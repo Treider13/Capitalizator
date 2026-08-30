@@ -365,7 +365,8 @@ GitHub честно: боты, которые люди **реально гоня
 | Этот план | **`TEAM-DESK.md`** |
 | Цифры по уровням/стакану/BTC | `SR-LEVELS-SCIENCE.md` |
 | Форумы (цитаты, сессии, усреднение) | `FORUMS-LEVELS-BOUNCE-BTC.md` |
-| 110 репо и кто что гоняет | `CENSUS-PRACTICE-REPOS.md` |
+| 150 топовых ботов vs стол | **`CENSUS-150.md`** |
+| 110 репо и кто что гоняет (issues) | `CENSUS-PRACTICE-REPOS.md` |
 | ИИ, новости, люди, киты | `ARCHITECTURE-AZ.md`, `intelligence-layer.md` |
 | Почему доливка убивала старую схему | `FINAL-PLAN-SCALPING.md` (история; в бою не используем) |
 | Старый рычаг «проп» | снят; цифры оставлены в `VERDICT-x10.md` как архив |

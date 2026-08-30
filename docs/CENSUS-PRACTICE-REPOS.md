@@ -1,6 +1,8 @@
 # Census: GitHub repos close to S/R, volume profile, order flow, SMC/ICT, BTC-filters, multi-agent “teams”
 
-**Date:** 2026-08-30 · **Method:** GitHub Search + `gh repo view` / `gh issue list` (live metadata). ~40 search queries, 350+ unique hits, 210+ repos viewed. Stars and `pushedAt` are **as of 2026-08-30**.
+**Date:** 2026-08-30 (morning). Second, wider pass (150 unique, live stars that evening, mapped to our desk): [`CENSUS-150.md`](CENSUS-150.md).
+
+**Method:** GitHub Search + `gh repo view` / `gh issue list` (live metadata). ~40 search queries, 350+ unique hits, 210+ repos viewed. Stars and `pushedAt` in *this* file are **as of 2026-08-30 morning**.
 
 **Deduped (famous engines — not re-reviewed here):** `freqtrade/freqtrade`, `hummingbot/hummingbot`, `nautechsystems/nautilus_trader`, `jesse-ai/jesse`, `ccxt/ccxt`, `TauricResearch/TradingAgents`, `NoFxAiOS/nofx`, FinMem (`pipiku915/FinMem-LLM-StockTrading`), `nkaz001/hftbacktest`, `bmoscon/cryptofeed`, `c9s/bbgo`. They appear only as **hosts** of strategies or as contrast.
 
