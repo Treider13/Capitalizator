@@ -5,6 +5,8 @@
 
 **Метод.** ~25 поисковых запросов (`crypto trading bot`, `futures`, `grid`, `bybit`, `passivbot`, `order book`, `smart-money-concepts`, `hyperliquid bot`, `topic:trading-bot`, `llm trading` через awesome-листы). Списки: `botcrypto-io/awesome-crypto-trading-bots` (2496★), `LLMQuant/awesome-trading-agents` (436★), `wilsonfreitas/awesome-quant` (29319★). Плюс ручной проход утренней переписи. Отсеяны Runescape-боты, кристаллическая «Wyckoff» (группы симметрии), AWS-курсы, NiceHash-вставки.
 
+Цифры результата на фьючерсах (не звёзды): [`FUTURES-BOTS-RESULTS.md`](FUTURES-BOTS-RESULTS.md).
+
 **Теги PnL (как утром):** `[V]` третья сторона / ончейн · `[S]` автор или юзер с деталью · `[M]` маркетинг / скрин · `—` нет.
 
 **Вердикт «нам»:** `позвоночник` / `труба` / `учить` / `антипример` / `игнор` / `пусто` (идея есть, продукта нет).

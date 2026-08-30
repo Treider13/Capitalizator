@@ -473,6 +473,7 @@ GitHub: ~110 репо в `CENSUS-PRACTICE-REPOS.md`. Люди гоняют гр�
 | `FIRST-IN-WORLD.md` | Что значит «первые» |
 | `SR-LEVELS-SCIENCE.md` | Osler, Corbet, стакан, BTC |
 | `FORUMS-LEVELS-BOUNCE-BTC.md` | Консенсус практиков |
+| `FUTURES-BOTS-RESULTS.md` | Кто результативен на крипто-перпах: `[V]`/`[B]`/`[M]`, не звёзды |
 | `CENSUS-150.md` | 150 топовых ботов/движков vs стол; что брать/не брать |
 | `CENSUS-PRACTICE-REPOS.md` | ~110 репо, issues/PnL-теги (утро) |
 | `ALTS-MARGIN-STOP.md` | Формула маржи на альтах |
