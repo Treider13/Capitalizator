@@ -9,6 +9,7 @@
 «Со 100к по 10к в день»: [`docs/VERDICT-10K-DAY.md`](docs/VERDICT-10K-DAY.md).  
 50к в месяц со 100к: [`docs/VERDICT-50K-MONTH.md`](docs/VERDICT-50K-MONTH.md).  
 Альты + шире стоп / больше маржа: [`docs/ALTS-MARGIN-STOP.md`](docs/ALTS-MARGIN-STOP.md).  
+Трейл и альт +40%: [`docs/TRAIL-RUNNERS.md`](docs/TRAIL-RUNNERS.md) — хвост ловим остатком, не бюджетом.  
 ×6–×9 за 6 месяцев «стабильно и с низким риском»: [`docs/VERDICT-x6-LOWRISK.md`](docs/VERDICT-x6-LOWRISK.md) — **нет**.
 
 Рядом: [`docs/SR-LEVELS-SCIENCE.md`](docs/SR-LEVELS-SCIENCE.md) (факты по уровням), [`docs/CENSUS-PRACTICE-REPOS.md`](docs/CENSUS-PRACTICE-REPOS.md) (~110 репо), [`docs/ARCHITECTURE-AZ.md`](docs/ARCHITECTURE-AZ.md) (ИИ, безопасность, контуры).
