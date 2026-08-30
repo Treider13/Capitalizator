@@ -2,8 +2,9 @@
 
 Частная фьючерсная торговая система. Исследования и план — в `docs/`.
 
-**С чего читать:** [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) — полная архитектура и план кода.  
-Фазы и все решения сессии: [`docs/PHASES-ALL.md`](docs/PHASES-ALL.md).  
+**С чего читать:** [`docs/PHASE-BUILD.md`](docs/PHASE-BUILD.md) — **поочерёдно**, каждая фаза и каждая мелочь (что первым, какой файл, какой тест, какой стоп).  
+Архитектура модулей: [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).  
+Фазы, гейты и деньги: [`docs/PHASES-ALL.md`](docs/PHASES-ALL.md).  
 Стол команды: [`docs/TEAM-DESK.md`](docs/TEAM-DESK.md).  
 Нейтральный месяц при скальпе 5% по очереди: [`docs/VERDICT-SCALP-5PCT.md`](docs/VERDICT-SCALP-5PCT.md).  
 100k → 600–900k при 10% в сделке: [`docs/VERDICT-600-900.md`](docs/VERDICT-600-900.md).  
