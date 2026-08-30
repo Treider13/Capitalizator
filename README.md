@@ -2,8 +2,8 @@
 
 Частная фьючерсная торговая система. Исследования и план — в `docs/`.
 
-**С чего читать:** [`docs/ARCHITECTURE-AZ.md`](docs/ARCHITECTURE-AZ.md) — полная архитектура по фазам: что система умеет, чему учится, как тренируется параллельно рынку, роль ИИ, безопасность, путь 100 000 ₽ → 1–1.5 млн ₽ за 6 месяцев.
+**С чего читать:** [`docs/TEAM-DESK.md`](docs/TEAM-DESK.md) — стол команды (уровни, стакан, отскок/пробой, BTC), только свой счёт, без усреднения и без фондов. Фазы, умения, тренировка.
 
-Остальные документы — основания и вердикты по отдельным вопросам (репозитории, новости, скальпинг, ×10 / ×50).
+Рядом: [`docs/SR-LEVELS-SCIENCE.md`](docs/SR-LEVELS-SCIENCE.md) (факты по уровням), [`docs/CENSUS-PRACTICE-REPOS.md`](docs/CENSUS-PRACTICE-REPOS.md) (~110 репо), [`docs/ARCHITECTURE-AZ.md`](docs/ARCHITECTURE-AZ.md) (ИИ, безопасность, контуры).
 
 Перепись GitHub по близким идеям (S/R, volume profile, order flow, SMC/ICT, корреляция BTC, фьючерсные боты с практикой): [`docs/CENSUS-PRACTICE-REPOS.md`](docs/CENSUS-PRACTICE-REPOS.md).
