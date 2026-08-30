@@ -23,4 +23,5 @@
 
 Кто реально прибыльный на **криптофьючерсах** (не звёзды): [`docs/FUTURES-BOTS-RESULTS.md`](docs/FUTURES-BOTS-RESULTS.md).  
 Перепись **150** топовых ботов/движков против стола (вечер 30.08): [`docs/CENSUS-150.md`](docs/CENSUS-150.md).  
+Мировой поиск (CN/IN/JP/KR, языки, Gitee/GitLab): [`docs/WORLD-SEARCH.md`](docs/WORLD-SEARCH.md) — пустой продукт пуст не только на EN GitHub.  
 Утренняя перепись практики (~110, issues/PnL): [`docs/CENSUS-PRACTICE-REPOS.md`](docs/CENSUS-PRACTICE-REPOS.md).

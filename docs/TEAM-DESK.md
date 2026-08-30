@@ -367,6 +367,7 @@ GitHub честно: боты, которые люди **реально гоня
 | Форумы (цитаты, сессии, усреднение) | `FORUMS-LEVELS-BOUNCE-BTC.md` |
 | Результат на криптофьючерсах (не звёзды) | **`FUTURES-BOTS-RESULTS.md`** |
 | 150 топовых ботов vs стол | **`CENSUS-150.md`** |
+| Мировой поиск (языки, Gitee) | **`WORLD-SEARCH.md`** |
 | 110 репо и кто что гоняет (issues) | `CENSUS-PRACTICE-REPOS.md` |
 | ИИ, новости, люди, киты | `ARCHITECTURE-AZ.md`, `intelligence-layer.md` |
 | Почему доливка убивала старую схему | `FINAL-PLAN-SCALPING.md` (история; в бою не используем) |
