@@ -26,6 +26,7 @@
 3. Если шаг красный — чинишь его. Не открываешь следующий модуль «пока этот сохнет».
 4. Колонка «не делать» — закон недели. Нарушил = откат коммита, не «потом вырежем».
 5. Имена пакетов как в `IMPLEMENTATION.md` §6. Схемы таблиц — §8. Конвейер сделки — §7. Сюда их не копируем целиком.
+6. Спеки без двусмысленностей (артефакты, команды, гейты, глоссарий, тесты, мониторинг, окна в UTC): разделы после «Карта документов». **Последовательность шагов и пороги гейтов не изменены** — только уточнены.
 
 Формат каждого шага:
 
@@ -1209,3 +1210,1276 @@ if raw_margin > cap_margin:
 | `ARCHITECTURE-AZ.md` | Карантин ИИ |
 
 Если этот файл спорит с `PHASES-ALL.md` по неделям — прав **календарь** в PHASES-ALL, а шаги здесь сдвигаются пачкой, не выкидываются.
+
+---
+
+# Детализация шагов
+
+Ниже каждый шаг из очереди выше: артефакты, «зелёный», команда, зависимости. Номера шагов **те же**. Не добавляет работ в середину фазы.
+
+Канон времени: все поля `*_ts` / `as_of` / `known_at` / `event_time` хранятся как **UTC** (`timestamptz`). Стены сессии задаются в `Europe/Moscow` (без перехода зима/лето — см. «Окна времени»). Код переводит через `zoneinfo`, не через `+3` в уме.
+
+Общие типы (шаг −1.4, живут вечно):
+
+```python
+# src/capitalizator/types.py
+class UtcDateTime: ...          # datetime с tz=UTC, naive запрещён
+class PitInstant:               # as_of: мир на этот момент; known_at: когда УЗНАЛИ
+    as_of: UtcDateTime
+    known_at: UtcDateTime
+class MarketEvent:
+    stream: Literal["trades","book_diff","bbo","funding","oi","mark","gap","resync"]
+    exchange: Literal["bybit","mexc"]
+    symbol: str                 # BTCUSDT
+    exchange_ts: UtcDateTime
+    recv_ts: UtcDateTime
+    seq: int | None
+    payload: dict
+```
+
+Зависимости читаются так: «шаг B **требует** A» = A зелёный, иначе B не начинать. «Не параллелить B с C» = даже на двух агентах нельзя, пока оба в работе: один из них врёт в данные другого.
+
+---
+
+## День минус один
+
+### −1.1 Каркас пакетов
+
+| | |
+|---|---|
+| **Требует** | — |
+| **Блокирует** | все шаги с импортом `capitalizator` |
+| **Не параллелить** | стратегию прибыли, подключение live-ключа (нечего импортировать безопасно) |
+| **Артефакты** | пакеты из очереди; `pyproject.toml` (`[project] name=capitalizator`); каждый пакет: `__init__.py`, `README.md` (вход/выход/не делает); `tests/test_import.py` |
+| **Классы** | пока нет; `__all__` пустые |
+| **API** | нет |
+| **Зелёный** | editable install + импорт всех пакетов; ни один модуль не читает `os.environ` с `KEY`/`SECRET`/`TOKEN` |
+| **Команда** | `pip install -e . && pytest tests/test_import.py -q && rg -n "API_KEY|SECRET|os.environ" src/capitalizator -g '!*.md' \|\| true` — `rg` не должен найти загрузку ключа |
+
+### −1.2 Замки качества
+
+| | |
+|---|---|
+| **Требует** | −1.1 |
+| **Не параллелить** | коммиты с секретами «потом почистим» |
+| **Артефакты** | `.pre-commit-config.yaml` (ruff, gitleaks); `.gitleaks.toml`; lockfile (`uv.lock` или `requirements.lock`); CI job `lint`; `infra/gitleaks/` |
+| **Зелёный** | хук и CI падают на `BYBIT_API_KEY=...` / `AKIA...`; чистый коммит проходит |
+| **Команда** | `pre-commit run --all-files`; `gitleaks detect --no-git -s tests/fixtures/fake_secret.txt --exit-code` (фикстура в `.gitleaks` allowlist **не** попадает в `src/`) |
+
+### −1.3 Схема без доливки
+
+| | |
+|---|---|
+| **Требует** | −1.1, −1.2 |
+| **Блокирует** | любой `RiskEngine`, signer, стратегии |
+| **Не параллелить** | написание `strategy_*` (обойдут дыру в enum) |
+| **Артефакты** | `risk/schema.py`: `RiskAction = Literal["accept","cut_size","reject"]`; `Intent`; `ManageAction = Literal["reduce","flatten","trail"]` — **нет** `average_in` / `add_to_position` / `pyramid` / `martingale`; `RiskEngine.validate(intent)`; `tests/risk/test_no_average.py`; фикстура `tests/fixtures/anti/old_user_average.json` |
+| **Зелёный** | любой JSON с доливкой → `ValidationError`; антипример 30k/5x/+10%/add 15k на −5% отвергнут |
+| **Команда** | `pytest tests/risk/test_no_average.py -q` |
+
+### −1.4 Два поля времени
+
+| | |
+|---|---|
+| **Требует** | −1.1 |
+| **Блокирует** | recorder sink, news, verifier, любые SQL-срезы |
+| **Не параллелить** | таблицы с одной колонкой `timestamp` |
+| **Артефакты** | `types.py` (`PitInstant`, `MarketEvent`); `tests/test_pit.py`; запрет naive datetime в конструкторе |
+| **Зелёный** | новость `known_at=12:05Z`, срез `as_of=12:00Z` → пусто; naive `datetime(2026,1,1)` → TypeError |
+| **Команда** | `pytest tests/test_pit.py -q` |
+
+---
+
+## Фаза 0 · неделя 1
+
+### 0.1.1 VPS
+
+| | |
+|---|---|
+| **Требует** | −1.2 (чтобы не везти секреты в git на машину) |
+| **Не параллелить** | прод на домашнем ноуте |
+| **Артефакты** | VPS SG/TYO; `ops/ping-week1.txt` (rtt ms, без IP ключей); firewall ufw; ssh ed25519 |
+| **API** | с VPS: `https://api.bybit.com`, `wss://stream.bybit.com` (linear) |
+| **Зелёный** | TCP/TLS до API; типичный RTT 10–35 ms; браузера на VPS нет |
+| **Команда** | `curl -s -o /dev/null -w '%{time_connect}\n' https://api.bybit.com`; `ss -lntu \| grep -E ':80|:5900|:3389'` → пусто |
+
+### 0.1.2 Ключи (не торгуем)
+
+| | |
+|---|---|
+| **Требует** | 0.1.1 |
+| **Не параллелить** | mainnet signer, запись ключа в `.env` в репо |
+| **Артефакты** | сабаккаунт Bybit; ключ Read+Trade, withdraw off, IP=VPS; Vault/sops путь `secret/bybit/sub-readtrade`; `ops/key-checklist.md` (без значений ключей); **нет** ключа основного аккаунта |
+| **API** | Bybit `GET /v5/user/query-api` (права); попытка withdraw → отвергнута |
+| **Зелёный** | чеклист заполнен; withdraw API fail; ключ не грепается в git |
+| **Команда** | `gitleaks detect`; ручной лог withdraw-reject в `ops/withdraw-denied.txt` |
+
+### 0.1.3 Docker рекордера
+
+| | |
+|---|---|
+| **Требует** | −1.1, 0.1.1 |
+| **Не параллелить** | образ с ключом и рекордером в одном контейнере |
+| **Артефакты** | `infra/recorder/Dockerfile`, `compose.yml`; класс `RecorderApp`; эндпоинты `GET /healthz` → 200, `GET /readyz` → 503 пока нет записи, `GET /metrics` (prometheus text) |
+| **Зелёный** | `compose up` → `/healthz` 200; процесс не импортирует `signer` |
+| **Команда** | `docker compose -f infra/recorder/compose.yml up -d && curl -sf localhost:8081/healthz` |
+
+### 0.1.4 WS BTCUSDT trades
+
+| | |
+|---|---|
+| **Требует** | 0.1.3, −1.4 |
+| **Не параллелить** | 15 альтов (сначала одна лента) |
+| **Артефакты** | `TradesNormalizer.normalize(raw) -> MarketEvent`; `BybitTradesWs.run()`; подписка `publicTrade.BTCUSDT`; фикстура `tests/fixtures/ws/btc_trades_100.jsonl` |
+| **Зелёный** | час записи не пуст; в логе p50/p95 `recv_ts-exchange_ts`; 100 мок-сделок → 100 событий |
+| **Команда** | `pytest tests/recorder/test_normalize_trades.py`; `python -m capitalizator.recorder.app --symbol BTCUSDT --stream trades --minutes 60` |
+
+### 0.1.5 Parquet
+
+| | |
+|---|---|
+| **Требует** | 0.1.4 |
+| **Не параллелить** | ClickHouse «вместо озера» |
+| **Артефакты** | `ParquetSink.write(event)`; путь `{data_root}/{exchange}/{symbol}/{stream}/date=YYYY-MM-DD/hour=HH.parquet`; схема Arrow = поля `MarketEvent` |
+| **Зелёный** | `pyarrow.parquet.read_table(...).num_rows == accepted_count` (±0) |
+| **Команда** | `python -m capitalizator.ops.check_parquet_count --path ... --expect-from-counter` |
+
+### 0.1.6 Дыры seq
+
+| | |
+|---|---|
+| **Требует** | 0.1.5 |
+| **Не параллелить** | «проглотить дыру, ресинк потом» без записи `gap` |
+| **Артефакты** | `GapDetector.on_seq(prev, cur) -> Gap \| None`; файл/таблица `gaps` (`symbol, stream, seq_from, seq_to, exchange_ts, recv_ts`); событие `stream=gap` |
+| **Зелёный** | синтетика 5→8 → ровно одна gap-запись |
+| **Команда** | `pytest tests/recorder/test_gap.py` |
+
+### 0.1.7 Сутки BTC
+
+| | |
+|---|---|
+| **Требует** | 0.1.6 |
+| **Не параллелить** | подключение альтов; зоны |
+| **Артефакты** | `ops/uptime-24h.md`; watchdog рестарт пишет gap |
+| **Зелёный** | аптайм ≥23.5 ч **или** рестарты только с помеченной gap; нет «тихо умер» |
+| **Команда** | `python -m capitalizator.ops.check_uptime --symbol BTCUSDT --hours 24 --max-unmarked-gap-s 0` |
+
+---
+
+## Фаза 0 · неделя 2
+
+### 0.2.1 REST snapshot
+
+| | |
+|---|---|
+| **Требует** | 0.1.5 |
+| **Артефакты** | `RestSnapshot.fetch(symbol) -> BookSnapshot`; Bybit `GET /v5/market/orderbook?category=linear&symbol=&limit=200`; parquet `stream=snapshot` |
+| **Зелёный** | снимок с `exchange_ts`, глубина > 0 |
+| **Команда** | `pytest tests/recorder/test_snapshot.py`; ручной `curl` к API с VPS |
+
+### 0.2.2 WS book diffs
+
+| | |
+|---|---|
+| **Требует** | 0.2.1, 0.1.4 |
+| **Не параллелить** | реконструктор до стабильного формата диффа |
+| **Артефакты** | `BookDiffNormalizer`; подписка `orderbook.200.BTCUSDT` (или эквивалент linear); `stream=book_diff` + `bbo` |
+| **Зелёный** | рядом с trades лежит поток диффов; фикстура snapshot+20 диффов читается |
+| **Команда** | `pytest tests/recorder/test_book_diff_normalize.py` |
+
+### 0.2.3 Реконструктор книги
+
+| | |
+|---|---|
+| **Требует** | 0.2.2 |
+| **Блокирует** | PRS, ZLG, стены, зоны-касания |
+| **Не параллелить** | кэш «видели уровень хоть раз» без удаления |
+| **Артефакты** | класс `Book`: `apply_snapshot`, `apply_diff`, `best()`, `depth_near(side, px, ticks)`, `spread()`, `imbalance(n)`, `fingerprint() -> bytes` |
+| **Зелёный** | два прогона файла → одинаковый `fingerprint` после каждого события |
+| **Команда** | `pytest tests/book/test_bit_identical.py` |
+
+### 0.2.4 Авто-ресинк
+
+| | |
+|---|---|
+| **Требует** | 0.2.3, 0.1.6 |
+| **Не параллелить** | торговлю (её ещё нет) на дырявой книге |
+| **Артефакты** | `BookResync.on_gap()` → REST snapshot → `stream=resync`; книга = снимок |
+| **Зелёный** | синтетический gap → лог resync, книга совпадает со снимком |
+| **Команда** | `pytest tests/book/test_resync.py` |
+
+### 0.2.5 Стена appeared / pulled / eaten
+
+| | |
+|---|---|
+| **Требует** | 0.2.3, 0.1.4 |
+| **Не параллелить** | использование стены как вход |
+| **Артефакты** | `WallWatch.on_book_and_trade() -> WallEvent`; таблица `wall_event(symbol, px, side, size, kind, ts)`; `kind ∈ {appeared,pulled,eaten}` |
+| **Зелёный** | фикстура 50 BTC @60000 → pull → `pulled`; съели трейдами → `eaten` |
+| **Команда** | `pytest tests/book/test_wall_watch.py` |
+
+### 0.2.6 Вселенная альтов
+
+| | |
+|---|---|
+| **Требует** | 0.1.7 (сутки BTC зелёные), 0.2.4 |
+| **Не параллелить** | 200 монет |
+| **Артефакты** | `infra/universe.week0.yaml` (`symbols: [BTCUSDT, ETHUSDT, ...]`); рекордер крутит список |
+| **Зелёный** | сутки BTC/ETH без непомеченного разрыва; альты — только помеченные gap |
+| **Команда** | `python -m capitalizator.ops.check_uptime --universe infra/universe.week0.yaml --hours 24` |
+
+### 0.2.7 Реплеер Nautilus
+
+| | |
+|---|---|
+| **Требует** | 0.2.3, 0.1.5 |
+| **Не параллелить** | оптимизатор параметров, стратегию на свечках без книги |
+| **Артефакты** | `ReplayEngine.run(path) -> list[BookCheckpoint]`; фикстура `tests/fixtures/day_btc_small/`; полный день на диске VPS, не в git |
+| **Зелёный** | два прогона часа = те же `best()` в контрольных точках |
+| **Команда** | `pytest tests/exec/test_replay_bit_identical.py` |
+
+### 0.2.8 SQL поверх Parquet (DuckDB допустим)
+
+| | |
+|---|---|
+| **Требует** | −1.4, 0.1.5 |
+| **Не параллелить** | запросы без `known_at` |
+| **Артефакты** | таблица `market_event` (колонки `MarketEvent`); view `market_event_pit`; клиент `PitStore.query(sql, as_of)` подставляет предикат |
+| **Зелёный** | срез `known_at <= t` не видит будущее |
+| **Команда** | `pytest tests/storage/test_pit_query.py` |
+
+---
+
+## Фаза 0 · неделя 3
+
+Конфиг разметки (зафиксировать, не крутить до конца Ф1): `infra/registry.yaml`
+
+```yaml
+epsilon_ticks: 2
+bounce_away_ticks: 8          # или 0.3 * planned_R, что больше — выбрать одно и записать
+working_tf: "15m"
+htf: "4h"
+touch_pending_timeout_h: 6
+die_no_touch_h: 24
+zlg_window_s: 8
+zlg_gamma: 0.25               # SILENCE если max A < gamma * q
+prs_alpha: 0.7
+prs_t_max_s: 8
+prs_delta_ticks: 5
+```
+
+### 0.3.1 Зоны без lookahead
+
+| | |
+|---|---|
+| **Требует** | 0.2.7, 0.2.8 |
+| **Не параллелить** | ICT/FVG как истину; зоны на дырявом дне без gap-флага |
+| **Артефакты** | `ZoneEngine.build(symbol, t) -> list[Zone]`; `Zone(zone_id, symbol, tf, side, lo, hi, method, created_as_of)`; `zone_id = blake2s(symbol,tf,side,lo,hi,method,created_as_of)` |
+| **Зелёный** | два прогона = те же id; зона с баром t+1 не существует в прогоне до t |
+| **Команда** | `pytest tests/zones/test_no_lookahead.py tests/zones/test_double_run.py` |
+
+### 0.3.2 Карта двух ТФ
+
+| | |
+|---|---|
+| **Требует** | 0.3.1 |
+| **Артефакты** | `ZoneMap.htf_bias(symbol, t) -> Literal["long","short","box","unknown"]`; поле на карте, **не** вход |
+| **Зелёный** | у символа есть bias на контрольной дате фикстуры |
+| **Команда** | `pytest tests/zones/test_htf_bias.py` |
+
+### 0.3.3 Касания → реестр
+
+| | |
+|---|---|
+| **Требует** | 0.3.1, 0.1.4 |
+| **Не параллелить** | смену `registry.yaml` «чтобы красивее n» |
+| **Артефакты** | таблица `touch` (IMPLEMENTATION §8 + `touch_id`); `Registry.on_trade()`; исход `pending→bounce\|break\|die` по правилам очереди |
+| **Зелёный** | реплей дня: число касаний стабильно ±0 на двух прогонах; фикстура тычок+уход без close за зоной → `bounce` |
+| **Команда** | `pytest tests/memory/test_touch_outcome.py` |
+
+### 0.3.4 Лента / OFI
+
+| | |
+|---|---|
+| **Требует** | 0.1.4, 0.3.3 |
+| **Не параллелить** | CVD-5мин как сигнал |
+| **Артефакты** | `TapeClassifier.taker_side(trade)`; `OFI.window(trades, book)`; поле `touch.tape_eaten: bool` |
+| **Зелёный** | на касании поле заполнено детерминированно |
+| **Команда** | `pytest tests/tape/test_classify.py tests/tape/test_eaten.py` |
+
+### 0.3.5 PRS только лог
+
+| | |
+|---|---|
+| **Требует** | 0.2.3, 0.1.4 |
+| **Не параллелить** | любой `place_order` внутри `prs/` |
+| **Артефакты** | `PRS.compute(trade, book_pre, book_path) -> PRSResult(tau, X, Y)`; таблица `prs_log`; формула `PASSIVE-RESILIENCE.md` (α=0.7, T_max=8s) |
+| **Зелёный** | известный τ на фикстуре → тот же Y дважды; `rg place_order src/capitalizator/prs` пусто |
+| **Команда** | `pytest tests/prs/test_tau.py`; `rg -n "place_order|create_order" src/capitalizator/prs` |
+
+### 0.3.6 ZLG только лог
+
+| | |
+|---|---|
+| **Требует** | 0.3.3, 0.2.3 |
+| **Не параллелить** | открытие размера по жесту |
+| **Артефакты** | `ZLG.classify(touch, book_adds, q) -> Gesture`; `Gesture = DEFEND\|RETREAT\|IMPROVE\|FADE\|SILENCE`; поля `A_same,A_back,A_in,A_opp`; спека `INVENTION-FIRST-FACT.md` |
+| **Зелёный** | два прогона дня = те же метки; по фикстуре на каждую метку |
+| **Команда** | `pytest tests/zlg/test_labels.py tests/zlg/test_double_run.py` |
+
+### 0.3.7 BTC-режим запись
+
+| | |
+|---|---|
+| **Требует** | 0.3.1 |
+| **Не параллелить** | `veto()` в проде (его ещё нет — сделок нет) |
+| **Артефакты** | `BtcRegime.classify(t) -> Literal["trend","box","news"]`; колонка `touch.btc_regime` |
+| **Зелёный** | поле заполнено на каждом касании фикстуры |
+| **Команда** | `pytest tests/btc/test_regime.py` |
+
+### 0.3.8 Вечерний отчёт
+
+| | |
+|---|---|
+| **Требует** | 0.3.3, 0.3.6, 0.1.6 |
+| **Не параллелить** | советы сделок в отчёте |
+| **Артефакты** | `ops/daily_map_report.py` → markdown; запрещённые токены `лонг\|шорт\|купи\|продай` в генераторе (кроме цитаты зоны) |
+| **Зелёный** | отчёт за фикстурный день содержит касания/жесты/дыры; нет «завтра лонг» |
+| **Команда** | `pytest tests/ops/test_daily_report_no_advice.py` |
+
+---
+
+## Фаза 0 · неделя 4
+
+### 0.4.1 Новости с двумя временами
+
+| | |
+|---|---|
+| **Требует** | −1.4, 0.2.8 |
+| **Не параллелить** | скрейп TG |
+| **Артефакты** | таблица `news`; `NewsIngest.from_csv(path)`; формат CSV — раздел «Входные календари»; `event_time`, `known_at` NOT NULL |
+| **Зелёный** | PIT: срез до `known_at` новости не видит |
+| **Команда** | `pytest tests/news/test_pit.py`; `python -m capitalizator.news_macro.ingest --file infra/calendars/macro.csv` |
+
+### 0.4.2 Авторы-сырьё
+
+| | |
+|---|---|
+| **Требует** | −1.4 |
+| **Не параллелить** | вес/скоринг (Ф2); скрейп ToS |
+| **Артефакты** | таблица `author_call` без `weight`; `AuthorsIngest`; ≥20 сырых записей |
+| **Зелёный** | `SELECT count(*) FROM author_call` ≥ 20 за неделю; колонки веса нет или NULL |
+| **Команда** | `python -m capitalizator.ops.check_author_raw --min 20` |
+
+### 0.4.3 LLM-сводка в карантине
+
+| | |
+|---|---|
+| **Требует** | 0.3.8 |
+| **Не параллелить** | доступ песочницы к signer/бирже/ключам |
+| **Артефакты** | контейнер `llm-sandbox` network=none + allowlist только к отчёту; `DailySummary.prompt`; JSON out `{summary: str, trade_advice: false}`; эндпоинт нет наружу |
+| **Зелёный** | яд «купи всё» → нет ордера, HTTP из песочницы = fail теста |
+| **Команда** | `pytest tests/llm/test_no_egress.py tests/llm/test_no_advice.py` |
+
+### 0.4.4 Signer тестнет
+
+| | |
+|---|---|
+| **Требует** | −1.3, 0.1.2 (тестнет-ключ отдельно) |
+| **Не параллелить** | mainnet ключ в процессе |
+| **Артефакты** | процесс `signer`; localhost `POST /v1/intent` (unix-socket или 127.0.0.1); `Signer.validate(unsigned) -> Order`; ядро **не** видит ключ; `trading_mode=testnet` |
+| **Зелёный** | hello-лимит+стоп на тестнете; в env ядра нет ключа |
+| **Команда** | `pytest tests/signer/test_schema.py`; ручной `ops/signer-hello-testnet.md` |
+
+### 0.4.5 Dead-man 30 с
+
+| | |
+|---|---|
+| **Требует** | 0.4.4 |
+| **Артефакты** | heartbeat ядро→signer каждые ≤5 с; `DEAD_MAN_S=30`; по тишине — cancel all |
+| **Зелёный** | `kill -9` ядра → ордера тестнета сняты ≤35 с; лог в `ops/kill-switch-week4.md` |
+| **Команда** | `pytest tests/signer/test_deadman.py` (мок часов) + ручной протокол |
+
+### 0.4.6 Reconcile 60 с
+
+| | |
+|---|---|
+| **Требует** | 0.4.4 |
+| **Артефакты** | `Reconciler.tick()`; биржа = истина; локальный кэш ордеров |
+| **Зелёный** | сняли ордер на сайте → локально нет ≤70 с |
+| **Команда** | ручной протокол `ops/reconcile-week4.md`; юнит с мок-API |
+
+### 0.4.7 Комиссии в симе
+
+| | |
+|---|---|
+| **Требует** | 0.2.7 |
+| **Не параллелить** | fill по close свечи как истину |
+| **Артефакты** | `FeeTable.VIP0` maker 0.0002*2, taker 0.00055*2 notional; `NaiveQueueFill` (пересекли лимит → fill) |
+| **Зелёный** | +1R после комиссий < +1R до на известную величину |
+| **Команда** | `pytest tests/exec/test_fees.py` |
+
+### 0.4.8 Дрейф на синтетике
+
+| | |
+|---|---|
+| **Требует** | −1.1 |
+| **Не параллелить** | смену чемпиона по пятницам; привязку к live деньгам |
+| **Артефакты** | `PageHinkley` или `ADWIN` в `champion/drift.py`; вход = ряд ошибок 0/1 |
+| **Зелёный** | ряд 0.3→0.7 → `drift=true` |
+| **Команда** | `pytest tests/champion/test_drift_synthetic.py` |
+
+### 0.4.9 Hashlog + пустой episode
+
+| | |
+|---|---|
+| **Требует** | 0.3.3, 0.3.6 |
+| **Артефакты** | таблица `episode` (0 строк ок); `HashChain.append(payload)`; `prev_hash` |
+| **Зелёный** | подмена жеста ломает `verify()` |
+| **Команда** | `pytest tests/memory/test_hashlog.py` |
+
+### 0.4.10 Гейт Ф0
+
+См. «Автоматические проверки» → `gate_f0`. Шаг зелёный только если скрипт exit 0. Последовательность гейта не меняется.
+
+---
+
+## Фаза 1 · недели 5–8
+
+### 1.5.1 Формула размера
+
+| | |
+|---|---|
+| **Требует** | −1.3, Г0 зелёный **для включения демо**; код можно писать на ветке раньше, флаги выключены |
+| **Не параллелить** | 5x в Ф1; кап маржи >10% |
+| **Артефакты** | `Sizing.compute(equity, lev, stop_frac, target_risk) -> SizeDecision`; `cap_margin=0.10*equity`; Ф1: `target_risk=0.01`, `max_lev=3` |
+| **Зелёный** | кейс 20%+4%+5x при target 1.2% → reject/урез, не 4% риска |
+| **Команда** | `pytest tests/risk/test_alt_wide_stop.py tests/risk/test_sizing.py` |
+
+### 1.5.2 Краны
+
+| | |
+|---|---|
+| **Требует** | 1.5.1 |
+| **Артефакты** | `Halts.state(day_pnl_pct, week_pnl_pct, dd_from_peak, liq_flag) -> Halt`; пороги −0.03 / −0.06 / −0.25 / liq; закрытие открытого разрешено |
+| **Зелёный** | день −3.1% → новый вход reject |
+| **Команда** | `pytest tests/risk/test_halts.py` |
+
+### 1.5.3 Одна позиция
+
+| | |
+|---|---|
+| **Требует** | 1.5.1 |
+| **Артефакты** | `RiskEngine._open_position: Position \| None` |
+| **Зелёный** | второй intent при открытой → reject |
+| **Команда** | `pytest tests/risk/test_one_position.py` |
+
+### 1.5.4 Сессия
+
+| | |
+|---|---|
+| **Требует** | −1.4, 1.5.1 |
+| **Артефакты** | `SessionWindow.allows(now_utc, calendar)` — см. «Окна времени»; ночь 5x всегда reject |
+| **Зелёный** | 12:00 UTC (15:00 МСК) reject; 14:10 UTC accept (если не US-data day); 20:00 UTC reject |
+| **Команда** | `pytest tests/risk/test_session.py` |
+
+### 1.5.5 Demo adapter
+
+| | |
+|---|---|
+| **Требует** | 1.5.1…1.5.4, 0.4.4 |
+| **Не параллелить** | сборку mainnet signer в этот бинарник |
+| **Артефакты** | `DemoAdapter`; `trading_mode=demo`; `episode.mode=demo` |
+| **Зелёный** | hello лимит+cancel на демо; grep mainnet endpoint в demo-сборке пуст |
+| **Команда** | `pytest tests/exec/test_demo_mode_no_mainnet.py` |
+
+### 1.5.6 Стоп на бирже обязателен
+
+| | |
+|---|---|
+| **Требует** | 0.4.4, 1.5.5 |
+| **Артефакты** | signer reject если нет stop; Bybit attached SL |
+| **Зелёный** | intent без stop → 4xx |
+| **Команда** | `pytest tests/signer/test_stop_required.py` |
+
+### 1.6.1–1.6.6 Отскок и журнал
+
+| Шаг | Требует | Артефакты | Зелёный | Команда |
+|---|---|---|---|---|
+| 1.6.1 предложение | 1.5.*, 0.3.1 | `BounceStrategy.propose() -> Intent\|None`; `setup_tag=bounce` | все 5 условий очереди | `pytest tests/exec/test_bounce_gates.py` |
+| 1.6.2 середина | 1.6.1 | `in_mid_range()` | mid → 0 intents | `pytest tests/exec/test_mid_range.py` |
+| 1.6.3 50% + трейл | 1.6.1 | `TradeManager.on_fill`; **нет** `move_to_be_at_pct=0.02` | путь +2R: частичный 50%; −стоп без доливки | `pytest tests/exec/test_partial_1r.py tests/exec/test_no_mechanical_be.py` |
+| 1.6.4 скринер | 0.2.8 | `Screener.ok(symbol)`; спред+комиссия vs ATR/медиана отскока | спред 0.4% цель 0.3% → reject | `pytest tests/screener/test_spread.py` |
+| 1.6.5 только лимит | 1.6.1 | `order_type=limit`; `TAKER_OK=false` в Ф1 | все входы недели limit | `pytest tests/exec/test_maker_only_f1.py` |
+| 1.6.6 episode | 1.6.1 | таблица `episode` заполняется | вечерний SQL без Excel | `python -m capitalizator.ops.day_episodes --date today` |
+
+**Не параллелить** 1.6.1 со сменой `registry.yaml`; 1.6.3 с механическим БУ.
+
+### 1.7.1–1.7.5 Карточка-черновик
+
+| Шаг | Требует | Артефакты | Зелёный | Команда |
+|---|---|---|---|---|
+| 1.7.1 черновик | 1.6.6 | `CardDraft` JSON schema; `require_card=true` | нет файла карточки → reject | `pytest tests/card/test_require_card.py` |
+| 1.7.2 костыль | 1.7.1, 0.2.8 | `ManualVerifier.bind(claim, sql_path, result)`; VERIFIED только если SQL совпал | «23 из 31» без запроса нельзя VERIFIED | `pytest tests/verifier/test_manual_bind.py` |
+| 1.7.3 first_fact тень | 0.3.6, 1.7.1 | `FirstFact.resolve()`; `n_min=20`; тег `shadow_gesture` | n<20 не увеличивает лот | `pytest tests/card/test_first_fact_no_sizeup.py` |
+| 1.7.4 1–3/день | 1.5.1 | счётчик intents сессии | 4-й reject | `pytest tests/risk/test_max_three.py` |
+| 1.7.5 претендент ширины | 0.2.7, 1.6.1 | `shadow_width` 0.8/1.2; ордеров нет | отчёт двух теней; чемпион не сменён | `pytest tests/champion/test_no_auto_promote.py` |
+
+### 1.8.1–1.8.4 Набор и гейт Ф1
+
+| Шаг | Требует | Артефакты | Зелёный | Команда |
+|---|---|---|---|---|
+| 1.8.1 разбор | 1.6–1.7 | таблица `skip_log(reason, ts)` | skip не пустой за неделю с нулём сделок | `python -m capitalizator.ops.check_skips --days 7` |
+| 1.8.2 TCA демо | 1.6.6 | `tca_demo.py`; медиана slip в тиках | таблица существует | `pytest tests/exec/test_tca_table.py` |
+| 1.8.3 средний R | 1.6.6 | `ops/gate_f1.sql` | команда печатает avg_r | см. гейт Ф1 |
+| 1.8.4 гейт | Г1 критерии | `ops/gates/f1.py` | exit 0 | `python -m capitalizator.ops.gates f1` |
+
+---
+
+## Фаза 2 · недели 9–12
+
+| Шаг | Требует | Не параллелить | Артефакты / зелёный / команда |
+|---|---|---|---|
+| 2.9.1 зоны BTC | 0.3.1 | другой движок зон для BTC | тот же `ZoneEngine`; зелёный = карта BTC на t; `pytest tests/btc/test_zones.py` |
+| 2.9.2 слом | 2.9.1, 0.3.4 | вето на один фитиль | `Break.detect()` = close рабочего ТФ за зоной **и** `tape_eaten`; фитиль без close → нет слома; `pytest tests/btc/test_break_definition.py` |
+| 2.9.3 закон альт | 2.9.2, 1.6.1 | ослабить «мало сделок» | `BtcVeto.allow(alt_side)`; SOL long + BTC слом вниз → reject; `pytest tests/btc/test_veto_alt.py` |
+| 2.9.4 saved-R | 2.9.3 | считать saved-R как live PnL | таблица `saved_r(reason, r_hat, ts)`; ежедневный отчёт; `pytest tests/memory/test_saved_r.py` |
+| 2.9.5 тень без вето | 2.9.3, 1.7.5 | выключить вето завтра | отчёт DD; претендент «H1 close» ≥15 дней; `pytest tests/champion/test_veto_shadow.py` |
+| 2.10.1 не едят | 0.3.4, 1.6.1 | — | `tape_eaten` → 0 bounce; `pytest tests/exec/test_bounce_eaten.py` |
+| 2.10.2 стена без печати | 0.2.5 | стена как вход | reason `wall_no_print`; `pytest tests/exec/test_wall_no_print.py` |
+| 2.10.3 PRS cut | 0.3.5, 1.5.1 | ордер для измерения | порог `prs_y` в yaml; `pytest tests/risk/test_prs_cut.py` |
+| 2.10.4 до 16:30 | 1.5.4, 0.4.1 | хардкод без календаря | день CPI → до сессии закрыто; `pytest tests/risk/test_us_data_day.py` |
+| 2.11.1 схема карточки | 1.7.1 | свободный текст вместо JSON | `Card` + `Claim`; невалидный JSON → нет входа; `pytest tests/card/test_schema.py` |
+| 2.11.2 SQL verifier | 2.11.1, 0.2.8 | LLM пишет VERIFIED | `SqlVerifier.recompute(claim)`; подмена числа → REFUTED; `pytest tests/verifier/test_recompute.py` |
+| 2.11.3 несущее | 2.11.2 | — | load_bearing ≠ VERIFIED → reject; `pytest tests/card/test_load_bearing.py` |
+| 2.11.4 first_fact код | 1.7.3, 2.11.1 | человек заполняет first_fact | `argmin(horizon)` среди claims с частотой; `pytest tests/card/test_first_fact_argmin.py` |
+| 2.11.5 LLM черновик | 0.4.3, 2.11.2 | путь `llm.verdict=VERIFIED` | `rg "VERIFIED" src/capitalizator/llm` не присваивает; `pytest tests/llm/test_cannot_verify.py` |
+| 2.11.6 красная команда | 0.4.3, 2.11.5 | — | яд → нет ордера/ключа/egress; `pytest tests/llm/test_redteam_poison.py` |
+| 2.11.7 макро-правила | 0.4.1, 1.5.1 | крутить ×0.5 каждый день | `MacroRules`; 24ч до CPI/FOMC; час после 14:00 ET; `pytest tests/news/test_macro_rules.py` |
+| 2.12.1 parse автора | 0.4.2 | — | `AuthorParse`; ≥50 разобранных; `python -m capitalizator.ops.check_author_parsed --min 50` |
+| 2.12.2 hit/miss | 2.12.1 | менять правило сверки после факта | `AuthorsResolve` ночной джоб; `pytest tests/authors/test_resolve.py` |
+| 2.12.3 вес | 2.12.2 | копировать инфлюенсера | байес, min 5–20 вызовов; 1 хит ≠ гуру; `pytest tests/authors/test_shrinkage.py` |
+| 2.12.4 голос не accept | 2.12.3, 2.11.3 | вход только от автора | нет зон + автор → reject; `pytest tests/authors/test_no_entry.py` |
+| 2.12.5 сентимент | 2.12.3 | «купи страх» на часе | месячное окно → cut; `pytest tests/news/test_sentiment_derisk.py` |
+| 2.12.6 GDELT | 0.4.1 | снайпер | опционально, не блокирует гейт |
+| 2.12.7 гейт Ф2 | все Г2 | прыжок в Ф3 | `python -m capitalizator.ops.gates f2` |
+
+---
+
+## Фаза 3 · недели 13–16
+
+| Шаг | Требует | Не параллелить | Артефакты / зелёный / команда |
+|---|---|---|---|
+| 3.13.1 флаг | **Г2=pass** | включить до гейта | `BREAKOUT_ENABLED=true`; git tag `phase3-breakout`; `pytest tests/exec/test_breakout_flag.py` |
+| 3.13.2 стратегия | 3.13.1, 2.9.3, 2.10.1 | первая минута; фитиль без close | `BreakoutStrategy`; close за зоной + eaten + BTC; ретест за T или skip; `pytest tests/exec/test_breakout_close.py tests/exec/test_first_minute.py` |
+| 3.13.3 жест на пробое | 0.3.6, 3.13.2 | DEFEND после прокола = догон | skip `fake_defend`; `pytest tests/exec/test_breakout_gesture.py` |
+| 3.13.4 фейк | 3.13.2, 1.6.1 | мешать статистику с пробоем | `setup_tag=failed_break`; `pytest tests/exec/test_failed_break_tag.py` |
+| 3.13.5 отскок жив | 1.6.1 | выключить bounce | SQL раздельный R; `ops/setup_split.sql` |
+| 3.13.6 претендент пробой | 3.13.2 | смена чемпиона в середине 15–20д | ярлык записан до старта; `champion/exam.md` |
+| 3.14.1 анлоки | 0.4.1 | торговать без флага в день unlock | таблица `unlocks`; формат CSV ниже; скринер режет; `pytest tests/screener/test_unlock.py` |
+| 3.14.2 класс×режим | 2.11.7, 3.14.1 | приор из intelligence как истина | таблица `reaction(class, regime, n, coef)`; n писать честно |
+| 3.14.3 тезис отменён | 2.11.2, 1.6.3 | «подождём» | REFUTED mid-trade → flatten; `pytest tests/exec/test_refute_flatten.py` |
+| 3.15.1 HL ingest | −1.4 | один кошелёк = сигнал | `whales/hl_ingest.py`; `known_at`=когда увидели; `pytest tests/whales/test_pit.py` |
+| 3.15.2 когорта | 3.15.1 | копировать лидерборд | `Cohort.filter` ≥180д, maxDD<30%, не HFT; список версий на дату |
+| 3.15.3 дельта | 3.15.2 | — | claim `cohort_delta` + SQL; без цифры UNVERIFIABLE |
+| 3.15.4 запрет кит | 3.15.3 | reason `whale` | единственный claim whale → нет входа; `pytest tests/whales/test_no_single_wallet.py` |
+| 3.15.5 хрупкость | 3.15.1, 0.2.3 | теплокарта как магнит | OI пик ∧ funding top5% ∧ тонкий стакан → forbid new longs; `pytest tests/whales/test_fragility.py` |
+| 3.15.6 флоу | 3.15.1 | лонг «потому что ввели» | фича волы; направление UNVERIFIABLE |
+| 3.15.7 тень только киты | 3.15.3 | включить китовый вход на n=10 | отчёт: остаётся фильтр |
+| 3.16.1 таблица жестов | 0.3.6, 0.3.3 | торговать пустую клетку | `ops/gesture_table.sql`; n в клетке |
+| 3.16.2 split R | 3.13.5 | Ф4 если оба минус | два expectancy |
+| 3.16.3 сквиз vs тренд | 3.15.5 | смягчить порог руками в пн | допуск X% заранее в yaml; претендент |
+| 3.16.4 гейт Ф3 | Г3 | микро до гейта | `python -m capitalizator.ops.gates f3` |
+
+---
+
+## Фаза 4–5
+
+| Шаг | Требует | Не параллелить | Артефакты / зелёный / команда |
+|---|---|---|---|
+| 4.17.1 shadow | **Г3=pass** | вызов signer | `ShadowWriter`; `mode=shadow`; `pytest tests/exec/test_shadow_no_signer.py` |
+| 4.17.2 карточка до входа | 2.11.3 | — | `card.ts < intent.ts`; `pytest tests/card/test_card_before_intent.py` |
+| 4.17.3 overlay | 4.17.1 | — | таблица `overlay(setup_id, r_shadow, r_live)` |
+| 4.18.1 микро 10–20k | 4.17.1 | считать риск от 100k | `equity_source=micro_subaccount`; target 1% **микро** |
+| 4.18.2 signer микро | 0.4.4, 4.18.1 | ключ основного счёта | mainnet только микро; `pytest tests/signer/test_no_main_key.py` |
+| 4.18.3 dead-man live | 4.18.2 | — | `ops/kill-switch-micro.md` |
+| 4.18.4 первые live | 4.18.2, конвейер Ф3 | разогрев тейкером | 0–3/день; limit+stop |
+| 4.18.5 first_fact размер | 2.11.4 | полный микро при n<20 | SILENCE\|n<20 → shadow или ¼; `pytest tests/risk/test_nmin_quarter.py` |
+| 4.19.1 ритуал | 4.18.* | новые фичи «мало сделок» | чеклист дня в `ops/ritual.md` |
+| 4.19.2 drift 0.5% | 0.4.8, 4.18.1 | молча торговать | drift → target 0.005; `pytest tests/risk/test_drift_cut.py` |
+| 4.19.3 калибр fill | 4.18.4 | подгонка под прибыль | процедура в `ops/fill_recal.md` |
+| 4.19.4 нет фич | — | хотфикс чемпиона | только претендент |
+| 4.19.5 краны live | 1.5.2 | сила воли вместо кода | −3% микро → halt |
+| 4.22.* гейт Ф4 | критерии Г4 | «почти 57% на полном» | `python -m capitalizator.ops.gates f4` |
+| 5.23.1–5 эквити | **Г4=pass** | риск 2%; ночь 5x | `equity_source=main`; target 1.2%; weekly compound; `APlus.ok`; `pytest tests/risk/test_f5_sizing.py tests/risk/test_aplus.py` |
+| 5.24.* ИИ-день | 2.11, 5.23 | «завтра долей» в уроке | брифинг файл; счётчик A+; `pytest tests/llm/test_lesson_no_average.py` |
+| 5.24.4 краны полного | 1.5.2 | — | −25% peak → Ф5 off, гейт Ф4 заново |
+| 5.25–5.26 | Ф5 жива | третий сетап | `kill_rules.yaml`; ёмкость live vs тень |
+
+---
+
+# Глоссарий
+
+Формальные определения. Примеры не меняют пороги.
+
+**Дыра (gap).** Пропуск в монотонности биржевого `seq` (или эквивалентного id) на одном `(exchange, symbol, stream)`: `seq_{n} > seq_{n-1}+1`, либо тишина дольше `gap_silence_s` (конфиг, старт 30 с на trades) при живом процессе. **Помеченная дыра** — есть строка в `gaps` и/или событие `stream=gap`. **Непомеченная** — разрыв в данных без строки. Гейт Ф0 запрещает непомеченные на BTC/ETH за 30 суток. Пример: пришли seq 100, 101, 104 → дыра 102–103.
+
+**Ресинк.** После дыры на книге: REST snapshot + продолжение диффов. Книга до ресинка для PRS/ZLG **не** используется.
+
+**Зона.** Интервал цены `[lo, hi]` на одном `(symbol, tf, side)`, построенный только из данных с `as_of < t`. Не линия. `zone_id` стабилен. Середина диапазона между двумя зонами — **не** зона входа. Пример: SOL поддержка 148.20–149.00, `created_as_of=2026-08-29T18:00:00Z`.
+
+**Касание (touch).** Сделка с `trade_px ∈ [lo−ε, hi+ε]`, ε из `registry.yaml`. Пока исход не размечен — `pending`.
+
+**Исход касания.** `bounce` — ушла от зоны на `bounce_away_ticks` (или 0.3R) и рабочая свеча не закрылась за зоной; `break` — закрытие рабочей свечи за зоной; `die` — `pending` дольше `touch_pending_timeout_h` или зона не торгуется `die_no_touch_h`. Числа не крутить до конца Ф1.
+
+**Лента / eaten.** Поток обезличенных сделок (taker). `tape_eaten=true`, если за окно касания тейкеры сняли ≥ порога глубины зоны (порог в yaml, старт: ≥50% `depth_near` на стороне зоны). Стена без сделок в зоне — декорация.
+
+**OFI.** Краткий order-flow imbalance в том же окне, что касание (Cont–Kukanov–Stoikov). Не CVD за 5 минут.
+
+**PRS (Passive Replenishment Score).** Время восстановления глубины после **чужой** агрессивной сделки: τ до возврата к `α·D_pre`, α=0.7, цензура `T_max=8с`. Дальше X и робастный z=Y. Предсказывает стресс спреда, не mid. Ордеров для измерения нет. Пример: удар 2 BTC по биду, глубина вернулась к 70% за 3 с → τ=3.
+
+**ZLG / жест (Zone Liquidity Gesture).** За T≈8 с после печати в зоне четыре счётчика **новых** add: same / back / in / opp → метка DEFEND / RETREAT / IMPROVE / FADE / SILENCE. SILENCE если `max A < γ·q`. Это путь ликвидности, не тело свечи. Пример: новый бид сел на ударенной цене → DEFEND.
+
+**Первый факт.** Утверждение карточки с минимальным горизонтом, у которого в **нашей** памяти есть частота (`n ≥ n_min`, старт 20). Обычно жест. Нет факта / SILENCE / мало n → skip или тень, размер не растёт.
+
+**Карточка.** JSON из тезиса и 5–7 `claims[]` (`type, subject, value, as_of, known_at, horizon, load_bearing, verdict`). Без карточки (с Ф1 `require_card`) входа нет. Официальный закон — с Ф2.
+
+**Верификатор.** Код, который пересчитывает число claim из PIT-SQL. Ставит VERIFIED / REFUTED / UNVERIFIABLE. LLM вердикт не ставит.
+
+**Верификатор-костыль (Ф1).** Тот же принцип, но оператор **привязывает** claim к файлу SQL и сохранённому результату. VERIFIED нельзя кликнуть без совпадения. Это не отмена верификатора, а ручной контур до авто-SQL Ф2.
+
+**Несущее (load_bearing).** Claim, без которого тезис входа мертв. Хотя бы один не VERIFIED → нет входа (с Ф2; в Ф1 — если костыль уже включён).
+
+**Эпизод (episode).** Одна разобранная идея с fill: `trade_id, mode ∈ {shadow,demo,micro,live}, card_id, setup_tag, fill, slip, r, fees, status`. Тень без ордера — эпизод `shadow`. Незаполненный лимит, отменённый до fill, **не** эпизод-сделка для гейтов.
+
+**R.** `r = pnl_quote / risk_quote` после комиссий и slip, где `risk_quote` = расстояние вход–стоп × размер в момент входа. Частичная + трейл — один эпизод, один итоговый `r`.
+
+**Краны.** Автоматические halt входов: день ≤ −3% эквити контура; неделя ≤ −6%; ≤ −25% от пика эквити контура; любая ликвидация. Закрывать открытое можно. Контур = демо / микро / main — тот, с которого считается размер.
+
+**Слом (BTC).** Закрытие **рабочего ТФ** BTC за своей зоной **и** `tape_eaten`. Фитиль без закрытия — не слом. После слома поддержки нельзя лонг альта; после слома сопротивления нельзя шорт альта.
+
+**Вето.** `reject` до intent: слом BTC, CPI-окно, несущее, SILENCE, хрупкость и т.д. Журнал вето — успех дня, не простой.
+
+**Спасённый R (saved-R).** Оценка тени: сколько R не сожгли, потому что вето сработало. Не живой PnL.
+
+**Флаг пробоя (`BREAKOUT_ENABLED`).** Булев в конфиге. `false` на Ф0–Ф2. `true` только после Г2. Пока false, `BreakoutStrategy` не зовётся.
+
+**Пробой (сетап).** Закрытие рабочей свечи за зоной + поток eaten + BTC в ту же сторону; предпочтителен ретест; **не** первая минута после close выноса.
+
+**Первая минута.** `exchange_ts < breakout_bar_close_ts + 60s` → reject пробоя. Время биржи/UTC, не «минута на часах в кухне».
+
+**Фейк / failed_break.** Вынос фитилём, close внутри зоны → отдельный `setup_tag`, статистика не смешивается с пробоем.
+
+**Анлок (unlock).** Календарное событие разблокировки токенов: дата, актив, тип получателя (команда / инвестор / иное). Командный анлок завтра → скринер режет монету или размер. Не сигнал шорта «потому что анлок» без своих n.
+
+**Когорта.** Множество адресов Hyperliquid, прошедших фильтр (≥180 дней, maxDD<30%, не HFT), зафиксированное на дату. Сигнал = **изменение** нетто-позиции когорты, не один кошелёк.
+
+**Хрупкость.** Конъюнкция: OI на пике окна ∧ фандинг в топ-5% своего окна ∧ тонкий стакан (PRS Y выше порога или спред). Запрет новых лонгов (зеркало для шортов). Не магнит входа по теплокарте ликвидаций.
+
+**Ритуал (Ф4).** Ежедневный фиксированный порядок: утро календарь → сессия → вечер overlay live/тень → ночь претендент-тень → раз в неделю компаунд микро. Не набор фич.
+
+**A+.** Флаг размера: роли 1–5 все «да» **и** BTC в ту же сторону, что сделка. Только тогда плечо 5x. Иначе ≤3x. В Ф1 A+ нет (max 3x). Третья сделка дня — только A+.
+
+**Чемпион / претендент.** Чемпион — ярлык конфига, который имеет право на ордер в текущем `trading_mode`. Претендент гоняет те же тики без ордеров. Смена ярлыка — после экзамена 15–20 дней, не после удачного дня.
+
+**Контуры A/B/C.** A — горячий путь ордера (без LLM, без ключа в ядре). B — ≥60 с, карточка, карантин. C — дрейф и экзамен, всегда с Ф0.
+
+**PIT (point-in-time).** Запрос «на момент t» видит только строки с `known_at ≤ t`. Иначе бэктест врёт.
+
+**Демо / микро / live / тень.** Демо — фантики биржи, размер как в бою. Микро — 10–20k ₽ живые, риск % от микро. Live в гейте Ф4 = закрытые эпизоды `mode=micro` (не shadow). Тень — тот же конвейер, signer не вызывается. Полный счёт — `mode=live` после Г4.
+
+**Kill-switch / dead-man.** Нет heartbeat ядро→signer 30 с → cancel all на том счёте, которым signer торгует. Стопы на бирже остаются биржевой защитой, если отмена рабочих лимитов прошла, а позиция ещё есть — SL уже должен висеть.
+
+**Lookahead.** Использование баров/тиков с временем ≥ t при решении в t. Запрещён в зонах и жестах.
+
+---
+
+# Окна времени
+
+Хранение: UTC. Сравнение сессии: `now_utc` → `Europe/Moscow` (с 2014 **нет** DST; смещение всегда +03:00).
+
+| Имя | Правило | UTC (эквивалент) | DST |
+|---|---|---|---|
+| Сессия стола | 16:30–19:30 `Europe/Moscow` | **13:30–16:30 UTC каждый день** | РФ DST нет. Не писать «MSK=+3 летом +4» |
+| До сессии / после | вне интервала | reject входа | — |
+| Ночь 5x | любое время вне сессии **или** календарный «ночь» после 19:30 МСК | 5x reject всегда вне сессии; в сессии 5x только A+ | — |
+| День US-данных | в `news` есть событие class ∈ {CPI,FOMC,NFP,PCE} с `event_time` в тот же календарный день `America/New_York` | до 16:30 МСК входов нет (`now < 13:30Z`) | якорь — календарь NY, не МСК |
+| 24 ч до CPI/FOMC | `now ∈ [event_time_utc − 24h, event_time_utc)` | размер ×0.5 или 0 (флаг в yaml, не крутить неделю) | `event_time` из календаря уже в UTC |
+| Первый час после 14:00 ET | `14:00–15:00 America/New_York` в день FOMC/CPI (как в правиле Ф2) | зима EST: **19:00–20:00 UTC**; лето EDT: **18:00–19:00 UTC** | **обязательно** `zoneinfo("America/New_York")`, не константа 19:00Z |
+| Релиз CPI 8:30 ET | из календаря | зима: 13:30Z (16:30 МСК); лето: 12:30Z (15:30 МСК) | лето CPI раньше сессии МСК — сессия всё равно закрыта правилом «день US-данных до 16:30» |
+| Первая минута пробоя | 60 с от `close_ts` выносящей свечи | `exchange_ts` UTC | не зависит от МСК |
+| Heartbeat / dead-man | 30 с монотонных `time.monotonic` | не NTP-МСК | часы процесса |
+| Reconcile | каждые 60 с | — | — |
+
+Конфиг: `infra/time.yaml`
+
+```yaml
+session_tz: Europe/Moscow
+session_start: "16:30"
+session_end: "19:30"
+us_tz: America/New_York
+us_data_classes: [CPI, FOMC, NFP, PCE]
+fomc_blackout_et: {start: "14:00", end: "15:00"}
+pre_event_hours: 24
+pre_event_size_mult: 0.5   # или 0.0 — выбрать и заморозить на фазу
+first_minute_s: 60
+dead_man_s: 30
+reconcile_s: 60
+```
+
+Тесты DST: прогнать `2026-03-08` (US spring) и `2026-11-01` (US fall) — чёрное окно FOMC сдвигается на 1 час UTC, сессия МСК **не** сдвигается.
+
+Расхождение старых файлов: `TEAM-DESK` местами пишет 19:00 МСК. Канон этого репо для кода — **19:30 МСК** (IMPLEMENTATION / этот файл). Не «усреднять» до 19:00 в коде.
+
+---
+
+# Входные календари (собрать заранее)
+
+Кладём в `infra/calendars/`. Git: только публичные даты и классы, без ключей API. `known_at` при ручном вводе = время, когда строка попала к нам (если узнали постфактум — не подставлять `event_time`).
+
+### Макро: `infra/calendars/macro.csv`
+
+```
+event_id,class,event_time_utc,announce_tz,known_at_utc,assets,source,size_rule,notes
+cpi-2026-09-11,CPI,2026-09-11T12:30:00Z,America/New_York,2026-08-30T18:00:00Z,BTCUSDT;ETHUSDT,bls,pre24_cut,CPI Aug
+fomc-2026-09-16,FOMC,2026-09-16T18:00:00Z,America/New_York,2026-08-30T18:00:00Z,BTCUSDT,fed,pre24_cut+et14h,statement
+```
+
+- `class`: `CPI|FOMC|NFP|PCE|SEC|LISTING|HACK|ETF|OTHER`
+- `event_time_utc` — момент публикации/события в UTC (уже с учётом EDT/EST на дату)
+- `announce_tz` — для тестов DST и отображения
+- `assets` — `;`-список; пусто = все из universe
+- Минимум до старта Ф0: **ближайшие 90 дней** CPI+FOMC (можно руками с сайта BLS/Fed/investing calendar).
+- Обновление: раз в неделю джоб или руками; каждая загрузка пишет `ingest_log`.
+
+### Анлоки: `infra/calendars/unlocks.csv` (нужны к шагу 3.14.1; копить с Ф0 можно)
+
+```
+unlock_id,symbol,event_time_utc,known_at_utc,recipient_type,amount_tokens,amount_usd_est,source
+sol-2026-09-01,SOLUSDT,2026-09-01T00:00:00Z,2026-08-20T12:00:00Z,team,1000000,180000000,tokenomist
+```
+
+`recipient_type`: `team|investor|other`. Команда завтра → скринер.
+
+### Вселенная: `infra/universe.week0.yaml`
+
+```yaml
+exchange: bybit
+category: linear
+symbols: [BTCUSDT, ETHUSDT]
+# 8–15 альтов добавить после 0.1.7
+```
+
+### Реакции (приор, не истина): `infra/calendars/reaction_prior.csv`
+
+Колонки: `class,regime,horizon_min,mean_ret,n,source`. С Ф2/Ф3 `n` наших замеров **перебивает** приор, когда `n≥5`.
+
+### Авторы (легально)
+
+Разрешённые источники в `infra/authors/sources.yaml`: rss url, reddit JSON, TradingView своим аккаунтом. Поле `tos_ok: true`. Нет TG scrape.
+
+---
+
+# Автоматические проверки
+
+Диалект SQL ниже — **DuckDB** (дефолт фазы 0). На ClickHouse те же предикаты, другие имена функций (`dateDiff`, `toStartOfHour`). Гейт гоняет тот диалект, который подключён в `PitStore`.
+
+Один вход: `python -m capitalizator.ops.gates {f0|f1|f2|f3|f4|f5kill}`.  
+Код выхода: `0` pass, `2` fail (фаза длится / стоп), `3` fail с **аварией** (ключ, доливка, liq).  
+JSON на stdout + файл `ops/gates/last_{id}.json`.  
+Переход фазы: CI/cron ставит тег `gate-fN-pass` **только** при exit 0. Включение следующего флага — отдельный файл `infra/phase.yaml`, который бот **не** переключает без exit 0.
+
+`infra/phase.yaml` (человек или бот после pass):
+
+```yaml
+phase: 0                    # 0..5
+breakout_enabled: false
+trading_mode: off           # off|demo|shadow|micro|live
+equity_source: none         # none|demo|micro_subaccount|main
+target_risk: 0.01
+max_lev: 3
+require_human_ack_to_advance: true   # Ф4→Ф5 всегда true
+```
+
+Автоматизация: гейты Ф0–Ф3 могут переключать `phase` сами, если `require_human_ack_to_advance=false` для этих гейтов (рекомендация: **false для Ф0–Ф3, true для Ф4→Ф5**). Ф5 на полный счёт — одно человеческое `ack` в `ops/gates/ack_f5.txt` (подпись датой). Авария (код 3) никогда не повышает фазу.
+
+Ниже пороги **как в очереди**; здесь только «как считать».
+
+---
+
+## Что считается сделкой для гейтов
+
+Строка `episode` входит в счётчик, если **все** истинны:
+
+1. `status='closed'`
+2. `fill_qty > 0` (был вход)
+3. `mode` в разрешённом для гейта множестве
+4. `setup_tag` в разрешённом множестве
+5. `r` не NULL (после комиссий)
+
+Не входят: тень (кроме overlay Ф4); отмена без fill; `pending`/`open`; ручные пометки в Excel.
+
+Минимальный |R| **нет**. Стоп −1R считается. `r=0` (комиссия съела) = закрытая сделка, **не** победа.
+
+WR = `count(r>0) / count(*)` по множеству гейта.
+
+Payoff R:R = `avg(r | r>0) / abs(avg(r | r<0))`. Если убытков 0 — R:R не определён, гейт Ф4 **не pass** (нужна двусторонняя выборка; минимум 10 убытков и 10 прибылей, иначе fail «мало n на R:R»).
+
+Плановый R:R входа ≥1.5 уже требует риск-движок; гейт смотрит **реализованный**.
+
+---
+
+## Гейт Ф0 — `ops/gates/f0.py` + SQL
+
+**Пороги (не менялись):** 30 суток BTC+ETH без непомеченного разрыва; зоны/жесты детерминированы; kill-switch пройден; withdraw off; касания >0; gitleaks чист; 0 mainnet ордеров.
+
+```sql
+-- ops/gate_f0.sql : непомеченные дыры
+-- «сутки покрыты», если есть trades каждый час ИЛИ час полностью в gaps
+WITH bounds AS (
+  SELECT now() AT TIME ZONE 'UTC' - INTERVAL '30 days' AS t0,
+         now() AT TIME ZONE 'UTC' AS t1
+),
+hours AS (
+  SELECT symbol, generate_series(t0, t1, INTERVAL '1 hour') AS hr
+  FROM (VALUES ('BTCUSDT'), ('ETHUSDT')) s(symbol)
+  CROSS JOIN bounds
+),
+covered AS (
+  SELECT h.symbol, h.hr,
+         EXISTS (
+           SELECT 1 FROM market_event e
+           WHERE e.symbol = h.symbol AND e.stream = 'trades'
+             AND e.exchange_ts >= h.hr AND e.exchange_ts < h.hr + INTERVAL '1 hour'
+         ) AS has_trades,
+         EXISTS (
+           SELECT 1 FROM gaps g
+           WHERE g.symbol = h.symbol AND g.stream = 'trades'
+             AND g.exchange_ts < h.hr + INTERVAL '1 hour'
+             AND coalesce(g.resolved_ts, g.exchange_ts) >= h.hr
+         ) AS has_gap
+  FROM hours h
+)
+SELECT symbol, count(*) FILTER (WHERE NOT has_trades AND NOT has_gap) AS unmarked
+FROM covered
+GROUP BY symbol;
+-- pass: unmarked = 0 для BTCUSDT и ETHUSDT
+```
+
+Остальные проверки Ф0 (не SQL):
+
+| Код | Команда | Pass |
+|---|---|---|
+| Г0.3–4 | `pytest tests/zones/test_double_run.py tests/zlg/test_double_run.py` | exit 0 |
+| Г0.5 | `rg -n "place_order\|create_order" src/capitalizator/prs` | пусто |
+| Г0.6 | файл `ops/kill-switch-week4.md` + `KILL_SWITCH_OK=1` в env гейта | существует, дата ≤14 дней |
+| Г0.7 | `ops/key-checklist.md` withdraw=off | чеклист |
+| Г0.8 | `SELECT count(*) FROM touch` | > 0 |
+| Г0.9 | `gitleaks detect --exit-code` | 0 |
+| Г0.10 | `SELECT count(*) FROM episode WHERE mode IN ('micro','live')` плюс выписка API | 0 |
+
+**Если fail:** фаза 0 **длится**. Календарная неделя 5 не включает демо-ордера. Код Ф1 на ветке писать можно, флаги `trading_mode=off`. Нет «почти месяц — поехали». Нет уменьшения капитала (капитала в игре нет).
+
+---
+
+## Гейт Ф1 — `ops/gate_f1.sql`
+
+**Пороги (не менялись):** ≥80 демо-отскоков; средний R > 0 после комиссий; 0 доливок; жест детерминирован; `BREAKOUT_ENABLED=false`.
+
+```sql
+-- только Ф1-контур: mode=demo, setup_tag=bounce, закрытые с fill
+-- окно: с момента первого demo-fill (или infra/phase.yaml.f1_started_at)
+SELECT
+  count(*) AS n_bounce,
+  avg(r) AS avg_r,
+  count(*) FILTER (WHERE r > 0) AS wins
+FROM episode
+WHERE mode = 'demo'
+  AND setup_tag = 'bounce'
+  AND status = 'closed'
+  AND fill_qty > 0
+  AND r IS NOT NULL
+  AND opened_at >= :f1_started_at;
+
+SELECT count(*) AS average_attempts
+FROM risk_reject
+WHERE reason IN ('average_in','add_to_position','pyramid')
+   OR raw_json::text ILIKE '%average_in%';
+```
+
+| Вопрос | Ответ |
+|---|---|
+| Только закрытые? | **Да.** Open/pending не входят |
+| Минимальный \|R\|? | **Нет.** Стоп считается |
+| Тень `shadow_gesture` с демо-fill? | **Да, входит** (учим руки). Чистый `mode=shadow` без fill — нет |
+| Пробои? | Не существуют при флаге false; если вдруг `setup_tag=breakout` > 0 → **fail Г1.5** |
+| Средний R | `avg(r)` по множеству выше, **> 0** (не медиана, не «без стопов») |
+
+**Если fail:** Ф1 длится. Не неделя 9. Не включаем пробой. Не режем «демо-капитал» — его нет. Ищем спред/ширину/сессию. Доливки > 0 → код 3, разбор кто обошёл схему, фаза не двигается.
+
+---
+
+## Гейт Ф2 — `ops/gates/f2.py`
+
+**Пороги (не менялись):** вето жило; тень без вето хуже по DD **или** честный отчёт «мало n»; 0 против слома BTC; ≥50 карточек с исходом; верификатор не верит ИИ; красная команда чиста.
+
+```sql
+SELECT count(*) AS veto_fired FROM saved_r WHERE reason = 'btc_veto';
+
+SELECT count(*) AS against_btc
+FROM episode
+WHERE status = 'closed' AND fill_qty > 0
+  AND veto_btc_would_reject = true;   -- поле ставит конвейер постфактум на тени
+
+SELECT count(*) AS cards_with_outcome
+FROM card
+WHERE outcome_at IS NOT NULL;         -- episode closed ИЛИ skip/veto с исходом
+```
+
+Карточка «с исходом» = есть `outcome_at` и все `load_bearing` не `pending`. Skip/вето без входа **считаются**, если записан контрфакт (цена через горизонт). Карточка без горизонта ещё не исход.
+
+Тень без вето: прогон `champion/veto_off` на тех же днях; pass если `max_dd_no_veto < max_dd_veto` (DD глубже без вето — вето полезно) **или** файл `ops/gates/f2_veto_n_insufficient.md` с `n < 10` и датой (гейт ждёт, не выключает вето).
+
+Красная команда: `pytest tests/llm/test_redteam_poison.py` exit 0 в CI на этом коммите.
+
+**Если fail:** Ф2 длится. Вето не выключаем. Ф3/флаг пробоя закрыты. Капитал не режем.
+
+---
+
+## Гейт Ф3 — `ops/gate_f3.sql`
+
+**Пороги (не менялись):** ≥40 пробойных демо; отскок не деградировал; суммарно ≥100 демо (отскок+пробой); средний R суммарно > 0; 0 «кит купил»; сквиз в допуске; ИИ-карантин.
+
+```sql
+SELECT
+  count(*) FILTER (WHERE setup_tag = 'breakout') AS n_break,
+  count(*) FILTER (WHERE setup_tag = 'bounce') AS n_bounce,
+  count(*) FILTER (WHERE setup_tag IN ('bounce','breakout')) AS n_sum,
+  avg(r) FILTER (WHERE setup_tag IN ('bounce','breakout')) AS avg_r_sum,
+  avg(r) FILTER (WHERE setup_tag = 'bounce') AS avg_r_bounce
+FROM episode
+WHERE mode = 'demo' AND status = 'closed' AND fill_qty > 0 AND r IS NOT NULL;
+
+SELECT count(*) AS whale_entries
+FROM episode e
+JOIN card c ON c.card_id = e.card_id
+WHERE e.fill_qty > 0 AND c.entry_reason = 'whale';
+```
+
+Деградация отскока: `avg_r_bounce >= avg_r_bounce_at_f1_end - bounce_slack`.  
+`bounce_slack` записать в `infra/gates.yaml` **до** старта Ф3 (рекомендация старта: `0.15` R). Не подгонять после прогона.
+
+`failed_break` **не** входит ни в 40 пробоев, ни в 100, пока отдельно не решите (канон: не смешивать). В 100 входят только `bounce`+`breakout`.
+
+Сквиз: `trend_days_killed / trend_days <= X`, X в yaml до старта Ф3.
+
+**Если fail:** Ф3 длится. Микро не включаем. Если оба сетапа в минусе — не Ф4. Если только пробой минус — выключаем флаг пробоя, отскок жив, гейт не pass. Капитал 100k не трогаем.
+
+---
+
+## Гейт Ф4 — `ops/gate_f4.sql`
+
+**Пороги (не менялись):** ≥100 live **или** 8 недель микро — **что позже**; WR ≥55% (лучше 57%); R:R ≥1.5; live≈тень; 0 liq; 0 доливок; 0 против слома BTC.
+
+`live` для этого гейта = `mode='micro'` (полный счёт ещё запрещён).
+
+```sql
+SELECT
+  count(*) AS n_live,
+  min(opened_at) AS first_micro,
+  date_diff('week', min(opened_at), max(opened_at)) + 1 AS weeks_spanned,
+  avg(CASE WHEN r > 0 THEN 1.0 ELSE 0.0 END) AS wr,
+  -- R:R
+  avg(r) FILTER (WHERE r > 0) AS avg_win,
+  avg(r) FILTER (WHERE r < 0) AS avg_loss,
+  count(*) FILTER (WHERE r > 0) AS n_win,
+  count(*) FILTER (WHERE r < 0) AS n_loss
+FROM episode
+WHERE mode = 'micro' AND status = 'closed' AND fill_qty > 0 AND r IS NOT NULL;
+
+SELECT count(*) AS liq FROM episode WHERE mode = 'micro' AND liquidated = true;
+SELECT count(*) AS against_btc FROM episode
+ WHERE mode = 'micro' AND fill_qty > 0 AND veto_btc_would_reject = true;
+```
+
+Правило «что позже» в коде, не в SQL:
+
+```
+eligible_n = (n_live >= 100)
+eligible_w = (weeks_spanned >= 8)   # календарные недели с first_micro, не «8 торговых дней»
+gate_time = eligible_n AND eligible_w
+```
+
+80 live за 3 недели → fail. 8 недель и 40 live → fail.
+
+**live≈тень** (`infra/gates.yaml`):
+
+```yaml
+overlay:
+  min_matched: 40
+  median_abs_r_diff_max: 0.40      # |r_live - r_shadow|
+  same_sign_min: 0.70
+```
+
+```sql
+SELECT
+  count(*) AS matched,
+  quantile(0.5)(abs(r_live - r_shadow)) AS med_abs,
+  avg(CASE WHEN sign(r_live)=sign(r_shadow) THEN 1.0 ELSE 0.0 END) AS same_sign
+FROM overlay
+WHERE r_live IS NOT NULL AND r_shadow IS NOT NULL;
+```
+
+Таблица решения (та же, формализована):
+
+| Условие | Действие (код) |
+|---|---|
+| WR≥0.57 ∧ R:R≥1.5 ∧ overlay ok ∧ liq=0 ∧ average=0 ∧ against_btc=0 ∧ gate_time | `f4=pass` → можно готовить Ф5; `trading_mode` не прыгает сам |
+| WR∈[0.55,0.57) ∧ остальное ok ∧ gate_time | `f4=pass_soft`; цель денег 600–750k; Ф5 можно после **человеческого ack** |
+| WR∈[0.52,0.54] | `f4=fail_goal`; 900k полугодия снять (`goal_900k=false`); полный счёт **не** открывать; микро можно оставить |
+| WR≤0.50 **или** overlay fail | `f4=stop`; микро выключить (`trading_mode=off`) |
+| liq>0 или доливка>0 | код 3; стоп ≥1 недели; счётчик гейта **с нуля** |
+| gate_time ложь | `f4=wait`; фаза 4 длится |
+
+**Если fail / wait:** 80–90k не трогаем. Календарь 900k этого полугодия снят только в ветках `fail_goal` и `stop`, не при `wait`. Нет «ещё две недели на полном».
+
+---
+
+## Гейт / kill Ф5 — `ops/gates/f5kill.py`
+
+Вход в Ф5 — **не** отдельный числовой гейт, а `f4=pass|pass_soft` **плюс** файл ack.  
+Kill (фаза 5 кончилась):
+
+| Условие | Действие |
+|---|---|
+| день ≤ −3% main | halt до следующего календарного дня `Europe/Moscow` |
+| неделя ≤ −6% | разбор; понедельник (МСК) не торгуем |
+| ≤ −25% от пика main | `phase=4`, `trading_mode=off`, гейт Ф4 заново, 900k не «догоняем» |
+| любая liq | неделя стопа; разбор |
+| drift орёт | target_risk=0.005 сразу |
+| желание долить руками / average в логе | цель мертва, halt, код 3 |
+
+`2%` риска в конфиге Ф5 — **запрещённая** константа, гейт-линтер падает если `target_risk > 0.012 + 1e-9` пока нет отдельного письменного решения (его в каноне нет).
+
+---
+
+## Рекомендации по автоматизации перехода
+
+1. Cron каждые 24 ч (после сессии, 17:00 UTC): `ops.gates` для текущей фазы.  
+2. Результат в `ops/gates/last_*.json` + алерт в канал оператора.  
+3. Ф0–Ф3: при exit 0 бот может сделать PR/коммит `infra/phase.yaml` (phase+1, флаги из таблицы ниже) **без** человеческого ack, если `auto_advance_f0_f3: true`. Иначе только issue «гейт зелёный, нажми».  
+4. Ф4→Ф5: **всегда** два ключа: скрипт pass **и** `ack_f5.txt`. Один человек, не ИИ.  
+5. `BREAKOUT_ENABLED` встаёт true только из обработчика Г2 pass, не руками в понедельник.  
+6. Любой код 3 → `trading_mode=off`, фазу не повышать, пейджинг.  
+7. Не считать гейт по дашборду «на глаз». Только скрипт.
+
+Переключения флагов при pass (не меняют пороги):
+
+| Стал pass | phase | breakout | trading_mode | equity_source | target_risk |
+|---|---|---|---|---|---|
+| Ф0 | 1 | false | demo (когда Г0.1 реально 30д) | demo | 0.01 |
+| Ф1 | 2 | false | demo | demo | 0.01 |
+| Ф2 | 3 | **true** | demo | demo | 0.01 |
+| Ф3 | 4 | true | shadow, затем micro на нед. 18 | micro | 0.01 от микро |
+| Ф4 + ack | 5 | true | live | main | **0.012** |
+
+---
+
+# План тестирования
+
+Пирамида: юнит на формулу → фикстура дня → гейт-скрипт. Фикстуры маленькие в git; сутки на диске.
+
+Обязательные имена — чтобы шаг «зелёный» не спорил с CI.
+
+| Компонент | Файлы тестов | Кейсы (минимум) |
+|---|---|---|
+| Импорт / секреты | `tests/test_import.py` | пакеты импортятся; нет загрузки ключа |
+| PIT | `tests/test_pit.py` | known_at 12:05 не виден в 12:00; naive datetime TypeError |
+| Схема риска | `tests/risk/test_no_average.py` | все запрещённые глаголы; антипример 30k+доливка |
+| Рекордер нормализация | `tests/recorder/test_normalize_trades.py` | 100 JSONL → 100 событий; side taker |
+| Дыры | `tests/recorder/test_gap.py` | 5→8 одна gap; монотонный seq → 0 |
+| Snapshot/дифф | `tests/recorder/test_snapshot.py`, `test_book_diff_normalize.py` | поля, seq |
+| Реконструктор | `tests/book/test_bit_identical.py` | два прогона = fingerprint; удаление уровня не оставляет призрак |
+| Ресинк | `tests/book/test_resync.py` | после gap книга = снимок |
+| Стены | `tests/book/test_wall_watch.py` | appeared / pulled / eaten |
+| Реплеер | `tests/exec/test_replay_bit_identical.py` | контрольные `best()` |
+| PIT SQL | `tests/storage/test_pit_query.py` | future row скрыта |
+| Зоны | `tests/zones/test_no_lookahead.py`, `test_double_run.py`, `test_htf_bias.py` | бар t+1 не существует; id стабилен |
+| Касания | `tests/memory/test_touch_outcome.py` | bounce/break/die по yaml |
+| Лента | `tests/tape/test_classify.py`, `test_eaten.py` | taker side; eaten порог |
+| PRS | `tests/prs/test_tau.py` | известный τ; цензура T_max; нет place_order |
+| ZLG | `tests/zlg/test_labels.py`, `test_double_run.py` | 5 меток; SILENCE при малом A |
+| BTC режим/вето | `tests/btc/test_regime.py`, `test_break_definition.py`, `test_veto_alt.py` | фитиль ≠ слом; альт лонг запрещён |
+| Отчёт | `tests/ops/test_daily_report_no_advice.py` | нет «купи» |
+| Новости | `tests/news/test_pit.py`, `test_macro_rules.py`, `test_sentiment_derisk.py` | 24ч cut; ET окно зима/лето |
+| LLM | `tests/llm/test_no_egress.py`, `test_no_advice.py`, `test_redteam_poison.py`, `test_cannot_verify.py`, `test_lesson_no_average.py` | яд, нет VERIFIED, нет «долей» |
+| Signer | `tests/signer/test_schema.py`, `test_stop_required.py`, `test_deadman.py`, `test_no_main_key.py` | нет стопа → 4xx; тишина 30с → cancel |
+| Комиссии | `tests/exec/test_fees.py` | VIP0 величина |
+| Дрейф | `tests/champion/test_drift_synthetic.py`, `test_drift_cut.py` | 0.3→0.7 орёт; риск 0.5% |
+| Hashlog | `tests/memory/test_hashlog.py` | подмена жеста ломает цепь |
+| Размер/краны | `tests/risk/test_sizing.py`, `test_alt_wide_stop.py`, `test_halts.py`, `test_one_position.py`, `test_session.py`, `test_max_three.py`, `test_aplus.py`, `test_f5_sizing.py` | 4% риска не проходит; окна UTC |
+| Отскок | `tests/exec/test_bounce_gates.py`, `test_mid_range.py`, `test_partial_1r.py`, `test_no_mechanical_be.py`, `test_maker_only_f1.py`, `test_bounce_eaten.py`, `test_wall_no_print.py` | середина/еaten/стена |
+| Скринер | `tests/screener/test_spread.py`, `test_unlock.py` | спред 0.4%; командный анлок |
+| Карточка | `tests/card/test_require_card.py`, `test_schema.py`, `test_load_bearing.py`, `test_first_fact_*`, `test_card_before_intent.py` | REFUTED → нет ордера |
+| Верификатор | `tests/verifier/test_manual_bind.py`, `test_recompute.py` | подмена «23 из 31» |
+| Авторы | `tests/authors/test_resolve.py`, `test_shrinkage.py`, `test_no_entry.py` | 1 хит ≠ гуру |
+| Пробой | `tests/exec/test_breakout_flag.py`, `test_breakout_close.py`, `test_first_minute.py`, `test_breakout_gesture.py`, `test_failed_break_tag.py`, `test_refute_flatten.py` | close+60с |
+| Киты | `tests/whales/test_pit.py`, `test_no_single_wallet.py`, `test_fragility.py` | нет входа с whale |
+| Тень | `tests/exec/test_shadow_no_signer.py` | signer не импортирован |
+| Гейты | `tests/ops/test_gates_count_rules.py` | эталонные CSV → n=80/40/100 как в спеке |
+| DST | `tests/risk/test_session.py`, `tests/news/test_macro_rules.py` | 2026-03-08 и 2026-11-01 |
+
+Регрессия целостности очереди (чтобы не перепутали фазу):
+
+```
+pytest tests/ops/test_phase_flags.py
+# BREAKOUT_ENABLED подразумевает gate_f2 pass
+# trading_mode=micro подразумевает gate_f3 pass
+# trading_mode=live подразумевает gate_f4 pass + ack
+# average_in отсутствует в schema JSON
+```
+
+---
+
+# Мониторинг и восстановление
+
+## Логирование
+
+Формат: **JSON Lines**, одна строка = одно событие. Поля обязательные:
+
+```
+ts          UTC RFC3339 с миллисекундами
+level       DEBUG|INFO|WARN|ERROR|CRITICAL
+service     recorder|book|zones|risk|signer|llm|gates|ops
+event       snake_case (gap_detected, intent_rejected, deadman_fired)
+trace_id    uuid конвейера одной идеи
+symbol      если есть
+phase       0..5
+extra       объект, без ключей и без полного payload ленты в INFO
+```
+
+Уровни: DEBUG — диффы книги только в dev; INFO — старты потоков, касания, reject reason; WARN — помеченная дыра, drift, cut_size; ERROR — непомеченный разрыв, verifier exception, signer 5xx; CRITICAL — dead-man, liq, gitleaks, mainnet ордер в Ф0–3.
+
+Хранение: локально `logs/service/date=YYYY-MM-DD/*.jsonl` 14 дней; ротация 100 MB. Агрегат (опционально Vector/Loki) — без секретов. Не писать API key, raw JWT, полный стакан на каждом тике в INFO.
+
+Метрики Prometheus (`GET /metrics` на recorder, signer, core): `ws_connected`, `events_in`, `gap_unmarked`, `book_resync`, `heartbeat_age_s`, `open_orders`, `halt_active`, `intent_total{result}`.
+
+## Алертинг
+
+Ростер: `ops/alert-roster.yaml` (email/telegram **бота**, не в git токен). Получатель — **единственный оператор счёта**. ИИ не получает ключи и не «чинит» ордера.
+
+| Событие | Severity | Кому | Канал | SLA |
+|---|---|---|---|---|
+| dead-man сработал | CRITICAL | оператор | push+SMS если есть | сразу |
+| kill-switch / halt кран | CRITICAL | оператор | push | сразу |
+| liq | CRITICAL | оператор | push | сразу |
+| непомеченная дыра > 60 с на BTC/ETH | ERROR | оператор | push | 2 мин |
+| рекордер down (healthz fail) | ERROR | оператор | push | 1 мин |
+| signer не бьёт heartbeat | CRITICAL | оператор | push | 10 с после порога |
+| drift | WARN | оператор | чат | 5 мин |
+| гейт fail ежедневный | WARN | оператор | чат | после крона |
+| гейт код 3 | CRITICAL | оператор | push | сразу |
+| красная команда CI fail | ERROR | оператор | чат | по PR |
+| диск > 80% | ERROR | оператор | чат | 15 мин |
+
+Тишина алертов в азию не делается: рекордер 24/7, торговля нет.
+
+## План восстановления
+
+Принцип: **не интерполировать рынок**. Дыра честнее вранья. Пока книга не после resync — контур A не предлагает входы (даже демо).
+
+### Рекордер упал на 10 минут
+
+1. Watchdog поднимает контейнер (compose `restart: unless-stopped`).  
+2. При старте: `GapDetector` пишет gap `[t_down, t_up)` на каждый поток.  
+3. Книга: REST snapshot → resync; PRS/ZLG окна, пересекающие gap, **бракуются** (`gesture=null`, `prs_y=null`, касание можно писать с флагом `data_quality=gap`).  
+4. Входы в окне gap и `T_max` после него — запрещены.  
+5. Алерт ERROR; в `ops/incidents/` одна запись.  
+6. Не «дорисовать» трейды из свечей. Не торговать, пока `readyz` не 200 и unmarked gap за последний час = 0.
+
+### Рекордер упал на часы / сутки
+
+То же + отчёт uptime красный. Гейт Ф0 не pass, пока 30-дневное окно не чистое **или** пока дыры не помечены и исключены из обучающих прогонов. Зоны на дырявом дне не строим без флага.
+
+### VPS недоступен
+
+Dead-man на signer: если signer на той же машине — ордера должны уйти по тишине **если процесс signer ещё жив без ядра**. Если умер весь VPS — ставка на **стопы уже на бирже**. Потому шаг 1.5.6 обязателен до любой стратегии. Оператор с телефона проверяет позицию на бирже; софт с телефона ордера не шлёт.
+
+### Signer / ядро рассинхрон
+
+Reconcile: биржа истина. Лишний локальный ордер → не дублировать. Позиция на бирже без локальной → flatten по правилу «неизвестная позиция» (halt входов + алерт CRITICAL).
+
+### Ошибка данных (битый parquet, расхождение двух прогонов)
+
+1. Пометить день `data_quality=bad`.  
+2. Не кормить чемпиона.  
+3. Починить replay; пока double-run красный — не повышать фазу.
+
+### Ложный вход / баг стратегии на микро
+
+Halt вручную (`trading_mode=off`) + cancel all + стоп на бирже проверить. Инцидент. Претендент не автопромоут.
+
+### Чеклист «10 минут дыры» (оператор)
+
+```
+[ ] healthz/readyz
+[ ] gaps строка есть
+[ ] resync в логе
+[ ] открытых intent нет
+[ ] стопы на бирже висят если была позиция
+[ ] инцидент-файл
+```
+
+---
+
+# `infra/gates.yaml` (пороги одним местом)
+
+```yaml
+# Не менять без записи в PHASES-ALL / этого файла и нового коммита.
+f0:
+  days: 30
+  symbols_strict: [BTCUSDT, ETHUSDT]
+  unmarked_hours_max: 0
+  touches_min: 1
+f1:
+  n_bounce_demo_min: 80
+  avg_r_min: 0.0
+  average_attempts_max: 0
+  breakout_enabled: false
+f2:
+  veto_min: 1
+  cards_with_outcome_min: 50
+  against_btc_max: 0
+  veto_shadow_n_insufficient: 10
+f3:
+  n_break_demo_min: 40
+  n_sum_demo_min: 100
+  avg_r_sum_min: 0.0
+  bounce_slack_r: 0.15          # записать ДО старта Ф3
+  whale_entries_max: 0
+  failed_break_in_counts: false
+f4:
+  n_live_min: 100
+  weeks_min: 8                  # AND, не OR
+  wr_hard: 0.57
+  wr_soft: 0.55
+  wr_cancel_900k: 0.54
+  wr_stop: 0.50
+  rr_min: 1.5
+  rr_min_wins: 10
+  rr_min_losses: 10
+  liq_max: 0
+  overlay: {min_matched: 40, median_abs_r_diff_max: 0.40, same_sign_min: 0.70}
+f5:
+  target_risk: 0.012
+  target_risk_max_until_written_otherwise: 0.012
+  day_halt: -0.03
+  week_halt: -0.06
+  peak_kill: -0.25
+```
+
+`weeks_min` и `n_live_min` связаны **AND** («что позже» = оба условия). Это та же логика очереди: 100 live за 3 недели недостаточно; 8 недель и 40 live недостаточно.
+
+---
+
+Конец дополнения. Очередь шагов и числовые гейты выше по файлу не менялись. Если код спорит с этим разделом — править код или **явно** коммитить изменение порога здесь и в `PHASES-ALL.md` одним PR, не «тихо в yaml».

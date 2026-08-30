@@ -2,7 +2,7 @@
 
 Частная фьючерсная торговая система. Исследования и план — в `docs/`.
 
-**С чего читать:** [`docs/PHASE-BUILD.md`](docs/PHASE-BUILD.md) — **поочерёдно**, каждая фаза и каждая мелочь (что первым, какой файл, какой тест, какой стоп).  
+**С чего читать:** [`docs/PHASE-BUILD.md`](docs/PHASE-BUILD.md) — очередь шагов плюс детализация (артефакты, глоссарий, SQL гейтов, тесты, мониторинг, окна UTC).  
 Архитектура модулей: [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).  
 Фазы, гейты и деньги: [`docs/PHASES-ALL.md`](docs/PHASES-ALL.md).  
 Стол команды: [`docs/TEAM-DESK.md`](docs/TEAM-DESK.md).  
