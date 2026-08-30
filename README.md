@@ -2,7 +2,8 @@
 
 Частная фьючерсная торговая система. Исследования и план — в `docs/`.
 
-**С чего читать:** [`docs/TEAM-DESK.md`](docs/TEAM-DESK.md) — стол команды.  
+**С чего читать:** [`docs/PHASES-ALL.md`](docs/PHASES-ALL.md) — общий итог всех фаз и решений сессии.  
+Стол команды: [`docs/TEAM-DESK.md`](docs/TEAM-DESK.md).  
 Нейтральный месяц при скальпе 5% по очереди: [`docs/VERDICT-SCALP-5PCT.md`](docs/VERDICT-SCALP-5PCT.md).  
 100k → 600–900k при 10% в сделке: [`docs/VERDICT-600-900.md`](docs/VERDICT-600-900.md).  
 **Что делать, чтобы целиться в 900k:** [`docs/PLAN-900k.md`](docs/PLAN-900k.md).  
