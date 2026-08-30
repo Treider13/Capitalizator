@@ -11,6 +11,7 @@
 Альты + шире стоп / больше маржа: [`docs/ALTS-MARGIN-STOP.md`](docs/ALTS-MARGIN-STOP.md).  
 Трейл и альт +40%: [`docs/TRAIL-RUNNERS.md`](docs/TRAIL-RUNNERS.md) — хвост ловим остатком, не бюджетом.  
 Почему худой месяц бывает у умного стола: [`docs/WHY-BAD-MONTH.md`](docs/WHY-BAD-MONTH.md).  
+Как стать первыми в мире честно: [`docs/FIRST-IN-WORLD.md`](docs/FIRST-IN-WORLD.md) — стол исходов, не самый большой PnL.  
 ×6–×9 за 6 месяцев «стабильно и с низким риском»: [`docs/VERDICT-x6-LOWRISK.md`](docs/VERDICT-x6-LOWRISK.md) — **нет**.
 
 Рядом: [`docs/SR-LEVELS-SCIENCE.md`](docs/SR-LEVELS-SCIENCE.md) (факты по уровням), [`docs/CENSUS-PRACTICE-REPOS.md`](docs/CENSUS-PRACTICE-REPOS.md) (~110 репо), [`docs/ARCHITECTURE-AZ.md`](docs/ARCHITECTURE-AZ.md) (ИИ, безопасность, контуры).
