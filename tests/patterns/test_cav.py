@@ -87,6 +87,30 @@ def test_small_range_inside_zone_is_compress() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"
 
 
+def test_gap_into_current_does_not_borrow_old_atr() -> None:
+    """15 priors at 130, current opens ~100: new segment has no closed bars → no COMPRESS."""
+    closed = []
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("130"),
+                high=Decimal("131"),
+                low=Decimal("129"),
+                close=Decimal("130"),
+            )
+        )
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert abs(bar.open - closed[-1].close) / closed[-1].close > Decimal("0.15")
+    assert (bar.high - bar.low) < Decimal("2")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
+
+
 def _hist(i: int, *, close: str = "101", volume: Decimal | None = None) -> Bar:
     ts = datetime(2026, 8, 30, 12, 0, tzinfo=UTC).replace(minute=i)
     return Bar(

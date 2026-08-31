@@ -54,6 +54,25 @@ def test_width_from_history_uses_post_gap_segment() -> None:
     assert width_now_from_history(bar, gapped, t=NOW) is None
 
 
+def test_gap_into_current_width_is_none() -> None:
+    hist = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=T0 + timedelta(minutes=15 * i),
+            close_ts=T0 + timedelta(minutes=15 * i + 15),
+            open=Decimal("130"),
+            high=Decimal("131"),
+            low=Decimal("129"),
+            close=Decimal("130"),
+        )
+        for i in range(15)
+    ]
+    bar = _bar(20, high="100.2", low="100.1", open_="100.15", close="100.15")
+    assert abs(bar.open - hist[-1].close) / hist[-1].close > Decimal("0.15")
+    assert width_now_from_history(bar, hist, t=NOW) is None
+
+
 def test_rank_needs_twenty_priors() -> None:
     hist = [_sample(i, "1") for i in range(19)]
     assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) is None

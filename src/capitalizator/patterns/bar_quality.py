@@ -71,9 +71,24 @@ def prior_same_tf(history: Sequence[Bar], current: Bar, *, t: datetime) -> list[
     return priors
 
 
-def last_gap_segment(history: Sequence[Bar], current: Bar, *, t: datetime) -> list[Bar]:
-    """Priors after the last jump. Empty if there is no usable history."""
-    segs = split_on_gaps(prior_same_tf(history, current, t=t))
+def last_gap_segment(
+    history: Sequence[Bar],
+    current: Bar,
+    *,
+    t: datetime,
+    jump_ratio: Decimal = JUMP_RATIO_15M,
+) -> list[Bar]:
+    """Priors after the last jump, in the same segment as `current`.
+
+    If `current` itself opens across a jump, the new segment has no closed bars yet.
+    Empty if there is no usable history. Does not include `current` (PIT ATR).
+    """
+    priors = prior_same_tf(history, current, t=t)
+    if not priors:
+        return []
+    if _is_gap(priors[-1], current, jump_ratio):
+        return []
+    segs = split_on_gaps(priors, jump_ratio=jump_ratio)
     return segs[-1] if segs else []
 
 
