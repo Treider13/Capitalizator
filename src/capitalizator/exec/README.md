@@ -1,10 +1,9 @@
 # exec
 
-Вход: `ReplayEngine.run(path)` — jsonl книги; `tape(path)` — `trades.jsonl` если есть.
-Выход: контрольные `best()`; лента как MarketEvent. Нет файла сделок — пустой список, не выдумка.
-`FeeTable.VIP0`: 0.0002 / 0.00055 ×2 номинала (PHASE-BUILD). `NaiveQueueFill`: печать пересекла лимит, не close свечи.
+Вход: `ReplayEngine.run(path)`; `BounceStrategy.propose(snapshot)` — все 5 гейтов.
+Выход: контрольные `best()`; `Intent` с `tag=bounce` или None. `TradeManager`: 50% на +1R, нет БУ на +2%.
+`DemoAdapter`: только `trading_mode=demo`. Сейчас phase=off → отказ. Hello на биржу не шлём.
+`TAKER_OK=false`. `EpisodeLog` пустой, пока нет демо-входа.
 
-`DemoAdapter`: только `trading_mode=demo`. Сейчас phase=off → отказ. Host mainnet в файле нет. Hello на биржу не шлём.
-
-Не делает: live-ордер, стратегию, выдуманный стакан на дыре.
+Не делает: live-ордер, submit из стратегии, механический BE, выдуманный стакан.
 Ключи не читает.

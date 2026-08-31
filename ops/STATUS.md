@@ -52,7 +52,19 @@
 | 1.5.5 demo adapter | `tests/exec/test_demo_mode_no_mainnet.py` | hello нет | `trading_mode=off` → отказ. Инжект `demo` → `{mode: demo, status: not_sent}`. Host mainnet в `exec/`+`signer/` нет. **Hello лимит+cancel на демо — нет** (ключа/тестнета нет) |
 | 1.5.6 стоп | `tests/signer/test_stop_required.py` | биржа нет | нет `stop_px` → ValidationError; ноль → ValueError. HTTP 4xx нет — процесса signer нет. Ордер не шлём |
 
-Неделя 1 **не закрыта** (нет VPS/суток). Гейт Ф0 красный. `trading_mode=off`. Стратегию отскока (1.6.*) **не** писал: hello демо красный, гейт Ф0 красный. Не «всё реализовано».
+| 1.6.1 отскок | `tests/exec/test_bounce_gates.py` | ордера нет | `propose` → Intent только если demo + сессия + одна позиция + краны + скринер + цена в зоне. `trading_mode=off` → None. `submit` в файле нет |
+| 1.6.2 середина | `tests/exec/test_mid_range.py` | не нужно | цена ровно между support.hi и resistance.lo → None |
+| 1.6.3 50% / трейл | `tests/exec/test_partial_1r.py`, `test_no_mechanical_be.py` | не нужно | +1R → reduce 50%; +2R остаток жив; стоп → flatten без доливки. `move_to_be_at_pct` в исходнике нет. +2% цены при стопе 4% ≠ БУ |
+| 1.6.4 скринер | `tests/screener/test_spread.py` | не нужно | спред 0.4% при ходе 0.3% → отказ. SOL не из week0 → отказ. ATR не выдумываем |
+| 1.6.5 лимит | `tests/exec/test_maker_only_f1.py` | не нужно | `TAKER_OK=false`, `ORDER_TYPE=limit` |
+| 1.6.6 episode | `tests/exec/test_episodes.py`, `tests/ops/test_day_episodes.py` | нет демо-входов | лог пустой; `day_episodes` без файла → n=0. mode=live отказ |
+
+Неделя 1 **не закрыта** (нет VPS/суток). Гейт Ф0 красный. `trading_mode=off`. Код 1.6 на ветке, **ордеров нет**, hello демо красный. Не «всё реализовано».
+
+Чужие проекты / форумы (не копировали стратегии):
+- Freqtrade: Bybit **futures isolated** умеет stoploss on exchange; Bybit **spot** — нет. Мы linear perp, стоп обязателен в схеме, на биржу не слали.
+- Elite Trader Turok (2001): не угадывать bounce/break заранее. У нас вход только при цене в зоне и закрытой логике CAV на журнале; жест не открывает размер.
+- NFI / passivbot / OctoBot grid — доливка. Это антипример, `average_in` по-прежнему отказ.
 
 Факты Bybit, не догадки:
 - сборка книги — `u` (подряд); `seq` — кросс-номер. [orderbook REST](https://bybit-exchange.github.io/docs/v5/market/orderbook), [WS](https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook)
