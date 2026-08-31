@@ -15,7 +15,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from capitalizator.book.reconstruct import Book
+from capitalizator.book.reconstruct import Book, _canon
 from capitalizator.types import MarketEvent, require_utc
 
 WallKind = Literal["appeared", "pulled", "eaten"]
@@ -85,7 +85,7 @@ class WallWatch:
                 out.append(
                     WallEvent(
                         symbol=self.symbol,
-                        px=str(key[1]),
+                        px=_canon(key[1]),
                         side=key[0],
                         size=sz,
                         kind="appeared",
@@ -101,7 +101,7 @@ class WallWatch:
             out.append(
                 WallEvent(
                     symbol=self.symbol,
-                    px=str(key[1]),
+                    px=_canon(key[1]),
                     side=key[0],
                     size=tracked.size,
                     kind=kind,

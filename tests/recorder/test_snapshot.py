@@ -72,6 +72,21 @@ def test_parse_rejects_missing_symbol() -> None:
         RestSnapshot().parse(payload)
 
 
+def test_parse_rejects_negative_size() -> None:
+    payload = {
+        "retCode": 0,
+        "result": {
+            "s": "BTCUSDT",
+            "ts": 1,
+            "u": 1,
+            "b": [["1", "-2"]],
+            "a": [["2", "1"]],
+        },
+    }
+    with pytest.raises(ValueError, match="size"):
+        RestSnapshot().parse(payload)
+
+
 def test_parse_rejects_zero_depth() -> None:
     payload = {
         "retCode": 0,

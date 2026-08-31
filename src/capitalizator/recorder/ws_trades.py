@@ -1,4 +1,4 @@
-"""Drive trade frames through the normalizer. No keys. Socket is injected."""
+"""Drive already-decoded publicTrade frames. No keys. Socket is injected."""
 
 from __future__ import annotations
 
@@ -14,11 +14,11 @@ class BybitTradesWs:
     """Turns already-decoded JSON frames into MarketEvents.
 
     Opening a live socket is a caller concern (VPS, public endpoint, no keys).
+    Does not invent a monotonic seq — Bybit publicTrade.seq may repeat.
     """
 
     def __init__(self, normalizer: TradesNormalizer | None = None) -> None:
         self.normalizer = normalizer or TradesNormalizer()
-        self.next_seq = 1
 
     def ingest_frames(
         self,
@@ -29,9 +29,5 @@ class BybitTradesWs:
         now = recv_ts or datetime.now(tz=UTC)
         out: list[MarketEvent] = []
         for frame in frames:
-            batch = self.normalizer.normalize_frame(
-                frame, recv_ts=now, seq_start=self.next_seq
-            )
-            self.next_seq += len(batch)
-            out.extend(batch)
+            out.extend(self.normalizer.normalize_frame(frame, recv_ts=now))
         return out

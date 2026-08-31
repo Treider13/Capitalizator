@@ -38,7 +38,9 @@ def _levels(rows: list[Any]) -> tuple[tuple[str, str], ...]:
             raise ValueError("level must be [price, size]")
         px, sz = str(row[0]), str(row[1])
         Decimal(px)
-        Decimal(sz)
+        size = Decimal(sz)
+        if size < 0:
+            raise ValueError(f"level size must be >= 0, got {size}")
         out.append((px, sz))
     return tuple(out)
 

@@ -1,4 +1,10 @@
-"""Seq holes become explicit gap events. Never swallow a skip or rewind."""
+"""Holes in a *consecutive* id become explicit gap events.
+
+Use this on Bybit orderbook `u`, not on publicTrade `seq`.
+Official: several trade messages may share one seq
+(https://bybit-exchange.github.io/docs/v5/websocket/public/trade).
+Never swallow a skip or rewind on a consecutive stream.
+"""
 
 from __future__ import annotations
 

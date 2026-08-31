@@ -133,6 +133,36 @@ def test_zero_size_deletes_level() -> None:
     assert book.level("bid", "60000.0") == Decimal("0")
 
 
+def test_imbalance_zero_is_rejected() -> None:
+    """`list[-0:]` in Python is the whole list — n=0 must not silently mean 'all'."""
+    book = Book()
+    book.apply_snapshot(
+        BookSnapshot(
+            symbol="BTCUSDT",
+            exchange_ts=datetime(2026, 8, 30, 13, 30, tzinfo=UTC),
+            seq=1,
+            bids=(("100", "1"),),
+            asks=(("101", "1"),),
+        )
+    )
+    with pytest.raises(ValueError, match="imbalance n"):
+        book.imbalance(0)
+
+
+def test_negative_size_rejected() -> None:
+    book = Book()
+    with pytest.raises(ValueError, match="size"):
+        book.apply_snapshot(
+            BookSnapshot(
+                symbol="BTCUSDT",
+                exchange_ts=datetime(2026, 8, 30, 13, 30, tzinfo=UTC),
+                seq=1,
+                bids=(("100", "-1"),),
+                asks=(("101", "1"),),
+            )
+        )
+
+
 def test_best_spread_depth_imbalance() -> None:
     book = Book(tick_size="0.1")
     book.apply_snapshot(

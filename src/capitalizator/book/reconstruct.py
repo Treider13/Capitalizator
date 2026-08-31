@@ -77,6 +77,8 @@ class Book:
         for px, sz in rows:
             price = Decimal(px)
             size = Decimal(sz)
+            if size < 0:
+                raise ValueError(f"level size must be >= 0, got {size}")
             if size == 0:
                 book.pop(price, None)
             else:
@@ -104,6 +106,8 @@ class Book:
         return total
 
     def imbalance(self, n: int) -> Decimal | None:
+        if n < 1:
+            raise ValueError("imbalance n must be >= 1")
         bids = sorted(self._bids.items())[-n:]
         asks = sorted(self._asks.items())[:n]
         bid_q = sum((s for _, s in bids), Decimal("0"))
