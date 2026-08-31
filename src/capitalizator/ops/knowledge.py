@@ -249,7 +249,9 @@ class Knowledge:
                 day = str(obj.get("day", ""))
                 report_kind = str(obj.get("kind", ""))
                 expected_rep[(day, report_kind)] = str(obj.get("body", ""))
-        got_ep = {row["trade_id"]: {key: row[key] for key in EPISODE_KEYS} for row in self.episodes()}
+        got_ep = {
+            row["trade_id"]: {key: row[key] for key in EPISODE_KEYS} for row in self.episodes()
+        }
         if got_ep != expected_ep:
             return False
         got_rep: dict[tuple[str, str], str] = {}
