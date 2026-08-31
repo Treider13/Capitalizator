@@ -98,6 +98,16 @@ def test_write_refuses_directory_symlink(tmp_path: Path) -> None:
     assert list(outside.rglob("*")) == []
 
 
+def test_write_refuses_lock_fifo(tmp_path: Path) -> None:
+    import os
+
+    path = partition_path(tmp_path, _event(1))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(path.with_name(f"{path.name}.lock"))
+    with pytest.raises(ValueError, match="regular file"):
+        ParquetSink(tmp_path).write(_event(1))
+
+
 def test_write_refuses_lock_symlink(tmp_path: Path) -> None:
     secret = tmp_path / "secret"
     secret.write_bytes(b"KEYMATERIAL")

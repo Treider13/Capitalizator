@@ -21,7 +21,13 @@ from typing import Any
 
 from capitalizator.memory.hashlog import GENESIS, HashChain, HashLink
 from capitalizator.ops.daily_map_report import contains_advice
-from capitalizator.ops.vault import Vault, replace_if_same, same_inode
+from capitalizator.ops.vault import (
+    Vault,
+    VaultError,
+    ensure_real_parent,
+    replace_if_same,
+    same_inode,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -82,7 +88,10 @@ class Knowledge:
         if path.is_file():
             fd = os.open(path, os.O_RDWR | nofollow)
         elif create:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                ensure_real_parent(path.parent)
+            except VaultError as exc:
+                raise ValueError(str(exc)) from exc
             if path.parent.is_symlink():
                 raise ValueError(f"symlink: {path.parent}")
             try:
@@ -136,7 +145,10 @@ class Knowledge:
     def snapshot_to(self, dest: Path) -> None:
         if self._cx is None:
             raise FileNotFoundError("no knowledge db to snapshot")
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            ensure_real_parent(dest.parent)
+        except VaultError as exc:
+            raise ValueError(str(exc)) from exc
         mem = sqlite3.connect(":memory:")
         try:
             self._cx.backup(mem)

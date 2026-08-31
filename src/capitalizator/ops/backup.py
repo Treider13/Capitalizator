@@ -24,6 +24,7 @@ from capitalizator.ops.vault import (
     Vault,
     VaultError,
     copy_regular,
+    ensure_real_parent,
     init_vault,
     iter_regular_files,
     load_vault,
@@ -191,7 +192,14 @@ def _file_records(vault: Vault, *, with_tape: bool) -> dict[str, dict[str, int |
 
 
 def _copy_plain(src: Path, dest: Path, *, suffixes: frozenset[str]) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
+    if dest.is_symlink():
+        raise BackupError(f"symlink: {dest}")
+    try:
+        ensure_real_parent(dest)
+    except VaultError as exc:
+        raise BackupError(str(exc)) from exc
+    if dest.is_symlink() or not dest.is_dir():
+        raise BackupError(f"symlink: {dest}")
     if not src.is_dir():
         return
     assert_no_symlinks(src)
@@ -202,7 +210,6 @@ def _copy_plain(src: Path, dest: Path, *, suffixes: frozenset[str]) -> None:
         if ".." in rel.parts:
             raise BackupError(f"unsafe path: {rel}")
         target = dest / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
         try:
             copy_regular(path, target)
         except VaultError as exc:

@@ -10,6 +10,7 @@ import fcntl
 import io
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -17,7 +18,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from capitalizator.ops.vault import (
+    VaultError,
     assert_no_symlink_components,
+    ensure_real_parent,
     mkdir_real_parents,
     open_regular,
     replace_if_same,
@@ -77,8 +80,10 @@ class ParquetSink:
 
     def write(self, event: MarketEvent) -> Path:
         path = partition_path(self.data_root, event)
-        if not self.data_root.exists():
-            self.data_root.mkdir(parents=True)
+        try:
+            ensure_real_parent(self.data_root)
+        except VaultError as exc:
+            raise ValueError(str(exc)) from exc
         if self.data_root.is_symlink() or not self.data_root.is_dir():
             raise ValueError(f"symlink: {self.data_root}")
         mkdir_real_parents(self.data_root, path.parent)
@@ -89,11 +94,16 @@ class ParquetSink:
         if nofollow is None:
             raise ValueError("O_NOFOLLOW required")
         lock_path = path.with_name(f"{path.name}.lock")
-        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | nofollow, 0o644)
+        lock_fd = os.open(
+            lock_path, os.O_CREAT | os.O_RDWR | os.O_NONBLOCK | nofollow, 0o644
+        )
         tmp: Path | None = None
         created = None
         fd = -1
         try:
+            lock_st = os.fstat(lock_fd)
+            if not stat.S_ISREG(lock_st.st_mode):
+                raise ValueError(f"not a regular file: {lock_path}")
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             rows: list[dict] = []
             if path.is_symlink():

@@ -141,7 +141,7 @@ def read_regular_text(path: Path) -> str:
 
 def write_regular_text(path: Path, text: str) -> None:
     """Write via mkstemp inode. Path.write_text follows a planted symlink."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_real_parent(path.parent)
     if path.parent.is_symlink():
         raise VaultError(f"symlink: {path.parent}")
     fd, tmp_name = tempfile.mkstemp(
@@ -165,17 +165,19 @@ def write_regular_text(path: Path, text: str) -> None:
 
 def copy_regular(src: Path, dest: Path) -> None:
     """Copy via fds. shutil.copy2 follows a symlink planted after the walk."""
-    fd = open_regular(src)
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    ensure_real_parent(dest.parent)
     if dest.parent.is_symlink():
-        os.close(fd)
         raise VaultError(f"symlink: {dest.parent}")
-    out_fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{dest.name}.", suffix=".tmp", dir=str(dest.parent)
-    )
-    tmp = Path(tmp_name)
-    created = os.fstat(out_fd)
+    fd = open_regular(src)
+    out_fd = -1
+    tmp: Path | None = None
+    created = None
     try:
+        out_fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{dest.name}.", suffix=".tmp", dir=str(dest.parent)
+        )
+        tmp = Path(tmp_name)
+        created = os.fstat(out_fd)
         while True:
             chunk = os.read(fd, 65536)
             if not chunk:
@@ -188,7 +190,7 @@ def copy_regular(src: Path, dest: Path) -> None:
     except Exception:
         if out_fd >= 0:
             os.close(out_fd)
-        if same_inode(tmp, created):
+        if tmp is not None and created is not None and same_inode(tmp, created):
             tmp.unlink()
         raise
     finally:
@@ -215,6 +217,38 @@ def assert_no_symlink_components(root: Path, path: Path) -> None:
         cur = cur / part
         if cur.is_symlink():
             raise VaultError(f"symlink: {cur}")
+
+
+def ensure_real_parent(directory: Path) -> Path:
+    """Create directory without following any symlink. Unlike Path.mkdir(parents=True).
+
+    Walk every ancestor, including ones that already exist. Stopping at the first
+    existing dir misses a symlink *above* a nested name that pathlib already
+    created inside the target (nested is a real directory; the leak is one name up).
+    abspath, not resolve: resolve() follows the link and hides it.
+    """
+    cur = Path(os.path.abspath(directory))
+    chain: list[Path] = []
+    while True:
+        chain.append(cur)
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    for node in reversed(chain):
+        if node.is_symlink():
+            raise VaultError(f"symlink: {node}")
+        if node.exists():
+            if not node.is_dir():
+                raise VaultError(f"not a directory: {node}")
+            continue
+        try:
+            node.mkdir()
+        except FileExistsError:
+            pass
+        if node.is_symlink() or not node.is_dir():
+            raise VaultError(f"symlink: {node}")
+    return chain[0]
 
 
 def mkdir_real_parents(root: Path, directory: Path) -> None:

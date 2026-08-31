@@ -457,6 +457,102 @@ def test_init_refuses_layout_symlink(tmp_path: Path) -> None:
     assert secret.read_bytes() == b"KEYMATERIAL"
 
 
+def test_copy_regular_refuses_parent_dir_symlink(tmp_path: Path) -> None:
+    """Fact: Path.mkdir(parents=True) creates nested names *inside* a dir symlink.
+
+    dest/reports → outside; dest/reports/nested.mkdir(parents=True) made
+    outside/nested. nested itself is a real directory, so a parent.is_symlink()
+    check after mkdir misses the leak. We walk every ancestor.
+    """
+    from capitalizator.ops.vault import copy_regular
+
+    src = tmp_path / "src.txt"
+    src.write_text("x", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    dest_root = tmp_path / "dest"
+    dest_root.mkdir()
+    (dest_root / "reports").symlink_to(outside)
+    with pytest.raises(VaultError, match="symlink"):
+        copy_regular(src, dest_root / "reports" / "nested" / "keep.txt")
+    assert list(outside.iterdir()) == []
+
+
+def test_copy_regular_refuses_existing_nested_via_symlink(tmp_path: Path) -> None:
+    from capitalizator.ops.vault import copy_regular
+
+    src = tmp_path / "src.txt"
+    src.write_text("x", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "nested").mkdir()
+    dest_root = tmp_path / "dest"
+    dest_root.mkdir()
+    (dest_root / "reports").symlink_to(outside)
+    with pytest.raises(VaultError, match="symlink"):
+        copy_regular(src, dest_root / "reports" / "nested" / "keep.txt")
+    assert list((outside / "nested").iterdir()) == []
+
+
+def test_write_regular_refuses_parent_dir_symlink(tmp_path: Path) -> None:
+    from capitalizator.ops.vault import write_regular_text
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    dest_root = tmp_path / "dest"
+    dest_root.mkdir()
+    (dest_root / "reports").symlink_to(outside)
+    with pytest.raises(VaultError, match="symlink"):
+        write_regular_text(dest_root / "reports" / "nested" / "LAYOUT", "1\n")
+    assert list(outside.iterdir()) == []
+
+
+def test_snapshot_refuses_parent_dir_symlink(tmp_path: Path) -> None:
+    from capitalizator.ops.knowledge import Knowledge
+
+    src = tmp_path / "src.sqlite"
+    kn = Knowledge(src)
+    kn.append_link("zone|DEFEND")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    dest_root = tmp_path / "dest"
+    dest_root.mkdir()
+    (dest_root / "knowledge").symlink_to(outside)
+    try:
+        with pytest.raises((VaultError, ValueError), match="symlink"):
+            kn.snapshot_to(dest_root / "knowledge" / "nested" / "desk.sqlite")
+    finally:
+        kn.close()
+    assert list(outside.rglob("*")) == []
+
+
+def test_knowledge_create_refuses_parent_dir_symlink(tmp_path: Path) -> None:
+    from capitalizator.ops.knowledge import Knowledge
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    dest_root = tmp_path / "dest"
+    dest_root.mkdir()
+    (dest_root / "knowledge").symlink_to(outside)
+    with pytest.raises((VaultError, ValueError), match="symlink"):
+        Knowledge(dest_root / "knowledge" / "nested" / "desk.sqlite")
+    assert list(outside.iterdir()) == []
+
+
+def test_copy_plain_refuses_dest_dir_symlink(tmp_path: Path) -> None:
+    from capitalizator.ops.backup import REPORT_SUFFIX, BackupError, _copy_plain
+
+    vault = init_vault(tmp_path / "desk")
+    (vault.reports / "keep.txt").write_text("x", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    dest = tmp_path / "dest_reports"
+    dest.symlink_to(outside)
+    with pytest.raises(BackupError, match="symlink"):
+        _copy_plain(vault.reports, dest, suffixes=REPORT_SUFFIX)
+    assert list(outside.iterdir()) == []
+
+
 def test_lock_file_is_not_packed(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     ParquetSink(vault.tape).write(_event())
