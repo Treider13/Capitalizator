@@ -53,3 +53,12 @@ def test_four_claims_rejected() -> None:
 
 def test_not_required_is_none() -> None:
     assert require_card(None, required=False) is None
+
+
+def test_verified_in_file_is_rejected(tmp_path: Path) -> None:
+    raw = _payload()
+    raw["claims"][0]["verdict"] = "VERIFIED"  # type: ignore[index]
+    path = tmp_path / "card.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="ManualVerifier"):
+        require_card(path, required=True)

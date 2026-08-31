@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from capitalizator.card.draft import CardDraft, load_bearing_ok
+from capitalizator.card.draft import CardDraft, apply_bind, load_bearing_ok
 
 
 def _card(*, verdict: str, bearing: bool = True) -> CardDraft:
@@ -30,8 +30,10 @@ def test_pending_load_bearing_is_not_ok() -> None:
 
 
 def test_verified_load_bearing_is_ok() -> None:
-    assert load_bearing_ok(_card(verdict="VERIFIED")) is True
+    stamped = apply_bind(_card(verdict="pending"), 0, "VERIFIED")
+    assert load_bearing_ok(stamped) is True
 
 
 def test_no_load_bearing_is_not_ok() -> None:
-    assert load_bearing_ok(_card(verdict="VERIFIED", bearing=False)) is False
+    stamped = apply_bind(_card(verdict="pending", bearing=False), 0, "VERIFIED")
+    assert load_bearing_ok(stamped) is False

@@ -7,9 +7,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+from capitalizator.card.draft import apply_bind, require_card
 from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import RiskEngine
+from capitalizator.verifier.manual import ManualVerifier
 from capitalizator.zones.model import Zone
 
 
@@ -53,10 +55,11 @@ def _strat(**kwargs: object) -> BounceStrategy:
 
 def test_missing_card_rejects_by_default() -> None:
     assert _strat().require_card is True
+    assert _strat().check_load_bearing is True
     assert _strat().propose(_snap()) is None
 
 
-def test_unit_card_file_allows_propose(tmp_path: Path) -> None:
+def test_pending_card_file_alone_is_not_enough(tmp_path: Path) -> None:
     stamp = datetime(2026, 8, 31, 12, 0, tzinfo=UTC).isoformat()
     payload = {
         "thesis": "unit fixture, not a market call",
@@ -76,6 +79,36 @@ def test_unit_card_file_allows_propose(tmp_path: Path) -> None:
     path = tmp_path / "card.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     got = _strat().propose(_snap(card_path=path))
+    assert got is None
+
+
+def test_stamped_after_bind_allows_propose(tmp_path: Path) -> None:
+    stamp = datetime(2026, 8, 31, 12, 0, tzinfo=UTC).isoformat()
+    payload = {
+        "thesis": "unit fixture, not a market call",
+        "claims": [
+            {
+                "type": "unit",
+                "subject": "BTCUSDT",
+                "value": f"fixture-{i}",
+                "as_of": stamp,
+                "known_at": stamp,
+                "horizon": "1h",
+                "load_bearing": i == 0,
+            }
+            for i in range(5)
+        ],
+    }
+    path = tmp_path / "card.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    card = require_card(path, required=True)
+    assert card is not None
+    q = tmp_path / "q.txt"
+    q.write_text(card.claims[0].value + "\n", encoding="utf-8")
+    verdict = ManualVerifier().bind(card.claims[0].value, q, card.claims[0].value)
+    assert verdict == "VERIFIED"
+    stamped = apply_bind(card, 0, verdict)
+    got = _strat().propose(_snap(card=stamped))
     assert got is not None
     assert got.tag == "bounce"
 

@@ -3,7 +3,7 @@
 All gates must pass or the result is None. trading_mode must be demo.
 F1: TAKER_OK is false; the intent is a limit idea only.
 Gesture / BTC veto are not gates here. Card file is required unless tests
-turn the flag off. Load-bearing VERIFIED is off until the operator binds SQL.
+turn the flag off. Load-bearing VERIFIED must come from ManualVerifier.bind, not the json file.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
-from capitalizator.card.draft import load_bearing_ok, require_card
+from capitalizator.card.draft import CardDraft, load_bearing_ok, require_card
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.ops.phase import trading_mode as phase_trading_mode
 from capitalizator.risk.budget import SessionBudget
@@ -49,6 +49,7 @@ class BounceSnapshot:
     no_us_today: bool = False
     lev: Decimal = Decimal("3")
     card_path: Path | str | None = None
+    card: CardDraft | None = None
 
 
 def price_in_zone(price: Decimal, zone: Zone) -> bool:
@@ -109,7 +110,7 @@ class BounceStrategy:
         desk_mode: str | None = None,
         budget: SessionBudget | None = None,
         require_card: bool = True,
-        check_load_bearing: bool = False,
+        check_load_bearing: bool = True,
     ) -> None:
         self.risk = risk
         self.halts = halts
@@ -126,10 +127,14 @@ class BounceStrategy:
             return None
         if self.require_card:
             try:
-                card = require_card(snap.card_path, required=True)
+                card = snap.card if snap.card is not None else require_card(
+                    snap.card_path, required=True
+                )
             except ValueError:
                 return None
-            if self.check_load_bearing and card is not None and not load_bearing_ok(card):
+            if card is None:
+                return None
+            if self.check_load_bearing and not load_bearing_ok(card):
                 return None
         if TAKER_OK:
             return None

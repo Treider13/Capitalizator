@@ -57,7 +57,21 @@ def require_card(path: Path | str | None, *, required: bool) -> CardDraft | None
     file = Path(path)
     if not file.is_file():
         raise ValueError("card required")
-    return CardDraft.model_validate_json(file.read_text(encoding="utf-8"))
+    card = CardDraft.model_validate_json(file.read_text(encoding="utf-8"))
+    if any(c.verdict != "pending" for c in card.claims):
+        raise ValueError("VERIFIED only via ManualVerifier.bind, not the json file")
+    return card
+
+
+def apply_bind(card: CardDraft, index: int, verdict: Verdict) -> CardDraft:
+    """Stamp a claim after ManualVerifier.bind. Does not invent a query."""
+    if index < 0 or index >= len(card.claims):
+        raise ValueError("claim index out of range")
+    if verdict not in {"pending", "VERIFIED", "REFUTED", "UNVERIFIABLE"}:
+        raise ValueError("unknown verdict")
+    claims = list(card.claims)
+    claims[index] = claims[index].model_copy(update={"verdict": verdict})
+    return card.model_copy(update={"claims": claims})
 
 
 def load_bearing_ok(card: CardDraft) -> bool:

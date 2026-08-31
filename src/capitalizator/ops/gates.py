@@ -10,6 +10,9 @@ import argparse
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any, get_args
+
+from capitalizator.risk.schema import FORBIDDEN_ACTIONS, RiskAction
 
 PASS = 0
 FAIL = 2
@@ -44,11 +47,28 @@ def gate_f0(*, root: Path | None = None) -> tuple[int, dict[str, object]]:
     return code, {"gate": "f0", "ok": passed, "checks": checks, "exit": code}
 
 
+def _f1_closed_bounce(row: Any) -> bool:
+    if not isinstance(row, dict):
+        return False
+    try:
+        fill_qty = float(row.get("fill_qty") or 0)
+        r = row.get("r")
+        float(r)
+    except (TypeError, ValueError):
+        return False
+    return (
+        row.get("mode") == "demo"
+        and row.get("setup_tag") == "bounce"
+        and row.get("status") == "closed"
+        and fill_qty > 0
+        and r is not None
+    )
+
+
 def gate_f1(*, root: Path | None = None) -> tuple[int, dict[str, object]]:
     """F1 stays red until ≥80 closed demo bounces exist. We do not invent them."""
     base = root or repo_root()
     phase = (base / "infra" / "phase.yaml").read_text(encoding="utf-8")
-    schema = (base / "src" / "capitalizator" / "risk" / "schema.py").read_text(encoding="utf-8")
     zlg = "\n".join(
         p.read_text(encoding="utf-8")
         for p in sorted((base / "src" / "capitalizator" / "zlg").glob("*.py"))
@@ -59,17 +79,19 @@ def gate_f1(*, root: Path | None = None) -> tuple[int, dict[str, object]]:
     if episode_file.is_file():
         raw = json.loads(episode_file.read_text(encoding="utf-8"))
         rows = raw if isinstance(raw, list) else raw.get("episodes") or []
-        n_bounce = len(rows)
-        rs = [float(r["r"]) for r in rows if r.get("r") is not None]
+        closed = [row for row in rows if _f1_closed_bounce(row)]
+        n_bounce = len(closed)
+        rs = [float(row["r"]) for row in closed]
         avg_r = (sum(rs) / len(rs)) if rs else None
     checks: dict[str, bool] = {
         "G1.1_n80": n_bounce >= 80,
         "G1.2_avg_r_pos": avg_r is not None and avg_r > 0,
-        "G1.3_no_average": "average_in" in schema and "FORBIDDEN" in schema,
+        "G1.3_no_average": "average_in" in FORBIDDEN_ACTIONS
+        and "average_in" not in get_args(RiskAction),
         "G1.4_zlg_no_random": "random" not in zlg,
         "G1.5_breakout_off": "breakout_enabled: false" in phase,
     }
-    accident = n_bounce > 0 and "average_in" not in schema
+    accident = "average_in" not in FORBIDDEN_ACTIONS
     passed = all(checks.values())
     code = ACCIDENT if accident else (PASS if passed else FAIL)
     return code, {
