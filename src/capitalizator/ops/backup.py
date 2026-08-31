@@ -59,7 +59,7 @@ def _needles() -> tuple[str, ...]:
 def scan_secret_bytes(blob: bytes) -> list[str]:
     """Scan raw bytes. ASCII, case-fold, UTF-16 LE/BE.
 
-    Fact: utf-16le BYBIT_API_KEY= and lowercase bybit_api_key= packed.
+    Fact: utf-16le and lowercase env-key needles packed (literals stay in tests).
     trufflehog (GitHub) scans UTF-16 LE/BE and matches keywords case-insensitive.
     gitleaks base64 decode defaults off — we do not invent that layer.
     """
