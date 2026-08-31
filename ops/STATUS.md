@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **638 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **639 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -33,7 +33,7 @@
 | 0.3.6 ZLG | `tests/zlg/test_labels.py`, `test_double_run.py` | не нужно | 5 меток; SILENCE если max A < γ·q. Два прогона = одна метка. Размер не открывается |
 | 0.3.7 BTC-режим | `tests/btc/test_regime.py` | не нужно | trend/box с закрытого HTF; news только с `known_at ≤ t`; unknown → None. `veto()` нет |
 | 0.3.8 отчёт | `tests/ops/test_daily_report_no_advice.py` | не нужно | касания/жесты/дыры/пинг; «лонг/купи/завтра» — ошибка |
-| знания / бэкап | `tests/ops/test_vault_backup.py` | VPS нет | Snapshot: serialize + запись через `openat`/`dir_fd`. DB: `O_EXCL|O_NOFOLLOW`, connect через `/proc/self/fd`. Staging — `mkdtemp`. Симлинк / FIFO / hardlink / секрет — отказ. Живого диска VPS **нет** |
+| знания / бэкап | `tests/ops/test_vault_backup.py` | VPS нет | Snapshot: serialize + `dir_fd`. DB: файл через `openat(parent, name)` — `O_NOFOLLOW` на путь ходит в dir-симлинк предка. Connect — `/proc/self/fd`. Staging — `mkdtemp`. Симлинк / FIFO / hardlink / секрет — отказ. Живого диска VPS **нет** |
 | консоль ноут | `tests/ops/test_console.py` | туннеля нет | GET `/` и `/api/status`; POST/PUT/DELETE/PATCH 405; только 127.0.0.1. Без LAYOUT не встаёт. Поля `vps` нет. Симлинк `desk.sqlite` / `tape/` — отказ, 500 `error`. Signer не импортирован |
 
 | 0.4.1 новости | `tests/news/test_pit.py` | не нужно | CSV BLS/Fed/BEA: CPI + FOMC + NFP (4 Sep / 2 Oct / 6 Nov EST / 4 Dec EST) + PCE (30 Sep / 29 Oct / 25 Nov EST / 23 Dec EST). Срез до `known_at` пустой. NFP/PCE не в MacroRules 24ч/ET. TG нет |
