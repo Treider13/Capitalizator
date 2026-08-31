@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat
 import tempfile
 from collections.abc import Mapping
 from datetime import datetime
@@ -73,15 +74,37 @@ def report_payload(*, day: str, kind: str, body: str) -> str:
 class Knowledge:
     def __init__(self, path: Path, *, create: bool = True) -> None:
         self.path = path
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            raise ValueError("O_NOFOLLOW required")
         if path.is_symlink():
             raise ValueError(f"symlink: {path}")
-        if not path.is_file() and not create:
+        if path.is_file():
+            fd = os.open(path, os.O_RDWR | nofollow)
+        elif create:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                fd = os.open(
+                    path, os.O_RDWR | os.O_CREAT | os.O_EXCL | nofollow, 0o644
+                )
+            except FileExistsError:
+                fd = os.open(path, os.O_RDWR | nofollow)
+        else:
             self._cx: sqlite3.Connection | None = None
             return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.is_symlink():
+        try:
+            created = os.fstat(fd)
+            if not stat.S_ISREG(created.st_mode):
+                raise ValueError(f"not a regular file: {path}")
+        finally:
+            os.close(fd)
+        if path.is_symlink() or not same_inode(path, created):
             raise ValueError(f"symlink: {path}")
         self._cx = sqlite3.connect(path, timeout=5.0)
+        if path.is_symlink() or not same_inode(path, created):
+            self._cx.close()
+            self._cx = None
+            raise ValueError(f"symlink: {path}")
         self._cx.isolation_level = None
         self._cx.row_factory = sqlite3.Row
         self._cx.execute("PRAGMA foreign_keys = ON")

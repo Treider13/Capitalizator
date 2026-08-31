@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import stat
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -105,10 +106,19 @@ def same_inode(path: Path, st: os.stat_result) -> bool:
 
 
 def replace_if_same(tmp: Path, dest: Path, created: os.stat_result) -> None:
-    """rename only if the name still points at the inode we wrote (not a planted symlink)."""
+    """rename only our inode. After rename, dest must still be that inode.
+
+    os.replace follows neither dest nor writes through it — but if *tmp* is
+    swapped for a symlink after the check, rename *moves the symlink* onto dest.
+    Then we unlink the dest *name* (the symlink), not the target.
+    """
     if not same_inode(tmp, created):
         raise VaultError(f"tmp was replaced: {tmp}")
     os.replace(tmp, dest)
+    if dest.is_symlink() or not same_inode(dest, created):
+        if dest.is_symlink():
+            dest.unlink()
+        raise VaultError(f"replace produced unexpected inode: {dest}")
 
 
 def read_regular_bytes(path: Path) -> bytes:
@@ -127,6 +137,28 @@ def read_regular_bytes(path: Path) -> bytes:
 
 def read_regular_text(path: Path) -> str:
     return read_regular_bytes(path).decode("utf-8", errors="ignore")
+
+
+def write_regular_text(path: Path, text: str) -> None:
+    """Write via mkstemp inode. Path.write_text follows a planted symlink."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    tmp = Path(tmp_name)
+    created = os.fstat(fd)
+    try:
+        os.write(fd, text.encode("utf-8"))
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        replace_if_same(tmp, path, created)
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        if same_inode(tmp, created):
+            tmp.unlink()
+        raise
 
 
 def copy_regular(src: Path, dest: Path) -> None:
@@ -184,7 +216,7 @@ def init_vault(root: Path) -> Vault:
         folder.mkdir(exist_ok=True)
     if vault.layout_path.is_symlink():
         raise VaultError("LAYOUT is a symlink")
-    vault.layout_path.write_text(f"{LAYOUT_VERSION}\n", encoding="utf-8")
+    write_regular_text(vault.layout_path, f"{LAYOUT_VERSION}\n")
     readme = vault.secrets / "README.md"
     if not vault.secrets.exists():
         vault.secrets.mkdir()
@@ -193,9 +225,9 @@ def init_vault(root: Path) -> Vault:
     if readme.is_symlink():
         raise VaultError("secrets/README.md is a symlink")
     if not readme.is_file():
-        readme.write_text(
+        write_regular_text(
+            readme,
             "Сюда ключи не класть. Vault/sops на VPS. Этот каталог в бэкап не входит.\n",
-            encoding="utf-8",
         )
     return vault
 
@@ -206,7 +238,7 @@ def load_vault(root: Path) -> Vault:
         raise VaultError("LAYOUT is a symlink")
     if not vault.layout_path.is_file():
         raise FileNotFoundError(f"not a vault: {vault.root} (missing LAYOUT)")
-    version = vault.layout_path.read_text(encoding="utf-8").strip()
+    version = read_regular_text(vault.layout_path).strip()
     if version != LAYOUT_VERSION:
         raise ValueError(f"unknown vault layout {version!r}")
     for folder in (vault.knowledge, vault.tape, vault.reports):

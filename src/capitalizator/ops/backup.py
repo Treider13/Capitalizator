@@ -29,6 +29,7 @@ from capitalizator.ops.vault import (
     load_vault,
     open_regular,
     read_regular_text,
+    write_regular_text,
 )
 
 # Built at runtime from codes so src and bytecode never hold the literal.
@@ -251,7 +252,7 @@ def pack(
         (staging / "knowledge").mkdir()
         (staging / "reports").mkdir()
         (staging / "tape").mkdir()
-        (staging / "LAYOUT").write_text("1\n", encoding="utf-8")
+        write_regular_text(staging / "LAYOUT", "1\n")
         if vault.db_path.is_symlink():
             raise BackupError(f"symlink: {vault.db_path}")
         if vault.db_path.is_file():
@@ -291,9 +292,9 @@ def pack(
             "hash_chain_ok": True,
             "secrets_excluded": True,
         }
-        (staging / "manifest.json").write_text(
+        write_regular_text(
+            staging / "manifest.json",
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
         verify_backup(staging)
         if dest.exists():

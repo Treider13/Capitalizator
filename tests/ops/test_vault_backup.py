@@ -396,6 +396,57 @@ def test_snapshot_does_not_write_through_symlink(tmp_path: Path) -> None:
         kn2.close()
 
 
+def test_write_regular_replaces_symlink_without_touching_target(tmp_path: Path) -> None:
+    from capitalizator.ops.vault import write_regular_text
+
+    secret = tmp_path / "secret"
+    secret.write_bytes(b"KEYMATERIAL")
+    dest = tmp_path / "LAYOUT"
+    dest.symlink_to(secret)
+    write_regular_text(dest, "1\n")
+    assert secret.read_bytes() == b"KEYMATERIAL"
+    assert dest.is_symlink() is False
+    assert dest.read_text(encoding="utf-8") == "1\n"
+
+
+def test_replace_if_same_unlinks_result_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from capitalizator.ops.vault import replace_if_same
+
+    secret = tmp_path / "secret"
+    secret.write_bytes(b"KEYMATERIAL")
+    tmp = tmp_path / "tmp"
+    tmp.write_bytes(b"data")
+    dest = tmp_path / "dest"
+    created = tmp.lstat()
+    real = os.replace
+
+    def sneaky(src: Path, dst: Path) -> None:
+        real(src, dst)
+        Path(dst).unlink()
+        Path(dst).symlink_to(secret)
+
+    monkeypatch.setattr(os, "replace", sneaky)
+    with pytest.raises(VaultError, match="unexpected inode"):
+        replace_if_same(tmp, dest, created)
+    assert secret.read_bytes() == b"KEYMATERIAL"
+    assert dest.exists() is False
+
+
+def test_init_refuses_layout_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "desk"
+    root.mkdir()
+    secret = tmp_path / "secret"
+    secret.write_bytes(b"KEYMATERIAL")
+    (root / "LAYOUT").symlink_to(secret)
+    with pytest.raises(VaultError, match="symlink"):
+        init_vault(root)
+    assert secret.read_bytes() == b"KEYMATERIAL"
+
+
 def test_lock_file_is_not_packed(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     ParquetSink(vault.tape).write(_event())

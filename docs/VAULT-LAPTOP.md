@@ -44,7 +44,9 @@ user_data/          ← VPS пишет, ноут копирует (rsync / pack)
 - **Эпизод/отчёт вне цепочки** — тихий `UPDATE episodes` раньше проходил verify. Теперь строка пишется в той же `BEGIN IMMEDIATE`, что и звено; `verify_tables()` сверяет повтор со таблицами.
 - **`verify`/`pack` не создают sqlite в источнике**, если его не было.
 - **Parquet** — `mkstemp` + запись в fd + `replace` только если имя всё ещё наш inode. Предсказуемый `{pid}.tmp`-симлинк больше не затирает цель. Два писателя — `fcntl.LOCK_EX` + `O_NOFOLLOW` на `.lock` и перечит с диска. Счётчик — `metadata.num_rows` через fd, не `read()` всего часа.
-- **`sqlite3.connect(path)` ходит по симлинку.** `desk.sqlite` → чужой файл консоль бы открыла. Отказ. Snapshot: serialize в память, байты в mkstemp, `replace` — цель старого симлинка не трогаем.
+- **`sqlite3.connect(path)` ходит по симлинку.** Файл создаём `O_EXCL|O_NOFOLLOW`, после `connect` сверяем inode. Snapshot: serialize → mkstemp → `replace`. Цель старого симлинка не трогаем.
+- **`os.replace(tmp, dest)` после проверки inode:** если *tmp* успели сменить на симлинк, rename **переносит ссылку** на dest. После rename сверяем inode; если dest — ссылка, `unlink` снимает имя, не цель.
+- **`Path.write_text` / `read_text` ходят по ссылке.** LAYOUT и README пишем через `write_regular_text`.
 - **`shutil.copy2` / `copytree(symlinks=False)`** — документация Python: цель симлинка *вклеивается*. Копируем через `O_NOFOLLOW`. Restore только listed-файлы на staging, потом `rename`. Сбой не оставляет dest.
 - Чтение отчёта / sha256 / parquet — тот же fd, не `path.open` (он следует за ссылкой).
 - Консоль: нет поля `vps: false` (это была выдумка); без `LAYOUT` сервер **не** рисует хранилище; PUT/DELETE/PATCH = 405; симлинк в `tape/` не читает; исключение → 500 `error`, не traceback.
