@@ -484,11 +484,11 @@ def test_knowledge_connect_does_not_write_through_swapped_name(
     path = tmp_path / "desk.sqlite"
     real = knmod.connect_held_inode
 
-    def swap_then_connect(fd: int):
+    def swap_then_connect(fd: int, *, readonly: bool = False):
         if path.exists() and not path.is_symlink():
             path.unlink()
             path.symlink_to(victim)
-        return real(fd)
+        return real(fd, readonly=readonly)
 
     monkeypatch.setattr(knmod, "connect_held_inode", swap_then_connect)
     with pytest.raises(ValueError, match="symlink"):
