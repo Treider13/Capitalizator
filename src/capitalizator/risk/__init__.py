@@ -1,5 +1,6 @@
 from capitalizator.risk.budget import SessionBudget
 from capitalizator.risk.halts import Halt, Halts
+from capitalizator.risk.prs_cut import decide as prs_decide
 from capitalizator.risk.schema import (
     FORBIDDEN_ACTIONS,
     Intent,
@@ -29,4 +30,5 @@ __all__ = [
     "Sizer",
     "Sizing",
     "allow_entry",
+    "prs_decide",
 ]

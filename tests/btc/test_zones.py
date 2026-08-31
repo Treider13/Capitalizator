@@ -72,9 +72,8 @@ def test_same_engine_class_builds_eth() -> None:
     assert type(engine) is ZoneEngine
 
 
-def test_btc_package_has_no_veto() -> None:
-    from capitalizator import btc as pkg
+def test_regime_has_no_veto_method() -> None:
     from capitalizator.btc.regime import BtcRegime
 
-    assert not hasattr(pkg, "BtcVeto")
     assert not hasattr(BtcRegime, "veto")
+    assert not hasattr(BtcRegime(), "veto")

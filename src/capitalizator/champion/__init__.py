@@ -3,5 +3,6 @@
 from capitalizator.champion.drift import PageHinkley
 from capitalizator.champion.ptf import ClassStat, PtfRow, PtfTable
 from capitalizator.champion.shadow_width import ShadowWidth
+from capitalizator.champion.veto_shadow import VetoShadow
 
-__all__ = ["ClassStat", "PageHinkley", "PtfRow", "PtfTable", "ShadowWidth"]
+__all__ = ["ClassStat", "PageHinkley", "PtfRow", "PtfTable", "ShadowWidth", "VetoShadow"]

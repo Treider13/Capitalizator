@@ -2,8 +2,9 @@
 
 All gates must pass or the result is None. trading_mode must be demo.
 F1: TAKER_OK is false; the intent is a limit idea only.
-Gesture / BTC veto are not gates here. Card file is required unless tests
-turn the flag off. Load-bearing VERIFIED must come from ManualVerifier.bind, not the json file.
+Gesture / BTC veto are not gates here (BtcVeto is not imported).
+tape_eaten / wall_no_print apply only when check_tape / check_wall are on
+(F1 defaults off). Card file is required unless tests turn the flag off.
 """
 
 from __future__ import annotations
@@ -50,6 +51,8 @@ class BounceSnapshot:
     lev: Decimal = Decimal("3")
     card_path: Path | str | None = None
     card: CardDraft | None = None
+    tape_eaten: bool = False
+    wall_no_print: bool = False
 
 
 def price_in_zone(price: Decimal, zone: Zone) -> bool:
@@ -111,6 +114,8 @@ class BounceStrategy:
         budget: SessionBudget | None = None,
         require_card: bool = True,
         check_load_bearing: bool = True,
+        check_tape: bool = False,
+        check_wall: bool = False,
     ) -> None:
         self.risk = risk
         self.halts = halts
@@ -121,6 +126,8 @@ class BounceStrategy:
         self.budget = budget if budget is not None else SessionBudget()
         self.require_card = require_card
         self.check_load_bearing = check_load_bearing
+        self.check_tape = check_tape
+        self.check_wall = check_wall
 
     def propose(self, snap: BounceSnapshot) -> Intent | None:
         if self.desk_mode != "demo" or snap.trading_mode != "demo":
@@ -163,6 +170,10 @@ class BounceStrategy:
         if in_mid_range(snap.price, snap.zones):
             return None
         if not price_in_zone(snap.price, zone):
+            return None
+        if self.check_tape and snap.tape_eaten:
+            return None
+        if self.check_wall and snap.wall_no_print:
             return None
         side = "buy" if zone.side == "support" else "sell"
         try:

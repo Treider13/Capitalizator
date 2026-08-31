@@ -19,10 +19,22 @@ Reason = Literal[
     "no_verified",
     "first_minute",
     "mid_range",
+    "btc_break",
+    "wall_no_print",
 ]
 Outcome = Literal["bounce", "break", "die"]
 REASONS = frozenset(
-    {"SILENCE", "SPLIT", "VETO", "CPI", "no_verified", "first_minute", "mid_range"}
+    {
+        "SILENCE",
+        "SPLIT",
+        "VETO",
+        "CPI",
+        "no_verified",
+        "first_minute",
+        "mid_range",
+        "btc_break",
+        "wall_no_print",
+    }
 )
 R_UNIT = Decimal("1")
 

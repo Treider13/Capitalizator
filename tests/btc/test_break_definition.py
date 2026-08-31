@@ -55,6 +55,52 @@ def test_unclosed_bar_is_not_break() -> None:
     assert Break.detect(zone=ZONE, bar=bar, tape_eaten=True, t=CLOSE) is False
 
 
+def test_wick_above_resistance_without_close_is_not_break() -> None:
+    resist = Zone.create(
+        symbol="BTCUSDT",
+        tf="1d",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=CLOSE - timedelta(minutes=15),
+        close_ts=CLOSE,
+        open=Decimal("100.1"),
+        high=Decimal("100.8"),
+        low=Decimal("100.0"),
+        close=Decimal("100.1"),
+    )
+    assert Break.detect(zone=resist, bar=bar, tape_eaten=True, t=T) is False
+
+
+def test_close_above_resistance_and_eaten_is_break() -> None:
+    resist = Zone.create(
+        symbol="BTCUSDT",
+        tf="1d",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=CLOSE - timedelta(minutes=15),
+        close_ts=CLOSE,
+        open=Decimal("100.1"),
+        high=Decimal("100.8"),
+        low=Decimal("100.0"),
+        close=Decimal("100.5"),
+    )
+    assert Break.detect(zone=resist, bar=bar, tape_eaten=True, t=T) is True
+
+
 def test_eth_zone_is_not_a_btc_break() -> None:
     eth = Zone.create(
         symbol="ETHUSDT",
