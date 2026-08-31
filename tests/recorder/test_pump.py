@@ -127,3 +127,6 @@ def test_cli_output_is_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     assert payload["accepted"] == 100
     assert payload["recording"] is True
     assert payload["readyz"] == 200
+    assert payload["lag"]["n"] == 100
+    assert "p50_ms" in payload["lag"]
+    assert "p95_ms" in payload["lag"]

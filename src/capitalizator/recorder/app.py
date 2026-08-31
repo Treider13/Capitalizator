@@ -15,6 +15,7 @@ class RecorderApp:
     def __init__(self) -> None:
         self.recording = False
         self.accepted_count = 0
+        self.last_lag: dict[str, float] | None = None
 
     def healthz(self) -> int:
         return 200
@@ -72,16 +73,15 @@ def main(argv: list[str] | None = None) -> int:
         accepted = pump_jsonl(
             app, Path(args.data_root), Path(args.from_jsonl), stream=args.stream
         )
-        print(
-            json.dumps(
-                {
-                    "accepted": accepted,
-                    "recording": app.recording,
-                    "readyz": app.readyz(),
-                    "symbol": args.symbol,
-                }
-            )
-        )
+        payload = {
+            "accepted": accepted,
+            "recording": app.recording,
+            "readyz": app.readyz(),
+            "symbol": args.symbol,
+        }
+        if app.last_lag is not None:
+            payload["lag"] = app.last_lag
+        print(json.dumps(payload))
         if args.serve:
             server = HTTPServer((args.host, args.port), _handler(app))
             server.serve_forever()

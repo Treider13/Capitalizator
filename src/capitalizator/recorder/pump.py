@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from capitalizator.ops.latency import lag_report
 from capitalizator.recorder.app import RecorderApp
 from capitalizator.recorder.public_ws import is_control_frame
 from capitalizator.recorder.sink_parquet import ParquetSink
@@ -42,7 +43,10 @@ def pump_frames(
 ) -> int:
     if stream == "trades":
         trades = BybitTradesWs()
-        return _write(app, sink, _trade_events(trades, frames, recv_ts=recv_ts))
+        events = _trade_events(trades, frames, recv_ts=recv_ts)
+        if events:
+            app.last_lag = lag_report(events)
+        return _write(app, sink, events)
     if stream == "book":
         book = BybitBookWs()
         return _write(app, sink, _book_events(book, frames, recv_ts=recv_ts))

@@ -1,0 +1,12 @@
+# Frozen until the end of phase 1. Numbers from PHASE-BUILD. Do not tune.
+epsilon_ticks: 2
+bounce_away_ticks: 8
+working_tf: "15m"
+htf: "4h"
+touch_pending_timeout_h: 6
+die_no_touch_h: 24
+zlg_window_s: 8
+zlg_gamma: 0.25
+prs_alpha: 0.7
+prs_t_max_s: 8
+prs_delta_ticks: 5
