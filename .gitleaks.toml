@@ -1,0 +1,16 @@
+title = "capitalizator"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "bybit-api-key-assignment"
+description = "Bybit API key assignment in a file"
+regex = '''BYBIT_API_KEY\s*=\s*\S+'''
+
+# Fixture is scanned on purpose in tests (without this allowlist).
+# It must not live under src/.
+[allowlist]
+paths = [
+    '''tests/fixtures/gitleaks/fake_secret.txt''',
+]

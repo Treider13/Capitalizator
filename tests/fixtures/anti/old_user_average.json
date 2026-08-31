@@ -1,0 +1,15 @@
+{
+  "symbol": "BTCUSDT",
+  "side": "buy",
+  "entry": "100000",
+  "stop": "95000",
+  "tp": "110000",
+  "tag": "old-user-scheme",
+  "margin": "30000",
+  "leverage": 5,
+  "target_pct": 0.10,
+  "average_in": {
+    "add_margin": "15000",
+    "at_drawdown_pct": -0.05
+  }
+}

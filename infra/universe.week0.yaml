@@ -1,0 +1,5 @@
+exchange: bybit
+category: linear
+symbols: [BTCUSDT, ETHUSDT]
+# 8–15 альтов добавить после 0.1.7
+# 0.2.6 live-зелёный только после суток BTC (0.1.7). Этот файл их не заменяет.

@@ -1,0 +1,16 @@
+# Runtime + [dev] pins after `pip install -e ".[dev]"` on 2026-08-31.
+# Only this project's tree. Not a freeze of the VM. pytz is unused and omitted.
+annotated-types==0.8.0
+duckdb==1.5.5
+iniconfig==2.3.0
+packaging==24.0
+pluggy==1.6.0
+pyarrow==22.0.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+Pygments==2.21.0
+pytest==8.4.2
+PyYAML==6.0.1
+ruff==0.16.5
+typing-inspection==0.4.4
+typing_extensions==4.15.0
