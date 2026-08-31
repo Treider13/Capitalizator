@@ -1,3 +1,4 @@
+from capitalizator.risk.budget import SessionBudget
 from capitalizator.risk.halts import Halt, Halts
 from capitalizator.risk.schema import (
     FORBIDDEN_ACTIONS,
@@ -23,6 +24,7 @@ __all__ = [
     "RiskAction",
     "RiskDecision",
     "RiskEngine",
+    "SessionBudget",
     "SessionWindow",
     "Sizer",
     "Sizing",

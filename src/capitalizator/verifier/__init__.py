@@ -1,1 +1,3 @@
-"""verifier package. Empty on day minus one."""
+from capitalizator.verifier.manual import ManualVerifier
+
+__all__ = ["ManualVerifier"]

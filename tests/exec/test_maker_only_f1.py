@@ -34,6 +34,7 @@ def test_propose_is_limit_bounce() -> None:
     got = BounceStrategy(
         risk=RiskEngine(),
         halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
     ).propose(
         BounceSnapshot(
             now=datetime(2026, 8, 31, 14, 10, tzinfo=UTC),

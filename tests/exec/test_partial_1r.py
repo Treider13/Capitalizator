@@ -48,3 +48,16 @@ def test_trail_is_last_swing_not_entry() -> None:
     mgr = TradeManager()
     assert mgr.trail_stop(Decimal("101.2")) == Decimal("101.2")
     assert mgr.trail_stop(Decimal("101.2")) != Decimal("100")
+
+
+def test_short_path_to_one_r_reduces_half() -> None:
+    mgr = TradeManager()
+    got = mgr.on_fill(
+        side="sell",
+        entry=Decimal("100"),
+        stop=Decimal("102"),
+        fill_px=Decimal("98"),
+    )
+    assert got is not None
+    assert got.action == "reduce"
+    assert mgr.remaining == Decimal("0.5")

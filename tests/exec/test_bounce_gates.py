@@ -32,6 +32,7 @@ def _strategy() -> BounceStrategy:
     return BounceStrategy(
         risk=RiskEngine(),
         halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
     )
 
 
@@ -65,6 +66,16 @@ def test_phase_off_returns_none() -> None:
     assert _strategy().propose(_snap(trading_mode="off")) is None
 
 
+def test_phase_yaml_off_blocks_injected_snapshot_demo() -> None:
+    """Current infra/phase.yaml is off. Default constructor must not emit."""
+    strat = BounceStrategy(
+        risk=RiskEngine(),
+        halts=Halts(start_equity=Decimal("100000")),
+    )
+    assert strat.desk_mode == "off"
+    assert strat.propose(_snap(trading_mode="demo")) is None
+
+
 def test_outside_session_returns_none() -> None:
     assert _strategy().propose(_snap(now=OUTSIDE)) is None
 
@@ -81,14 +92,18 @@ def test_open_position_returns_none() -> None:
             "tag": "bounce",
         }
     )
-    strat = BounceStrategy(risk=risk, halts=Halts(start_equity=Decimal("100000")))
+    strat = BounceStrategy(
+        risk=risk,
+        halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
+    )
     assert strat.propose(_snap()) is None
 
 
 def test_halt_returns_none() -> None:
     h = Halts(start_equity=Decimal("100000"))
     h.mark_liq()
-    strat = BounceStrategy(risk=RiskEngine(), halts=h)
+    strat = BounceStrategy(risk=RiskEngine(), halts=h, desk_mode="demo")
     assert strat.propose(_snap()) is None
 
 
@@ -113,3 +128,23 @@ def test_source_does_not_submit() -> None:
     assert "submit" not in text
     assert "place_order" not in text
     assert "api.bybit.com" not in text
+
+
+def test_resistance_zone_is_a_short() -> None:
+    zone = _zone(side="resistance", lo="109", hi="110")
+    got = _strategy().propose(
+        _snap(price=Decimal("109.5"), zone=zone, zones=(zone,))
+    )
+    assert got is not None
+    assert got.side == "sell"
+    assert got.stop == Decimal("110.8")
+    assert got.tp < got.entry < got.stop
+
+
+def test_next_zone_closer_than_one_point_five_r_is_none() -> None:
+    zone = _zone()
+    nxt = _zone(side="resistance", lo="102", hi="103")
+    assert (
+        _strategy().propose(_snap(zone=zone, zones=(zone, nxt), next_target=nxt))
+        is None
+    )

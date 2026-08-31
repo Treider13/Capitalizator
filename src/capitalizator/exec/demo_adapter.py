@@ -7,27 +7,15 @@ the signer accepted the schema; status is not_sent.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-import yaml
-
+from capitalizator.ops.phase import trading_mode as phase_trading_mode
 from capitalizator.signer.validate import Signer, UnsignedIntent
-
-
-def _phase_mode() -> str:
-    root = Path(__file__).resolve()
-    for parent in root.parents:
-        candidate = parent / "infra" / "phase.yaml"
-        if candidate.is_file():
-            raw = yaml.safe_load(candidate.read_text(encoding="utf-8"))
-            return str((raw or {}).get("trading_mode") or "off")
-    return "off"
 
 
 class DemoAdapter:
     def __init__(self, *, trading_mode: str | None = None, signer: Signer | None = None) -> None:
-        self.trading_mode = trading_mode if trading_mode is not None else _phase_mode()
+        self.trading_mode = trading_mode if trading_mode is not None else phase_trading_mode()
         self.signer = signer or Signer()
 
     def submit(self, unsigned: UnsignedIntent) -> dict[str, Any]:

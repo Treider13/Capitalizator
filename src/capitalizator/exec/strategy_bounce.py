@@ -13,6 +13,8 @@ from datetime import datetime
 from decimal import Decimal
 
 from capitalizator.news_macro.ingest import NewsRow
+from capitalizator.ops.phase import trading_mode as phase_trading_mode
+from capitalizator.risk.budget import SessionBudget
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import Intent, RiskEngine
 from capitalizator.risk.session import SessionWindow
@@ -100,15 +102,19 @@ class BounceStrategy:
         session: SessionWindow | None = None,
         screener: Screener | None = None,
         registry: RegistryConfig | None = None,
+        desk_mode: str | None = None,
+        budget: SessionBudget | None = None,
     ) -> None:
         self.risk = risk
         self.halts = halts
         self.session = session or SessionWindow()
         self.screener = screener or Screener()
         self.registry = registry or load_registry()
+        self.desk_mode = desk_mode if desk_mode is not None else phase_trading_mode()
+        self.budget = budget if budget is not None else SessionBudget()
 
     def propose(self, snap: BounceSnapshot) -> Intent | None:
-        if snap.trading_mode != "demo":
+        if self.desk_mode != "demo" or snap.trading_mode != "demo":
             return None
         if TAKER_OK:
             return None
@@ -146,7 +152,9 @@ class BounceStrategy:
         tp = take_profit(side, snap.price, stop, snap.next_target)
         if tp is None:
             return None
-        return Intent(
+        if not self.budget.allow_entry():
+            return None
+        intent = Intent(
             symbol=snap.symbol,
             side=side,
             entry=snap.price,
@@ -154,3 +162,5 @@ class BounceStrategy:
             tp=tp,
             tag=SETUP_TAG,
         )
+        self.budget.on_intent()
+        return intent

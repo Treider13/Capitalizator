@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **278 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **304 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -52,14 +52,21 @@
 | 1.5.5 demo adapter | `tests/exec/test_demo_mode_no_mainnet.py` | hello нет | `trading_mode=off` → отказ. Инжект `demo` → `{mode: demo, status: not_sent}`. Host mainnet в `exec/`+`signer/` нет. **Hello лимит+cancel на демо — нет** (ключа/тестнета нет) |
 | 1.5.6 стоп | `tests/signer/test_stop_required.py` | биржа нет | нет `stop_px` → ValidationError; ноль → ValueError. HTTP 4xx нет — процесса signer нет. Ордер не шлём |
 
-| 1.6.1 отскок | `tests/exec/test_bounce_gates.py` | ордера нет | `propose` → Intent только если demo + сессия + одна позиция + краны + скринер + цена в зоне. `trading_mode=off` → None. `submit` в файле нет |
+| 1.6.1 отскок | `tests/exec/test_bounce_gates.py` | ордера нет | `propose` смотрит `phase.yaml` **и** снимок. Сейчас phase=off → None даже если в снимке demo. Инжект `desk_mode=demo` только в тестах. Шорт с resistance; next zone <1.5R → None. `submit` нет |
 | 1.6.2 середина | `tests/exec/test_mid_range.py` | не нужно | цена ровно между support.hi и resistance.lo → None |
 | 1.6.3 50% / трейл | `tests/exec/test_partial_1r.py`, `test_no_mechanical_be.py` | не нужно | +1R → reduce 50%; +2R остаток жив; стоп → flatten без доливки. `move_to_be_at_pct` в исходнике нет. +2% цены при стопе 4% ≠ БУ |
 | 1.6.4 скринер | `tests/screener/test_spread.py` | не нужно | спред 0.4% при ходе 0.3% → отказ. SOL не из week0 → отказ. ATR не выдумываем |
 | 1.6.5 лимит | `tests/exec/test_maker_only_f1.py` | не нужно | `TAKER_OK=false`, `ORDER_TYPE=limit` |
 | 1.6.6 episode | `tests/exec/test_episodes.py`, `tests/ops/test_day_episodes.py` | нет демо-входов | лог пустой; `day_episodes` без файла → n=0. mode=live отказ |
 
-Неделя 1 **не закрыта** (нет VPS/суток). Гейт Ф0 красный. `trading_mode=off`. Код 1.6 на ветке, **ордеров нет**, hello демо красный. Не «всё реализовано».
+| 1.7.1 карточка | `tests/card/test_require_card.py` | нет живых карточек | нет файла + `require_card` → отказ. 5 claims-фикстура подписана как unit, не рынок |
+| 1.7.2 костыль | `tests/verifier/test_manual_bind.py` | не SQL на проде | «23 из 31» без файла запроса → UNVERIFIABLE. Совпадение файла = VERIFIED |
+| 1.7.3 first_fact | `tests/card/test_first_fact_no_sizeup.py` | n жестов <20 | n=19 / SILENCE → `shadow_gesture`, `size_mult=1`. n=20 не увеличивает лот |
+| 1.7.4 1–3/день | `tests/risk/test_max_three.py` | не нужно | 4-й `propose` → None |
+| 1.7.5 тень ширины | `tests/champion/test_no_auto_promote.py` | ордеров нет | отчёт 0.8 и 1.2; `promote()` отказ; чемпион не сменён |
+| 1.8.1 skip | `tests/ops/test_check_skips.py` | недели сессии нет | нет файла → n=0, код 2. Не рисуем «зелёную неделю скипов» |
+
+Неделя 1 **не закрыта** (нет VPS/суток). Гейт Ф0 красный. `trading_mode=off`. Код 1.6–1.7 на ветке, **ордеров нет**, hello демо красный. Не «всё реализовано».
 
 Чужие проекты / форумы (не копировали стратегии):
 - Freqtrade: Bybit **futures isolated** умеет stoploss on exchange; Bybit **spot** — нет. Мы linear perp, стоп обязателен в схеме, на биржу не слали.

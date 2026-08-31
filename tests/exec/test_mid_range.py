@@ -40,6 +40,7 @@ def test_exact_mid_yields_no_intent() -> None:
     strat = BounceStrategy(
         risk=RiskEngine(),
         halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
     )
     snap = BounceSnapshot(
         now=SESSION,
