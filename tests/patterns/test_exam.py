@@ -144,6 +144,57 @@ def test_two_runs_bit_identical() -> None:
     assert run() == run()
 
 
+def test_flat_actual_is_a_direction_miss() -> None:
+    rows = [ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("10"))]
+    assert hostile_exam(rows).direction_hit == Decimal("0")
+
+
+def test_vol_rank_ic_is_plus_one_and_minus_one() -> None:
+    up = [
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("12"),
+            pred_vol_rank=Decimal(i),
+            actual_vol=Decimal(i),
+        )
+        for i in range(1, 5)
+    ]
+    down = [
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("12"),
+            pred_vol_rank=Decimal(i),
+            actual_vol=Decimal(5 - i),
+        )
+        for i in range(1, 5)
+    ]
+    up_ic = hostile_exam(up).vol_rank_ic
+    down_ic = hostile_exam(down).vol_rank_ic
+    assert up_ic is not None and down_ic is not None
+    # Decimal.sqrt is not bit-exact; do not pretend the IC is exactly ±1.
+    assert Decimal("0.999") < up_ic <= 1
+    assert -1 <= down_ic < Decimal("-0.999")
+
+
+def test_pnl_share_can_exceed_one_when_a_day_loses() -> None:
+    days = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 3, d), pnl=pnl)
+        for d, pnl in (
+            (1, Decimal("91")),
+            (2, Decimal("1")),
+            (3, Decimal("1")),
+            (4, Decimal("1")),
+            (5, Decimal("1")),
+            (6, Decimal("-20")),
+        )
+    ]
+    share = hostile_exam(days).pnl_share_best_5_days
+    assert share == Decimal("95") / Decimal("75")
+    assert share > 1
+
+
 def test_exam_source_has_no_numpy() -> None:
     text = SRC.read_text(encoding="utf-8")
     assert "import numpy" not in text

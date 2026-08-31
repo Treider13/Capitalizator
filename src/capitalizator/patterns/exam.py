@@ -1,7 +1,8 @@
 """Hostile exam of a price/vol forecast. Contour C later. Not an entry.
 
-Beats last-price, residual after ATR, share of profit in the best 5 days,
-direction hit and vol-rank Spearman IC are reported separately.
+Beats last-price, residual after ATR, share of signed PnL in the best 5 days
+(may exceed 1 if some days lose), direction hit and vol-rank Spearman IC
+are reported separately.
 Does not open size. Pure Decimal.
 """
 

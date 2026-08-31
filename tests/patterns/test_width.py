@@ -98,3 +98,35 @@ def test_negative_w_now_rejected() -> None:
         width_rank(zone_id="z1", now=NOW, w_now=Decimal("-1"), history=[])
     with pytest.raises(ValueError, match="w_now"):
         WidthSample(zone_id="z1", ts=T0, w_now=Decimal("-1"))
+
+
+def test_naive_now_is_rejected() -> None:
+    hist = [_sample(i, "1") for i in range(20)]
+    with pytest.raises(TypeError, match="naive"):
+        width_rank(zone_id="z1", now=datetime(2026, 8, 30, 18, 0), w_now=Decimal("2"), history=hist)
+
+
+def test_sample_at_now_is_not_a_prior() -> None:
+    hist = [_sample(i, "1") for i in range(19)]
+    hist.append(WidthSample(zone_id="z1", ts=NOW, w_now=Decimal("1")))
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) is None
+
+
+def test_foreign_symbol_history_does_not_make_width() -> None:
+    hist = []
+    for i in range(15):
+        ts = T0 + timedelta(minutes=15 * i)
+        hist.append(
+            Bar(
+                symbol="ETHUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = _bar(20, high="100.2", low="100.1")
+    assert width_now_from_history(bar, hist, t=NOW) is None

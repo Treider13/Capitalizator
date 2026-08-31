@@ -190,8 +190,68 @@ def test_gap_resets_atr_so_compress_needs_new_segment() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
 
 
-def test_later_closed_bar_does_not_feed_atr() -> None:
-    """PIT: a bar that closes after the labeled bar cannot widen ATR."""
+def test_stagnant_through_is_noise() -> None:
+    closed = [_hist(i, close="99.8") for i in range(4)]
+    bar = _bar(low="99.5", high="100.1", close="99.8")
+    assert label(ZONE, bar, t=T, htf_bias="box") == "THROUGH"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
+
+
+def test_stagnant_resistance_reject_is_noise() -> None:
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    closed = [_hist(i, close="100.1") for i in range(4)]
+    bar = _bar(low="99.8", high="100.4", close="100.1")
+    assert label(res, bar, t=T, htf_bias="box") == "REJECT"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
+
+
+def test_foreign_symbol_and_tf_do_not_feed_atr() -> None:
+    """ETH or 1h history must not invent a 15m BTC COMPRESS."""
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    eth = []
+    hourly = []
+    for i in range(15):
+        ts = start.replace(minute=i)
+        eth.append(
+            Bar(
+                symbol="ETHUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+        ht = start.replace(hour=i % 12)
+        hourly.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ht,
+                close_ts=ht.replace(minute=59),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=eth) == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=hourly) == "DRIFT"
+
+
+def test_future_bar_does_not_create_compress() -> None:
+    """14 priors → no ATR. A later bar before t must not complete the window."""
     closed = []
     start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
     for i in range(14):
@@ -208,6 +268,16 @@ def test_later_closed_bar_does_not_feed_atr() -> None:
                 close=Decimal("101"),
             )
         )
+    extra_prior = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 14, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 14, 30, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
     future = Bar(
         symbol="BTCUSDT",
         tf="15m",
@@ -219,8 +289,15 @@ def test_later_closed_bar_does_not_feed_atr() -> None:
         close=Decimal("101"),
     )
     bar = _bar(low="100.05", high="100.15", close="100.10")
-    assert bar.close_ts < future.close_ts < T
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed + [future]) == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed + [extra_prior]) == "COMPRESS"
+
+
+def test_unclosed_stagnant_history_is_noise_from_unclosed() -> None:
+    closed = [_hist(i, close="100.1") for i in range(4)]
+    bar = _bar(low="99.9", high="100.5", close="100.1", close_ts=T)
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
 
 
 def test_compress_survives_when_post_gap_segment_is_long() -> None:

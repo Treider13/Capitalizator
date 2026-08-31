@@ -43,6 +43,8 @@ def split_on_gaps(
     ordered = sorted(bars, key=lambda b: (b.close_ts, b.open_ts))
     if not ordered:
         return []
+    if len({b.symbol for b in ordered}) != 1 or len({b.tf for b in ordered}) != 1:
+        raise ValueError("split_on_gaps expects one symbol and one tf")
     segments: list[list[Bar]] = [[ordered[0]]]
     prev = ordered[0]
     for bar in ordered[1:]:
@@ -97,10 +99,15 @@ def classify_bar_quality(
     *,
     t: datetime,
 ) -> BarQuality:
-    """live | stagnant | illiquid. volume=None skips the illiquid check (do not invent)."""
-    require_utc(t)
+    """live | stagnant | illiquid. volume=None skips the illiquid check (do not invent).
+
+    An unclosed bar (close_ts >= t) is LIVE: the close is not a fact yet.
+    """
+    when = require_utc(t)
     require_utc(current.close_ts)
-    series = prior_same_tf(history, current, t=t) + [current]
+    if current.close_ts >= when:
+        return LIVE
+    series = prior_same_tf(history, current, t=when) + [current]
     if len(series) >= STAGNANT_SAME_CLOSES:
         last = series[-STAGNANT_SAME_CLOSES:]
         if all(b.close == last[0].close for b in last):

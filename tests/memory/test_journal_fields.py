@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
+from capitalizator.jury import desk
+from capitalizator.memory.hashlog import touch_payload
 from capitalizator.memory.registry import Registry
 from capitalizator.types import MarketEvent
 from capitalizator.zones.model import Zone
@@ -68,6 +71,14 @@ def test_journal_does_not_change_class_id() -> None:
     assert "16" not in row.rho_class_id
     assert "stagnant" not in row.rho_class_id
     assert "0.9" not in row.rho_class_id
+    assert row.w_now == Decimal("2")
+    assert row.w_rank == Decimal("0.9")
+    assert row.bar_quality == "stagnant"
+    assert row.session_hour == 16
+    later = reg.fill_width(w_now=Decimal("3"), w_rank=Decimal("0.1"))[0]
+    assert later.jury == "ACCORD"
+    assert later.rho_class_id == "bounce × REJECT × DEFEND × BTC_box"
+    assert later.w_now == Decimal("3")
 
 
 def test_unknown_quality_rejected() -> None:
@@ -95,3 +106,79 @@ def test_two_runs_same_journal() -> None:
 
     assert run() == run()
     assert run() == (Decimal("1.25"), "illiquid", 16, None)
+
+
+def test_fill_width_on_one_touch_does_not_write_the_other() -> None:
+    other = Zone.create(
+        symbol="BTCUSDT",
+        tf="1d",
+        side="support",
+        lo=Decimal("100.05"),
+        hi=Decimal("100.25"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
+    reg = Registry(tick_size=TICK)
+    trade = MarketEvent(
+        stream="trades",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=PRINT,
+        recv_ts=PRINT,
+        seq=None,
+        payload={"px": "100.1", "qty": "0.001", "side": "buy"},
+    )
+    opened = reg.on_trade(trade, [ZONE, other])
+    assert len(opened) == 2
+    first, second = opened
+    reg.fill_width(w_now=Decimal("1.5"), w_rank=Decimal("0.2"), touch_id=first.touch_id)
+    by_id = {t.touch_id: t for t in reg.touches}
+    assert by_id[first.touch_id].w_now == Decimal("1.5")
+    assert by_id[second.touch_id].w_now is None
+    assert by_id[second.touch_id].w_rank is None
+
+
+def test_midnight_utc_session_hour_is_zero() -> None:
+    midnight = datetime(2026, 8, 30, 0, 15, tzinfo=UTC)
+    zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1d",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="prior_day_hl",
+        created_as_of=datetime(2026, 8, 29, 12, 0, tzinfo=UTC),
+    )
+    reg = Registry(tick_size=TICK)
+    reg.on_trade(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=midnight,
+            recv_ts=midnight,
+            seq=None,
+            payload={"px": "100.1", "qty": "0.001", "side": "buy"},
+        ),
+        [zone],
+    )
+    assert reg.fill_session_hour()[0].session_hour == 0
+
+
+def test_journal_is_invisible_to_jury_and_hash() -> None:
+    assert list(desk.Voices.__dataclass_fields__) == ["cav", "zlg", "tape", "btc", "card"]
+    src = inspect.getsource(desk)
+    assert "w_now" not in src
+    assert "w_rank" not in src
+    assert "bar_quality" not in src
+    assert "session_hour" not in src
+    assert "hostile_exam" not in src
+    payload_src = inspect.getsource(touch_payload)
+    assert "w_now" not in payload_src
+    assert "session_hour" not in payload_src
+    assert inspect.signature(desk.rho_class_id).parameters.keys() == {
+        "setup",
+        "cav",
+        "zlg",
+        "btc",
+    }

@@ -121,3 +121,84 @@ def test_atr_needs_fifteen_bars() -> None:
 def test_negative_volume_rejected() -> None:
     with pytest.raises(ValueError, match="volume"):
         _bar(0, volume=Decimal("-1"))
+
+
+def test_unclosed_bar_is_live_not_stagnant() -> None:
+    """Close is not a fact until close_ts < t. Five equal prints are still LIVE."""
+    hist = [_bar(i, close="100") for i in range(4)]
+    current = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        close_ts=T,
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    assert current.close_ts >= T
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
+def test_unclosed_zero_volume_is_live_not_illiquid() -> None:
+    hist = [_bar(0, close="100", volume=Decimal("0"))]
+    current = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        close_ts=T,
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
+def test_exact_15pct_is_not_a_gap() -> None:
+    a = _bar(0, close="100")
+    b = _bar(1, close="115", open_="115")
+    assert abs(b.open - a.close) / a.close == JUMP_RATIO_15M
+    segs = split_on_gaps([a, b])
+    assert len(segs) == 1
+    assert len(segs[0]) == 2
+
+
+def test_mixed_symbol_or_tf_is_not_a_gap_series() -> None:
+    btc = _bar(0, close="100")
+    eth = _bar(1, close="116", open_="116", symbol="ETHUSDT")
+    with pytest.raises(ValueError, match="one symbol"):
+        split_on_gaps([btc, eth])
+    other_tf = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=btc.open_ts,
+        close_ts=btc.close_ts + timedelta(hours=1),
+        open=Decimal("116"),
+        high=Decimal("117"),
+        low=Decimal("115"),
+        close=Decimal("116"),
+    )
+    with pytest.raises(ValueError, match="one"):
+        split_on_gaps([btc, other_tf])
+
+
+def test_wrong_tf_is_not_a_stagnant_prior() -> None:
+    hist = []
+    for i in range(4):
+        ts = datetime(2026, 8, 30, 12, 0, tzinfo=UTC) + timedelta(hours=i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ts,
+                close_ts=ts + timedelta(hours=1),
+                open=Decimal("100"),
+                high=Decimal("101"),
+                low=Decimal("99"),
+                close=Decimal("100"),
+            )
+        )
+    current = _bar(10, close="100")
+    assert classify_bar_quality(hist, current, t=T) == LIVE
