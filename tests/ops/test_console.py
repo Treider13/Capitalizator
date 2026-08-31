@@ -9,7 +9,7 @@ from http.server import HTTPServer
 from pathlib import Path
 
 import capitalizator.ops.console as console_pkg
-from capitalizator.ops.console import ConsoleApp, desk_snapshot, render_html, _handler
+from capitalizator.ops.console import ConsoleApp, _handler, desk_snapshot, render_html
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
 

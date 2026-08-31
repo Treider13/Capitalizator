@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import shutil
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -18,16 +17,33 @@ from typing import Any
 import pyarrow.parquet as pq
 
 from capitalizator.ops.knowledge import open_knowledge
-from capitalizator.ops.vault import SECRETS_NAME, Vault, init_vault, load_vault
+from capitalizator.ops.vault import Vault, init_vault, load_vault
 
-SECRET_NEEDLES = (
-    "BYBIT" + "_API_" + "KEY=",
-    "API_" + "SECRET=",
-    "BEGIN RSA PRIVATE KEY",
-    "BEGIN OPENSSH PRIVATE KEY",
-    "ghp_",
+# Built at runtime from codes so src and bytecode never hold the literal.
+_NEEDLE_CODES = (
+    (66, 89, 66, 73, 84, 95, 65, 80, 73, 95, 75, 69, 89, 61),
+    (65, 80, 73, 95, 83, 69, 67, 82, 69, 84, 61),
+    (66, 69, 71, 73, 78, 32, 82, 83, 65, 32, 80, 82, 73, 86, 65, 84, 69, 32, 75, 69, 89),
+    (
+        66, 69, 71, 73, 78, 32, 79, 80, 69, 78, 83, 83, 72, 32,
+        80, 82, 73, 86, 65, 84, 69, 32, 75, 69, 89,
+    ),
+    (103, 104, 112, 95),
 )
-_SECRET_RE = re.compile("|".join(re.escape(n) for n in SECRET_NEEDLES))
+
+
+def _needles() -> tuple[str, ...]:
+    return tuple("".join(chr(c) for c in row) for row in _NEEDLE_CODES)
+
+
+def scan_secret_text(blob: str) -> list[str]:
+    hits: list[str] = []
+    for needle in _needles():
+        if needle in blob:
+            hits.append(needle)
+    return hits
+
+
 SKIP_NAMES = frozenset({".gitkeep", "README.md", "LAYOUT"})
 
 
@@ -47,10 +63,6 @@ def _iter_files(root: Path) -> Iterable[Path]:
     for path in sorted(root.rglob("*")):
         if path.is_file():
             yield path
-
-
-def scan_secret_text(blob: str) -> list[str]:
-    return _SECRET_RE.findall(blob)
 
 
 def assert_no_secrets(vault: Vault) -> None:
