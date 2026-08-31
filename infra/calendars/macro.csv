@@ -2,7 +2,9 @@
 # CPI: https://www.bls.gov/schedule/news_release/cpi.htm  08:30 America/New_York
 # FOMC statement: last day of the meeting, 14:00 ET.
 # https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
-# Sep/Oct still EDT (UTC-4). 10 Nov 2026 is EST (UTC-5): DST ended 1 Nov 2026.
+# Sep/Oct still EDT (UTC-4). After 1 Nov 2026 EST (UTC-5).
+# NFP: https://www.bls.gov/schedule/news_release/empsit.htm  08:30 ET
+# PCE: https://www.bea.gov/news/schedule/  Personal Income and Outlays 08:30 ET
 event_id,class,event_time_utc,announce_tz,known_at_utc,assets,source,size_rule,notes
 cpi-2026-09-11,CPI,2026-09-11T12:30:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT;ETHUSDT,bls,pre24_cut,CPI Aug 2026 BLS
 cpi-2026-10-14,CPI,2026-10-14T12:30:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT;ETHUSDT,bls,pre24_cut,CPI Sep 2026 BLS
@@ -10,3 +12,11 @@ cpi-2026-11-10,CPI,2026-11-10T13:30:00Z,America/New_York,2026-08-31T12:00:00Z,BT
 fomc-2026-09-16,FOMC,2026-09-16T18:00:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT,fed,pre24_cut+et14h,FOMC Sep 15-16 statement
 fomc-2026-10-28,FOMC,2026-10-28T18:00:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT,fed,pre24_cut+et14h,FOMC Oct 27-28 statement
 fomc-2026-12-09,FOMC,2026-12-09T19:00:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT,fed,pre24_cut+et14h,FOMC Dec 8-9 statement EST https://www.federalreserve.gov/newsevents/pressreleases/monetary20240809a.htm
+nfp-2026-09-04,NFP,2026-09-04T12:30:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT;ETHUSDT,bls,us_data_day,Employment Situation Aug 2026 08:30 EDT
+nfp-2026-10-02,NFP,2026-10-02T12:30:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT;ETHUSDT,bls,us_data_day,Employment Situation Sep 2026 08:30 EDT
+nfp-2026-11-06,NFP,2026-11-06T13:30:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT;ETHUSDT,bls,us_data_day,Employment Situation Oct 2026 08:30 EST
+pce-2026-09-30,PCE,2026-09-30T12:30:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT;ETHUSDT,bea,us_data_day,Personal Income Aug 2026 https://www.bea.gov/news/schedule/
+pce-2026-10-29,PCE,2026-10-29T12:30:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT;ETHUSDT,bea,us_data_day,Personal Income Sep 2026 08:30 EDT
+pce-2026-11-25,PCE,2026-11-25T13:30:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT;ETHUSDT,bea,us_data_day,Personal Income Oct 2026 08:30 EST
+nfp-2026-12-04,NFP,2026-12-04T13:30:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT;ETHUSDT,bls,us_data_day,Employment Situation Nov 2026 08:30 EST https://www.bls.gov/schedule/news_release/empsit.htm
+pce-2026-12-23,PCE,2026-12-23T13:30:00Z,America/New_York,2026-08-31T12:00:00Z,BTCUSDT;ETHUSDT,bea,us_data_day,Personal Income Nov 2026 08:30 EST https://www.bea.gov/news/schedule/

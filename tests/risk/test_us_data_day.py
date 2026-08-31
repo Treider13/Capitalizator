@@ -72,6 +72,38 @@ def test_day_before_cpi_session_is_open() -> None:
     assert reason == "session"
 
 
+def test_nfp_morning_is_closed_session_is_open() -> None:
+    """4 Sep 2026 NFP 12:30Z. Morning closed; 14:10Z is the Moscow session."""
+    news = NewsIngest.from_csv(MACRO)
+    win = SessionWindow()
+    ok, reason = win.allows(datetime(2026, 9, 4, 12, 0, tzinfo=UTC), news.rows)
+    assert ok is False
+    assert reason == "us_data_day"
+    ok2, reason2 = win.allows(datetime(2026, 9, 4, 14, 10, tzinfo=UTC), news.rows)
+    assert ok2 is True
+    assert reason2 == "session"
+
+
+def test_november_nfp_est_morning_is_closed() -> None:
+    """6 Nov 2026 is EST. NFP 13:30Z. 12:00Z is still a US-data morning."""
+    news = NewsIngest.from_csv(MACRO)
+    win = SessionWindow()
+    ok, reason = win.allows(datetime(2026, 11, 6, 12, 0, tzinfo=UTC), news.rows)
+    assert ok is False
+    assert reason == "us_data_day"
+    ok2, reason2 = win.allows(datetime(2026, 11, 6, 14, 10, tzinfo=UTC), news.rows)
+    assert ok2 is True
+    assert reason2 == "session"
+
+
+def test_pce_morning_is_closed() -> None:
+    news = NewsIngest.from_csv(MACRO)
+    win = SessionWindow()
+    ok, reason = win.allows(datetime(2026, 9, 30, 12, 0, tzinfo=UTC), news.rows)
+    assert ok is False
+    assert reason == "us_data_day"
+
+
 def test_time_yaml_is_phase_build_window() -> None:
     assert TIME_YAML.is_file()
     cfg = load_time_config()

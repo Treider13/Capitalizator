@@ -1,0 +1,45 @@
+# PHASE-BUILD thresholds. Do not retune after a run.
+# Extra keys are rejected by capitalizator.ops.thresholds.
+f0:
+  days: 30
+  symbols_strict: [BTCUSDT, ETHUSDT]
+  unmarked_hours_max: 0
+  touches_min: 1
+f1:
+  n_bounce_demo_min: 80
+  avg_r_min: 0.0
+  average_attempts_max: 0
+  breakout_enabled: false
+f2:
+  veto_min: 1
+  cards_with_outcome_min: 50
+  against_btc_max: 0
+  veto_shadow_n_insufficient: 10
+f3:
+  n_break_demo_min: 40
+  n_sum_demo_min: 100
+  avg_r_sum_min: 0.0
+  bounce_slack_r: 0.15
+  whale_entries_max: 0
+  failed_break_in_counts: false
+f4:
+  n_live_min: 100
+  weeks_min: 8
+  wr_hard: 0.57
+  wr_soft: 0.55
+  wr_cancel_900k: 0.54
+  wr_stop: 0.50
+  rr_min: 1.5
+  rr_min_wins: 10
+  rr_min_losses: 10
+  liq_max: 0
+  overlay:
+    min_matched: 40
+    median_abs_r_diff_max: 0.40
+    same_sign_min: 0.70
+f5:
+  target_risk: 0.012
+  target_risk_max_until_written_otherwise: 0.012
+  day_halt: -0.03
+  week_halt: -0.06
+  peak_kill: -0.25

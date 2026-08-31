@@ -1,8 +1,12 @@
-"""0.4.6 — exchange order list is truth. Local cache follows. No live API."""
+"""0.4.6 — exchange order list is truth. Local cache follows. No live API.
+
+PHASE-BUILD: a position on the exchange with no local idea → flatten + halt.
+This module does not send flatten. It only reports the mismatch.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 
@@ -10,6 +14,18 @@ from dataclasses import dataclass
 class PaperOrder:
     order_id: str
     symbol: str
+
+
+@dataclass(frozen=True)
+class PaperPosition:
+    symbol: str
+
+
+@dataclass(frozen=True)
+class UnknownPosition:
+    flatten: bool
+    halt_entries: bool
+    alert: str | None
 
 
 def yaml_reconcile_s() -> int:
@@ -30,3 +46,20 @@ class Reconciler:
 
     def tick(self, exchange_orders: Mapping[str, PaperOrder]) -> None:
         self.local = dict(exchange_orders)
+
+    def unknown_position(
+        self,
+        exchange_positions: Sequence[PaperPosition],
+        *,
+        local_symbol: str | None,
+    ) -> UnknownPosition:
+        """Exchange has a position we did not open → CRITICAL, not a new entry."""
+        live = {p.symbol for p in exchange_positions if p.symbol}
+        if not live:
+            return UnknownPosition(False, False, None)
+        if local_symbol is None or local_symbol not in live:
+            return UnknownPosition(True, True, "CRITICAL")
+        extra = live - {local_symbol}
+        if extra:
+            return UnknownPosition(True, True, "CRITICAL")
+        return UnknownPosition(False, False, None)

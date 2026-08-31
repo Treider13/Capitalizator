@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **546 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **581 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -34,7 +34,7 @@
 | 0.3.7 BTC-режим | `tests/btc/test_regime.py` | не нужно | trend/box с закрытого HTF; news только с `known_at ≤ t`; unknown → None. `veto()` нет |
 | 0.3.8 отчёт | `tests/ops/test_daily_report_no_advice.py` | не нужно | касания/жесты/дыры/пинг; «лонг/купи/завтра» — ошибка |
 
-| 0.4.1 новости | `tests/news/test_pit.py` | не нужно | CSV BLS/Fed: CPI 11 Sep / 14 Oct / 10 Nov (EST 13:30Z); FOMC 16 Sep / 28 Oct. Срез до `known_at` пустой. TG нет |
+| 0.4.1 новости | `tests/news/test_pit.py` | не нужно | CSV BLS/Fed/BEA: CPI + FOMC + NFP (4 Sep / 2 Oct / 6 Nov EST / 4 Dec EST) + PCE (30 Sep / 29 Oct / 25 Nov EST / 23 Dec EST). Срез до `known_at` пустой. NFP/PCE не в MacroRules 24ч/ET. TG нет |
 | 0.4.7 комиссии | `tests/exec/test_fees.py` | не нужно | VIP0 0.0002/0.00055 ×2; +1R после комиссий меньше на известную величину. Fill по печати, не close |
 | 0.4.8 дрейф | `tests/champion/test_drift_synthetic.py` | не нужно | Page-Hinkley: 0.3→0.7 = drift; плоский 0.3 — нет. Не live |
 | 0.4.9 hashlog | `tests/memory/test_hashlog.py` | не нужно | касание пишет звено; жест — следующее; подмена ломает verify; `episode` пустой |
@@ -42,13 +42,13 @@
 | 0.4.4 signer схема | `tests/signer/test_schema.py` | ключа/тестнета нет | validate: week0 + stop + testnet. Mainnet/SOL — отказ. Ордер не шлём. Ключ не читаем |
 | 0.4.2 авторы | `tests/authors/test_ingest.py` | нет 20 постов | jsonl без `weight`; TG запрещён; `check_author_raw --min 20` = код 2. Посты не выдумывал |
 | 0.4.5 dead-man | `tests/signer/test_deadman.py` | тестнета нет | тишина >30 с → `cancel_all` (колбэк). Не биржа |
-| 0.4.6 reconcile | `tests/signer/test_reconcile.py` | тестнета нет | `tick({})` снимает локальный ордер. Мок, не сайт |
+| 0.4.6 reconcile | `tests/signer/test_reconcile.py` | тестнета нет | `tick({})` снимает локальный ордер. Позиция без локальной идеи → CRITICAL, flatten не шлём. Мок, не сайт |
 | 0.4.10 гейт Ф0 | `tests/ops/test_gate_f0.py` | нет 30 суток | `gates f0` код 2. `infra/phase.yaml` phase=0, trading_mode=off. Файл не переключаем |
 
 | 1.5.1 размер | `tests/risk/test_sizing.py`, `test_alt_wide_stop.py` | не нужно | `Sizing.compute(100000, 3, 0.02, 0.01)` → отказ (16.67% > 10%). 20%×5×4% = 4% при target 1.2% → отказ **из-за риска**, не только из-за капа 3x. Ордера нет |
 | 1.5.2 краны | `tests/risk/test_halts.py` | не нужно | `Halts.state`; день −3% / неделя −6% / пик −25% / liq. После liq reason не переписывается. Flatten — `RiskEngine.on_flat`, не этот класс |
 | 1.5.3 одна позиция | `tests/risk/test_one_position.py` | не нужно | `RiskEngine._open_position: Position \| None`. Второй вход reject. `PositionBook` убран — второй счётчик врал бы |
-| 1.5.4 сессия | `tests/risk/test_session.py`, `test_us_data_day.py` | не нужно | 12:00Z reject, 14:10Z accept, 20:00Z reject; ночь 5x всегда reject. Окно из `infra/time.yaml` + `zoneinfo`. CPI 11 Sep / 10 Nov (EST) / FOMC 16 Sep до 13:30Z = `us_data_day`. 24ч-кат **не** включён (2.11.7) |
+| 1.5.4 сессия | `tests/risk/test_session.py`, `test_us_data_day.py` | не нужно | 12:00Z reject, 14:10Z accept, 20:00Z reject; ночь 5x всегда reject. Окно из `infra/time.yaml` + `zoneinfo`. CPI / FOMC / NFP 4 Sep и 6 Nov EST / PCE до сессии = `us_data_day`. 24ч-кат **не** включён (2.11.7) |
 | 1.5.5 demo adapter | `tests/exec/test_demo_mode_no_mainnet.py` | hello нет | `trading_mode=off` → отказ. Инжект `demo` → `{mode: demo, status: not_sent}`. Host mainnet в `exec/`+`signer/` нет. **Hello лимит+cancel на демо — нет** (ключа/тестнета нет) |
 | 1.5.6 стоп | `tests/signer/test_stop_required.py` | биржа нет | нет `stop_px` → ValidationError; ноль → ValueError. HTTP 4xx нет — процесса signer нет. Ордер не шлём |
 
@@ -93,9 +93,14 @@
 | 3.13.2 первая минута | `tests/exec/test_first_minute.py` | пробоя нет | `FirstMinute` из `time.yaml` (60 с). 0–59 с после close → block; 60 с → нет. `strategy_bounce` **не импортирует** FirstMinute |
 | 3.14.1 анлоки | `tests/screener/test_unlock.py` | нет Tokenomist | `infra/calendars/unlocks.csv` — только заголовок. Нет файла → пусто, не выдумка. Команда сегодня/завтра → скринер. Инвестор не режет. Не шорт |
 | гейт Ф2 бумага | `tests/ops/test_gate_f2.py` | нет 50 карточек | `gates f2` код 2. Пустые эпизоды ≠ «0 против BTC». CI красной команды **не** зелёный (`G2.6_redteam_ci=false`) |
+| пороги yaml | `tests/ops/test_gates_yaml.py` | не нужно | `infra/gates.yaml` как в PHASE-BUILD. Лишний ключ — отказ. `bounce_slack_r=0.15` записан **до** Ф3, не после прогона |
+| гейт Ф3 бумага | `tests/ops/test_gate_f3.py` | нет 40 пробоев | `gates f3` код 2. Пусто ≠ 40. 40 `failed_break` ≠ пробой. 100 отскоков без пробоя ≠ Г3. Сквиз без таблицы ≠ допуск. `phase.yaml` не трогаем |
+| гейт Ф4 бумага | `tests/ops/test_gate_f4.py` | нет микро | `gates f4` код 2. 80 за 3 недели ≠ «что позже». 8 недель и 40 ≠ 100. Пусто ≠ 0 против BTC |
+| f5kill бумага | `tests/ops/test_gate_f5kill.py` | нет main PnL | код 2. День −3% не выдумываем. `target_risk>0.012` → код 3. `phase.yaml` не пишет |
 | 3.13.4 фейк-тег | `tests/exec/test_failed_break_tag.py` | не вход | фитиль за зоной + close внутри → `failed_break`. Close за зоной ≠ этот тег. `propose` не импортирует. В счётчик bounce/breakout не входит |
 | 3.14.3 REFUTED | `tests/exec/test_refute_flatten.py` | нет mid-trade | несущий REFUTED → flatten. UNVERIFIABLE / pending / не несущее → не выход |
 | 3.14.2 реакция | `tests/news/test_reaction_prior.py` | нет наших n | CSV — заголовок. n<5 → coef `None`. `opens_size` всегда false. Числа из intelligence-layer не копировал |
+| 3.15.1 PIT кит | `tests/whales/test_pit.py` | нет HL | нет файла → пусто. `accept()` false. `signal`/`weight`/`side` — отказ. `hl_ingest.py` нет |
 | 3.15.4 кит | `tests/whales/test_no_single_wallet.py` | нет HL | `whale_accepts` всегда false. Один claim whale → sole. `hl_ingest.py` нет. `propose` китов не импортирует |
 | 4.17.1 тень бумага | `tests/exec/test_shadow_no_signer.py` | Г3 красный | `ShadowWriter` → `sent=false`. Signer не импортирован. `trading_mode` не shadow |
 | 5.24 урок | `tests/llm/test_lesson_no_average.py` | контейнера нет | «долей» / `average_in` → не совет и не слово в сводке |
@@ -107,9 +112,10 @@
 | 4.19.2 drift | `tests/risk/test_drift_cut.py` | не live | drift → target 0.005. `phase.yaml` target 0.01 не трогали |
 | 4.18.5 n_min | `tests/risk/test_nmin_quarter.py` | не Ф4 | Ф1 size_mult=1 даже при SILENCE. Четверть только если явно `phase=f4` |
 | 5.23 A+ | `tests/risk/test_aplus.py` | не Ф5 | 5 ролей + BTC. F1 Sizer 5x всё равно reject. `raises_lev_in_f1` false |
+| 5.23 размер Ф5 | `tests/risk/test_f5_sizing.py` | Г4 красный | `f5_target` при `equity_source=none` = `None`. 1.2% только main+Г4. `phase.yaml` target 0.01 не трогали |
 | DST 1 Nov | `tests/risk/test_session.py`, `test_macro_rules.py` | не нужно | 2026-11-01 13:30Z = сессия МСК. FOMC 9 Dec (Fed calendar) 14:00 EST = 19:00Z |
 
-Неделя 1 **не закрыта**. Гейты Ф0/Ф1/Ф2 красные. `trading_mode` читается как строка `"off"`. Макро-правила **не** вшиты в сессию. Ордеров нет. Не «всё реализовано» (нет 20 постов, нет пробоя/китов, нет 50 разобранных авторов, нет живого часа). Не топ мира по %: PTF пустая.
+Неделя 1 **не закрыта**. Гейты Ф0/Ф1/Ф2/Ф3/Ф4 красные. `trading_mode` читается как строка `"off"`. Макро-правила **не** вшиты в сессию. Ордеров нет. Не «всё реализовано» (нет 20 постов, нет пробоя/китов, нет 50 разобранных авторов, нет живого часа). Не топ мира по %: PTF пустая, `world_return_rank()` = `None`.
 
 Чужие проекты / форумы (не копировали стратегии):
 - Freqtrade: Bybit **futures isolated** умеет stoploss on exchange; Bybit **spot** — нет. Мы linear perp, стоп обязателен в схеме, на биржу не слали.

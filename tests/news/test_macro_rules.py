@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from capitalizator.news_macro.ingest import NewsIngest
-from capitalizator.news_macro.rules import MacroRules
+from capitalizator.news_macro.rules import PRE_CLASSES, MacroRules
 from capitalizator.risk.session import SessionWindow
 
 MACRO = Path(__file__).resolve().parents[2] / "infra" / "calendars" / "macro.csv"
@@ -63,6 +63,19 @@ def test_cpi_day_et_hour_is_closed() -> None:
     )
     assert got.allow is False
     assert got.reason == "et_blackout"
+
+
+def test_nfp_is_not_pre_event_or_et_blackout() -> None:
+    """NFP/PCE close the morning via SessionWindow. MacroRules 24h/ET stay CPI+FOMC."""
+    assert PRE_CLASSES == frozenset({"CPI", "FOMC"})
+    news = NewsIngest.from_csv(MACRO)
+    rules = MacroRules(enabled=True)
+    day_before = rules.decide(datetime(2026, 9, 3, 14, 10, tzinfo=UTC), news.rows)
+    assert day_before.reason == "ok"
+    assert day_before.size_mult == Decimal("1")
+    nfp_et = rules.decide(datetime(2026, 9, 4, 18, 10, tzinfo=UTC), news.rows)
+    assert nfp_et.allow is True
+    assert nfp_et.reason == "ok"
 
 
 def test_december_fomc_est_blackout_is_1900z() -> None:
