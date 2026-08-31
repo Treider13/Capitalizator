@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **645 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **649 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -33,7 +33,7 @@
 | 0.3.6 ZLG | `tests/zlg/test_labels.py`, `test_double_run.py` | не нужно | 5 меток; SILENCE если max A < γ·q. Два прогона = одна метка. Размер не открывается |
 | 0.3.7 BTC-режим | `tests/btc/test_regime.py` | не нужно | trend/box с закрытого HTF; news только с `known_at ≤ t`; unknown → None. `veto()` нет |
 | 0.3.8 отчёт | `tests/ops/test_daily_report_no_advice.py` | не нужно | касания/жесты/дыры/пинг; «лонг/купи/завтра» — ошибка |
-| знания / бэкап | `tests/ops/test_vault_backup.py` | VPS нет | Snapshot: serialize + `dir_fd`. DB: файл через `openat(parent, name)`. Connect — `/proc/self/fd`; `create=False` = `O_RDONLY` + `mode=ro`, пустой файл не инициализирует (факт: раньше pack писал 32 КБ `SQLite format 3` в источник). nlink на fd, не только на walk. Висячий слой/`secrets` — `VaultError`, не `FileExistsError`. Staging — `mkdtemp`. Симлинк / FIFO / hardlink / секрет — отказ. Живого диска VPS **нет** |
+| знания / бэкап | `tests/ops/test_vault_backup.py` | VPS нет | Snapshot: serialize + `dir_fd`. DB: файл через `openat(parent, name)`. Connect — `/proc/self/fd`; `create=False` = `O_RDONLY` + `mode=ro`, пустой файл не инициализирует. nlink на fd. Висячий слой/`secrets`/корень — `VaultError`. Staging pack/restore — `mkdirat`/`renameat`/`remove_tree_at` на `dir_fd` родителя (факт: `Path.rmtree` после подмены родителя сносил `keep` жертвы). Симлинк / FIFO / hardlink / секрет — отказ. Живого диска VPS **нет** |
 | консоль ноут | `tests/ops/test_console.py` | туннеля нет | GET `/` и `/api/status`; POST/PUT/DELETE/PATCH 405; только 127.0.0.1. Без LAYOUT не встаёт. Поля `vps` нет. Симлинк `desk.sqlite` / `tape/` — отказ, 500 `error`. Пустой `desk.sqlite` не дописывает схему. Signer не импортирован |
 
 | 0.4.1 новости | `tests/news/test_pit.py` | не нужно | CSV BLS/Fed/BEA: CPI + FOMC + NFP (4 Sep / 2 Oct / 6 Nov EST / 4 Dec EST) + PCE (30 Sep / 29 Oct / 25 Nov EST / 23 Dec EST). Срез до `known_at` пустой. NFP/PCE не в MacroRules 24ч/ET. TG нет |
