@@ -48,7 +48,8 @@ class Touch:
         trade_qty: Decimal,
     ) -> Touch:
         when = require_utc(ts)
-        payload = "|".join((zone_id, when.isoformat(), _canon(trade_px), _canon(trade_qty))).encode()
+        parts = (zone_id, when.isoformat(), _canon(trade_px), _canon(trade_qty))
+        payload = "|".join(parts).encode()
         return cls(
             touch_id=blake2s(payload, digest_size=16).hexdigest(),
             zone_id=zone_id,
@@ -81,6 +82,8 @@ class Registry:
         pending_zones = {t.zone_id for t in self.touches if t.outcome == "pending"}
         for zone in zones:
             self._zones[zone.zone_id] = zone
+            if zone.symbol != trade.symbol:
+                continue
             if zone.created_as_of >= ts:
                 continue
             if not (zone.lo - pad <= px <= zone.hi + pad):

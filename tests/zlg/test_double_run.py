@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from capitalizator.memory.registry import Touch
-from capitalizator.zlg.gesture import BookAdd, ZLG
+from capitalizator.zlg.gesture import ZLG, BookAdd
 
 T0 = datetime(2026, 8, 30, 16, 30, tzinfo=UTC)
 

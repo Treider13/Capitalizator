@@ -61,6 +61,8 @@ class TapeClassifier:
         taken = Decimal("0")
         lo, hi = zone.lo - pad, zone.hi + pad
         for trade in trades:
+            if trade.symbol != zone.symbol:
+                continue
             ts = require_utc(trade.exchange_ts)
             if ts < start or ts > end:
                 continue

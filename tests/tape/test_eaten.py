@@ -119,6 +119,27 @@ def test_not_ready_book_is_error() -> None:
         )
 
 
+def test_other_symbol_print_does_not_eat() -> None:
+    clf = TapeClassifier()
+    book = _book(bid_sz="10")
+    eth = MarketEvent(
+        stream="trades",
+        exchange="bybit",
+        symbol="ETHUSDT",
+        exchange_ts=PRINT,
+        recv_ts=PRINT,
+        seq=None,
+        payload={"px": "100.1", "qty": "20", "side": "sell"},
+    )
+    assert clf.eaten(
+        book=book,
+        trades=[eth],
+        zone=ZONE,
+        t0=PRINT,
+        tick_size=TICK,
+    ) is False
+
+
 def test_registry_fill_tape_is_deterministic() -> None:
     book = _book(bid_sz="10")
     trades = [_sell("6")]

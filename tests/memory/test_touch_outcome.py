@@ -100,6 +100,20 @@ def test_second_print_while_pending_is_same_touch() -> None:
     assert len(reg.touches) == 1
 
 
+def test_other_symbol_same_price_is_not_a_touch() -> None:
+    eth = Zone.create(
+        symbol="ETHUSDT",
+        tf="1d",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
+    reg = Registry(tick_size=TICK)
+    assert reg.on_trade(_trade("100.1"), [eth]) == []
+
+
 def test_two_replays_same_touch_ids() -> None:
     def run() -> list[str]:
         reg = Registry(tick_size=TICK)

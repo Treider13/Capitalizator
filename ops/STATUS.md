@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **155 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **198 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -25,10 +25,16 @@
 | 0.2.8 PIT SQL | `tests/storage/test_pit_query.py` | не нужно | DuckDB по уже видимым строкам; срез 12:00 не видит 12:05; `enable_external_access=false` без тихого pass |
 | 0.3.1 зоны | `tests/zones/test_no_lookahead.py`, `test_double_run.py` | не нужно | `prior_day_hl` + свинг; бар t+1 не создаёт зону до t; `zone_id` = blake2s. ICT/FVG нет |
 | 0.3.2 HTF | `tests/zones/test_htf_bias.py` | не нужно | long/short/box/unknown по закрытым 4h; будущий бар не переворачивает срез |
-| CAV запись | `tests/patterns/test_cav.py` | не нужно | REJECT/THROUGH/NOISE на закрытой свече. Не вход |
+| CAV запись | `tests/patterns/test_cav.py` | не нужно | REJECT/THROUGH/COMPRESS/NOISE на закрытой свече. Не вход |
 | registry | `infra/registry.yaml` | не нужно | числа из PHASE-BUILD; лишний ключ — отказ |
+| 0.3.3 касания | `tests/memory/test_touch_outcome.py` | нет живого часа | pending→bounce/break/die; чужой символ с той же ценой — не касание. Live-ленты нет |
+| 0.3.4 лента/OFI | `tests/tape/test_classify.py`, `test_eaten.py`, `test_ofi.py` | нет живого часа | taker = поле side; eaten = ≥50% `depth_near` за 8 с; OFI = CKS `e_n`, не CVD. Поле без книги не заполняем |
+| 0.3.5 PRS | `tests/prs/test_tau.py` | не нужно | известный τ=3 с; цензура 8 с; два прогона → тот же Y. `place_order` в `prs/` нет |
+| 0.3.6 ZLG | `tests/zlg/test_labels.py`, `test_double_run.py` | не нужно | 5 меток; SILENCE если max A < γ·q. Два прогона = одна метка. Размер не открывается |
+| 0.3.7 BTC-режим | `tests/btc/test_regime.py` | не нужно | trend/box с закрытого HTF; news только с `known_at ≤ t`; unknown → None. `veto()` нет |
+| 0.3.8 отчёт | `tests/ops/test_daily_report_no_advice.py` | не нужно | касания/жесты/дыры/пинг; «лонг/купи/завтра» — ошибка |
 
-Неделя 1 **не закрыта** (нет VPS/суток). Неделя 3 **не закрыта** (нет касаний/PRS/ZLG/отчёта). Стратегию отскока не пишем.
+Неделя 1 **не закрыта** (нет VPS/суток). Неделя 3: журнал на фикстурах есть; живого часа ленты (0.1.4) нет — шаг не «закрыт железом». Стратегию отскока не пишем.
 
 Факты Bybit, не догадки:
 - сборка книги — `u` (подряд); `seq` — кросс-номер. [orderbook REST](https://bybit-exchange.github.io/docs/v5/market/orderbook), [WS](https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook)
