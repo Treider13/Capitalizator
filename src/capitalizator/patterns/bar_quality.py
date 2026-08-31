@@ -76,7 +76,7 @@ def last_gap_segment(history: Sequence[Bar], current: Bar, *, t: datetime) -> li
 
 
 def atr(bars: Sequence[Bar], n: int = ATR_N) -> Decimal | None:
-    """Wilder-style mean TR over the last n steps. Needs n+1 bars. None if short."""
+    """Mean true range over the last n steps (same formula CAV already used). Needs n+1 bars."""
     if n <= 0:
         raise ValueError("atr n must be > 0")
     if len(bars) < n + 1:

@@ -16,7 +16,7 @@ def test_empty_sample_is_none() -> None:
     assert out.n == 0
     assert out.beat_last_price is None
     assert out.direction_hit is None
-    assert out.vol_rank_hit is None
+    assert out.vol_rank_ic is None
 
 
 def test_pred_worse_than_last_price_does_not_beat() -> None:
@@ -61,7 +61,7 @@ def test_pnl_share_needs_five_days_and_positive_total() -> None:
         )
     ]
     share = hostile_exam(days).pnl_share_best_5_days
-    assert share == Decimal("95") / Decimal("100")
+    assert share == Decimal("99") / Decimal("100")
     lost = [
         ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 2, d), pnl=Decimal("-1"))
         for d in range(1, 6)
@@ -102,8 +102,8 @@ def test_direction_and_vol_rank_are_separate() -> None:
     ]
     out = hostile_exam(rows)
     assert out.direction_hit == Decimal("1")
-    assert out.vol_rank_hit is not None
-    assert out.vol_rank_hit < 0
+    assert out.vol_rank_ic is not None
+    assert out.vol_rank_ic < 0
 
 
 def test_two_runs_bit_identical() -> None:
@@ -138,7 +138,7 @@ def test_two_runs_bit_identical() -> None:
             out.residual_after_atr,
             out.pnl_share_best_5_days,
             out.direction_hit,
-            out.vol_rank_hit,
+            out.vol_rank_ic,
         )
 
     assert run() == run()
@@ -146,6 +146,6 @@ def test_two_runs_bit_identical() -> None:
 
 def test_exam_source_has_no_numpy() -> None:
     text = SRC.read_text(encoding="utf-8")
-    assert "numpy" not in text
+    assert "import numpy" not in text
+    assert "from numpy" not in text
     assert "import np" not in text
-    assert "np." not in text

@@ -1,8 +1,8 @@
 """Hostile exam of a price/vol forecast. Contour C later. Not an entry.
 
 Beats last-price, residual after ATR, share of profit in the best 5 days,
-direction hit and vol-rank hit are reported separately.
-Does not open size. No numpy.
+direction hit and vol-rank Spearman IC are reported separately.
+Does not open size. Pure Decimal.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ class HostileExam:
     residual_after_atr: Decimal | None
     pnl_share_best_5_days: Decimal | None
     direction_hit: Decimal | None
-    vol_rank_hit: Decimal | None
+    vol_rank_ic: Decimal | None
 
 
 def hostile_exam(cases: Sequence[ExamCase]) -> HostileExam:
@@ -46,7 +46,7 @@ def hostile_exam(cases: Sequence[ExamCase]) -> HostileExam:
             residual_after_atr=None,
             pnl_share_best_5_days=None,
             direction_hit=None,
-            vol_rank_hit=None,
+            vol_rank_ic=None,
         )
     return HostileExam(
         n=n,
@@ -54,7 +54,7 @@ def hostile_exam(cases: Sequence[ExamCase]) -> HostileExam:
         residual_after_atr=_residual_after_atr(rows),
         pnl_share_best_5_days=_pnl_share_best_5_days(rows),
         direction_hit=_direction_hit(rows),
-        vol_rank_hit=_vol_rank_hit(rows),
+        vol_rank_ic=_vol_rank_ic(rows),
     )
 
 
@@ -93,7 +93,7 @@ def _direction_hit(rows: Sequence[ExamCase]) -> Decimal | None:
     return Decimal(hits) / Decimal(len(directed))
 
 
-def _vol_rank_hit(rows: Sequence[ExamCase]) -> Decimal | None:
+def _vol_rank_ic(rows: Sequence[ExamCase]) -> Decimal | None:
     pairs = [
         (c.pred_vol_rank, c.actual_vol)
         for c in rows
