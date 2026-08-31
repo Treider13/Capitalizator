@@ -234,7 +234,10 @@ def mkdir_real_parents(root: Path, directory: Path) -> None:
             if not nxt.is_dir():
                 raise VaultError(f"not a directory: {nxt}")
         else:
-            nxt.mkdir()
+            try:
+                nxt.mkdir()
+            except FileExistsError:
+                pass
             if nxt.is_symlink() or not nxt.is_dir():
                 raise VaultError(f"symlink: {nxt}")
         cur = nxt
