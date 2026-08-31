@@ -77,6 +77,19 @@ def report_payload(*, day: str, kind: str, body: str) -> str:
     )
 
 
+def connect_held_inode(fd: int) -> sqlite3.Connection:
+    """Bind SQLite to the inode we already opened with O_NOFOLLOW.
+
+    sqlite3.connect(path) follows a symlink planted after the probe fd is closed.
+    /proc/self/fd/N opens that inode (Linux). Journal stays next to the real file;
+    a later connect(path) sees the same bytes. stdlib has no SQLITE_OPEN_NOFOLLOW.
+    """
+    proc = f"/proc/self/fd/{int(fd)}"
+    if not os.path.exists(proc):
+        raise ValueError("sqlite open requires /proc/self/fd")
+    return sqlite3.connect(proc, timeout=5.0)
+
+
 class Knowledge:
     def __init__(self, path: Path, *, create: bool = True) -> None:
         self.path = path
@@ -107,11 +120,11 @@ class Knowledge:
             created = os.fstat(fd)
             if not stat.S_ISREG(created.st_mode):
                 raise ValueError(f"not a regular file: {path}")
+            if path.is_symlink() or not same_inode(path, created):
+                raise ValueError(f"symlink: {path}")
+            self._cx = connect_held_inode(fd)
         finally:
             os.close(fd)
-        if path.is_symlink() or not same_inode(path, created):
-            raise ValueError(f"symlink: {path}")
-        self._cx = sqlite3.connect(path, timeout=5.0)
         if path.is_symlink() or not same_inode(path, created):
             self._cx.close()
             self._cx = None

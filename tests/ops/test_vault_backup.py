@@ -406,6 +406,57 @@ def test_knowledge_refuses_symlink_db(tmp_path: Path) -> None:
         Knowledge(link)
 
 
+def test_knowledge_connect_does_not_write_through_swapped_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fact: sqlite3.connect(path) follows a symlink planted after the probe fd closes.
+
+    We bind via /proc/self/fd/N instead. A swap of the name must not touch the target.
+    """
+    import capitalizator.ops.knowledge as knmod
+    from capitalizator.ops.knowledge import Knowledge
+
+    victim = tmp_path / "secret"
+    victim.write_bytes(b"KEYMATERIAL")
+    path = tmp_path / "desk.sqlite"
+    real = knmod.connect_held_inode
+
+    def swap_then_connect(fd: int):
+        if path.exists() and not path.is_symlink():
+            path.unlink()
+            path.symlink_to(victim)
+        return real(fd)
+
+    monkeypatch.setattr(knmod, "connect_held_inode", swap_then_connect)
+    with pytest.raises(ValueError, match="symlink"):
+        Knowledge(path)
+    assert victim.read_bytes() == b"KEYMATERIAL"
+
+
+def test_connect_held_inode_writes_held_file_not_symlink_target(tmp_path: Path) -> None:
+    import os
+
+    from capitalizator.ops.knowledge import connect_held_inode
+
+    victim = tmp_path / "secret"
+    victim.write_bytes(b"KEYMATERIAL")
+    path = tmp_path / "desk.sqlite"
+    nofollow = os.O_NOFOLLOW
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | nofollow, 0o644)
+    try:
+        path.unlink()
+        path.symlink_to(victim)
+        cx = connect_held_inode(fd)
+        try:
+            cx.executescript("CREATE TABLE t(x INT); INSERT INTO t VALUES (1);")
+        finally:
+            cx.close()
+    finally:
+        os.close(fd)
+    assert victim.read_bytes() == b"KEYMATERIAL"
+    assert path.is_symlink()
+
+
 def test_snapshot_does_not_write_through_symlink(tmp_path: Path) -> None:
     from capitalizator.ops.knowledge import Knowledge
 
