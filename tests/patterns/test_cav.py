@@ -58,3 +58,24 @@ def test_htf_against_is_noise() -> None:
 def test_mid_range_miss_is_noise() -> None:
     bar = _bar(low="110", high="111", close="110.5")
     assert label(ZONE, bar, t=T, htf_bias="box") == "NOISE"
+
+
+def test_small_range_inside_zone_is_compress() -> None:
+    closed = []
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"

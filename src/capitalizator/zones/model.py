@@ -59,6 +59,8 @@ class Zone:
     ) -> Zone:
         if lo > hi:
             raise ValueError("zone lo must be <= hi")
+        if lo <= 0:
+            raise ValueError("zone price must be > 0")
         created = require_utc(created_as_of)
         zid = make_zone_id(
             symbol=symbol,

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from capitalizator.zones.engine import ZoneEngine
 from capitalizator.zones.ids import make_zone_id
 from capitalizator.zones.model import Bar, Zone
@@ -53,3 +55,16 @@ def test_zone_id_is_blake2s_of_fields() -> None:
         created_as_of=created,
     )
     assert len(zone.zone_id) == 32
+
+
+def test_non_positive_zone_price_rejected() -> None:
+    with pytest.raises(ValueError, match="price"):
+        Zone.create(
+            symbol="BTCUSDT",
+            tf="1d",
+            side="support",
+            lo=Decimal("0"),
+            hi=Decimal("0.2"),
+            method="prior_day_hl",
+            created_as_of=datetime(2026, 8, 30, tzinfo=UTC),
+        )
