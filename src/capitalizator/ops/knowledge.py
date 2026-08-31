@@ -153,6 +153,7 @@ class Knowledge:
         if create:
             self._cx.executescript(SCHEMA)
             self._cx.execute("INSERT OR IGNORE INTO meta(k, v) VALUES ('schema', '1')")
+            self._cx.execute("PRAGMA secure_delete = ON")
         else:
             try:
                 self._cx.execute("SELECT 1 FROM sqlite_master LIMIT 1")
@@ -185,6 +186,9 @@ class Knowledge:
         mem = sqlite3.connect(":memory:")
         try:
             self._cx.backup(mem)
+            # sqlite/sqlite ext/misc/scrub.c: DELETE leaves reusable pages; VACUUM
+            # rebuilds the copy. backup+serialize without it can ship deleted cells.
+            mem.execute("VACUUM")
             row = mem.execute("PRAGMA integrity_check").fetchone()
             if row is None or str(row[0]) != "ok":
                 raise ValueError("integrity_check failed after snapshot")

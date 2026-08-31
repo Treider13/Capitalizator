@@ -99,6 +99,32 @@ def test_secret_file_blocks_pack(tmp_path: Path) -> None:
         pack(vault, tmp_path / "bak")
 
 
+def test_secret_in_parquet_payload_blocks_pack(tmp_path: Path) -> None:
+    """Fact: assert_no_secrets skipped .parquet; pack copied ghp_ in payload_json.
+
+    gitleaks-style scan of file bytes; GitHub sqlite/scrub.c + VACUUM on snapshot.
+    """
+    from datetime import UTC, datetime
+
+    from capitalizator.types import MarketEvent
+
+    vault = init_vault(tmp_path / "desk")
+    ParquetSink(vault.tape).write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=datetime(2026, 8, 30, 13, 30, 1, tzinfo=UTC),
+            recv_ts=datetime(2026, 8, 30, 13, 30, 1, 1, tzinfo=UTC),
+            seq=1,
+            payload={"px": "1", "note": "ghp_" + "fromparquet"},
+        )
+    )
+    with pytest.raises(BackupError, match="secret"):
+        pack(vault, tmp_path / "bak")
+    assert list((tmp_path / "bak").glob("*")) == []
+
+
 def test_pack_does_not_create_source_db(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     assert not vault.db_path.is_file()

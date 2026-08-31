@@ -3,6 +3,8 @@
 Freqtrade: copy user_data, but a live SQLite file copy can tear; we use
 sqlite3.Connection.backup (online backup API). Hummingbot: data/ ≠ conf/.
 Default shutil.copytree follows symlink *content* — that inlines a key. Refuse links.
+GitHub restic (#5143) and Borg: openat handle, not a second path after lstat.
+GitHub sqlite/scrub.c: deleted cells stay in free pages until VACUUM/scrub.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from capitalizator.ops.vault import (
     open_real_dir_fd,
     open_regular,
     promote_dir_at,
+    read_regular_bytes,
     read_regular_text,
     remove_tree_at,
     write_regular_text,
@@ -53,12 +56,17 @@ def _needles() -> tuple[str, ...]:
     return tuple("".join(chr(c) for c in row) for row in _NEEDLE_CODES)
 
 
-def scan_secret_text(blob: str) -> list[str]:
+def scan_secret_bytes(blob: bytes) -> list[str]:
+    """Scan raw bytes. gitleaks-style: a key in parquet is still ASCII in the file."""
     hits: list[str] = []
     for needle in _needles():
-        if needle in blob:
+        if needle.encode("ascii") in blob:
             hits.append(needle)
     return hits
+
+
+def scan_secret_text(blob: str) -> list[str]:
+    return scan_secret_bytes(blob.encode("utf-8", errors="surrogateescape"))
 
 
 SKIP_NAMES = frozenset({".gitkeep", "README.md", "LAYOUT"})
@@ -141,13 +149,11 @@ def assert_no_secrets(vault: Vault) -> None:
         if not layer.is_dir():
             continue
         for path in _iter_files(layer):
-            if path.suffix in {".sqlite", ".parquet"}:
-                continue
             try:
-                text = read_regular_text(path)
+                data = read_regular_bytes(path)
             except VaultError as exc:
                 raise BackupError(str(exc)) from exc
-            hits = scan_secret_text(text)
+            hits = scan_secret_bytes(data)
             if hits:
                 raise BackupError(f"secret pattern in {path}: {hits[0]}")
     try:

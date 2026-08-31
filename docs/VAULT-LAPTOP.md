@@ -55,6 +55,7 @@ user_data/          ← VPS пишет, ноут копирует (rsync / pack)
 - **`Path.rmtree` / `Path.rename` после подмены dest.parent.** Факт: родитель сменили на симлинк → `_remove_staging` сносил дерево жертвы (`keep` исчез); `Path.rename` переименовывал каталог в цели, не наш staging. Очистка и `renameat` — только через `dir_fd`. Висячий корень vault — отказ, не `mkdir` цели.
 - **Один `os.write`.** POSIX не обещает записать весь буфер. Факт: подмена `os.write` → dest = `H` вместо `HELLO-WORLD`; `copy_regular` оставлял `A`. Пишем циклом, как `write_all`. После `renameat` — `fsync` каталога.
 - **`desk.sqlite` был `0o644`.** Журнал читал любой локальный пользователь. Создание и повторный `create=True` — `0o600` (как `conf/` у Hummingbot). `load_vault` отказывается, если `secrets/` — симлинк.
+- **Секрет в parquet.** Факт: `ghp_` в `payload_json` уезжал в бэкап — `.parquet`/`.sqlite` не сканировали. Как gitleaks: иголки по сырым байтам. Snapshot: `VACUUM` копии (GitHub [`sqlite/sqlite` `ext/misc/scrub.c`](https://github.com/sqlite/sqlite/blob/master/ext/misc/scrub.c): DELETE оставляет страницы). `PRAGMA secure_delete=ON` на записи. restic/Borg: handle/`openat`, не path после walk.
 - Чтение отчёта / sha256 / parquet — тот же fd, не `path.open` (он следует за ссылкой).
 - Консоль: нет поля `vps: false` (это была выдумка); без `LAYOUT` сервер **не** рисует хранилище; PUT/DELETE/PATCH = 405; симлинк в `tape/` не читает; исключение → 500 `error`, не traceback.
 
