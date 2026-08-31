@@ -76,6 +76,13 @@ def test_naive_datetime_is_rejected() -> None:
         win.allows(datetime(2026, 8, 31, 14, 10))
 
 
+def test_session_does_not_import_macro_rules() -> None:
+    src = Path(__file__).resolve().parents[2] / "src" / "capitalizator" / "risk" / "session.py"
+    text = src.read_text(encoding="utf-8")
+    assert "MacroRules" not in text
+    assert "news_macro.rules" not in text
+
+
 def test_session_source_has_no_handwritten_offset() -> None:
     src = Path(__file__).resolve().parents[2] / "src" / "capitalizator" / "risk" / "session.py"
     text = src.read_text(encoding="utf-8")

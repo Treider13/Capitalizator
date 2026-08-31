@@ -114,6 +114,14 @@ def test_halt_returns_none() -> None:
     assert strat.propose(_snap()) is None
 
 
+def test_unlock_today_returns_none() -> None:
+    assert _strategy().propose(_snap(unlock_today=True)) is None
+
+
+def test_unlock_tomorrow_returns_none() -> None:
+    assert _strategy().propose(_snap(unlock_tomorrow=True)) is None
+
+
 def test_wide_spread_returns_none() -> None:
     assert (
         _strategy().propose(_snap(spread_frac=Decimal("0.004"), typical_move=Decimal("0.003")))

@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, get_args
 
-from capitalizator.ops.phase import trading_mode as read_trading_mode
+from capitalizator.ops.phase import breakout_enabled, trading_mode as read_trading_mode
 from capitalizator.risk.schema import FORBIDDEN_ACTIONS, RiskAction
 
 PASS = 0
@@ -65,31 +65,36 @@ def _f1_closed_bounce(row: Any) -> bool:
     )
 
 
+def _episode_rows(path: Path) -> list[object]:
+    if not path.is_file():
+        return []
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    rows = raw if isinstance(raw, list) else raw.get("episodes") or []
+    return list(rows) if isinstance(rows, list) else []
+
+
 def gate_f1(*, root: Path | None = None) -> tuple[int, dict[str, object]]:
     """F1 stays red until ≥80 closed demo bounces exist. We do not invent them."""
     base = root or repo_root()
-    phase = (base / "infra" / "phase.yaml").read_text(encoding="utf-8")
     zlg = "\n".join(
         p.read_text(encoding="utf-8")
         for p in sorted((base / "src" / "capitalizator" / "zlg").glob("*.py"))
     )
-    episode_file = base / "ops" / "gates" / "f1_episodes.json"
-    n_bounce = 0
-    avg_r: float | None = None
-    if episode_file.is_file():
-        raw = json.loads(episode_file.read_text(encoding="utf-8"))
-        rows = raw if isinstance(raw, list) else raw.get("episodes") or []
-        closed = [row for row in rows if _f1_closed_bounce(row)]
-        n_bounce = len(closed)
-        rs = [float(row["r"]) for row in closed]
-        avg_r = (sum(rs) / len(rs)) if rs else None
+    rows = _episode_rows(base / "ops" / "gates" / "f1_episodes.json")
+    closed = [row for row in rows if _f1_closed_bounce(row)]
+    n_bounce = len(closed)
+    rs = [float(row["r"]) for row in closed if isinstance(row, dict)]
+    avg_r = (sum(rs) / len(rs)) if rs else None
+    n_breakout = sum(
+        1 for row in rows if isinstance(row, dict) and row.get("setup_tag") == "breakout"
+    )
     checks: dict[str, bool] = {
         "G1.1_n80": n_bounce >= 80,
         "G1.2_avg_r_pos": avg_r is not None and avg_r > 0,
         "G1.3_no_average": "average_in" in FORBIDDEN_ACTIONS
         and "average_in" not in get_args(RiskAction),
         "G1.4_zlg_no_random": "random" not in zlg,
-        "G1.5_breakout_off": "breakout_enabled: false" in phase,
+        "G1.5_breakout_off": (not breakout_enabled()) and n_breakout == 0,
     }
     accident = "average_in" not in FORBIDDEN_ACTIONS
     passed = all(checks.values())
@@ -99,16 +104,108 @@ def gate_f1(*, root: Path | None = None) -> tuple[int, dict[str, object]]:
         "ok": passed,
         "checks": checks,
         "n_bounce": n_bounce,
+        "n_breakout": n_breakout,
         "avg_r": avg_r,
+        "exit": code,
+    }
+
+
+_LLM_VERIFIED_ASSIGN = (
+    'verdict = "VERIFIED"',
+    "verdict='VERIFIED'",
+    '.verdict = "VERIFIED"',
+)
+
+
+def _llm_assigns_verified(base: Path) -> bool:
+    llm = base / "src" / "capitalizator" / "llm"
+    if not llm.is_dir():
+        return False
+    for path in sorted(llm.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if any(token in text for token in _LLM_VERIFIED_ASSIGN):
+            return True
+    return False
+
+
+def gate_f2(*, root: Path | None = None) -> tuple[int, dict[str, object]]:
+    """F2 stays red. Empty journals are unknown, not a clean pass."""
+    base = root or repo_root()
+    bounce = (base / "src" / "capitalizator" / "exec" / "strategy_bounce.py").read_text(
+        encoding="utf-8"
+    )
+    cards = _episode_rows(base / "ops" / "gates" / "f2_cards.json")
+    n_cards = sum(
+        1
+        for row in cards
+        if isinstance(row, dict) and row.get("outcome_at") not in (None, "")
+    )
+    episodes = _episode_rows(base / "ops" / "gates" / "f1_episodes.json")
+    closed = [row for row in episodes if _f1_closed_bounce(row)]
+    n_against = sum(
+        1
+        for row in closed
+        if isinstance(row, dict) and row.get("veto_btc_would_reject") is True
+    )
+    saved = _episode_rows(base / "ops" / "gates" / "f2_saved_r.json")
+    n_veto = sum(
+        1
+        for row in saved
+        if isinstance(row, dict) and row.get("reason") in {"btc_veto", "btc_break", "VETO"}
+    )
+    n_file = base / "ops" / "gates" / "f2_veto_n_insufficient.md"
+    n_text = n_file.read_text(encoding="utf-8") if n_file.is_file() else ""
+    n_insufficient = "n < 10" in n_text or "n<10" in n_text
+    parsed_file = base / "ops" / "authors" / "parsed.jsonl"
+    parsed_n = 0
+    if parsed_file.is_file():
+        from capitalizator.authors.parse import AuthorParse
+
+        parsed_n = len(AuthorParse().from_jsonl(parsed_file))
+    checks: dict[str, bool] = {
+        "G2.1_veto_lived": n_veto >= 1,
+        "G2.2_veto_shadow_or_n": n_insufficient,
+        "G2.3_against_btc": len(closed) > 0 and n_against == 0,
+        "G2.4_cards_50": n_cards >= 50,
+        "G2.5_verifier_not_llm": not _llm_assigns_verified(base),
+        "G2.6_redteam_ci": False,
+        "G2_breakout_off": not breakout_enabled(),
+        "G2_parsed_50": parsed_n >= 50,
+        "G2_veto_not_in_propose": "BtcVeto" not in bounce,
+    }
+    # G2_veto_not_in_propose documents the hole: veto is paper, not live.
+    # It is True today and must not make the gate pass.
+    passed = all(
+        checks[k]
+        for k in (
+            "G2.1_veto_lived",
+            "G2.2_veto_shadow_or_n",
+            "G2.3_against_btc",
+            "G2.4_cards_50",
+            "G2.5_verifier_not_llm",
+            "G2.6_redteam_ci",
+        )
+    )
+    code = FAIL if not passed else PASS
+    return code, {
+        "gate": "f2",
+        "ok": passed,
+        "checks": checks,
+        "n_cards": n_cards,
+        "n_veto": n_veto,
+        "n_closed": len(closed),
+        "n_against": n_against,
+        "parsed_n": parsed_n,
         "exit": code,
     }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("gate", choices=("f0", "f1"))
+    parser.add_argument("gate", choices=("f0", "f1", "f2"))
     args = parser.parse_args(argv)
-    code, payload = gate_f0() if args.gate == "f0" else gate_f1()
+    runners = {"f0": gate_f0, "f1": gate_f1, "f2": gate_f2}
+    code, payload = runners[args.gate]()
     out = repo_root() / "ops" / "gates"
     out.mkdir(parents=True, exist_ok=True)
     (out / f"last_{args.gate}.json").write_text(

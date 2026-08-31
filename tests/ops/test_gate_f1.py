@@ -12,6 +12,7 @@ def test_f1_fails_closed_today() -> None:
     assert code == FAIL
     assert payload["ok"] is False
     assert payload["n_bounce"] == 0
+    assert payload["n_breakout"] == 0
     assert payload["avg_r"] is None
     checks = payload["checks"]
     assert checks["G1.1_n80"] is False

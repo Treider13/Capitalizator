@@ -46,6 +46,7 @@ class BounceSnapshot:
     spread_frac: Decimal = Decimal("0")
     typical_move: Decimal = Decimal("0.01")
     unlock_tomorrow: bool = False
+    unlock_today: bool = False
     calendar: Sequence[NewsRow] = field(default_factory=tuple)
     no_us_today: bool = False
     lev: Decimal = Decimal("3")
@@ -162,6 +163,7 @@ class BounceStrategy:
             spread_frac=snap.spread_frac,
             typical_move=snap.typical_move,
             unlock_tomorrow=snap.unlock_tomorrow,
+            unlock_today=snap.unlock_today,
         ):
             return None
         zone = snap.zone

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from capitalizator.ops.phase import equity_source, trading_mode
+from capitalizator.ops.phase import MODES, breakout_enabled, equity_source, trading_mode
 
 PHASE = Path(__file__).resolve().parents[2] / "infra" / "phase.yaml"
 
@@ -27,6 +27,8 @@ def test_phase_file_is_still_f0_off() -> None:
     assert raw["require_human_ack_to_advance"] is True
     assert trading_mode() == "off"
     assert equity_source() == "none"
+    assert breakout_enabled() is False
+    assert "shadow" in MODES
 
 
 def test_bare_yaml_off_is_not_the_mode_name() -> None:

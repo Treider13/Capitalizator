@@ -29,6 +29,18 @@ def test_tight_spread_is_ok() -> None:
     )
 
 
+def test_unlock_today_rejects() -> None:
+    assert (
+        Screener().ok(
+            "BTCUSDT",
+            spread_frac=Decimal("0.001"),
+            typical_move=Decimal("0.01"),
+            unlock_today=True,
+        )
+        is False
+    )
+
+
 def test_unlock_tomorrow_rejects() -> None:
     assert (
         Screener().ok(

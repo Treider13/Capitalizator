@@ -1,8 +1,8 @@
 """1.6.4 — spread + maker round-trip must be smaller than the typical move.
 
 Typical move is passed in (ATR, or median bounce if the caller already has n≥20).
-This module does not invent ATR from empty history. Unlock tomorrow is a flag,
-not a scraped calendar.
+This module does not invent ATR from empty history. Unlock today/tomorrow are
+flags from the calendar reader, not scraped Tokenomist rows.
 """
 
 from __future__ import annotations
@@ -25,10 +25,11 @@ class Screener:
         spread_frac: Decimal,
         typical_move: Decimal,
         unlock_tomorrow: bool = False,
+        unlock_today: bool = False,
     ) -> bool:
         if symbol not in self.universe.symbols:
             return False
-        if unlock_tomorrow:
+        if unlock_tomorrow or unlock_today:
             return False
         if spread_frac < 0 or typical_move <= 0:
             return False

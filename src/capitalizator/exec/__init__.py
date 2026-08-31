@@ -4,6 +4,7 @@ from capitalizator.exec.demo_adapter import DemoAdapter
 from capitalizator.exec.episodes import EpisodeLog
 from capitalizator.exec.fees import FeeTable
 from capitalizator.exec.fill_model import NaiveQueueFill
+from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.manage import TradeManager
 from capitalizator.exec.replay import BookCheckpoint, ReplayEngine
 from capitalizator.exec.strategy_bounce import (
@@ -22,6 +23,7 @@ __all__ = [
     "DemoAdapter",
     "EpisodeLog",
     "FeeTable",
+    "FirstMinute",
     "NaiveQueueFill",
     "ORDER_TYPE",
     "ReplayEngine",

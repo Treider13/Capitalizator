@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-MODES = frozenset({"off", "demo", "testnet", "micro", "live"})
+MODES = frozenset({"off", "demo", "testnet", "shadow", "micro", "live"})
 EQUITY = frozenset({"none", "demo", "micro_subaccount", "main"})
 
 
@@ -47,3 +47,10 @@ def equity_source() -> str:
     if text not in EQUITY:
         raise ValueError(f"unknown equity_source: {raw!r}")
     return text
+
+
+def breakout_enabled() -> bool:
+    raw = load_phase().get("breakout_enabled")
+    if not isinstance(raw, bool):
+        raise ValueError(f"breakout_enabled must be bool, got {raw!r}")
+    return raw

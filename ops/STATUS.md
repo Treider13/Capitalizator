@@ -88,14 +88,20 @@
 | 2.12.4 не accept | `tests/authors/test_no_entry.py` | не нужно | автор никогда не accept. `propose` без зоны → None |
 | 2.11.1 схема | `tests/card/test_schema.py` | не нужно | битый JSON / нет `known_at` / голый текст — не карточка |
 | 2.11.2 SQL PIT | `tests/verifier/test_recompute.py` | нет прод-SQL | «23 из 31» = два числа из запроса. «24 из 31» тем же SQL → REFUTED. Срез 12:10 не видит 23. VERIFIED без файла результата не штампует карточку |
+| 2.12.1 parse | `tests/authors/test_parse.py` | нет 50 постов | `AuthorParse` только если уже есть claims+horizon+known_at. Текст «BTC long» без полей → не разобран. `check_author_parsed --min 50` = код 2. Посты не выдумывал |
+| 3.13.1 флаг | `tests/exec/test_breakout_flag.py` | Г2 красный | `breakout_enabled()` читает **bool**. Строка `"false"` — не выкл. Класса `BreakoutStrategy` нет. `propose` его не зовёт |
+| 3.13.2 первая минута | `tests/exec/test_first_minute.py` | пробоя нет | `FirstMinute` из `time.yaml` (60 с). 0–59 с после close → block; 60 с → нет. `strategy_bounce` **не импортирует** FirstMinute |
+| 3.14.1 анлоки | `tests/screener/test_unlock.py` | нет Tokenomist | `infra/calendars/unlocks.csv` — только заголовок. Нет файла → пусто, не выдумка. Команда сегодня/завтра → скринер. Инвестор не режет. Не шорт |
+| гейт Ф2 бумага | `tests/ops/test_gate_f2.py` | нет 50 карточек | `gates f2` код 2. Пустые эпизоды ≠ «0 против BTC». CI красной команды **не** зелёный (`G2.6_redteam_ci=false`) |
 
-Неделя 1 **не закрыта**. Гейт Ф0/Ф1 красные. `trading_mode` читается как строка `"off"`. Макро-правила **не** вшиты в сессию. Ордеров нет. Не «всё реализовано» (нет 20 постов, нет пробоя/китов, нет 50 разобранных авторов). Не топ мира по %: PTF пустая.
+Неделя 1 **не закрыта**. Гейты Ф0/Ф1/Ф2 красные. `trading_mode` читается как строка `"off"`. Макро-правила **не** вшиты в сессию. Ордеров нет. Не «всё реализовано» (нет 20 постов, нет пробоя/китов, нет 50 разобранных авторов, нет живого часа). Не топ мира по %: PTF пустая.
 
 Чужие проекты / форумы (не копировали стратегии):
 - Freqtrade: Bybit **futures isolated** умеет stoploss on exchange; Bybit **spot** — нет. Мы linear perp, стоп обязателен в схеме, на биржу не слали.
-- Elite Trader Turok (2001): не угадывать bounce/break заранее. CAV+ZLG спорят → SPLIT, не среднее. Жест не открывает размер. `propose` жюри пока не читает.
+- Elite Trader Turok (2001) / BabyPips: не угадывать bounce/break заранее; первая печать за линией — не сделка. CAV+ZLG спорят → SPLIT. `FirstMinute` — только пробой, и он выключен.
 - NFI / passivbot / OctoBot grid — доливка. Это антипример, `average_in` по-прежнему отказ.
 - Census практики: живого bounce-бота с аудированной книгой нет. `propose` — не доказанный край. SMC-библиотеки (lookahead в swing) не копировали.
+- Tokenomist / Keyrock (календарь анлоков): команда — самый чувствительный тип; давление часто за ~30 дней до даты; день анлока может быть тихим. Мы **не** шортим «потому что анлок» и **не** подставляли чужие строки. Пустой CSV + флаг скринера.
 
 Факты Bybit, не догадки:
 - сборка книги — `u` (подряд); `seq` — кросс-номер. [orderbook REST](https://bybit-exchange.github.io/docs/v5/market/orderbook), [WS](https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook)

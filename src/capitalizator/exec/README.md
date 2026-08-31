@@ -5,5 +5,7 @@
 `DemoAdapter`: только `trading_mode=demo`. Сейчас phase=off → отказ. Hello на биржу не шлём.
 `TAKER_OK=false`. Карточка по умолчанию обязательна. `TcaTable` пустая → медиана None. `EpisodeLog` пустой, пока нет демо-входа.
 
-Не делает: live-ордер, submit из стратегии, механический BE, выдуманный стакан.
+`FirstMinute.blocks` — бумага для пробоя: `exchange_ts < close + 60s`. `propose` отскока это не читает. `BreakoutStrategy` нет.
+
+Не делает: live-ордер, submit из стратегии, механический BE, выдуманный стакан, вход на первой минуте выноса.
 Ключи не читает.
