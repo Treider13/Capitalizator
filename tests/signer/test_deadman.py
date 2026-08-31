@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from capitalizator.signer.deadman import DeadMan
+from capitalizator.risk.session import load_time_config
+from capitalizator.signer.deadman import DeadMan, yaml_dead_man_s
 
 T0 = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
 
@@ -23,6 +24,13 @@ def test_silence_31s_cancels() -> None:
     dm.beat(T0)
     assert dm.tick(T0 + timedelta(seconds=31)) is True
     assert hits == [1]
+
+
+def test_default_seconds_come_from_time_yaml() -> None:
+    assert int(load_time_config()["dead_man_s"]) == 30
+    assert yaml_dead_man_s() == 30
+    dm = DeadMan(lambda: None)
+    assert dm.dead_man_s == 30
 
 
 def test_no_beat_cancels_on_first_tick() -> None:

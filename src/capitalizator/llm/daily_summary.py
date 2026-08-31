@@ -11,7 +11,10 @@ from typing import Any
 
 from capitalizator.llm.sandbox import no_egress
 
-_ADVICE = re.compile(r"лонг|шорт|купи|продай|завтра", re.IGNORECASE)
+_ADVICE = re.compile(
+    r"лонг|шорт|купи|продай|завтра|долей|усредн|average_in|martingale|pyramid",
+    re.IGNORECASE,
+)
 _POISON = re.compile(
     r"VERIFIED|REFUTED|UNVERIFIABLE|API_KEY|API_SECRET|os\.environ",
     re.IGNORECASE,
@@ -21,7 +24,7 @@ _POISON = re.compile(
 class DailySummary:
     prompt = (
         "Перескажи вечерний отчёт. Не предлагай сделок. "
-        "Не пиши лонг, шорт, купи, продай, завтра."
+        "Не пиши лонг, шорт, купи, продай, завтра, долей."
     )
 
     def run(self, report: str) -> dict[str, Any]:

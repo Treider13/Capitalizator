@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **480 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **514 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -93,12 +93,20 @@
 | 3.13.2 первая минута | `tests/exec/test_first_minute.py` | пробоя нет | `FirstMinute` из `time.yaml` (60 с). 0–59 с после close → block; 60 с → нет. `strategy_bounce` **не импортирует** FirstMinute |
 | 3.14.1 анлоки | `tests/screener/test_unlock.py` | нет Tokenomist | `infra/calendars/unlocks.csv` — только заголовок. Нет файла → пусто, не выдумка. Команда сегодня/завтра → скринер. Инвестор не режет. Не шорт |
 | гейт Ф2 бумага | `tests/ops/test_gate_f2.py` | нет 50 карточек | `gates f2` код 2. Пустые эпизоды ≠ «0 против BTC». CI красной команды **не** зелёный (`G2.6_redteam_ci=false`) |
+| 3.13.4 фейк-тег | `tests/exec/test_failed_break_tag.py` | не вход | фитиль за зоной + close внутри → `failed_break`. Close за зоной ≠ этот тег. `propose` не импортирует. В счётчик bounce/breakout не входит |
+| 3.14.3 REFUTED | `tests/exec/test_refute_flatten.py` | нет mid-trade | несущий REFUTED → flatten. UNVERIFIABLE / pending / не несущее → не выход |
+| 3.14.2 реакция | `tests/news/test_reaction_prior.py` | нет наших n | CSV — заголовок. n<5 → coef `None`. `opens_size` всегда false. Числа из intelligence-layer не копировал |
+| 3.15.4 кит | `tests/whales/test_no_single_wallet.py` | нет HL | `whale_accepts` всегда false. Один claim whale → sole. `hl_ingest.py` нет. `propose` китов не импортирует |
+| 4.17.1 тень бумага | `tests/exec/test_shadow_no_signer.py` | Г3 красный | `ShadowWriter` → `sent=false`. Signer не импортирован. `trading_mode` не shadow |
+| 5.24 урок | `tests/llm/test_lesson_no_average.py` | контейнера нет | «долей» / `average_in` → не совет и не слово в сводке |
+| yaml-часы | `tests/signer/test_deadman.py`, `test_reconcile.py` | тестнета нет | `dead_man_s=30` и `reconcile_s=60` из `time.yaml`, не магические числа в стороне |
+| счётчики гейта | `tests/ops/test_gates_count_rules.py` | нет 80 демо | 79 bounce ≠ порог. 80 `failed_break` ≠ bounce. Репо `n_bounce=0`. Фикстуры — не живые сделки |
 
 Неделя 1 **не закрыта**. Гейты Ф0/Ф1/Ф2 красные. `trading_mode` читается как строка `"off"`. Макро-правила **не** вшиты в сессию. Ордеров нет. Не «всё реализовано» (нет 20 постов, нет пробоя/китов, нет 50 разобранных авторов, нет живого часа). Не топ мира по %: PTF пустая.
 
 Чужие проекты / форумы (не копировали стратегии):
 - Freqtrade: Bybit **futures isolated** умеет stoploss on exchange; Bybit **spot** — нет. Мы linear perp, стоп обязателен в схеме, на биржу не слали.
-- Elite Trader Turok (2001) / BabyPips: не угадывать bounce/break заранее; первая печать за линией — не сделка. CAV+ZLG спорят → SPLIT. `FirstMinute` — только пробой, и он выключен.
+- Elite Trader Turok (2001) / BabyPips: не угадывать bounce/break заранее; первая печать за линией — не сделка; фитиль за уровень + close внутри = фейк, не пробой. У нас это тег `failed_break`, не вход. `FirstMinute` — только пробой, и он выключен.
 - NFI / passivbot / OctoBot grid — доливка. Это антипример, `average_in` по-прежнему отказ.
 - Census практики: живого bounce-бота с аудированной книгой нет. `propose` — не доказанный край. SMC-библиотеки (lookahead в swing) не копировали.
 - Tokenomist / Keyrock (календарь анлоков): команда — самый чувствительный тип; давление часто за ~30 дней до даты; день анлока может быть тихим. Мы **не** шортим «потому что анлок» и **не** подставляли чужие строки. Пустой CSV + флаг скринера.

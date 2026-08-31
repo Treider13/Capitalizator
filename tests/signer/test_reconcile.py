@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from capitalizator.signer.reconcile import PaperOrder, Reconciler
+from capitalizator.risk.session import load_time_config
+from capitalizator.signer.reconcile import PaperOrder, Reconciler, yaml_reconcile_s
+
+
+def test_interval_comes_from_time_yaml() -> None:
+    assert int(load_time_config()["reconcile_s"]) == 60
+    assert yaml_reconcile_s() == 60
+    assert Reconciler().reconcile_s == 60
 
 
 def test_missing_on_exchange_is_dropped() -> None:

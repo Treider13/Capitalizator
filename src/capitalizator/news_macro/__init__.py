@@ -2,7 +2,14 @@
 
 from typing import Any
 
-__all__ = ["NewsIngest", "NewsRow", "NewsStore", "Unlocks", "UnlockRow"]
+__all__ = [
+    "NewsIngest",
+    "NewsRow",
+    "NewsStore",
+    "ReactionTable",
+    "UnlockRow",
+    "Unlocks",
+]
 
 
 def __getattr__(name: str) -> Any:
@@ -18,4 +25,8 @@ def __getattr__(name: str) -> Any:
         from capitalizator.news_macro.unlocks import UnlockRow, Unlocks
 
         return {"Unlocks": Unlocks, "UnlockRow": UnlockRow}[name]
+    if name == "ReactionTable":
+        from capitalizator.news_macro.reaction import ReactionTable
+
+        return ReactionTable
     raise AttributeError(name)

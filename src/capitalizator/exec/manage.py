@@ -38,6 +38,13 @@ class TradeManager:
             return ManageIntent(action="reduce", fraction=HALF)
         return None
 
+    def on_refute(self, *, load_bearing: bool, verdict: str) -> ManageIntent | None:
+        """3.14.3 — REFUTED load-bearing claim → flatten. Not 'wait and see'."""
+        if verdict == "REFUTED" and load_bearing:
+            self.remaining = Decimal("0")
+            return ManageIntent(action="flatten")
+        return None
+
     def trail_stop(self, last_swing: Decimal) -> Decimal:
         """New stop is the last broken swing / zone, not the entry."""
         if last_swing <= 0:

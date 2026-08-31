@@ -2,11 +2,13 @@
 
 from capitalizator.exec.demo_adapter import DemoAdapter
 from capitalizator.exec.episodes import EpisodeLog
+from capitalizator.exec.failed_break import FailedBreak
 from capitalizator.exec.fees import FeeTable
 from capitalizator.exec.fill_model import NaiveQueueFill
 from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.manage import TradeManager
 from capitalizator.exec.replay import BookCheckpoint, ReplayEngine
+from capitalizator.exec.shadow import ShadowWriter
 from capitalizator.exec.strategy_bounce import (
     ORDER_TYPE,
     TAKER_OK,
@@ -22,11 +24,13 @@ __all__ = [
     "BounceStrategy",
     "DemoAdapter",
     "EpisodeLog",
+    "FailedBreak",
     "FeeTable",
     "FirstMinute",
     "NaiveQueueFill",
     "ORDER_TYPE",
     "ReplayEngine",
+    "ShadowWriter",
     "TAKER_OK",
     "TcaRow",
     "TcaTable",

@@ -1,4 +1,4 @@
-"""0.4.5 — silence > DEAD_MAN_S → cancel_all. No exchange call in this module.
+"""0.4.5 — silence > dead_man_s from time.yaml → cancel_all.
 
 The callback is injected. This is the unit, not a testnet screenshot.
 """
@@ -10,14 +10,27 @@ from datetime import datetime
 
 from capitalizator.types import require_utc
 
-DEAD_MAN_S = 30
+
+def yaml_dead_man_s() -> int:
+    from capitalizator.risk.session import load_time_config
+
+    seconds = int(load_time_config()["dead_man_s"])
+    if seconds <= 0:
+        raise ValueError("dead_man_s must be > 0")
+    return seconds
 
 
 class DeadMan:
-    def __init__(self, cancel_all: Callable[[], None], *, dead_man_s: int = DEAD_MAN_S) -> None:
-        if dead_man_s <= 0:
+    def __init__(
+        self,
+        cancel_all: Callable[[], None],
+        *,
+        dead_man_s: int | None = None,
+    ) -> None:
+        seconds = yaml_dead_man_s() if dead_man_s is None else dead_man_s
+        if seconds <= 0:
             raise ValueError("dead_man_s must be > 0")
-        self.dead_man_s = dead_man_s
+        self.dead_man_s = seconds
         self._cancel_all = cancel_all
         self._last: datetime | None = None
         self.cancelled = False
