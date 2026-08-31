@@ -6,9 +6,10 @@ Walk never follows directory symlinks (pathlib rglob can).
 
 from __future__ import annotations
 
+import errno
 import os
+import secrets
 import stat
-import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -105,6 +106,108 @@ def same_inode(path: Path, st: os.stat_result) -> bool:
     )
 
 
+def open_real_dir_fd(directory: Path, *, create: bool = True) -> int:
+    """Open directory via openat(O_NOFOLLOW). Path.mkdir and mkstemp(dir=) follow a swap.
+
+    Fact: after reports/ is renamed and replaced with a symlink to outside/nested,
+    tempfile.mkstemp(dir=reports/nested) writes into outside. A held dir_fd does not.
+    """
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise VaultError("O_NOFOLLOW required")
+    flags = os.O_RDONLY | os.O_DIRECTORY
+    abs_dir = Path(os.path.abspath(directory))
+    parts = abs_dir.parts
+    fd = os.open(parts[0], flags)
+    try:
+        for part in parts[1:]:
+            try:
+                nxt = os.open(part, flags | nofollow, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise VaultError(f"not a directory: {abs_dir}") from None
+                try:
+                    os.mkdir(part, 0o755, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                try:
+                    nxt = os.open(part, flags | nofollow, dir_fd=fd)
+                except OSError as exc:
+                    # Linux: O_NOFOLLOW|O_DIRECTORY on a symlink is ENOTDIR, not ELOOP.
+                    if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                        raise VaultError(f"symlink: {part}") from exc
+                    raise
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise VaultError(f"symlink: {part}") from exc
+                raise
+            os.close(fd)
+            fd = nxt
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def mkstemp_at(dir_fd: int, *, prefix: str, suffix: str) -> tuple[int, str]:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise VaultError("O_NOFOLLOW required")
+    for _ in range(128):
+        name = f"{prefix}{secrets.token_hex(8)}{suffix}"
+        try:
+            fd = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | nofollow,
+                0o600,
+                dir_fd=dir_fd,
+            )
+            return fd, name
+        except FileExistsError:
+            continue
+    raise VaultError("mkstemp_at exhausted")
+
+
+def replace_at(dir_fd: int, tmp_name: str, dest_name: str, created: os.stat_result) -> None:
+    """renameat on a held directory fd. os.replace(tmp, dest) follows a parent symlink."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise VaultError("O_NOFOLLOW required")
+    chk = os.open(tmp_name, os.O_RDONLY | nofollow, dir_fd=dir_fd)
+    try:
+        st = os.fstat(chk)
+        if not (
+            stat.S_ISREG(st.st_mode)
+            and st.st_ino == created.st_ino
+            and st.st_dev == created.st_dev
+        ):
+            raise VaultError(f"tmp was replaced: {tmp_name}")
+    finally:
+        os.close(chk)
+    os.replace(tmp_name, dest_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    dest_fd = -1
+    try:
+        dest_fd = os.open(dest_name, os.O_RDONLY | nofollow, dir_fd=dir_fd)
+        st = os.fstat(dest_fd)
+        if not (
+            stat.S_ISREG(st.st_mode)
+            and st.st_ino == created.st_ino
+            and st.st_dev == created.st_dev
+        ):
+            raise VaultError(f"replace produced unexpected inode: {dest_name}")
+    except (OSError, VaultError) as exc:
+        try:
+            os.unlink(dest_name, dir_fd=dir_fd)
+        except OSError:
+            pass
+        if isinstance(exc, VaultError):
+            raise
+        raise VaultError(f"replace produced unexpected inode: {dest_name}") from exc
+    finally:
+        if dest_fd >= 0:
+            os.close(dest_fd)
+
+
 def replace_if_same(tmp: Path, dest: Path, created: os.stat_result) -> None:
     """rename only our inode. After rename, dest must still be that inode.
 
@@ -139,62 +242,71 @@ def read_regular_text(path: Path) -> str:
     return read_regular_bytes(path).decode("utf-8", errors="ignore")
 
 
-def write_regular_text(path: Path, text: str) -> None:
-    """Write via mkstemp inode. Path.write_text follows a planted symlink."""
-    ensure_real_parent(path.parent)
-    if path.parent.is_symlink():
-        raise VaultError(f"symlink: {path.parent}")
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
-    tmp = Path(tmp_name)
-    created = os.fstat(fd)
+def write_regular_bytes(path: Path, data: bytes) -> None:
+    """Write via a held parent dir_fd. tempfile.mkstemp(dir=) follows a swapped ancestor."""
+    dir_fd = open_real_dir_fd(path.parent)
+    fd = -1
+    tmp_name: str | None = None
     try:
-        os.write(fd, text.encode("utf-8"))
+        fd, tmp_name = mkstemp_at(dir_fd, prefix=f".{path.name}.", suffix=".tmp")
+        created = os.fstat(fd)
+        os.write(fd, data)
         os.fsync(fd)
         os.close(fd)
         fd = -1
-        replace_if_same(tmp, path, created)
+        replace_at(dir_fd, tmp_name, path.name, created)
+        tmp_name = None
     except Exception:
         if fd >= 0:
             os.close(fd)
-        if same_inode(tmp, created):
-            tmp.unlink()
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name, dir_fd=dir_fd)
+            except OSError:
+                pass
         raise
+    finally:
+        os.close(dir_fd)
+
+
+def write_regular_text(path: Path, text: str) -> None:
+    """Write via mkstemp inode. Path.write_text follows a planted symlink."""
+    write_regular_bytes(path, text.encode("utf-8"))
 
 
 def copy_regular(src: Path, dest: Path) -> None:
     """Copy via fds. shutil.copy2 follows a symlink planted after the walk."""
-    ensure_real_parent(dest.parent)
-    if dest.parent.is_symlink():
-        raise VaultError(f"symlink: {dest.parent}")
-    fd = open_regular(src)
+    dir_fd = open_real_dir_fd(dest.parent)
+    src_fd = -1
     out_fd = -1
-    tmp: Path | None = None
-    created = None
+    tmp_name: str | None = None
     try:
-        out_fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{dest.name}.", suffix=".tmp", dir=str(dest.parent)
-        )
-        tmp = Path(tmp_name)
+        src_fd = open_regular(src)
+        out_fd, tmp_name = mkstemp_at(dir_fd, prefix=f".{dest.name}.", suffix=".tmp")
         created = os.fstat(out_fd)
         while True:
-            chunk = os.read(fd, 65536)
+            chunk = os.read(src_fd, 65536)
             if not chunk:
                 break
             os.write(out_fd, chunk)
         os.fsync(out_fd)
         os.close(out_fd)
         out_fd = -1
-        replace_if_same(tmp, dest, created)
+        replace_at(dir_fd, tmp_name, dest.name, created)
+        tmp_name = None
     except Exception:
         if out_fd >= 0:
             os.close(out_fd)
-        if tmp is not None and created is not None and same_inode(tmp, created):
-            tmp.unlink()
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name, dir_fd=dir_fd)
+            except OSError:
+                pass
         raise
     finally:
-        os.close(fd)
+        if src_fd >= 0:
+            os.close(src_fd)
+        os.close(dir_fd)
 
 
 def _require_real_dir(path: Path, *, name: str) -> None:

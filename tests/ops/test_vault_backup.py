@@ -540,6 +540,39 @@ def test_init_refuses_layout_symlink(tmp_path: Path) -> None:
     assert secret.read_bytes() == b"KEYMATERIAL"
 
 
+def test_write_regular_holds_dir_fd_across_parent_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fact: mkstemp(dir=parent) after ancestor swap writes into the symlink target.
+
+    Hold the parent inode (openat) before the swap; bytes stay in the real dir.
+    """
+    import capitalizator.ops.vault as vault_mod
+    from capitalizator.ops.vault import write_regular_bytes
+
+    dest_root = tmp_path / "dest"
+    dest_root.mkdir()
+    reports = dest_root / "reports"
+    reports.mkdir()
+    nested = reports / "nested"
+    nested.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "nested").mkdir()
+    real_open = vault_mod.open_real_dir_fd
+
+    def open_then_swap(directory: Path, *, create: bool = True) -> int:
+        fd = real_open(directory, create=create)
+        reports.rename(tmp_path / "reports_real")
+        (dest_root / "reports").symlink_to(outside)
+        return fd
+
+    monkeypatch.setattr(vault_mod, "open_real_dir_fd", open_then_swap)
+    write_regular_bytes(nested / "keep.txt", b"DATA")
+    assert (tmp_path / "reports_real" / "nested" / "keep.txt").read_bytes() == b"DATA"
+    assert list((outside / "nested").iterdir()) == []
+
+
 def test_copy_regular_refuses_parent_dir_symlink(tmp_path: Path) -> None:
     """Fact: Path.mkdir(parents=True) creates nested names *inside* a dir symlink.
 

@@ -13,7 +13,6 @@ import json
 import os
 import sqlite3
 import stat
-import tempfile
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -25,8 +24,8 @@ from capitalizator.ops.vault import (
     Vault,
     VaultError,
     ensure_real_parent,
-    replace_if_same,
     same_inode,
+    write_regular_bytes,
 )
 
 SCHEMA = """
@@ -158,10 +157,6 @@ class Knowledge:
     def snapshot_to(self, dest: Path) -> None:
         if self._cx is None:
             raise FileNotFoundError("no knowledge db to snapshot")
-        try:
-            ensure_real_parent(dest.parent)
-        except VaultError as exc:
-            raise ValueError(str(exc)) from exc
         mem = sqlite3.connect(":memory:")
         try:
             self._cx.backup(mem)
@@ -171,23 +166,10 @@ class Knowledge:
             blob = mem.serialize()
         finally:
             mem.close()
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{dest.name}.", suffix=".tmp", dir=str(dest.parent)
-        )
-        tmp = Path(tmp_name)
-        created = os.fstat(fd)
         try:
-            os.write(fd, blob)
-            os.fsync(fd)
-            os.close(fd)
-            fd = -1
-            replace_if_same(tmp, dest, created)
-        except Exception:
-            if fd >= 0:
-                os.close(fd)
-            if same_inode(tmp, created):
-                tmp.unlink()
-            raise
+            write_regular_bytes(dest, blob)
+        except VaultError as exc:
+            raise ValueError(str(exc)) from exc
 
     def _insert_link(self, payload: str) -> HashLink:
         if self._cx is None:
