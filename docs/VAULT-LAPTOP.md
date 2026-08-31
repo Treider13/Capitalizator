@@ -56,6 +56,7 @@ user_data/          ← VPS пишет, ноут копирует (rsync / pack)
 - **Один `os.write`.** POSIX не обещает записать весь буфер. Факт: подмена `os.write` → dest = `H` вместо `HELLO-WORLD`; `copy_regular` оставлял `A`. Пишем циклом, как `write_all`. После `renameat` — `fsync` каталога.
 - **`desk.sqlite` был `0o644`.** Журнал читал любой локальный пользователь. Создание и повторный `create=True` — `0o600` (как `conf/` у Hummingbot). `load_vault` отказывается, если `secrets/` — симлинк.
 - **Секрет в parquet.** Факт: `ghp_` в `payload_json` уезжал в бэкап — `.parquet`/`.sqlite` не сканировали. Как gitleaks: иголки по сырым байтам. Snapshot: `VACUUM` копии (GitHub [`sqlite/sqlite` `ext/misc/scrub.c`](https://github.com/sqlite/sqlite/blob/master/ext/misc/scrub.c): DELETE оставляет страницы). `PRAGMA secure_delete=ON` на записи. restic/Borg: handle/`openat`, не path после walk.
+- **UTF-16 / регистр.** Факт: `note.txt` в UTF-16LE с `BYBIT_API_KEY=` и строка `bybit_api_key=` уезжали. [trufflehog](https://github.com/trufflesecurity/trufflehog) смотрит UTF-16 LE/BE и keywords без регистра. Base64 не декодируем: у gitleaks `--max-decode-depth` по умолчанию 0.
 - Чтение отчёта / sha256 / parquet — тот же fd, не `path.open` (он следует за ссылкой).
 - Консоль: нет поля `vps: false` (это была выдумка); без `LAYOUT` сервер **не** рисует хранилище; PUT/DELETE/PATCH = 405; симлинк в `tape/` не читает; исключение → 500 `error`, не traceback.
 

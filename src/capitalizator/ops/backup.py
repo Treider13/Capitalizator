@@ -57,10 +57,24 @@ def _needles() -> tuple[str, ...]:
 
 
 def scan_secret_bytes(blob: bytes) -> list[str]:
-    """Scan raw bytes. gitleaks-style: a key in parquet is still ASCII in the file."""
+    """Scan raw bytes. ASCII, case-fold, UTF-16 LE/BE.
+
+    Fact: utf-16le BYBIT_API_KEY= and lowercase bybit_api_key= packed.
+    trufflehog (GitHub) scans UTF-16 LE/BE and matches keywords case-insensitive.
+    gitleaks base64 decode defaults off — we do not invent that layer.
+    """
     hits: list[str] = []
+    blob_l = blob.lower()
     for needle in _needles():
-        if needle.encode("ascii") in blob:
+        ascii_n = needle.encode("ascii")
+        if ascii_n in blob or ascii_n.lower() in blob_l:
+            hits.append(needle)
+            continue
+        folded = needle.lower()
+        if any(
+            needle.encode(enc) in blob or folded.encode(enc) in blob
+            for enc in ("utf-16le", "utf-16be")
+        ):
             hits.append(needle)
     return hits
 

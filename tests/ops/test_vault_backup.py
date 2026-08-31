@@ -92,6 +92,27 @@ def test_roundtrip_keeps_rows_and_chain(tmp_path: Path) -> None:
         kn2.close()
 
 
+def test_secret_utf16le_report_blocks_pack(tmp_path: Path) -> None:
+    """Fact: UTF-16LE BYBIT_API_KEY= packed; ASCII-only scan missed it.
+
+    trufflehog (GitHub) scans UTF-16 LE/BE.
+    """
+    vault = init_vault(tmp_path / "desk")
+    (vault.reports / "note.txt").write_bytes(("BYBIT" + "_API_" + "KEY=abc\n").encode("utf-16le"))
+    with pytest.raises(BackupError, match="secret"):
+        pack(vault, tmp_path / "bak")
+    assert list((tmp_path / "bak").glob("*")) == []
+
+
+def test_secret_lowercase_report_blocks_pack(tmp_path: Path) -> None:
+    """Fact: bybit_api_key= packed; needles were uppercase-only."""
+    vault = init_vault(tmp_path / "desk")
+    (vault.reports / "note.txt").write_text("bybit_api_key=abc\n", encoding="utf-8")
+    with pytest.raises(BackupError, match="secret"):
+        pack(vault, tmp_path / "bak")
+    assert list((tmp_path / "bak").glob("*")) == []
+
+
 def test_secret_file_blocks_pack(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     (vault.knowledge / "note.txt").write_text("BYBIT" + "_API_" + "KEY=abc\n", encoding="utf-8")
