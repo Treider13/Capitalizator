@@ -19,7 +19,14 @@ from typing import Any
 import pyarrow.parquet as pq
 
 from capitalizator.ops.knowledge import EMPTY_COUNTS, Knowledge, open_knowledge
-from capitalizator.ops.vault import DB_NAME, Vault, init_vault, load_vault
+from capitalizator.ops.vault import (
+    DB_NAME,
+    Vault,
+    VaultError,
+    init_vault,
+    iter_regular_files,
+    load_vault,
+)
 
 # Built at runtime from codes so src and bytecode never hold the literal.
 _NEEDLE_CODES = (
@@ -65,11 +72,10 @@ def _sha256(path: Path) -> str:
 
 
 def _iter_files(root: Path) -> Iterable[Path]:
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink():
-            raise BackupError(f"symlink: {path}")
-        if path.is_file():
-            yield path
+    try:
+        yield from iter_regular_files(root)
+    except VaultError as exc:
+        raise BackupError(str(exc)) from exc
 
 
 def assert_no_symlinks(root: Path) -> None:
@@ -77,9 +83,10 @@ def assert_no_symlinks(root: Path) -> None:
         raise BackupError(f"symlink: {root}")
     if not root.is_dir():
         return
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            raise BackupError(f"symlink: {path}")
+    try:
+        list(iter_regular_files(root))
+    except VaultError as exc:
+        raise BackupError(str(exc)) from exc
 
 
 def assert_layer_files(vault: Vault) -> None:
@@ -119,6 +126,8 @@ def assert_no_secrets(vault: Vault) -> None:
                 raise BackupError(f"secret pattern in {path}: {hits[0]}")
     knowledge = open_knowledge(vault, create=False)
     try:
+        if not knowledge.verify_ok():
+            raise BackupError("hash chain broken")
         hits = scan_secret_text(knowledge.all_text())
     finally:
         knowledge.close()
@@ -127,11 +136,11 @@ def assert_no_secrets(vault: Vault) -> None:
 
 
 def _parquet_stats(tape: Path) -> tuple[int, int]:
-    files = list(tape.rglob("*.parquet")) if tape.is_dir() else []
+    if not tape.is_dir():
+        return 0, 0
+    files = [path for path in _iter_files(tape) if path.suffix in TAPE_SUFFIX]
     rows = 0
     for path in files:
-        if path.is_symlink():
-            raise BackupError(f"symlink: {path}")
         rows += int(pq.ParquetFile(path).read().num_rows)
     return len(files), rows
 
@@ -180,10 +189,10 @@ def _safe_under(root: Path, rel: str) -> Path:
 def _knowledge_counts(vault: Vault) -> dict[str, int]:
     knowledge = open_knowledge(vault, create=False)
     try:
-        if not knowledge.verify_chain():
+        if not knowledge.verify_ok():
+            if not knowledge.integrity_ok():
+                raise BackupError("integrity_check failed")
             raise BackupError("hash chain broken")
-        if not knowledge.integrity_ok():
-            raise BackupError("integrity_check failed")
         return knowledge.counts()
     finally:
         knowledge.close()
@@ -213,14 +222,18 @@ def pack(
         if vault.db_path.is_file():
             kn = Knowledge(vault.db_path, create=False)
             try:
-                if not kn.verify_chain():
-                    raise BackupError("hash chain broken")
-                if not kn.integrity_ok():
-                    raise BackupError("integrity_check failed")
-                counts = kn.counts()
                 kn.snapshot_to(staging / "knowledge" / DB_NAME)
             finally:
                 kn.close()
+            dest_kn = Knowledge(staging / "knowledge" / DB_NAME, create=False)
+            try:
+                if not dest_kn.verify_ok():
+                    if not dest_kn.integrity_ok():
+                        raise BackupError("integrity_check failed")
+                    raise BackupError("hash chain broken")
+                counts = dest_kn.counts()
+            finally:
+                dest_kn.close()
         else:
             counts = dict(EMPTY_COUNTS)
         _copy_plain(vault.reports, staging / "reports", suffixes=REPORT_SUFFIX)
@@ -249,6 +262,8 @@ def pack(
         )
         verify_backup(staging)
         if dest.exists():
+            if not dest.is_dir():
+                raise BackupError(f"backup dest not a directory: {dest}")
             if any(dest.iterdir()):
                 raise BackupError(f"backup dest not empty: {dest}")
             dest.rmdir()
@@ -326,6 +341,8 @@ def verify_backup(backup: Path) -> dict[str, Any]:
 def restore(backup: Path, dest: Path) -> Vault:
     manifest = verify_backup(backup)
     dest = dest.resolve()
+    if dest.exists() and not dest.is_dir():
+        raise BackupError(f"restore dest not a directory: {dest}")
     if dest.exists() and any(dest.iterdir()):
         raise BackupError(f"restore dest not empty: {dest}")
     dest.mkdir(parents=True, exist_ok=True)

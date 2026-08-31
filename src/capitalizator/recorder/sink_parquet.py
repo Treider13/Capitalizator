@@ -1,8 +1,13 @@
-"""Append MarketEvents to hourly Parquet partitions. Count is exact."""
+"""Append MarketEvents to hourly Parquet partitions. Count is exact.
+
+Write goes to a sibling tmp file, then replace(). A live pack never copies a
+half-written parquet (the old complete file stays until the rename).
+"""
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pyarrow as pa
@@ -69,6 +74,13 @@ class ParquetSink:
                 self._rows[path].extend(loaded.to_pylist())
         self._rows[path].append(_row(event))
         table = pa.Table.from_pylist(self._rows[path], schema=SCHEMA)
-        pq.write_table(table, path)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            pq.write_table(table, tmp)
+            tmp.replace(path)
+        except Exception:
+            if tmp.exists():
+                tmp.unlink()
+            raise
         self.accepted_count += 1
         return path

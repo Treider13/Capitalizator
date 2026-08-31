@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 import pyarrow.parquet as pq
 
 from capitalizator.recorder.sink_parquet import ParquetSink, partition_path
@@ -55,6 +56,21 @@ def test_snapshot_and_book_diff_and_resync_partitions(tmp_path: Path) -> None:
         )
         assert path == tmp_path / "bybit" / "BTCUSDT" / stream / "date=2026-08-30" / "hour=13.parquet"
         assert pq.ParquetFile(path).read().num_rows == 1
+
+
+def test_failed_write_leaves_old_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sink = ParquetSink(tmp_path)
+    path = sink.write(_event(1))
+    old = path.read_bytes()
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk")
+
+    monkeypatch.setattr(pq, "write_table", boom)
+    with pytest.raises(OSError, match="disk"):
+        sink.write(_event(2))
+    assert path.read_bytes() == old
+    assert list(path.parent.glob("*.tmp")) == []
 
 
 def test_new_sink_reloads_existing_file(tmp_path: Path) -> None:

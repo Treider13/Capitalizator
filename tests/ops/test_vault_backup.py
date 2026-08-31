@@ -9,7 +9,7 @@ import pytest
 
 from capitalizator.ops.backup import BackupError, pack, restore, verify_backup
 from capitalizator.ops.knowledge import open_knowledge
-from capitalizator.ops.vault import init_vault, load_vault
+from capitalizator.ops.vault import VaultError, init_vault, load_vault
 from capitalizator.recorder.sink_parquet import ParquetSink
 from capitalizator.types import MarketEvent
 
@@ -77,15 +77,15 @@ def test_roundtrip_keeps_rows_and_chain(tmp_path: Path) -> None:
     backup = tmp_path / "bak"
     manifest = pack(vault, backup)
     assert manifest["counts"]["episodes"] == 1
-    assert manifest["counts"]["hash_links"] == 1
+    assert manifest["counts"]["hash_links"] == 3
     assert manifest["counts"]["reports"] == 1
     assert manifest["counts"]["parquet_rows"] == 1
     dest = tmp_path / "moved"
     restored = restore(backup, dest)
     kn2 = open_knowledge(restored)
     try:
-        assert kn2.counts() == {"hash_links": 1, "episodes": 1, "reports": 1}
-        assert kn2.verify_chain()
+        assert kn2.counts() == {"hash_links": 3, "episodes": 1, "reports": 1}
+        assert kn2.verify_ok()
         assert kn2.episodes()[0]["r"] == "1.5"
         assert kn2.report(day="2026-08-30") is not None
     finally:
@@ -153,7 +153,7 @@ def test_restored_db_integrity_ok(tmp_path: Path) -> None:
     kn2 = open_knowledge(restored, create=False)
     try:
         assert kn2.integrity_ok()
-        assert kn2.verify_chain()
+        assert kn2.verify_ok()
         assert kn2.counts()["hash_links"] == 1
     finally:
         kn2.close()
@@ -263,3 +263,65 @@ def test_advice_report_rejected(tmp_path: Path) -> None:
             kn.save_report(day="2026-08-30", kind="map", body="купи BTC\n")
     finally:
         kn.close()
+
+
+def test_tampered_episode_breaks_tables_and_pack(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    try:
+        kn.append_episode(
+            {
+                "trade_id": "e1",
+                "mode": "demo",
+                "zone_id": "z1",
+                "gesture": "DEFEND",
+                "fill": "2026-08-30T14:00:00+00:00",
+                "slip": "0",
+                "fees": "0",
+                "r": "1.5",
+            }
+        )
+        assert kn.verify_ok()
+        kn._cx.execute("UPDATE episodes SET r = '99' WHERE trade_id = 'e1'")
+        kn._cx.commit()
+        assert kn.verify_chain() is True
+        assert kn.verify_tables() is False
+    finally:
+        kn.close()
+    with pytest.raises(BackupError, match="hash chain"):
+        pack(vault, tmp_path / "bak")
+
+
+def test_fifo_in_tape_is_refused(tmp_path: Path) -> None:
+    import os
+
+    vault = init_vault(tmp_path / "desk")
+    os.mkfifo(vault.tape / "x.parquet")
+    with pytest.raises(BackupError, match="regular file"):
+        pack(vault, tmp_path / "bak")
+
+
+def test_dir_symlink_in_tape_is_refused(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "stolen.parquet").write_bytes(b"not-a-key-but-outside")
+    (vault.tape / "evil").symlink_to(outside)
+    with pytest.raises(BackupError, match="symlink"):
+        pack(vault, tmp_path / "bak")
+
+
+def test_layer_symlink_is_refused(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    vault.tape.rmdir()
+    vault.tape.symlink_to(tmp_path / "desk" / "reports")
+    with pytest.raises(VaultError, match="symlink"):
+        load_vault(vault.root)
+
+
+def test_pack_dest_file_is_refused(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    dest = tmp_path / "bak"
+    dest.write_text("nope", encoding="utf-8")
+    with pytest.raises(BackupError, match="not a directory"):
+        pack(vault, dest)

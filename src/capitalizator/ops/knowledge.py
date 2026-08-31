@@ -3,10 +3,13 @@
 Empty tables are honest. Does not read keys. Does not open size.
 Open with create=False never writes a missing file (pack/verify must not invent a db).
 Writes take BEGIN IMMEDIATE. Snapshot uses sqlite3 backup API, not a raw file copy.
+Episode and report rows are bound into the hash chain in the same transaction.
+verify_tables() replays those links; a silent UPDATE of episodes fails pack.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Mapping
 from datetime import datetime
@@ -47,7 +50,22 @@ CREATE TABLE IF NOT EXISTS reports (
 """
 
 EPISODE_MODES = frozenset({"shadow", "demo"})
+EPISODE_KEYS = ("trade_id", "mode", "zone_id", "gesture", "fill", "slip", "fees", "r")
 EMPTY_COUNTS = {"hash_links": 0, "episodes": 0, "reports": 0}
+
+
+def episode_payload(row: Mapping[str, str]) -> str:
+    body = {"k": "episode", **{key: str(row[key]) for key in EPISODE_KEYS}}
+    return json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def report_payload(*, day: str, kind: str, body: str) -> str:
+    return json.dumps(
+        {"k": "report", "day": day, "kind": kind, "body": body},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 class Knowledge:
@@ -99,26 +117,32 @@ class Knowledge:
         finally:
             dst.close()
 
+    def _insert_link(self, payload: str) -> HashLink:
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        prev = GENESIS
+        last = self._cx.execute(
+            "SELECT digest FROM hash_links ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if last is not None:
+            prev = str(last["digest"])
+        chain = HashChain()
+        chain.links = self.links()
+        link = chain.append(payload)
+        if link.prev_hash != prev:
+            raise ValueError("hash prev mismatch")
+        self._cx.execute(
+            "INSERT INTO hash_links(prev_hash, payload, digest) VALUES (?, ?, ?)",
+            (link.prev_hash, link.payload, link.digest),
+        )
+        return link
+
     def append_link(self, payload: str) -> HashLink:
         if self._cx is None:
             raise FileNotFoundError("no knowledge db")
         self._cx.execute("BEGIN IMMEDIATE")
         try:
-            prev = GENESIS
-            last = self._cx.execute(
-                "SELECT digest FROM hash_links ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-            if last is not None:
-                prev = str(last["digest"])
-            chain = HashChain()
-            chain.links = self.links()
-            link = chain.append(payload)
-            if link.prev_hash != prev:
-                raise ValueError("hash prev mismatch")
-            self._cx.execute(
-                "INSERT INTO hash_links(prev_hash, payload, digest) VALUES (?, ?, ?)",
-                (link.prev_hash, link.payload, link.digest),
-            )
+            link = self._insert_link(payload)
             self._cx.commit()
         except Exception:
             self._cx.rollback()
@@ -145,6 +169,38 @@ class Knowledge:
         chain.links = self.links()
         return chain.verify()
 
+    def verify_tables(self) -> bool:
+        """Replay episode/report links. A silent table UPDATE must not pass."""
+        if self._cx is None:
+            return True
+        expected_ep: dict[str, dict[str, str]] = {}
+        expected_rep: dict[tuple[str, str], str] = {}
+        for link in self.links():
+            try:
+                obj = json.loads(link.payload)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            kind = obj.get("k")
+            if kind == "episode":
+                row = {key: str(obj.get(key, "")) for key in EPISODE_KEYS}
+                expected_ep[row["trade_id"]] = row
+            elif kind == "report":
+                day = str(obj.get("day", ""))
+                report_kind = str(obj.get("kind", ""))
+                expected_rep[(day, report_kind)] = str(obj.get("body", ""))
+        got_ep = {row["trade_id"]: {key: row[key] for key in EPISODE_KEYS} for row in self.episodes()}
+        if got_ep != expected_ep:
+            return False
+        got_rep: dict[tuple[str, str], str] = {}
+        for row in self._cx.execute("SELECT day, kind, body FROM reports"):
+            got_rep[(str(row["day"]), str(row["kind"]))] = str(row["body"])
+        return got_rep == expected_rep
+
+    def verify_ok(self) -> bool:
+        return self.verify_chain() and self.verify_tables() and self.integrity_ok()
+
     def append_episode(self, row: Mapping[str, Any]) -> None:
         if self._cx is None:
             raise FileNotFoundError("no knowledge db")
@@ -156,6 +212,16 @@ class Knowledge:
             raise ValueError(f"episode.mode must be shadow|demo, got {row['mode']!r}")
         fill = row["fill"]
         fill_text = fill.isoformat() if isinstance(fill, datetime) else str(fill)
+        stored = {
+            "trade_id": str(row["trade_id"]),
+            "mode": str(row["mode"]),
+            "zone_id": str(row["zone_id"]),
+            "gesture": str(row["gesture"]),
+            "fill": fill_text,
+            "slip": str(row["slip"]),
+            "fees": str(row["fees"]),
+            "r": str(row["r"]),
+        }
         self._cx.execute("BEGIN IMMEDIATE")
         try:
             self._cx.execute(
@@ -163,17 +229,9 @@ class Knowledge:
                 INSERT INTO episodes(trade_id, mode, zone_id, gesture, fill, slip, fees, r)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    str(row["trade_id"]),
-                    str(row["mode"]),
-                    str(row["zone_id"]),
-                    str(row["gesture"]),
-                    fill_text,
-                    str(row["slip"]),
-                    str(row["fees"]),
-                    str(row["r"]),
-                ),
+                tuple(stored[key] for key in EPISODE_KEYS),
             )
+            self._insert_link(episode_payload(stored))
             self._cx.commit()
         except Exception:
             self._cx.rollback()
@@ -199,6 +257,7 @@ class Knowledge:
                 "INSERT OR REPLACE INTO reports(day, kind, body) VALUES (?, ?, ?)",
                 (day, kind, body),
             )
+            self._insert_link(report_payload(day=day, kind=kind, body=body))
             self._cx.commit()
         except Exception:
             self._cx.rollback()

@@ -106,3 +106,12 @@ def test_serve_without_layout_does_not_invent_vault(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError, match="not a vault"):
         main(["--userdir", str(tmp_path / "missing"), "--serve"])
+
+
+def test_snapshot_refuses_tape_symlink(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    target = tmp_path / "outside.txt"
+    target.write_text("secret-target\n", encoding="utf-8")
+    (vault.tape / "leak.parquet").symlink_to(target)
+    with pytest.raises(ValueError, match="symlink"):
+        desk_snapshot(vault)

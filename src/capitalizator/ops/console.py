@@ -17,19 +17,23 @@ from urllib.parse import parse_qs, urlparse
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.phase import trading_mode
-from capitalizator.ops.vault import Vault, init_vault, load_vault
+from capitalizator.ops.vault import Vault, init_vault, iter_regular_files, load_vault
 
 ADVICE_WORDS = ("лонг", "шорт", "купи", "продай", "завтра")
 
 
 def _parquet_counts(tape: Path) -> tuple[int, int]:
-    files = list(tape.rglob("*.parquet")) if tape.is_dir() else []
+    if tape.is_symlink():
+        raise ValueError(f"symlink: {tape}")
+    if not tape.is_dir():
+        return 0, 0
+    files = [path for path in iter_regular_files(tape) if path.suffix == ".parquet"]
     rows = 0
     if files:
         import pyarrow.parquet as pq
 
         for path in files:
-            rows += int(pq.read_table(path).num_rows)
+            rows += int(pq.ParquetFile(path).read().num_rows)
     return len(files), rows
 
 
@@ -37,7 +41,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     knowledge = open_knowledge(vault, create=False)
     try:
         counts = knowledge.counts()
-        chain_ok = knowledge.verify_chain()
+        chain_ok = knowledge.verify_ok()
         episodes = knowledge.episodes()
         latest = knowledge.latest_report()
         report_body = None
