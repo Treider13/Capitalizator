@@ -44,6 +44,12 @@ def test_night_five_x_always_reject() -> None:
     assert reason == "night 5x"
 
 
+def test_msk_window_does_not_shift_on_us_fall() -> None:
+    """2026-11-01 US fall. MSK has no DST. 13:30Z is still 16:30 MSK."""
+    t = datetime(2026, 11, 1, 13, 30, tzinfo=UTC)
+    assert in_desk_window(t) is True
+
+
 def test_msk_window_does_not_shift_on_us_dst() -> None:
     """2026-03-08 US spring. MSK has no DST. 13:30Z is still 16:30 MSK."""
     t = datetime(2026, 3, 8, 13, 30, tzinfo=UTC)

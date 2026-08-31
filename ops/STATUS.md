@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **514 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **546 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -79,7 +79,7 @@
 | 2.9.5 тень вето | `tests/champion/test_veto_shadow.py` | ордеров нет | отчёт veto on/off; `promote()` отказ |
 | 2.10.1 eaten | `tests/exec/test_bounce_eaten.py` | флаг выкл | `check_tape` по умолчанию False. При True: eaten или **нет данных** → None (не выдумываем «не ели») |
 | 2.10.2 стена | `tests/exec/test_wall_no_print.py` | флаг выкл | `check_wall` по умолчанию False. При True: стена без печати или **неизвестно** → None |
-| 2.11.7 макро | `tests/news/test_macro_rules.py` | не в Session | выкл → size 1. Вкл: 10 Sep 14:10Z за 24ч до CPI → ×0.5; 9 Sep → 1; FOMC 14:10 ET → 0. Session 10 Sep всё ещё open |
+| 2.11.7 макро | `tests/news/test_macro_rules.py` | не в Session | выкл → size 1. Вкл: 10 Sep 14:10Z за 24ч до CPI → ×0.5; 9 Sep → 1; FOMC/CPI 14:10 ET → `et_blackout`. 9 Dec EST: 18:10Z ещё pre, 19:10Z закрыто. Session 10 Sep всё ещё open |
 | 2.12.5 сентимент | `tests/news/test_sentiment_derisk.py` | нет индекса | месяц + жадность → reject. Час → reject (не «купи страх»). Не шорт «потому что все купили» |
 | флаги фазы | `tests/ops/test_phase_flags.py` | не нужно | `trading_mode` и `equity_source` — **строки** `"off"`/`"none"`. Голый YAML `off` = False; это дыра, файл в кавычках |
 | 2.10.3 PRS | `tests/risk/test_prs_cut.py` | порог не в yaml | Y выше порога → reject. Y=`None` (мало n) ≠ тонкая книга. Порог — аргумент, `registry.yaml` не трогали |
@@ -101,6 +101,13 @@
 | 5.24 урок | `tests/llm/test_lesson_no_average.py` | контейнера нет | «долей» / `average_in` → не совет и не слово в сводке |
 | yaml-часы | `tests/signer/test_deadman.py`, `test_reconcile.py` | тестнета нет | `dead_man_s=30` и `reconcile_s=60` из `time.yaml`, не магические числа в стороне |
 | счётчики гейта | `tests/ops/test_gates_count_rules.py` | нет 80 демо | 79 bounce ≠ порог. 80 `failed_break` ≠ bounce. Репо `n_bounce=0`. Фикстуры — не живые сделки |
+| 3.13.2 close | `tests/exec/test_breakout_close.py` | флаг false | флаг выкл → нет, даже если close+eaten+BTC. Фитиль ≠ close. Первая минута → нет. Файла `strategy_breakout.py` нет |
+| 3.13.3 жест | `tests/exec/test_breakout_gesture.py` | не вход | DEFEND после прокола → `fake_defend`. RETREAT не этот skip. `propose` не импортирует |
+| 3.15.5 хрупкость | `tests/whales/test_fragility.py` | нет OI | три True → запрет новых лонгов. `None` ≠ пик. Теплокарта не вход. `propose` не импортирует |
+| 4.19.2 drift | `tests/risk/test_drift_cut.py` | не live | drift → target 0.005. `phase.yaml` target 0.01 не трогали |
+| 4.18.5 n_min | `tests/risk/test_nmin_quarter.py` | не Ф4 | Ф1 size_mult=1 даже при SILENCE. Четверть только если явно `phase=f4` |
+| 5.23 A+ | `tests/risk/test_aplus.py` | не Ф5 | 5 ролей + BTC. F1 Sizer 5x всё равно reject. `raises_lev_in_f1` false |
+| DST 1 Nov | `tests/risk/test_session.py`, `test_macro_rules.py` | не нужно | 2026-11-01 13:30Z = сессия МСК. FOMC 9 Dec (Fed calendar) 14:00 EST = 19:00Z |
 
 Неделя 1 **не закрыта**. Гейты Ф0/Ф1/Ф2 красные. `trading_mode` читается как строка `"off"`. Макро-правила **не** вшиты в сессию. Ордеров нет. Не «всё реализовано» (нет 20 постов, нет пробоя/китов, нет 50 разобранных авторов, нет живого часа). Не топ мира по %: PTF пустая.
 

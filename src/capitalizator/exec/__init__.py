@@ -1,5 +1,6 @@
 """Replay recorded book frames. Fees and naive fill are paper only."""
 
+from capitalizator.exec.breakout_close import BreakoutClose
 from capitalizator.exec.demo_adapter import DemoAdapter
 from capitalizator.exec.episodes import EpisodeLog
 from capitalizator.exec.failed_break import FailedBreak
@@ -21,6 +22,7 @@ from capitalizator.exec.tca_demo import TcaRow, TcaTable
 __all__ = [
     "BookCheckpoint",
     "BounceSnapshot",
+    "BreakoutClose",
     "BounceStrategy",
     "DemoAdapter",
     "EpisodeLog",

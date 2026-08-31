@@ -22,6 +22,7 @@ def test_repo_macro_csv_has_required_times() -> None:
         "cpi-2026-11-10",
         "fomc-2026-09-16",
         "fomc-2026-10-28",
+        "fomc-2026-12-09",
     }
     for row in news.rows:
         assert row.event_time.tzinfo is not None
@@ -41,7 +42,7 @@ def test_slice_at_known_at_sees_rows() -> None:
     news = NewsIngest.from_csv(MACRO)
     when = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
     seen = news.visible(when)
-    assert len(seen) == 5
+    assert len(seen) == 6
     store = NewsStore(news.rows)
     rows = store.query("SELECT event_id FROM news ORDER BY event_id", as_of=when)
     assert [r["event_id"] for r in rows] == sorted(r.event_id for r in seen)
@@ -67,6 +68,13 @@ def test_naive_event_time_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(NewsIngestError, match="UTC"):
         NewsIngest.from_csv(path)
+
+
+def test_december_fomc_is_est_1900z() -> None:
+    """DST ended 1 Nov 2026; 14:00 ET on 9 Dec is 19:00Z, not 18:00Z."""
+    news = NewsIngest.from_csv(MACRO)
+    dec = next(r for r in news.rows if r.event_id == "fomc-2026-12-09")
+    assert dec.event_time == datetime(2026, 12, 9, 19, 0, tzinfo=UTC)
 
 
 def test_november_cpi_is_est_1330z() -> None:

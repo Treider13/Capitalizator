@@ -1,4 +1,4 @@
-"""2.11.7 — 24h pre CPI/FOMC and FOMC 14:00–15:00 ET. Off until enabled.
+"""2.11.7 — 24h pre CPI/FOMC and 14:00–15:00 ET on CPI/FOMC days. Off until enabled.
 
 Numbers come from infra/time.yaml. SessionWindow does not call this.
 Does not open size. Does not invent a calendar row.
@@ -41,8 +41,8 @@ class MacroRules:
         when = require_utc(now)
         if not self.enabled:
             return MacroDecision(True, Decimal("1"), "macro_off")
-        if self._fomc_blackout(when, calendar):
-            return MacroDecision(False, Decimal("0"), "fomc_blackout")
+        if self._et_blackout(when, calendar):
+            return MacroDecision(False, Decimal("0"), "et_blackout")
         if self._pre_event(when, calendar):
             return MacroDecision(True, self.size_mult, "pre_event")
         return MacroDecision(True, Decimal("1"), "ok")
@@ -50,13 +50,14 @@ class MacroRules:
     def _known(self, row: NewsRow, when: datetime) -> bool:
         return row.known_at <= when
 
-    def _fomc_blackout(self, when: datetime, calendar: Sequence[NewsRow]) -> bool:
+    def _et_blackout(self, when: datetime, calendar: Sequence[NewsRow]) -> bool:
+        """14:00–15:00 ET on a CPI or FOMC day. zoneinfo, not a UTC constant."""
         ny_day = when.astimezone(self.ny).date()
         stamp = when.astimezone(self.ny).timetz().replace(tzinfo=None)
         if not (self.blackout_start <= stamp < self.blackout_end):
             return False
         return any(
-            row.event_class == "FOMC"
+            row.event_class in PRE_CLASSES
             and self._known(row, when)
             and row.event_time.astimezone(self.ny).date() == ny_day
             for row in calendar

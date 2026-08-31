@@ -51,5 +51,27 @@ def test_fomc_blackout_et_is_closed() -> None:
         datetime(2026, 9, 16, 18, 10, tzinfo=UTC), news.rows
     )
     assert got.allow is False
-    assert got.reason == "fomc_blackout"
+    assert got.reason == "et_blackout"
     assert got.size_mult == Decimal("0")
+
+
+def test_cpi_day_et_hour_is_closed() -> None:
+    """11 Sep 2026 18:10Z = 14:10 EDT on a CPI day."""
+    news = NewsIngest.from_csv(MACRO)
+    got = MacroRules(enabled=True).decide(
+        datetime(2026, 9, 11, 18, 10, tzinfo=UTC), news.rows
+    )
+    assert got.allow is False
+    assert got.reason == "et_blackout"
+
+
+def test_december_fomc_est_blackout_is_1900z() -> None:
+    """9 Dec 2026 is EST. 14:10 ET = 19:10Z. 18:10Z is still 13:10 ET — not the hour."""
+    news = NewsIngest.from_csv(MACRO)
+    rules = MacroRules(enabled=True)
+    early = rules.decide(datetime(2026, 12, 9, 18, 10, tzinfo=UTC), news.rows)
+    assert early.allow is True
+    assert early.reason == "pre_event"
+    late = rules.decide(datetime(2026, 12, 9, 19, 10, tzinfo=UTC), news.rows)
+    assert late.allow is False
+    assert late.reason == "et_blackout"
