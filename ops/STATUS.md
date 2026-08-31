@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **390 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **411 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -72,9 +72,13 @@
 | PTF бумага | `tests/champion/test_ptf.py` | нет живых классов | ρ = E[R]×риск%/часы. n=19 → ρ=`None`; n=138 не pickable; часы≤0 или >3 отказ; ρ≤0 не pickable; риск>1% без гейта отказ; `world_return_rank()` всегда `None` |
 | WJD бумага | `tests/jury/test_desk.py`, `test_weights.py`, `tests/memory/test_stamp_jury.py` | нет живых меток | THROUGH×DEFEND = SPLIT. Вес = n/(n+20)×hit только после экзамена; до n=20 веса равны. `weight_opens_size` всегда false. `propose` жюри не читает |
 | saved-R бумага | `tests/memory/test_saved_r.py` | нет живых скипов с исходом | пустой итог `None`, не ноль. skip bounce → later break = +1R; later bounce = missed, не прибыль. Чужая причина — отказ. Не PnL |
-| LLM не ставит вердикт | `tests/llm/test_cannot_verify.py` | контейнера нет | в `llm/` нет присваивания VERIFIED. Это не красная команда Ф2 и не модель по сети |
+| LLM не ставит вердикт | `tests/llm/test_cannot_verify.py`, `test_redteam_poison.py` | контейнера нет | яд `verdict=VERIFIED` / `API_KEY` не копируется в сводку. `trade_advice=false`. Сокет в sandbox — ошибка. Не модель по сети |
+| 2.9.1 зоны BTC | `tests/btc/test_zones.py` | нет живой карты | тот же `ZoneEngine`, не второй движок. Есть support/resistance и regime=box на закрытых 4h. `BtcVeto` нет |
+| 2.9.2 слом | `tests/btc/test_break_definition.py` | нет живого часа | фитиль ниже поддержки + eaten ≠ слом. Закрытие за зоной + eaten = слом. ETH не слом BTC. `propose` это **не** читает |
+| 2.11.1 схема | `tests/card/test_schema.py` | не нужно | битый JSON / нет `known_at` / голый текст — не карточка |
+| 2.11.2 SQL PIT | `tests/verifier/test_recompute.py` | нет прод-SQL | «23 из 31» = два числа из запроса. «24 из 31» тем же SQL → REFUTED. Срез 12:10 не видит 23. VERIFIED без файла результата не штампует карточку |
 
-Неделя 1 **не закрыта** (нет VPS/суток). Гейт Ф0 красный. Гейт Ф1 красный (0 closed demo bounce). `trading_mode=off`. Код 1.6–1.8 + PTF/WJD на ветке, **ордеров нет**, hello демо красный. Не «всё реализовано». Не топ мира по %: пустая PTF → ρ неизвестен, титула нет.
+Неделя 1 **не закрыта** (нет VPS/суток). Гейт Ф0 красный. Гейт Ф1 красный (0 closed demo bounce). `trading_mode=off`. Код 1.6–1.8 + бумага 2.9.1–2 / 2.11.1–2 / 2.11.6 на ветке. **Вето BTC на альт не открывали.** Ордеров нет. Не «всё реализовано». Не топ мира по %: пустая PTF → ρ неизвестен.
 
 Чужие проекты / форумы (не копировали стратегии):
 - Freqtrade: Bybit **futures isolated** умеет stoploss on exchange; Bybit **spot** — нет. Мы linear perp, стоп обязателен в схеме, на биржу не слали.

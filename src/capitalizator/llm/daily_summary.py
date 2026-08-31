@@ -12,6 +12,10 @@ from typing import Any
 from capitalizator.llm.sandbox import no_egress
 
 _ADVICE = re.compile(r"лонг|шорт|купи|продай|завтра", re.IGNORECASE)
+_POISON = re.compile(
+    r"VERIFIED|REFUTED|UNVERIFIABLE|API_KEY|API_SECRET|os\.environ",
+    re.IGNORECASE,
+)
 
 
 class DailySummary:
@@ -24,11 +28,11 @@ class DailySummary:
         with no_egress():
             lines = [ln.strip() for ln in report.splitlines() if ln.strip()]
             body = " ".join(lines[:3]) if lines else "Отчёт пуст."
-            if _ADVICE.search(body):
+            if _ADVICE.search(body) or _POISON.search(body):
                 body = "Отчёт содержит запрещённые слова; пересказ без советов."
             out = {"summary": body, "trade_advice": False}
             if out["trade_advice"] is not False:
                 raise ValueError("trade_advice must stay false")
-            if _ADVICE.search(out["summary"]):
+            if _ADVICE.search(out["summary"]) or _POISON.search(out["summary"]):
                 raise ValueError("summary must not advise")
             return out
