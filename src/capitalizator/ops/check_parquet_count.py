@@ -9,7 +9,10 @@ import pyarrow.parquet as pq
 
 
 def count_rows(path: Path) -> int:
-    return int(pq.ParquetFile(path).read().num_rows)
+    meta = pq.ParquetFile(path).metadata
+    if meta is None:
+        raise ValueError(f"parquet metadata missing: {path}")
+    return int(meta.num_rows)
 
 
 def main(argv: list[str] | None = None) -> int:

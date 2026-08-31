@@ -33,7 +33,10 @@ def _parquet_counts(tape: Path) -> tuple[int, int]:
         import pyarrow.parquet as pq
 
         for path in files:
-            rows += int(pq.ParquetFile(path).read().num_rows)
+            meta = pq.ParquetFile(path).metadata
+            if meta is None:
+                raise ValueError(f"parquet metadata missing: {path}")
+            rows += int(meta.num_rows)
     return len(files), rows
 
 
@@ -244,25 +247,31 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
             self._reject_write()
 
         def do_GET(self) -> None:  # noqa: N802
-            parsed = urlparse(self.path)
-            path = parsed.path
-            if path == "/healthz":
-                body, code, ctype = b"ok", 200, "text/plain; charset=utf-8"
-            elif path == "/api/status":
-                payload = desk_snapshot(app.vault)
-                body = json.dumps(payload, ensure_ascii=False).encode()
-                code, ctype = 200, "application/json; charset=utf-8"
-            elif path in {"/", "/index.html"}:
-                qs = parse_qs(parsed.query)
-                day = qs.get("day", [None])[0]
-                body = render_html(app.vault, day=day).encode()
-                code, ctype = 200, "text/html; charset=utf-8"
-            else:
-                body, code, ctype = b"not-found", 404, "text/plain; charset=utf-8"
-            self.send_response(code)
-            self.send_header("Content-Type", ctype)
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                parsed = urlparse(self.path)
+                path = parsed.path
+                if path == "/healthz":
+                    body, code, ctype = b"ok", 200, "text/plain; charset=utf-8"
+                elif path == "/api/status":
+                    payload = desk_snapshot(app.vault)
+                    body = json.dumps(payload, ensure_ascii=False).encode()
+                    code, ctype = 200, "application/json; charset=utf-8"
+                elif path in {"/", "/index.html"}:
+                    qs = parse_qs(parsed.query)
+                    day = qs.get("day", [None])[0]
+                    body = render_html(app.vault, day=day).encode()
+                    code, ctype = 200, "text/html; charset=utf-8"
+                else:
+                    body, code, ctype = b"not-found", 404, "text/plain; charset=utf-8"
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception:
+                self.send_response(500)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"error")
 
     return Handler
 

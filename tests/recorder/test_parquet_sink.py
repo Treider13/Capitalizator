@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -71,6 +72,25 @@ def test_failed_write_leaves_old_file(tmp_path: Path, monkeypatch: pytest.Monkey
         sink.write(_event(2))
     assert path.read_bytes() == old
     assert list(path.parent.glob("*.tmp")) == []
+
+
+def test_concurrent_writers_keep_all_rows(tmp_path: Path) -> None:
+    errors: list[BaseException] = []
+
+    def go(seq: int) -> None:
+        try:
+            ParquetSink(tmp_path).write(_event(seq))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=go, args=(seq,)) for seq in range(1, 6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    path = partition_path(tmp_path, _event(1))
+    assert pq.ParquetFile(path).read().num_rows == 5
 
 
 def test_new_sink_reloads_existing_file(tmp_path: Path) -> None:

@@ -325,3 +325,49 @@ def test_pack_dest_file_is_refused(tmp_path: Path) -> None:
     dest.write_text("nope", encoding="utf-8")
     with pytest.raises(BackupError, match="not a directory"):
         pack(vault, dest)
+
+
+def test_hardlink_in_reports_is_refused(tmp_path: Path) -> None:
+    import os
+
+    vault = init_vault(tmp_path / "desk")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("plain", encoding="utf-8")
+    os.link(outside, vault.reports / "keep.txt")
+    with pytest.raises(BackupError, match="hardlink"):
+        pack(vault, tmp_path / "bak")
+
+
+def test_failed_restore_does_not_create_dest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import capitalizator.ops.backup as bak
+
+    vault = init_vault(tmp_path / "desk")
+    (vault.reports / "keep.txt").write_text("x", encoding="utf-8")
+    backup = tmp_path / "bak"
+    pack(vault, backup)
+    dest = tmp_path / "moved"
+    real = bak.copy_regular
+
+    def boom(src: Path, target: Path) -> None:
+        if target.name == "keep.txt":
+            raise OSError("disk")
+        real(src, target)
+
+    monkeypatch.setattr(bak, "copy_regular", boom)
+    with pytest.raises(OSError, match="disk"):
+        restore(backup, dest)
+    assert not dest.exists()
+    leftovers = list(dest.parent.glob(f".{dest.name}.*.restore"))
+    assert leftovers == []
+
+
+def test_lock_file_is_not_packed(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    ParquetSink(vault.tape).write(_event())
+    assert list(vault.tape.rglob("*.lock"))
+    manifest = pack(vault, tmp_path / "bak")
+    assert manifest["counts"]["parquet_rows"] == 1
+    listed = " ".join(manifest["files"])
+    assert ".lock" not in listed

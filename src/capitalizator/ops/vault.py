@@ -53,7 +53,7 @@ class Vault:
 
 
 def iter_regular_files(root: Path) -> Iterator[Path]:
-    """List regular files only. Symlinks, fifos, and devices are a hard reject."""
+    """List regular files only. Symlinks, fifos, devices, hardlinks are a hard reject."""
     if root.is_symlink():
         raise VaultError(f"symlink: {root}")
     if not root.is_dir():
@@ -68,9 +68,59 @@ def iter_regular_files(root: Path) -> Iterator[Path]:
             path = base / name
             if path.is_symlink():
                 raise VaultError(f"symlink: {path}")
-            if not stat.S_ISREG(path.lstat().st_mode):
+            st = path.lstat()
+            if not stat.S_ISREG(st.st_mode):
                 raise VaultError(f"not a regular file: {path}")
+            if st.st_nlink > 1:
+                raise VaultError(f"hardlink: {path}")
             yield path
+
+
+def open_regular(path: Path, *, flags: int = os.O_RDONLY) -> int:
+    """Open a path that must still be a regular file. O_NOFOLLOW: no symlink swap."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise VaultError("O_NOFOLLOW required")
+    fd = os.open(path, flags | nofollow)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise VaultError(f"not a regular file: {path}")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def copy_regular(src: Path, dest: Path) -> None:
+    """Copy via fds. shutil.copy2 follows a symlink planted after the walk."""
+    fd = open_regular(src)
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
+    out: int | None = None
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        out = os.open(
+            tmp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o644,
+        )
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            os.write(out, chunk)
+        os.fsync(out)
+        os.close(out)
+        out = None
+        os.replace(tmp, dest)
+    except Exception:
+        if out is not None:
+            os.close(out)
+        if tmp.exists() and not tmp.is_symlink():
+            tmp.unlink()
+        raise
+    finally:
+        os.close(fd)
 
 
 def _require_real_dir(path: Path, *, name: str) -> None:

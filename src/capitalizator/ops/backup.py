@@ -23,9 +23,11 @@ from capitalizator.ops.vault import (
     DB_NAME,
     Vault,
     VaultError,
+    copy_regular,
     init_vault,
     iter_regular_files,
     load_vault,
+    open_regular,
 )
 
 # Built at runtime from codes so src and bytecode never hold the literal.
@@ -56,6 +58,7 @@ def scan_secret_text(blob: str) -> list[str]:
 SKIP_NAMES = frozenset({".gitkeep", "README.md", "LAYOUT"})
 REPORT_SUFFIX = frozenset({".md", ".txt"})
 TAPE_SUFFIX = frozenset({".parquet"})
+EPHEMERAL_SUFFIX = frozenset({".lock", ".tmp"})
 SIDECARS = frozenset({"-wal", "-shm", "-journal"})
 
 
@@ -64,16 +67,28 @@ class BackupError(ValueError):
 
 
 def _sha256(path: Path) -> str:
+    try:
+        fd = open_regular(path)
+    except VaultError as exc:
+        raise BackupError(str(exc)) from exc
     digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
+    try:
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
             digest.update(chunk)
+    finally:
+        os.close(fd)
     return digest.hexdigest()
 
 
 def _iter_files(root: Path) -> Iterable[Path]:
     try:
-        yield from iter_regular_files(root)
+        for path in iter_regular_files(root):
+            if path.suffix in EPHEMERAL_SUFFIX:
+                continue
+            yield path
     except VaultError as exc:
         raise BackupError(str(exc)) from exc
 
@@ -125,6 +140,7 @@ def assert_no_secrets(vault: Vault) -> None:
             if hits:
                 raise BackupError(f"secret pattern in {path}: {hits[0]}")
     knowledge = open_knowledge(vault, create=False)
+    hits: list[str] = []
     try:
         if not knowledge.verify_ok():
             raise BackupError("hash chain broken")
@@ -141,7 +157,10 @@ def _parquet_stats(tape: Path) -> tuple[int, int]:
     files = [path for path in _iter_files(tape) if path.suffix in TAPE_SUFFIX]
     rows = 0
     for path in files:
-        rows += int(pq.ParquetFile(path).read().num_rows)
+        meta = pq.ParquetFile(path).metadata
+        if meta is None:
+            raise BackupError(f"parquet metadata missing: {path}")
+        rows += int(meta.num_rows)
     return len(files), rows
 
 
@@ -172,7 +191,10 @@ def _copy_plain(src: Path, dest: Path, *, suffixes: frozenset[str]) -> None:
             raise BackupError(f"unsafe path: {rel}")
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
+        try:
+            copy_regular(path, target)
+        except VaultError as exc:
+            raise BackupError(str(exc)) from exc
 
 
 def _safe_under(root: Path, rel: str) -> Path:
@@ -339,44 +361,62 @@ def verify_backup(backup: Path) -> dict[str, Any]:
 
 
 def restore(backup: Path, dest: Path) -> Vault:
+    """Copy listed files only, on a staging dir, then rename. copytree is gone.
+
+    Python shutil.copytree(symlinks=False) *inlines* symlink targets. A failed
+    copy into dest used to leave a dirty tree (and a leaked file).
+    """
     manifest = verify_backup(backup)
     dest = dest.resolve()
     if dest.exists() and not dest.is_dir():
         raise BackupError(f"restore dest not a directory: {dest}")
     if dest.exists() and any(dest.iterdir()):
         raise BackupError(f"restore dest not empty: {dest}")
-    dest.mkdir(parents=True, exist_ok=True)
-    for name in ("LAYOUT", "knowledge", "reports", "tape"):
-        src = backup / name
-        target = dest / name
-        if src.is_symlink():
-            raise BackupError(f"symlink: {src}")
-        if src.is_file():
-            shutil.copy2(src, target)
-        elif src.is_dir():
-            assert_no_symlinks(src)
-            shutil.copytree(src, target, symlinks=False)
-        elif name == "tape":
-            target.mkdir(exist_ok=True)
     files = manifest.get("files")
     if not isinstance(files, dict):
         raise BackupError("manifest.files missing")
-    _check_listed_files(dest, files)
-    vault = init_vault(dest)
-    got = _knowledge_counts(vault)
-    expect = manifest.get("counts")
-    if not isinstance(expect, dict):
-        raise BackupError("manifest.counts missing")
-    for key in ("hash_links", "episodes", "reports"):
-        if int(expect.get(key, -1)) != got[key]:
-            raise BackupError(f"restore count mismatch {key}")
-    if "tape" in manifest.get("layers", []):
-        files_n, rows_n = _parquet_stats(vault.tape)
-        if int(expect.get("parquet_files", -1)) != files_n:
-            raise BackupError("restore parquet file count mismatch")
-        if int(expect.get("parquet_rows", -1)) != rows_n:
-            raise BackupError("restore parquet row count mismatch")
-    return vault
+    parent = dest.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    staging = parent / f".{dest.name}.{os.getpid()}.restore"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir()
+    try:
+        (staging / "knowledge").mkdir()
+        (staging / "reports").mkdir()
+        (staging / "tape").mkdir()
+        layout_src = backup / "LAYOUT"
+        if layout_src.is_symlink() or not layout_src.is_file():
+            raise BackupError("LAYOUT missing or symlink")
+        try:
+            copy_regular(layout_src, staging / "LAYOUT")
+            for rel in files:
+                copy_regular(_safe_under(backup, str(rel)), _safe_under(staging, str(rel)))
+        except VaultError as exc:
+            raise BackupError(str(exc)) from exc
+        _check_listed_files(staging, files)
+        vault = init_vault(staging)
+        got = _knowledge_counts(vault)
+        expect = manifest.get("counts")
+        if not isinstance(expect, dict):
+            raise BackupError("manifest.counts missing")
+        for key in ("hash_links", "episodes", "reports"):
+            if int(expect.get(key, -1)) != got[key]:
+                raise BackupError(f"restore count mismatch {key}")
+        if "tape" in manifest.get("layers", []):
+            files_n, rows_n = _parquet_stats(vault.tape)
+            if int(expect.get("parquet_files", -1)) != files_n:
+                raise BackupError("restore parquet file count mismatch")
+            if int(expect.get("parquet_rows", -1)) != rows_n:
+                raise BackupError("restore parquet row count mismatch")
+        if dest.exists():
+            dest.rmdir()
+        staging.rename(dest)
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+    return load_vault(dest)
 
 
 def main(argv: list[str] | None = None) -> int:

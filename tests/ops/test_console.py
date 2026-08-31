@@ -90,6 +90,28 @@ def test_http_get_and_post_readonly(tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_http_error_is_plain_500(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    target = tmp_path / "outside.txt"
+    target.write_text("secret-target\n", encoding="utf-8")
+    (vault.tape / "leak.parquet").symlink_to(target)
+    app = ConsoleApp(vault)
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("GET", "/api/status")
+        resp = conn.getresponse()
+        assert resp.status == 500
+        assert resp.read() == b"error"
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_cli_refuses_public_bind(tmp_path: Path) -> None:
     from capitalizator.ops.console import main
 
