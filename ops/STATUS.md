@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **626 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **633 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | 0.1.2 ключи | `ops/key-checklist.md` шаблон без значений | галочки человек не ставил | шаблон есть; **не зелёный** |
 | 0.1.3 docker healthz | `tests/recorder/test_app.py`, `tests/infra/test_recorder_docker.py` | docker на VPS нет | Dockerfile/compose без ключей; compose up на VPS — **нет** |
 | 0.1.4 WS час BTC | `BybitTradesWs.run()` + `--from-jsonl`; p50/p95 `recv-exchange` в JSON | живой час нет | ack не сделка. `--minutes` без jsonl — отказ. Час записи — **нет** |
-| 0.1.5 parquet | `tests/recorder/test_parquet_sink.py` | не нужно | `mkstemp`+fd+inode `replace`; lock `O_NOFOLLOW`; mkdir по одному имени (не в dir-симлинк); два писателя — flock + перечит. Счётчик — `metadata.num_rows` через fd. Зелёный после прогона |
+| 0.1.5 parquet | `tests/recorder/test_parquet_sink.py` | не нужно | `mkstemp`+fd+inode `replace`; lock `O_NOFOLLOW` + `O_NONBLOCK` + `S_ISREG` (FIFO отказ); mkdir по одному имени (не в dir-симлинк); два писателя — flock + перечит. Счётчик — `metadata.num_rows` через fd. Зелёный после прогона |
 | 0.1.6 gap | `tests/recorder/test_gap.py` | не нужно | зелёный после прогона |
 | 0.1.7 сутки | `check_uptime` на фикстурах | нет живых суток | инструмент есть; сутки — **не зелёные** |
 | 0.2.1 REST snapshot | `tests/recorder/test_snapshot.py` | curl с VPS нет | `exchange_ts` = `cts` (движок, стыкуется с `T` сделки), не системный `ts` |
@@ -33,7 +33,7 @@
 | 0.3.6 ZLG | `tests/zlg/test_labels.py`, `test_double_run.py` | не нужно | 5 меток; SILENCE если max A < γ·q. Два прогона = одна метка. Размер не открывается |
 | 0.3.7 BTC-режим | `tests/btc/test_regime.py` | не нужно | trend/box с закрытого HTF; news только с `known_at ≤ t`; unknown → None. `veto()` нет |
 | 0.3.8 отчёт | `tests/ops/test_daily_report_no_advice.py` | не нужно | касания/жесты/дыры/пинг; «лонг/купи/завтра» — ошибка |
-| знания / бэкап | `tests/ops/test_vault_backup.py` | VPS нет | Snapshot: serialize + mkstemp. DB: `O_EXCL|O_NOFOLLOW`, inode после `connect` и после `replace`. LAYOUT через `write_regular_text`. Симлинк / FIFO / hardlink / секрет — отказ. Restore — staging + rename. Живого диска VPS **нет** |
+| знания / бэкап | `tests/ops/test_vault_backup.py` | VPS нет | Snapshot: serialize + mkstemp. DB: `O_EXCL|O_NOFOLLOW`, inode после `connect` и после `replace`. LAYOUT через `write_regular_text`. `ensure_real_parent` смотрит каждого предка: `mkdir(parents=True)` пишет в цель dir-симлинка, `parent.is_symlink()` после этого врёт. Симлинк / FIFO / hardlink / секрет — отказ. Restore — staging + rename. Живого диска VPS **нет** |
 | консоль ноут | `tests/ops/test_console.py` | туннеля нет | GET `/` и `/api/status`; POST/PUT/DELETE/PATCH 405; только 127.0.0.1. Без LAYOUT не встаёт. Поля `vps` нет. Симлинк `desk.sqlite` / `tape/` — отказ, 500 `error`. Signer не импортирован |
 
 | 0.4.1 новости | `tests/news/test_pit.py` | не нужно | CSV BLS/Fed/BEA: CPI + FOMC + NFP (4 Sep / 2 Oct / 6 Nov EST / 4 Dec EST) + PCE (30 Sep / 29 Oct / 25 Nov EST / 23 Dec EST). Срез до `known_at` пустой. NFP/PCE не в MacroRules 24ч/ET. TG нет |
