@@ -95,6 +95,8 @@ def open_regular(path: Path, *, flags: int = os.O_RDONLY) -> int:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode):
                 raise VaultError(f"not a regular file: {path}")
+            if st.st_nlink > 1:
+                raise VaultError(f"hardlink: {path}")
             return fd
         except Exception:
             os.close(fd)
@@ -404,7 +406,9 @@ def init_vault(root: Path) -> Vault:
         raise VaultError(f"vault root is a symlink: {vault.root}")
     vault.root.mkdir(parents=True, exist_ok=True)
     for folder in (vault.knowledge, vault.tape, vault.reports):
-        if folder.exists() and (folder.is_symlink() or not folder.is_dir()):
+        # exists() follows: a dangling layer symlink looks missing, then mkdir
+        # raises FileExistsError instead of a vault refuse.
+        if folder.is_symlink() or (folder.exists() and not folder.is_dir()):
             raise VaultError(
                 f"vault layer exists and is not a real directory: {folder.name}"
             )
@@ -416,6 +420,8 @@ def init_vault(root: Path) -> Vault:
         raise VaultError("LAYOUT is a symlink")
     write_regular_text(vault.layout_path, f"{LAYOUT_VERSION}\n")
     readme = vault.secrets / "README.md"
+    if vault.secrets.is_symlink():
+        raise VaultError("secrets/ exists and is not a real directory")
     if not vault.secrets.exists():
         vault.secrets.mkdir()
     if vault.secrets.is_symlink() or not vault.secrets.is_dir():

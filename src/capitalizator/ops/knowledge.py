@@ -1,7 +1,8 @@
 """SQLite knowledge base. Same idea as Freqtrade tradesv3.sqlite — portable file.
 
 Empty tables are honest. Does not read keys. Does not open size.
-Open with create=False never writes a missing file (pack/verify must not invent a db).
+Open with create=False never writes: missing file stays missing; a 0-byte
+desk.sqlite is not a db (SQLite would init it). Readonly bind via mode=ro.
 Writes take BEGIN IMMEDIATE. Snapshot uses sqlite3 backup API, not a raw file copy.
 Episode and report rows are bound into the hash chain in the same transaction.
 verify_tables() replays those links; a silent UPDATE of episodes fails pack.
@@ -76,16 +77,19 @@ def report_payload(*, day: str, kind: str, body: str) -> str:
     )
 
 
-def connect_held_inode(fd: int) -> sqlite3.Connection:
+def connect_held_inode(fd: int, *, readonly: bool = False) -> sqlite3.Connection:
     """Bind SQLite to the inode we already opened with O_NOFOLLOW.
 
     sqlite3.connect(path) follows a symlink planted after the probe fd is closed.
     /proc/self/fd/N opens that inode (Linux). Journal stays next to the real file;
     a later connect(path) sees the same bytes. stdlib has no SQLITE_OPEN_NOFOLLOW.
+    create=False uses file:?mode=ro so SCHEMA / INSERT cannot dirty the source.
     """
     proc = f"/proc/self/fd/{int(fd)}"
     if not os.path.exists(proc):
         raise ValueError("sqlite open requires /proc/self/fd")
+    if readonly:
+        return sqlite3.connect(f"file:{proc}?mode=ro", uri=True, timeout=5.0)
     return sqlite3.connect(proc, timeout=5.0)
 
 
@@ -108,7 +112,7 @@ class Knowledge:
                     raise ValueError(str(exc)) from exc
                 self._cx: sqlite3.Connection | None = None
                 return
-            flags = os.O_RDWR | nofollow
+            flags = (os.O_RDWR if create else os.O_RDONLY) | nofollow
             if create:
                 try:
                     fd = os.open(
@@ -125,7 +129,13 @@ class Knowledge:
             created = os.fstat(fd)
             if not stat.S_ISREG(created.st_mode):
                 raise ValueError(f"not a regular file: {path}")
-            self._cx = connect_held_inode(fd)
+            if created.st_nlink > 1:
+                raise ValueError(f"hardlink: {path}")
+            # Fact: SQLite treats a 0-byte file as a new db and writes a header
+            # even when the URI is mode=ro (select 1 succeeds; pack then snapshots).
+            if not create and created.st_size == 0:
+                raise ValueError(f"empty knowledge db: {path}")
+            self._cx = connect_held_inode(fd, readonly=not create)
         finally:
             if fd >= 0:
                 os.close(fd)
@@ -138,8 +148,14 @@ class Knowledge:
         self._cx.isolation_level = None
         self._cx.row_factory = sqlite3.Row
         self._cx.execute("PRAGMA foreign_keys = ON")
-        self._cx.executescript(SCHEMA)
-        self._cx.execute("INSERT OR IGNORE INTO meta(k, v) VALUES ('schema', '1')")
+        if create:
+            self._cx.executescript(SCHEMA)
+            self._cx.execute("INSERT OR IGNORE INTO meta(k, v) VALUES ('schema', '1')")
+        else:
+            try:
+                self._cx.execute("SELECT 1 FROM sqlite_master LIMIT 1")
+            except sqlite3.DatabaseError as exc:
+                raise ValueError(f"not a sqlite database: {path}") from exc
 
     def close(self) -> None:
         if self._cx is not None:

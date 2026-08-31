@@ -130,6 +130,14 @@ def test_serve_without_layout_does_not_invent_vault(tmp_path: Path) -> None:
         main(["--userdir", str(tmp_path / "missing"), "--serve"])
 
 
+def test_snapshot_does_not_init_empty_sqlite(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    vault.db_path.write_bytes(b"")
+    with pytest.raises(ValueError, match="empty knowledge db"):
+        desk_snapshot(vault)
+    assert vault.db_path.read_bytes() == b""
+
+
 def test_snapshot_refuses_symlink_db(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     open_knowledge(vault).close()

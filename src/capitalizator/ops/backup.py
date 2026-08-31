@@ -77,11 +77,12 @@ def _digest_size(path: Path) -> tuple[str, int]:
         raise BackupError(str(exc)) from exc
     digest = hashlib.sha256()
     try:
-        size = os.fstat(fd).st_size
+        size = 0
         while True:
             chunk = os.read(fd, 65536)
             if not chunk:
                 break
+            size += len(chunk)
             digest.update(chunk)
         return digest.hexdigest(), size
     finally:
@@ -147,7 +148,10 @@ def assert_no_secrets(vault: Vault) -> None:
             hits = scan_secret_text(text)
             if hits:
                 raise BackupError(f"secret pattern in {path}: {hits[0]}")
-    knowledge = open_knowledge(vault, create=False)
+    try:
+        knowledge = open_knowledge(vault, create=False)
+    except ValueError as exc:
+        raise BackupError(str(exc)) from exc
     hits: list[str] = []
     try:
         if not knowledge.verify_ok():
@@ -243,7 +247,10 @@ def _make_staging(parent: Path, dest_name: str, *, suffix: str) -> Path:
 
 
 def _knowledge_counts(vault: Vault) -> dict[str, int]:
-    knowledge = open_knowledge(vault, create=False)
+    try:
+        knowledge = open_knowledge(vault, create=False)
+    except ValueError as exc:
+        raise BackupError(str(exc)) from exc
     try:
         if not knowledge.verify_ok():
             if not knowledge.integrity_ok():
@@ -275,12 +282,18 @@ def pack(
         if vault.db_path.is_symlink():
             raise BackupError(f"symlink: {vault.db_path}")
         if vault.db_path.is_file():
-            kn = Knowledge(vault.db_path, create=False)
+            try:
+                kn = Knowledge(vault.db_path, create=False)
+            except ValueError as exc:
+                raise BackupError(str(exc)) from exc
             try:
                 kn.snapshot_to(staging / "knowledge" / DB_NAME)
             finally:
                 kn.close()
-            dest_kn = Knowledge(staging / "knowledge" / DB_NAME, create=False)
+            try:
+                dest_kn = Knowledge(staging / "knowledge" / DB_NAME, create=False)
+            except ValueError as exc:
+                raise BackupError(str(exc)) from exc
             try:
                 if not dest_kn.verify_ok():
                     if not dest_kn.integrity_ok():

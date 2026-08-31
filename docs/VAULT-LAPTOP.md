@@ -37,12 +37,12 @@ user_data/          ← VPS пишет, ноут копирует (rsync / pack)
 - Сломанная хеш-цепочка; `PRAGMA integrity_check` после snapshot.
 - Лишний / пропавший файл; подмена sha256; непустой dest; dest — файл, не каталог.
 - **Симлинк файла или каталога в слое** — `pathlib.rglob` умеет зайти в цель. Обход только `os.walk(followlinks=False)`. Слой-симлинк (`tape` → чужое) — отказ при `load_vault`.
-- **FIFO / hardlink / не regular file** — чтение зависло бы или вклеило чужой inode. Отказ.
+- **FIFO / hardlink / не regular file** — чтение зависло бы или вклеило чужой inode. Отказ на обходе **и** на `fstat` уже открытого fd (после walk можно успеть сделать `link` на ключ). sha256 и размер — с одного потока байт, не `fstat` до чтения.
 - **`../` в manifest** — путь не должен выходить из архива.
 - **`--no-tape`** раньше не создавал `tape/` → `load_vault` падал. Теперь пустой каталог есть, счётчик parquet = 0.
 - **Живой `shutil.copy` sqlite** — порча при открытой записи (документация SQLite / практика Freqtrade: не копировать файл на горячую). Пишем через `Connection.backup`. Счётчики берём **со снимка**, не с живого файла (иначе запись между `COUNT` и backup рвёт manifest).
 - **Эпизод/отчёт вне цепочки** — тихий `UPDATE episodes` раньше проходил verify. Теперь строка пишется в той же `BEGIN IMMEDIATE`, что и звено; `verify_tables()` сверяет повтор со таблицами.
-- **`verify`/`pack` не создают sqlite в источнике**, если его не было.
+- **`verify`/`pack` не создают sqlite в источнике**, если его не было. Пустой `touch desk.sqlite` раньше проходил: SQLite считает 0 байт новой базой и пишет заголовок `SQLite format 3` (факт: pack → источник 32768 байт). `create=False` теперь `O_RDONLY` + `mode=ro`, SCHEMA не гоняет, 0 байт — отказ.
 - **Parquet** — `mkstemp` + запись в fd + `replace` только если имя всё ещё наш inode. Предсказуемый `{pid}.tmp`-симлинк больше не затирает цель. Два писателя — `fcntl.LOCK_EX` + `O_NOFOLLOW` на `.lock` и перечит с диска. Счётчик — `metadata.num_rows` через fd, не `read()` всего часа.
 - **`sqlite3.connect(path)` ходит по симлинку.** Факт: после `close(fd)` можно подменить имя; `connect` открывает цель. Пишем через `/proc/self/fd/N` (тот же inode, что `O_NOFOLLOW`). Журнал SQLite остаётся у настоящего файла; повторный `connect(path)` видит те же байты. В stdlib нет `SQLITE_OPEN_NOFOLLOW`. Snapshot: serialize → запись через `dir_fd`.
 - **`os.open(path, O_NOFOLLOW)` ходит в промежуточный dir-симлинк.** Факт: `dest/knowledge` → `outside`, `outside/desk.sqlite` есть, `is_symlink` False, `is_file` True; `Knowledge()` писал заголовок `SQLite format 3` в цель. Файл открываем только как `openat(parent_fd, name)`.

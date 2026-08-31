@@ -107,6 +107,31 @@ def test_pack_does_not_create_source_db(tmp_path: Path) -> None:
     verify_backup(tmp_path / "bak")
 
 
+def test_create_false_does_not_init_empty_sqlite(tmp_path: Path) -> None:
+    """Fact: SQLite treats a 0-byte file as a new db and writes a header.
+
+    Knowledge(create=False) used to executescript(SCHEMA) on that inode.
+    pack then snapshotted the invented db and left 32KiB in the source vault.
+    """
+    from capitalizator.ops.knowledge import Knowledge
+
+    empty = tmp_path / "desk.sqlite"
+    empty.write_bytes(b"")
+    with pytest.raises(ValueError, match="empty knowledge db"):
+        Knowledge(empty, create=False)
+    assert empty.stat().st_size == 0
+    assert empty.read_bytes() == b""
+
+
+def test_pack_empty_sqlite_does_not_write_source(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    vault.db_path.write_bytes(b"")
+    with pytest.raises(BackupError, match="empty knowledge db"):
+        pack(vault, tmp_path / "bak")
+    assert vault.db_path.stat().st_size == 0
+    assert vault.db_path.read_bytes() == b""
+
+
 def test_no_tape_pack_still_verifies(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     open_knowledge(vault).close()
@@ -327,6 +352,24 @@ def test_pack_dest_file_is_refused(tmp_path: Path) -> None:
         pack(vault, dest)
 
 
+def test_copy_regular_refuses_hardlink_on_open_fd(tmp_path: Path) -> None:
+    """Walk already refuses nlink>1. Copy must refuse on the fd it actually reads:
+
+    after the walk, a hardlink onto a key would otherwise be packed as bytes.
+    """
+    import os
+
+    from capitalizator.ops.vault import copy_regular
+
+    secret = tmp_path / "secret"
+    secret.write_text("KEYMATERIAL", encoding="utf-8")
+    src = tmp_path / "src.txt"
+    os.link(secret, src)
+    with pytest.raises(VaultError, match="hardlink"):
+        copy_regular(src, tmp_path / "dest" / "keep.txt")
+    assert secret.read_text(encoding="utf-8") == "KEYMATERIAL"
+
+
 def test_hardlink_in_reports_is_refused(tmp_path: Path) -> None:
     import os
 
@@ -537,6 +580,31 @@ def test_replace_if_same_unlinks_result_symlink(
         replace_if_same(tmp, dest, created)
     assert secret.read_bytes() == b"KEYMATERIAL"
     assert dest.exists() is False
+
+
+def test_init_refuses_dangling_layer_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "desk"
+    root.mkdir()
+    (root / "knowledge").symlink_to(tmp_path / "missing-knowledge")
+    (root / "tape").mkdir()
+    (root / "reports").mkdir()
+    with pytest.raises(VaultError, match="real directory|symlink"):
+        init_vault(root)
+    assert (root / "knowledge").is_symlink()
+    assert not (tmp_path / "missing-knowledge").exists()
+
+
+def test_init_refuses_dangling_secrets(tmp_path: Path) -> None:
+    root = tmp_path / "desk"
+    root.mkdir()
+    (root / "knowledge").mkdir()
+    (root / "tape").mkdir()
+    (root / "reports").mkdir()
+    (root / "secrets").symlink_to(tmp_path / "missing-secrets")
+    with pytest.raises(VaultError, match="secrets"):
+        init_vault(root)
+    assert (root / "secrets").is_symlink()
+    assert not (tmp_path / "missing-secrets").exists()
 
 
 def test_init_refuses_layer_dir_symlink(tmp_path: Path) -> None:
