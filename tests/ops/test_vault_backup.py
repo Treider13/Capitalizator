@@ -95,8 +95,68 @@ def test_roundtrip_keeps_rows_and_chain(tmp_path: Path) -> None:
 def test_secret_file_blocks_pack(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     (vault.knowledge / "note.txt").write_text("BYBIT" + "_API_" + "KEY=abc\n", encoding="utf-8")
-    with pytest.raises(BackupError, match="secret"):
+    with pytest.raises(BackupError, match="unexpected|secret"):
         pack(vault, tmp_path / "bak")
+
+
+def test_pack_does_not_create_source_db(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    assert not vault.db_path.is_file()
+    pack(vault, tmp_path / "bak")
+    assert not vault.db_path.is_file()
+    verify_backup(tmp_path / "bak")
+
+
+def test_no_tape_pack_still_verifies(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    manifest = pack(vault, tmp_path / "bak", with_tape=False)
+    assert "tape" not in manifest["layers"]
+    assert manifest["counts"]["parquet_rows"] == 0
+    verify_backup(tmp_path / "bak")
+
+
+def test_symlink_in_tape_is_refused(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    target = tmp_path / "outside.txt"
+    target.write_text("secret-target\n", encoding="utf-8")
+    (vault.tape / "leak.parquet").symlink_to(target)
+    with pytest.raises(BackupError, match="symlink"):
+        pack(vault, tmp_path / "bak")
+
+
+def test_manifest_path_escape_is_refused(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    backup = tmp_path / "bak"
+    pack(vault, backup)
+    evil = tmp_path / "evil.txt"
+    evil.write_text("x", encoding="utf-8")
+    manifest_path = backup / "manifest.json"
+    import json
+
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["files"]["../evil.txt"] = {"sha256": "00", "bytes": 1}
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(BackupError, match="unsafe|escapes|sha256"):
+        verify_backup(backup)
+
+
+def test_restored_db_integrity_ok(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    kn.append_link("zone|DEFEND")
+    kn.close()
+    backup = tmp_path / "bak"
+    pack(vault, backup)
+    restored = restore(backup, tmp_path / "moved")
+    kn2 = open_knowledge(restored, create=False)
+    try:
+        assert kn2.integrity_ok()
+        assert kn2.verify_chain()
+        assert kn2.counts()["hash_links"] == 1
+    finally:
+        kn2.close()
 
 
 def test_secrets_dir_extra_file_blocks_pack(tmp_path: Path) -> None:

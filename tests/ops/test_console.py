@@ -8,6 +8,8 @@ from http.client import HTTPConnection
 from http.server import HTTPServer
 from pathlib import Path
 
+import pytest
+
 import capitalizator.ops.console as console_pkg
 from capitalizator.ops.console import ConsoleApp, _handler, desk_snapshot, render_html
 from capitalizator.ops.knowledge import open_knowledge
@@ -24,6 +26,7 @@ def test_empty_snapshot_is_honest(tmp_path: Path) -> None:
     assert snap["parquet_files"] == 0
     assert snap["hash_chain_ok"] is True
     assert snap["episodes"] == []
+    assert "vps" not in snap
     assert "Касаний нет" in snap["report"]
     assert "пусто" in snap["honest"]
     for word in ("лонг", "шорт", "купи", "продай", "завтра"):
@@ -78,6 +81,10 @@ def test_http_get_and_post_readonly(tmp_path: Path) -> None:
         conn.request("POST", "/order", body="{}", headers={"Content-Type": "application/json"})
         assert conn.getresponse().status == 405
         conn.close()
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("PUT", "/api/status", body="{}", headers={"Content-Type": "application/json"})
+        assert conn.getresponse().status == 405
+        conn.close()
     finally:
         server.shutdown()
         server.server_close()
@@ -92,3 +99,10 @@ def test_cli_refuses_public_bind(tmp_path: Path) -> None:
         assert "localhost" in str(exc)
         return
     raise AssertionError("public bind must refuse")
+
+
+def test_serve_without_layout_does_not_invent_vault(tmp_path: Path) -> None:
+    from capitalizator.ops.console import main
+
+    with pytest.raises(FileNotFoundError, match="not a vault"):
+        main(["--userdir", str(tmp_path / "missing"), "--serve"])

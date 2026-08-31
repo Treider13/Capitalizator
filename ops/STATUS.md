@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **598 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **604 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -33,8 +33,8 @@
 | 0.3.6 ZLG | `tests/zlg/test_labels.py`, `test_double_run.py` | не нужно | 5 меток; SILENCE если max A < γ·q. Два прогона = одна метка. Размер не открывается |
 | 0.3.7 BTC-режим | `tests/btc/test_regime.py` | не нужно | trend/box с закрытого HTF; news только с `known_at ≤ t`; unknown → None. `veto()` нет |
 | 0.3.8 отчёт | `tests/ops/test_daily_report_no_advice.py` | не нужно | касания/жесты/дыры/пинг; «лонг/купи/завтра» — ошибка |
-| знания / бэкап | `tests/ops/test_vault_backup.py` | VPS нет | `user_data/`: SQLite отдельно от parquet; pack/restore сверяет sha256, строки, хеш-цепочку. Пусто = 0. Секрет / сломанная цепочка / лишний файл — отказ. Живого диска VPS **нет** |
-| консоль ноут | `tests/ops/test_console.py` | туннеля нет | GET `/` и `/api/status`; POST 405; только 127.0.0.1. Пустой журнал на экране. Signer не импортирован |
+| знания / бэкап | `tests/ops/test_vault_backup.py` | VPS нет | SQLite через `Connection.backup`, не `shutil` файла. Симлинк / `../` / sidecar / секрет — отказ. `--no-tape` держит пустой `tape/`. Pack не создаёт db в источнике. `integrity_check` после restore. Живого диска VPS **нет** |
+| консоль ноут | `tests/ops/test_console.py` | туннеля нет | GET `/` и `/api/status`; POST/PUT/DELETE/PATCH 405; только 127.0.0.1. Без LAYOUT не встаёт. Поля `vps` нет. Signer не импортирован |
 
 | 0.4.1 новости | `tests/news/test_pit.py` | не нужно | CSV BLS/Fed/BEA: CPI + FOMC + NFP (4 Sep / 2 Oct / 6 Nov EST / 4 Dec EST) + PCE (30 Sep / 29 Oct / 25 Nov EST / 23 Dec EST). Срез до `known_at` пустой. NFP/PCE не в MacroRules 24ч/ET. TG нет |
 | 0.4.7 комиссии | `tests/exec/test_fees.py` | не нужно | VIP0 0.0002/0.00055 ×2; +1R после комиссий меньше на известную величину. Fill по печати, не close |

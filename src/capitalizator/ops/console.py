@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from capitalizator.ops.daily_map_report import _ADVICE, daily_map_report
+from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.phase import trading_mode
 from capitalizator.ops.vault import Vault, init_vault, load_vault
@@ -34,7 +34,7 @@ def _parquet_counts(tape: Path) -> tuple[int, int]:
 
 
 def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
-    knowledge = open_knowledge(vault)
+    knowledge = open_knowledge(vault, create=False)
     try:
         counts = knowledge.counts()
         chain_ok = knowledge.verify_chain()
@@ -65,11 +65,10 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         "episodes": episodes,
         "report_day": report_day,
         "report": report_body,
-        "vps": False,
         "honest": "пусто — не выдумка" if counts["episodes"] == 0 else "есть строки журнала",
     }
     text = json.dumps(snap, ensure_ascii=False)
-    if _ADVICE.search(text):
+    if contains_advice(text):
         raise ValueError("console snapshot must not advise")
     return snap
 
@@ -221,12 +220,24 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             return
 
-        def do_POST(self) -> None:  # noqa: N802
+        def _reject_write(self) -> None:
             self.send_response(405)
             self.send_header("Allow", "GET")
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
             self.wfile.write(b"read-only")
+
+        def do_POST(self) -> None:  # noqa: N802
+            self._reject_write()
+
+        def do_PUT(self) -> None:  # noqa: N802
+            self._reject_write()
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._reject_write()
+
+        def do_PATCH(self) -> None:  # noqa: N802
+            self._reject_write()
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
@@ -260,10 +271,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--init", action="store_true")
     parser.add_argument("--serve", action="store_true")
     args = parser.parse_args(argv)
-    root = Path(args.userdir)
-    vault = init_vault(root) if args.init or not (root / "LAYOUT").is_file() else load_vault(root)
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         raise SystemExit("console binds only to localhost")
+    root = Path(args.userdir)
+    vault = init_vault(root) if args.init else load_vault(root)
     if not args.serve:
         print(json.dumps(desk_snapshot(vault), ensure_ascii=False, indent=2))
         return 0
