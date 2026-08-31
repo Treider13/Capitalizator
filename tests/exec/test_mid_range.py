@@ -41,6 +41,7 @@ def test_exact_mid_yields_no_intent() -> None:
         risk=RiskEngine(),
         halts=Halts(start_equity=Decimal("100000")),
         desk_mode="demo",
+        require_card=False,
     )
     snap = BounceSnapshot(
         now=SESSION,

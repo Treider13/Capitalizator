@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **304 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: прогон после гейта Ф1 и карточки — см. число после pytest. Skip = нет egress на `api.bybit.com`. GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -59,12 +59,15 @@
 | 1.6.5 лимит | `tests/exec/test_maker_only_f1.py` | не нужно | `TAKER_OK=false`, `ORDER_TYPE=limit` |
 | 1.6.6 episode | `tests/exec/test_episodes.py`, `tests/ops/test_day_episodes.py` | нет демо-входов | лог пустой; `day_episodes` без файла → n=0. mode=live отказ |
 
-| 1.7.1 карточка | `tests/card/test_require_card.py` | нет живых карточек | нет файла + `require_card` → отказ. 5 claims-фикстура подписана как unit, не рынок |
+| 1.7.1 карточка | `tests/card/test_require_card.py`, `test_card_before_intent.py` | нет живых карточек | `propose` по умолчанию требует файл. Нет файла → None. Фикстура unit, не рынок |
 | 1.7.2 костыль | `tests/verifier/test_manual_bind.py` | не SQL на проде | «23 из 31» без файла запроса → UNVERIFIABLE. Совпадение файла = VERIFIED |
 | 1.7.3 first_fact | `tests/card/test_first_fact_no_sizeup.py` | n жестов <20 | n=19 / SILENCE → `shadow_gesture`, `size_mult=1`. n=20 не увеличивает лот |
 | 1.7.4 1–3/день | `tests/risk/test_max_three.py` | не нужно | 4-й `propose` → None |
 | 1.7.5 тень ширины | `tests/champion/test_no_auto_promote.py` | ордеров нет | отчёт 0.8 и 1.2; `promote()` отказ; чемпион не сменён |
 | 1.8.1 skip | `tests/ops/test_check_skips.py` | недели сессии нет | нет файла → n=0, код 2. Не рисуем «зелёную неделю скипов» |
+| 1.8.2 TCA | `tests/exec/test_tca_table.py` | нет демо-fill | пустая таблица → медиана `None`, не ноль. Два слипа 1 и 3 тика → медиана 2 |
+| 1.8.3 avg R | `ops/gate_f1.sql` | нет 80 демо | SQL есть; строк episode нет. avg_r не выдумываем |
+| 1.8.4 гейт Ф1 | `tests/ops/test_gate_f1.py` | нет 80 демо | `gates f1` код 2. G1.1/G1.2 красные. G1.3–G1.5 (схема/zlg/breakout) зелёные. `phase.yaml` не трогаем |
 
 Неделя 1 **не закрыта** (нет VPS/суток). Гейт Ф0 красный. `trading_mode=off`. Код 1.6–1.7 на ветке, **ордеров нет**, hello демо красный. Не «всё реализовано».
 

@@ -13,6 +13,7 @@ from capitalizator.exec.strategy_bounce import (
     BounceStrategy,
     in_mid_range,
 )
+from capitalizator.exec.tca_demo import TcaRow, TcaTable
 
 __all__ = [
     "BookCheckpoint",
@@ -25,6 +26,8 @@ __all__ = [
     "ORDER_TYPE",
     "ReplayEngine",
     "TAKER_OK",
+    "TcaRow",
+    "TcaTable",
     "TradeManager",
     "in_mid_range",
 ]

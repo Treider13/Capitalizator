@@ -44,11 +44,49 @@ def gate_f0(*, root: Path | None = None) -> tuple[int, dict[str, object]]:
     return code, {"gate": "f0", "ok": passed, "checks": checks, "exit": code}
 
 
+def gate_f1(*, root: Path | None = None) -> tuple[int, dict[str, object]]:
+    """F1 stays red until ≥80 closed demo bounces exist. We do not invent them."""
+    base = root or repo_root()
+    phase = (base / "infra" / "phase.yaml").read_text(encoding="utf-8")
+    schema = (base / "src" / "capitalizator" / "risk" / "schema.py").read_text(encoding="utf-8")
+    zlg = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted((base / "src" / "capitalizator" / "zlg").glob("*.py"))
+    )
+    episode_file = base / "ops" / "gates" / "f1_episodes.json"
+    n_bounce = 0
+    avg_r: float | None = None
+    if episode_file.is_file():
+        raw = json.loads(episode_file.read_text(encoding="utf-8"))
+        rows = raw if isinstance(raw, list) else raw.get("episodes") or []
+        n_bounce = len(rows)
+        rs = [float(r["r"]) for r in rows if r.get("r") is not None]
+        avg_r = (sum(rs) / len(rs)) if rs else None
+    checks: dict[str, bool] = {
+        "G1.1_n80": n_bounce >= 80,
+        "G1.2_avg_r_pos": avg_r is not None and avg_r > 0,
+        "G1.3_no_average": "average_in" in schema and "FORBIDDEN" in schema,
+        "G1.4_zlg_no_random": "random" not in zlg,
+        "G1.5_breakout_off": "breakout_enabled: false" in phase,
+    }
+    accident = n_bounce > 0 and "average_in" not in schema
+    passed = all(checks.values())
+    code = ACCIDENT if accident else (PASS if passed else FAIL)
+    return code, {
+        "gate": "f1",
+        "ok": passed,
+        "checks": checks,
+        "n_bounce": n_bounce,
+        "avg_r": avg_r,
+        "exit": code,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("gate", choices=("f0",))
+    parser.add_argument("gate", choices=("f0", "f1"))
     args = parser.parse_args(argv)
-    code, payload = gate_f0()
+    code, payload = gate_f0() if args.gate == "f0" else gate_f1()
     out = repo_root() / "ops" / "gates"
     out.mkdir(parents=True, exist_ok=True)
     (out / f"last_{args.gate}.json").write_text(

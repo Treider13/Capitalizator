@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from capitalizator.types import require_utc
+
+Verdict = Literal["pending", "VERIFIED", "REFUTED", "UNVERIFIABLE"]
 
 
 class Claim(BaseModel):
@@ -24,7 +27,7 @@ class Claim(BaseModel):
     known_at: datetime
     horizon: str
     load_bearing: bool
-    verdict: str = "pending"
+    verdict: Verdict = "pending"
 
     @field_validator("as_of", "known_at")
     @classmethod
@@ -55,3 +58,11 @@ def require_card(path: Path | str | None, *, required: bool) -> CardDraft | None
     if not file.is_file():
         raise ValueError("card required")
     return CardDraft.model_validate_json(file.read_text(encoding="utf-8"))
+
+
+def load_bearing_ok(card: CardDraft) -> bool:
+    """At least one load-bearing claim, and every one of them is VERIFIED."""
+    bearing = [c for c in card.claims if c.load_bearing]
+    if not bearing:
+        return False
+    return all(c.verdict == "VERIFIED" for c in bearing)

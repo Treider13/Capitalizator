@@ -33,6 +33,7 @@ def _strategy() -> BounceStrategy:
         risk=RiskEngine(),
         halts=Halts(start_equity=Decimal("100000")),
         desk_mode="demo",
+        require_card=False,
     )
 
 
@@ -96,6 +97,7 @@ def test_open_position_returns_none() -> None:
         risk=risk,
         halts=Halts(start_equity=Decimal("100000")),
         desk_mode="demo",
+        require_card=False,
     )
     assert strat.propose(_snap()) is None
 
@@ -103,7 +105,12 @@ def test_open_position_returns_none() -> None:
 def test_halt_returns_none() -> None:
     h = Halts(start_equity=Decimal("100000"))
     h.mark_liq()
-    strat = BounceStrategy(risk=RiskEngine(), halts=h, desk_mode="demo")
+    strat = BounceStrategy(
+        risk=RiskEngine(),
+        halts=h,
+        desk_mode="demo",
+        require_card=False,
+    )
     assert strat.propose(_snap()) is None
 
 

@@ -2,7 +2,8 @@
 
 All gates must pass or the result is None. trading_mode must be demo.
 F1: TAKER_OK is false; the intent is a limit idea only.
-Gesture / BTC veto / official card are not gates here (PHASE-BUILD week 6).
+Gesture / BTC veto are not gates here. Card file is required unless tests
+turn the flag off. Load-bearing VERIFIED is off until the operator binds SQL.
 """
 
 from __future__ import annotations
@@ -11,7 +12,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
+from capitalizator.card.draft import load_bearing_ok, require_card
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.ops.phase import trading_mode as phase_trading_mode
 from capitalizator.risk.budget import SessionBudget
@@ -45,6 +48,7 @@ class BounceSnapshot:
     calendar: Sequence[NewsRow] = field(default_factory=tuple)
     no_us_today: bool = False
     lev: Decimal = Decimal("3")
+    card_path: Path | str | None = None
 
 
 def price_in_zone(price: Decimal, zone: Zone) -> bool:
@@ -104,6 +108,8 @@ class BounceStrategy:
         registry: RegistryConfig | None = None,
         desk_mode: str | None = None,
         budget: SessionBudget | None = None,
+        require_card: bool = True,
+        check_load_bearing: bool = False,
     ) -> None:
         self.risk = risk
         self.halts = halts
@@ -112,10 +118,19 @@ class BounceStrategy:
         self.registry = registry or load_registry()
         self.desk_mode = desk_mode if desk_mode is not None else phase_trading_mode()
         self.budget = budget if budget is not None else SessionBudget()
+        self.require_card = require_card
+        self.check_load_bearing = check_load_bearing
 
     def propose(self, snap: BounceSnapshot) -> Intent | None:
         if self.desk_mode != "demo" or snap.trading_mode != "demo":
             return None
+        if self.require_card:
+            try:
+                card = require_card(snap.card_path, required=True)
+            except ValueError:
+                return None
+            if self.check_load_bearing and card is not None and not load_bearing_ok(card):
+                return None
         if TAKER_OK:
             return None
         ok, _reason = self.session.allows(

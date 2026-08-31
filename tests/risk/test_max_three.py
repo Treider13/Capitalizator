@@ -42,6 +42,7 @@ def test_fourth_bounce_is_rejected() -> None:
         halts=Halts(start_equity=Decimal("100000")),
         desk_mode="demo",
         budget=SessionBudget(),
+        require_card=False,
     )
     assert strat.propose(snap) is not None
     assert strat.propose(snap) is not None
