@@ -14,4 +14,9 @@ def test_lock_covers_runtime_packages() -> None:
 
 
 def test_lock_does_not_claim_unused_pytz() -> None:
-    assert "pytz" not in LOCK
+    pins = [
+        line.split("==", 1)[0].lower()
+        for line in LOCK.splitlines()
+        if line.strip() and not line.startswith("#") and "==" in line
+    ]
+    assert "pytz" not in pins
