@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **654 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **655 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -33,7 +33,7 @@
 | 0.3.6 ZLG | `tests/zlg/test_labels.py`, `test_double_run.py` | не нужно | 5 меток; SILENCE если max A < γ·q. Два прогона = одна метка. Размер не открывается |
 | 0.3.7 BTC-режим | `tests/btc/test_regime.py` | не нужно | trend/box с закрытого HTF; news только с `known_at ≤ t`; unknown → None. `veto()` нет |
 | 0.3.8 отчёт | `tests/ops/test_daily_report_no_advice.py` | не нужно | касания/жесты/дыры/пинг; «лонг/купи/завтра» — ошибка |
-| знания / бэкап | `tests/ops/test_vault_backup.py` | VPS нет | Snapshot: serialize + `dir_fd`. DB: `openat` + `/proc/self/fd`; `create=False` не пишет. nlink на fd. Staging — `mkdirat`/`renameat`/`remove_tree_at`. Запись — цикл `write_all` (факт: один `os.write` оставлял `H` вместо `HELLO-WORLD`). `desk.sqlite` — `0o600`, не `0o644`. `load_vault` отказывается от `secrets/`-симлинка. Симлинк / FIFO / hardlink / секрет — отказ. Живого диска VPS **нет** |
+| знания / бэкап | `tests/ops/test_vault_backup.py` | VPS нет | Snapshot: serialize + `VACUUM` копии (`sqlite/scrub.c`). DB: `openat` + `/proc/self/fd`; `create=False` не пишет; `secure_delete`. nlink на fd. Staging — `mkdirat`/`renameat`. `write_all`. `0o600`. Иголки по **байтам** (факт: `ghp_` в parquet уезжал). Симлинк / FIFO / hardlink / секрет — отказ. Живого диска VPS **нет** |
 | консоль ноут | `tests/ops/test_console.py` | туннеля нет | GET `/` и `/api/status`; POST/PUT/DELETE/PATCH 405; только 127.0.0.1. Без LAYOUT не встаёт. Поля `vps` нет. Симлинк `desk.sqlite` / `tape/` — отказ, 500 `error`. Пустой `desk.sqlite` не дописывает схему. Signer не импортирован |
 
 | 0.4.1 новости | `tests/news/test_pit.py` | не нужно | CSV BLS/Fed/BEA: CPI + FOMC + NFP (4 Sep / 2 Oct / 6 Nov EST / 4 Dec EST) + PCE (30 Sep / 29 Oct / 25 Nov EST / 23 Dec EST). Срез до `known_at` пустой. NFP/PCE не в MacroRules 24ч/ET. TG нет |
