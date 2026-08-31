@@ -56,7 +56,9 @@ class ZoneEngine:
         if created >= t:
             return []
         return [
-            self._zone(symbol, "1d", "support", *self._band(low, "support"), "prior_day_hl", created),
+            self._zone(
+                symbol, "1d", "support", *self._band(low, "support"), "prior_day_hl", created
+            ),
             self._zone(
                 symbol, "1d", "resistance", *self._band(high, "resistance"), "prior_day_hl", created
             ),
