@@ -53,7 +53,9 @@ class BybitBookWs:
                 recovered = self.resync.feed(kind, snap, recv_ts=now)
                 if recovered:
                     out.extend(recovered)
-                    bbo = self._bbo_event(snap.symbol, snap.exchange_ts, now, exchange)
+                    # Times/symbol come from the REST snapshot, not the discarded delta.
+                    ev = recovered[0]
+                    bbo = self._bbo_event(ev.symbol, ev.exchange_ts, now, exchange)
                     if bbo is not None:
                         out.append(bbo)
                     continue

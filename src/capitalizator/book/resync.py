@@ -68,5 +68,6 @@ class BookResync:
             else:
                 self.book.apply_diff(snap.bids, snap.asks, seq=snap.seq)
         except (BookDirty, SeqFault):
-            return [self.on_gap(recv_ts=recv_ts, exchange_ts=snap.exchange_ts)]
+            # Discard the failed delta's clock. Resync time is the snapshot we fetched.
+            return [self.on_gap(recv_ts=recv_ts)]
         return []
