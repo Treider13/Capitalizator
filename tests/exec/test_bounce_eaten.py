@@ -64,3 +64,14 @@ def test_eaten_blocks_when_flag_on() -> None:
     )
     assert strat.propose(_snap(tape_eaten=True)) is None
     assert isinstance(strat.propose(_snap(tape_eaten=False)), Intent)
+
+
+def test_unknown_tape_is_not_a_clean_book() -> None:
+    strat = BounceStrategy(
+        risk=RiskEngine(),
+        halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
+        require_card=False,
+        check_tape=True,
+    )
+    assert strat.propose(_snap()) is None

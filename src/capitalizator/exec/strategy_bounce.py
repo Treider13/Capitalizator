@@ -51,8 +51,8 @@ class BounceSnapshot:
     lev: Decimal = Decimal("3")
     card_path: Path | str | None = None
     card: CardDraft | None = None
-    tape_eaten: bool = False
-    wall_no_print: bool = False
+    tape_eaten: bool | None = None
+    wall_no_print: bool | None = None
 
 
 def price_in_zone(price: Decimal, zone: Zone) -> bool:
@@ -171,9 +171,9 @@ class BounceStrategy:
             return None
         if not price_in_zone(snap.price, zone):
             return None
-        if self.check_tape and snap.tape_eaten:
+        if self.check_tape and snap.tape_eaten is not False:
             return None
-        if self.check_wall and snap.wall_no_print:
+        if self.check_wall and snap.wall_no_print is not False:
             return None
         side = "buy" if zone.side == "support" else "sell"
         try:

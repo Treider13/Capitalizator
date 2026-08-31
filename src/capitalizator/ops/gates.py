@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, get_args
 
+from capitalizator.ops.phase import trading_mode as read_trading_mode
 from capitalizator.risk.schema import FORBIDDEN_ACTIONS, RiskAction
 
 PASS = 0
@@ -32,14 +33,13 @@ def gate_f0(*, root: Path | None = None) -> tuple[int, dict[str, object]]:
     text = "\n".join(p.read_text(encoding="utf-8") for p in sorted(prs.glob("*.py")))
     checklist = (base / "ops" / "key-checklist.md").read_text(encoding="utf-8")
     withdraw = next((ln for ln in checklist.splitlines() if "Withdraw" in ln), "")
-    phase = (base / "infra" / "phase.yaml").read_text(encoding="utf-8")
     checks: dict[str, bool] = {
         "G0.5_no_place_order": "place_order" not in text and "create_order" not in text,
         "G0.1_uptime_30d": (base / "ops" / "uptime-30d.md").is_file(),
         "G0.6_kill_switch": (base / "ops" / "kill-switch-week4.md").is_file(),
         "G0.7_withdraw_checked": "[x]" in withdraw.lower(),
         "G0.9_gitleaks_ci": False,
-        "trading_mode_off": "trading_mode: off" in phase,
+        "trading_mode_off": read_trading_mode() == "off",
     }
     accident = "average_in" in text
     passed = all(checks.values())

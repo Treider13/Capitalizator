@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **436 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **447 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -73,12 +73,15 @@
 | WJD бумага | `tests/jury/test_desk.py`, `test_weights.py`, `tests/memory/test_stamp_jury.py` | нет живых меток | THROUGH×DEFEND = SPLIT. Вес = n/(n+20)×hit только после экзамена; до n=20 веса равны. `weight_opens_size` всегда false. `propose` жюри не читает |
 | saved-R бумага | `tests/memory/test_saved_r.py` | нет живых скипов с исходом | пустой итог `None`, не ноль. skip bounce → later break = +1R; later bounce = missed, не прибыль. Чужая причина — отказ. Не PnL |
 | LLM не ставит вердикт | `tests/llm/test_cannot_verify.py`, `test_redteam_poison.py` | контейнера нет | яд `verdict=VERIFIED` / `API_KEY` не копируется в сводку. `trade_advice=false`. Сокет в sandbox — ошибка. Не модель по сети |
-| 2.9.1 зоны BTC | `tests/btc/test_zones.py` | нет живой карты | тот же `ZoneEngine`, не второй движок. Есть support/resistance и regime=box на закрытых 4h. `BtcVeto` нет |
+| 2.9.1 зоны BTC | `tests/btc/test_zones.py` | нет живой карты | тот же `ZoneEngine`, не второй движок. Есть support/resistance и regime=box на закрытых 4h. У `BtcRegime` метода `veto()` нет |
 | 2.9.2 слом | `tests/btc/test_break_definition.py` | нет живого часа | фитиль ниже поддержки / выше сопротивления ≠ слом. Закрытие за зоной + eaten = слом. ETH не слом BTC |
 | 2.9.3 вето альт | `tests/btc/test_veto_alt.py` | не в `propose` | SOL long + слом поддержки → `allow=False`. Шорт + вынос сопротивления → False. Та же сторона не режется. `strategy_bounce` **не импортирует** BtcVeto |
 | 2.9.5 тень вето | `tests/champion/test_veto_shadow.py` | ордеров нет | отчёт veto on/off; `promote()` отказ |
-| 2.10.1 eaten | `tests/exec/test_bounce_eaten.py` | флаг выкл | `check_tape` по умолчанию False (Ф1). При True eaten → None |
-| 2.10.2 стена | `tests/exec/test_wall_no_print.py` | флаг выкл | `check_wall` по умолчанию False. При True `wall_no_print` → None |
+| 2.10.1 eaten | `tests/exec/test_bounce_eaten.py` | флаг выкл | `check_tape` по умолчанию False. При True: eaten или **нет данных** → None (не выдумываем «не ели») |
+| 2.10.2 стена | `tests/exec/test_wall_no_print.py` | флаг выкл | `check_wall` по умолчанию False. При True: стена без печати или **неизвестно** → None |
+| 2.11.7 макро | `tests/news/test_macro_rules.py` | не в Session | выкл → size 1. Вкл: 10 Sep 14:10Z за 24ч до CPI → ×0.5; 9 Sep → 1; FOMC 14:10 ET → 0. Session 10 Sep всё ещё open |
+| 2.12.5 сентимент | `tests/news/test_sentiment_derisk.py` | нет индекса | месяц + жадность → reject. Час → reject (не «купи страх»). Не шорт «потому что все купили» |
+| флаги фазы | `tests/ops/test_phase_flags.py` | не нужно | `trading_mode` и `equity_source` — **строки** `"off"`/`"none"`. Голый YAML `off` = False; это дыра, файл в кавычках |
 | 2.10.3 PRS | `tests/risk/test_prs_cut.py` | порог не в yaml | Y выше порога → reject. Y=`None` (мало n) ≠ тонкая книга. Порог — аргумент, `registry.yaml` не трогали |
 | 2.12.2 hit/miss | `tests/authors/test_resolve.py` | нет 50 постов | после горизонта up+1% = hit. До горизонта hit пустой. Повторная сверка — отказ |
 | 2.12.3 вес | `tests/authors/test_shrinkage.py` | нет журнала | 1/1 и 4/4 = 0. 0/20 = 0. 10/20 = формула |
@@ -86,7 +89,7 @@
 | 2.11.1 схема | `tests/card/test_schema.py` | не нужно | битый JSON / нет `known_at` / голый текст — не карточка |
 | 2.11.2 SQL PIT | `tests/verifier/test_recompute.py` | нет прод-SQL | «23 из 31» = два числа из запроса. «24 из 31» тем же SQL → REFUTED. Срез 12:10 не видит 23. VERIFIED без файла результата не штампует карточку |
 
-Неделя 1 **не закрыта** (нет VPS/суток). Гейт Ф0 красный. Гейт Ф1 красный. `trading_mode=off`. `BtcVeto` есть как бумага, **в `propose` не вшит**. `check_tape`/`check_wall` по умолчанию выкл. Ордеров нет. Не «всё реализовано» (нет 2.11.7 24ч CPI, нет 20 постов, нет пробоя/китов). Не топ мира по %: PTF пустая.
+Неделя 1 **не закрыта**. Гейт Ф0/Ф1 красные. `trading_mode` читается как строка `"off"`. Макро-правила **не** вшиты в сессию. Ордеров нет. Не «всё реализовано» (нет 20 постов, нет пробоя/китов, нет 50 разобранных авторов). Не топ мира по %: PTF пустая.
 
 Чужие проекты / форумы (не копировали стратегии):
 - Freqtrade: Bybit **futures isolated** умеет stoploss on exchange; Bybit **spot** — нет. Мы linear perp, стоп обязателен в схеме, на биржу не слали.

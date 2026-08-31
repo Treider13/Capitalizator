@@ -1,8 +1,8 @@
 # Bot does not advance this file without gate exit 0.
 phase: 0
 breakout_enabled: false
-trading_mode: off
-equity_source: none
+trading_mode: "off"
+equity_source: "none"
 target_risk: 0.01
 max_lev: 3
 require_human_ack_to_advance: true

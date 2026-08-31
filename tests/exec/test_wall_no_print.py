@@ -52,3 +52,14 @@ def test_wall_no_print_blocks_when_flag_on() -> None:
     )
     assert strat.propose(_snap(wall_no_print=True)) is None
     assert isinstance(strat.propose(_snap(wall_no_print=False)), Intent)
+
+
+def test_unknown_wall_is_not_an_entry() -> None:
+    strat = BounceStrategy(
+        risk=RiskEngine(),
+        halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
+        require_card=False,
+        check_wall=True,
+    )
+    assert strat.propose(_snap()) is None
