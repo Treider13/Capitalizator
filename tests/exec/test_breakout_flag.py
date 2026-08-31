@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from capitalizator.ops.phase import breakout_enabled
+from capitalizator.ops.phase import as_breakout_flag, breakout_enabled
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "capitalizator"
@@ -21,14 +21,10 @@ def test_phase_breakout_is_false_bool() -> None:
 
 
 def test_string_false_is_not_a_bool() -> None:
-    with pytest.raises(ValueError, match="bool"):
-        # quoted "false" would be a string; the reader must not treat it as off.
-        from capitalizator.ops import phase as phase_mod
-
-        assert phase_mod.breakout_enabled.__doc__ or True
-    raw = yaml.safe_load("breakout_enabled: \"false\"")
+    raw = yaml.safe_load('breakout_enabled: "false"')
     assert raw["breakout_enabled"] == "false"
-    assert raw["breakout_enabled"] is not False
+    with pytest.raises(ValueError, match="bool"):
+        as_breakout_flag(raw["breakout_enabled"])
 
 
 def test_no_breakout_strategy_class() -> None:

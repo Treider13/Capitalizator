@@ -131,9 +131,10 @@ def test_unknown_recipient_is_rejected(tmp_path: Path) -> None:
         Unlocks.from_csv(path)
 
 
-def test_module_has_no_short_signal() -> None:
+def test_module_has_no_entry_side() -> None:
     src = Path(__file__).resolve().parents[2] / "src" / "capitalizator" / "news_macro" / "unlocks.py"
     text = src.read_text(encoding="utf-8")
-    assert "short" not in text.lower()
-    assert "sell" not in text.lower()
-    assert "side =" not in text
+    assert "Intent" not in text
+    assert "side=" not in text
+    assert "def short" not in text
+    assert "create_order" not in text

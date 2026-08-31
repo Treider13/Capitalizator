@@ -49,8 +49,11 @@ def equity_source() -> str:
     return text
 
 
-def breakout_enabled() -> bool:
-    raw = load_phase().get("breakout_enabled")
+def as_breakout_flag(raw: object) -> bool:
     if not isinstance(raw, bool):
         raise ValueError(f"breakout_enabled must be bool, got {raw!r}")
     return raw
+
+
+def breakout_enabled() -> bool:
+    return as_breakout_flag(load_phase().get("breakout_enabled"))

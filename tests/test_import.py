@@ -54,5 +54,10 @@ def test_scanner_catches_getenv() -> None:
     assert reads_secret_env(src, "snippet.py")
 
 
+def test_dict_get_amount_tokens_is_not_an_env_key() -> None:
+    src = 'row = {"amount_tokens": "1"}\nvalue = row.get("amount_tokens")\n'
+    assert reads_secret_env(src, "snippet.py") == []
+
+
 def test_no_package_loads_keys() -> None:
     assert scan_tree(SRC) == []

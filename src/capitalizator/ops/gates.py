@@ -12,7 +12,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, get_args
 
-from capitalizator.ops.phase import breakout_enabled, trading_mode as read_trading_mode
+from capitalizator.ops.phase import breakout_enabled
+from capitalizator.ops.phase import trading_mode as read_trading_mode
 from capitalizator.risk.schema import FORBIDDEN_ACTIONS, RiskAction
 
 PASS = 0
@@ -171,7 +172,11 @@ def gate_f2(*, root: Path | None = None) -> tuple[int, dict[str, object]]:
         "G2.6_redteam_ci": False,
         "G2_breakout_off": not breakout_enabled(),
         "G2_parsed_50": parsed_n >= 50,
-        "G2_veto_not_in_propose": "BtcVeto" not in bounce,
+        "G2_veto_not_in_propose": (
+            "from capitalizator.btc" not in bounce
+            and "import BtcVeto" not in bounce
+            and "BtcVeto()" not in bounce
+        ),
     }
     # G2_veto_not_in_propose documents the hole: veto is paper, not live.
     # It is True today and must not make the gate pass.
