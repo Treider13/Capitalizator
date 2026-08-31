@@ -56,6 +56,13 @@ def test_unknown_type_is_error() -> None:
         BookDiffNormalizer().parse_frame({"type": "trade", "ts": 1, "data": {"s": "X", "u": 1}})
 
 
+def test_missing_symbol_is_error() -> None:
+    with pytest.raises(ValueError, match="missing s"):
+        BookDiffNormalizer().parse_frame(
+            {"type": "delta", "ts": 1, "data": {"u": 1, "b": [], "a": []}}
+        )
+
+
 def test_missing_u_is_error() -> None:
     with pytest.raises(ValueError, match="missing u"):
         BookDiffNormalizer().parse_frame(

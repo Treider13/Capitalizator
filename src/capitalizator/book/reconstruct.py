@@ -19,11 +19,16 @@ class BookDirty(ValueError):
     """Diff arrived without a snapshot, or after an unhandled gap / restart."""
 
 
+def _canon(value: Decimal) -> str:
+    """Same number, same text: 60000.0 and 60000 fingerprint equal."""
+    return format(value.normalize(), "f")
+
+
 class Book:
     def __init__(self, *, tick_size: str = "0.1") -> None:
         self.tick_size = Decimal(tick_size)
-        self._bids: dict[str, Decimal] = {}
-        self._asks: dict[str, Decimal] = {}
+        self._bids: dict[Decimal, Decimal] = {}
+        self._asks: dict[Decimal, Decimal] = {}
         self._seq: int | None = None
         self._ready = False
 
@@ -37,7 +42,7 @@ class Book:
 
     def levels(self, side: Side) -> dict[Decimal, Decimal]:
         raw = self._bids if side == "bid" else self._asks
-        return {Decimal(px): sz for px, sz in raw.items()}
+        return dict(raw)
 
     def apply_snapshot(self, snapshot: BookSnapshot) -> None:
         self._bids = {}
@@ -68,18 +73,18 @@ class Book:
         self._put_side(self._asks, asks)
         self._seq = seq
 
-    def _put_side(self, book: dict[str, Decimal], rows: tuple[tuple[str, str], ...]) -> None:
+    def _put_side(self, book: dict[Decimal, Decimal], rows: tuple[tuple[str, str], ...]) -> None:
         for px, sz in rows:
+            price = Decimal(px)
             size = Decimal(sz)
             if size == 0:
-                book.pop(str(Decimal(px)), None)
-                book.pop(px, None)
+                book.pop(price, None)
             else:
-                book[str(Decimal(px))] = size
+                book[price] = size
 
     def best(self) -> tuple[Decimal | None, Decimal | None]:
-        bid = max((Decimal(p) for p in self._bids), default=None)
-        ask = min((Decimal(p) for p in self._asks), default=None)
+        bid = max(self._bids, default=None)
+        ask = min(self._asks, default=None)
         return bid, ask
 
     def spread(self) -> Decimal | None:
@@ -94,13 +99,13 @@ class Book:
         book = self._bids if side == "bid" else self._asks
         total = Decimal("0")
         for price, size in book.items():
-            if abs(Decimal(price) - center) <= width:
+            if abs(price - center) <= width:
                 total += size
         return total
 
     def imbalance(self, n: int) -> Decimal | None:
-        bids = sorted((Decimal(p), s) for p, s in self._bids.items())[-n:]
-        asks = sorted((Decimal(p), s) for p, s in self._asks.items())[:n]
+        bids = sorted(self._bids.items())[-n:]
+        asks = sorted(self._asks.items())[:n]
         bid_q = sum((s for _, s in bids), Decimal("0"))
         ask_q = sum((s for _, s in asks), Decimal("0"))
         denom = bid_q + ask_q
@@ -109,11 +114,13 @@ class Book:
         return (bid_q - ask_q) / denom
 
     def fingerprint(self) -> bytes:
-        bids = ",".join(f"{p}:{self._bids[p]}" for p in sorted(self._bids, key=Decimal, reverse=True))
-        asks = ",".join(f"{p}:{self._asks[p]}" for p in sorted(self._asks, key=Decimal))
+        bid_keys = sorted(self._bids, reverse=True)
+        ask_keys = sorted(self._asks)
+        bids = ",".join(f"{_canon(p)}:{_canon(self._bids[p])}" for p in bid_keys)
+        asks = ",".join(f"{_canon(p)}:{_canon(self._asks[p])}" for p in ask_keys)
         payload = f"{self._seq}|{bids}|{asks}".encode()
         return sha256(payload).digest()
 
     def level(self, side: Side, px: str) -> Decimal:
         book = self._bids if side == "bid" else self._asks
-        return book.get(str(Decimal(px)), Decimal("0"))
+        return book.get(Decimal(px), Decimal("0"))

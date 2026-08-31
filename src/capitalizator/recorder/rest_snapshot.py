@@ -58,6 +58,8 @@ class RestSnapshot:
         result = payload.get("result") or payload
         if not isinstance(result, dict):
             raise ValueError("snapshot result must be an object")
+        if "s" not in result:
+            raise ValueError("snapshot missing s")
         symbol = str(result["s"])
         ts_ms = result.get("ts") or result.get("cts")
         if ts_ms is None:

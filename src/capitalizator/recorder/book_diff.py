@@ -29,6 +29,8 @@ class BookDiffNormalizer:
         ts = frame.get("ts") or data.get("ts") or frame.get("cts") or data.get("cts")
         if ts is None:
             raise ValueError("book frame missing ts")
+        if "s" not in data:
+            raise ValueError("book frame missing s")
         cross = data.get("seq")
         snap = BookSnapshot(
             symbol=str(data["s"]),

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from capitalizator.book.reconstruct import Book
 from capitalizator.book.wall_watch import WallWatch
 from capitalizator.recorder.rest_snapshot import BookSnapshot
@@ -100,6 +102,12 @@ def test_partial_prints_then_cancel_is_pulled() -> None:
     )
     ev = watch.on_book_and_trade(gone, ts=TS)
     assert [e.kind for e in ev] == ["pulled"]
+
+
+def test_naive_ts_is_rejected() -> None:
+    watch = WallWatch("BTCUSDT", min_size=Decimal("50"))
+    with pytest.raises(TypeError, match="naive"):
+        watch.on_book_and_trade(_book("50"), ts=datetime(2026, 8, 30, 16, 30))
 
 
 def test_not_ready_book_emits_nothing() -> None:

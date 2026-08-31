@@ -74,6 +74,49 @@ def test_replay_matches_independent_dict_book() -> None:
     assert book.levels("ask") == naive_a
 
 
+def test_fingerprint_stable_across_price_aliases() -> None:
+    a = Book()
+    b = Book()
+    ts = datetime(2026, 8, 30, 13, 30, tzinfo=UTC)
+    a.apply_snapshot(
+        BookSnapshot(
+            symbol="BTCUSDT",
+            exchange_ts=ts,
+            seq=1,
+            bids=(("60000.0", "5.0"),),
+            asks=(("60001.00", "1"),),
+        )
+    )
+    b.apply_snapshot(
+        BookSnapshot(
+            symbol="BTCUSDT",
+            exchange_ts=ts,
+            seq=1,
+            bids=(("60000", "5"),),
+            asks=(("60001", "1"),),
+        )
+    )
+    assert a.fingerprint() == b.fingerprint()
+
+
+def test_price_alias_does_not_leave_ghost() -> None:
+    """Bybit may send 60000.0 then 60000. Those are one price."""
+    book = Book()
+    book.apply_snapshot(
+        BookSnapshot(
+            symbol="BTCUSDT",
+            exchange_ts=datetime(2026, 8, 30, 13, 30, tzinfo=UTC),
+            seq=1,
+            bids=(("60000.0", "5"),),
+            asks=(("60000.1", "1"),),
+        )
+    )
+    book.apply_diff((("60000", "0"),), (), seq=2)
+    assert book.levels("bid") == {}
+    assert book.level("bid", "60000.0") == Decimal("0")
+    assert book.level("bid", "60000") == Decimal("0")
+
+
 def test_zero_size_deletes_level() -> None:
     book = Book()
     book.apply_snapshot(

@@ -38,6 +38,25 @@ def test_row_count_matches_accepted(tmp_path: Path) -> None:
     assert partition_path(tmp_path, _event(1)) == expected
 
 
+def test_snapshot_and_book_diff_and_resync_partitions(tmp_path: Path) -> None:
+    sink = ParquetSink(tmp_path)
+    ts = datetime(2026, 8, 30, 13, 30, tzinfo=UTC)
+    for stream in ("snapshot", "book_diff", "bbo", "resync"):
+        path = sink.write(
+            MarketEvent(
+                stream=stream,
+                exchange="bybit",
+                symbol="BTCUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                seq=1,
+                payload={"kind": stream},
+            )
+        )
+        assert path == tmp_path / "bybit" / "BTCUSDT" / stream / "date=2026-08-30" / "hour=13.parquet"
+        assert pq.ParquetFile(path).read().num_rows == 1
+
+
 def test_new_sink_reloads_existing_file(tmp_path: Path) -> None:
     first = ParquetSink(tmp_path)
     path = first.write(_event(1))

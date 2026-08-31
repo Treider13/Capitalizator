@@ -17,7 +17,7 @@
 | 0.1.7 сутки | — | нет | **не зелёный** |
 | 0.2.1 REST snapshot | `tests/recorder/test_snapshot.py` | curl с VPS нет | парсер по официальному примеру Bybit; живой fetch — skip если нет сети |
 | 0.2.2 WS book diffs | `tests/recorder/test_book_diff_normalize.py` | живого сокета нет | фикстура snapshot+20 диффов; `u` подряд, `seq` дырявый — так у Bybit |
-| 0.2.3 реконструктор | `tests/book/test_bit_identical.py` | не нужно | два прогона = один fingerprint; ноль удаляет уровень |
+| 0.2.3 реконструктор | `tests/book/test_bit_identical.py` | не нужно | два прогона = один fingerprint; ключи `Decimal` — `60000.0` и `60000` один уровень, ноль его снимает |
 | 0.2.4 ресинк | `tests/book/test_resync.py` | не нужно | синтетический gap → `stream=resync`; книга = снимок, яд диффа не кладётся сверху |
 | 0.2.5 стены | `tests/book/test_wall_watch.py` | не нужно | 50 BTC @ 60000: pull / eaten. Это не вход |
 | 0.2.6 альты | — | нет суток BTC | **не начинали** |

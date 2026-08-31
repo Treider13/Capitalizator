@@ -63,6 +63,15 @@ def test_parse_rejects_missing_u() -> None:
         RestSnapshot().parse(payload)
 
 
+def test_parse_rejects_missing_symbol() -> None:
+    payload = {
+        "retCode": 0,
+        "result": {"ts": 1, "u": 1, "b": [["1", "1"]], "a": [["2", "1"]]},
+    }
+    with pytest.raises(ValueError, match="missing s"):
+        RestSnapshot().parse(payload)
+
+
 def test_parse_rejects_zero_depth() -> None:
     payload = {
         "retCode": 0,
