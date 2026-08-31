@@ -38,6 +38,9 @@ class Touch:
     tape_eaten: bool | None = None
     prs_y: Decimal | None = None
     gesture: str | None = None
+    cav_label: str | None = None
+    jury: str | None = None
+    rho_class_id: str | None = None
 
     @classmethod
     def create(
@@ -189,6 +192,56 @@ class Registry:
         changed = self._patch(gesture=gesture, touch_id=touch_id)
         for row in changed:
             self.chain.append(touch_payload(zone_id=row.zone_id, gesture=gesture))
+        return changed
+
+    def fill_cav(self, *, cav_label: str, touch_id: str | None = None) -> list[Touch]:
+        allowed = {"REJECT", "THROUGH", "COMPRESS", "DRIFT", "NOISE"}
+        if cav_label not in allowed:
+            raise ValueError(f"unknown cav: {cav_label!r}")
+        return self._patch(cav_label=cav_label, touch_id=touch_id)
+
+    def stamp_jury(
+        self,
+        *,
+        idea: str = "bounce",
+        n_cav: int = 0,
+        n_zlg: int = 0,
+        touch_id: str | None = None,
+    ) -> list[Touch]:
+        """Write jury + rho_class_id from already filled labels. Does not open size."""
+        from capitalizator.jury.desk import decide, rho_class_id, voices_for_bounce
+
+        if idea != "bounce":
+            raise ValueError("only bounce idea is mapped in F1")
+        changed: list[Touch] = []
+        next_rows: list[Touch] = []
+        for touch in self.touches:
+            if touch_id is not None and touch.touch_id != touch_id:
+                next_rows.append(touch)
+                continue
+            voices = voices_for_bounce(
+                cav=touch.cav_label,
+                n_cav=n_cav,
+                zlg=touch.gesture,
+                n_zlg=n_zlg,
+                tape_eaten=touch.tape_eaten,
+                btc_regime=touch.btc_regime,
+            )
+            label = decide(voices)
+            class_id = None
+            if touch.cav_label and touch.gesture and touch.btc_regime:
+                class_id = rho_class_id(
+                    setup=idea,
+                    cav=touch.cav_label,
+                    zlg=touch.gesture,
+                    btc=touch.btc_regime,
+                )
+            row = replace(touch, jury=label, rho_class_id=class_id)
+            next_rows.append(row)
+            changed.append(row)
+        if touch_id is not None and not changed:
+            raise KeyError(touch_id)
+        self.touches = next_rows
         return changed
 
     def _patch(self, *, touch_id: str | None = None, **fields: object) -> list[Touch]:

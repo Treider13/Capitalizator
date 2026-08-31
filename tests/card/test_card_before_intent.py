@@ -105,9 +105,9 @@ def test_stamped_after_bind_allows_propose(tmp_path: Path) -> None:
     assert card is not None
     q = tmp_path / "q.txt"
     q.write_text(card.claims[0].value + "\n", encoding="utf-8")
-    verdict = ManualVerifier().bind(card.claims[0].value, q, card.claims[0].value)
-    assert verdict == "VERIFIED"
-    stamped = apply_bind(card, 0, verdict)
+    receipt = ManualVerifier().bind(card.claims[0].value, q, card.claims[0].value)
+    assert receipt.verdict == "VERIFIED"
+    stamped = apply_bind(card, 0, receipt)
     got = _strat().propose(_snap(card=stamped))
     assert got is not None
     assert got.tag == "bounce"

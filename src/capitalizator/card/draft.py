@@ -13,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from capitalizator.types import require_utc
+from capitalizator.verifier.manual import BindReceipt
 
 Verdict = Literal["pending", "VERIFIED", "REFUTED", "UNVERIFIABLE"]
 
@@ -63,14 +64,16 @@ def require_card(path: Path | str | None, *, required: bool) -> CardDraft | None
     return card
 
 
-def apply_bind(card: CardDraft, index: int, verdict: Verdict) -> CardDraft:
-    """Stamp a claim after ManualVerifier.bind. Does not invent a query."""
+def apply_bind(card: CardDraft, index: int, receipt: BindReceipt) -> CardDraft:
+    """Stamp only from a bind receipt. A raw 'VERIFIED' string is not enough."""
     if index < 0 or index >= len(card.claims):
         raise ValueError("claim index out of range")
-    if verdict not in {"pending", "VERIFIED", "REFUTED", "UNVERIFIABLE"}:
-        raise ValueError("unknown verdict")
+    if card.claims[index].value != receipt.claim:
+        raise ValueError("receipt does not match claim")
+    if receipt.verdict == "VERIFIED" and not receipt.sql_path:
+        raise ValueError("VERIFIED requires a query file")
     claims = list(card.claims)
-    claims[index] = claims[index].model_copy(update={"verdict": verdict})
+    claims[index] = claims[index].model_copy(update={"verdict": receipt.verdict})
     return card.model_copy(update={"claims": claims})
 
 

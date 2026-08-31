@@ -22,6 +22,7 @@ PACKAGES = [
     "capitalizator.news_macro",
     "capitalizator.whales",
     "capitalizator.patterns",
+    "capitalizator.jury",
     "capitalizator.llm",
     "capitalizator.risk",
     "capitalizator.signer",

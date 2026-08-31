@@ -6,8 +6,10 @@ from capitalizator.card.draft import (
     require_card,
 )
 from capitalizator.card.first_fact import FirstFact, resolve
+from capitalizator.verifier.manual import BindReceipt
 
 __all__ = [
+    "BindReceipt",
     "CardDraft",
     "Claim",
     "FirstFact",
