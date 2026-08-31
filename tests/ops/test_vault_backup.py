@@ -363,6 +363,38 @@ def test_failed_restore_does_not_create_dest(
     assert leftovers == []
 
 
+def test_pack_does_not_touch_predictable_pid_staging(tmp_path: Path) -> None:
+    import os
+
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    dest = tmp_path / "bak"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("secret", encoding="utf-8")
+    planted = dest.parent / f".{dest.name}.{os.getpid()}.partial"
+    planted.symlink_to(outside)
+    pack(vault, dest)
+    assert dest.is_dir()
+    assert planted.is_symlink()
+    assert (outside / "keep").read_text(encoding="utf-8") == "secret"
+
+
+def test_remove_staging_unlinks_symlink_not_target(tmp_path: Path) -> None:
+    from capitalizator.ops.backup import _remove_staging
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("secret", encoding="utf-8")
+    staging = tmp_path / "staging"
+    staging.symlink_to(outside)
+    _remove_staging(staging)
+    assert outside.is_dir()
+    assert (outside / "keep").read_text(encoding="utf-8") == "secret"
+    assert staging.exists() is False
+    assert staging.is_symlink() is False
+
+
 def test_knowledge_refuses_symlink_db(tmp_path: Path) -> None:
     from capitalizator.ops.knowledge import Knowledge
 

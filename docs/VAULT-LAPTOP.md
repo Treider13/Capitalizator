@@ -49,6 +49,7 @@ user_data/          ← VPS пишет, ноут копирует (rsync / pack)
 - **`Path.write_text` / `read_text` ходят по ссылке.** LAYOUT и README пишем через `write_regular_text`.
 - **`Path.mkdir(parents=True)` ходит в симлинк-каталог.** Факт pathlib: `dest/reports` → `outside`, затем `dest/reports/nested.mkdir(parents=True)` создаёт `outside/nested`. Сам `nested` — обычный каталог, `parent.is_symlink()` после mkdir врёт. `ensure_real_parent` смотрит **каждого** предка (`abspath`, не `resolve` — тот прячет ссылку). Писатель ленты — `mkdir_real_parents` от корня `tape/`. `.lock` — только regular file (`O_NONBLOCK` + `S_ISREG`), не FIFO.
 - **`shutil.copy2` / `copytree(symlinks=False)`** — документация Python: цель симлинка *вклеивается*. Копируем через `O_NOFOLLOW`. Restore только listed-файлы на staging, потом `rename`. Сбой не оставляет dest.
+- **Staging `.{имя}.{pid}`** — то же семейство, что `{pid}.tmp`: имя угадывается (`/tmp/cap-bak`). `Path.exists()` ходит в симлинк. `shutil.rmtree` на 3.12 по dir-симлинку бросает OSError и цель не трогает — но чужой каталог с этим именем мы бы снесли. Теперь `tempfile.mkdtemp`; очистка `unlink` если имя — ссылка, не `rmtree` в цель.
 - Чтение отчёта / sha256 / parquet — тот же fd, не `path.open` (он следует за ссылкой).
 - Консоль: нет поля `vps: false` (это была выдумка); без `LAYOUT` сервер **не** рисует хранилище; PUT/DELETE/PATCH = 405; симлинк в `tape/` не читает; исключение → 500 `error`, не traceback.
 

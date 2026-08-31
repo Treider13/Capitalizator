@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import shutil
+import tempfile
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -227,6 +228,20 @@ def _safe_under(root: Path, rel: str) -> Path:
     return path
 
 
+def _remove_staging(path: Path) -> None:
+    """Never rmtree through a symlink. exists() follows; unlink the name instead."""
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        path.unlink()
+        return
+    if path.is_dir():
+        shutil.rmtree(path)
+
+
+def _make_staging(parent: Path, dest_name: str, *, suffix: str) -> Path:
+    """Exclusive random dir. Predictable .{name}.{pid} is the same class as {pid}.tmp."""
+    return Path(tempfile.mkdtemp(prefix=f".{dest_name}.", suffix=suffix, dir=str(parent)))
+
+
 def _knowledge_counts(vault: Vault) -> dict[str, int]:
     knowledge = open_knowledge(vault, create=False)
     try:
@@ -251,10 +266,7 @@ def pack(
     dest = dest.resolve()
     parent = dest.parent
     parent.mkdir(parents=True, exist_ok=True)
-    staging = parent / f".{dest.name}.{os.getpid()}.partial"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir()
+    staging = _make_staging(parent, dest.name, suffix=".partial")
     try:
         (staging / "knowledge").mkdir()
         (staging / "reports").mkdir()
@@ -312,8 +324,7 @@ def pack(
             dest.rmdir()
         staging.rename(dest)
     except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
+        _remove_staging(staging)
         raise
     return manifest
 
@@ -402,10 +413,7 @@ def restore(backup: Path, dest: Path) -> Vault:
         raise BackupError("manifest.files missing")
     parent = dest.parent
     parent.mkdir(parents=True, exist_ok=True)
-    staging = parent / f".{dest.name}.{os.getpid()}.restore"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir()
+    staging = _make_staging(parent, dest.name, suffix=".restore")
     try:
         (staging / "knowledge").mkdir()
         (staging / "reports").mkdir()
@@ -438,8 +446,7 @@ def restore(backup: Path, dest: Path) -> Vault:
             dest.rmdir()
         staging.rename(dest)
     except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
+        _remove_staging(staging)
         raise
     return load_vault(dest)
 
