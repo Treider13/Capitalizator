@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **198 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **214 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -34,7 +34,12 @@
 | 0.3.7 BTC-режим | `tests/btc/test_regime.py` | не нужно | trend/box с закрытого HTF; news только с `known_at ≤ t`; unknown → None. `veto()` нет |
 | 0.3.8 отчёт | `tests/ops/test_daily_report_no_advice.py` | не нужно | касания/жесты/дыры/пинг; «лонг/купи/завтра» — ошибка |
 
-Неделя 1 **не закрыта** (нет VPS/суток). Неделя 3: журнал на фикстурах есть; живого часа ленты (0.1.4) нет — шаг не «закрыт железом». Стратегию отскока не пишем.
+| 0.4.1 новости | `tests/news/test_pit.py` | не нужно | CSV BLS/Fed: CPI 11 Sep / 14 Oct / 10 Nov (EST 13:30Z); FOMC 16 Sep / 28 Oct. Срез до `known_at` пустой. TG нет |
+| 0.4.7 комиссии | `tests/exec/test_fees.py` | не нужно | VIP0 0.0002/0.00055 ×2; +1R после комиссий меньше на известную величину. Fill по печати, не close |
+| 0.4.8 дрейф | `tests/champion/test_drift_synthetic.py` | не нужно | Page-Hinkley: 0.3→0.7 = drift; плоский 0.3 — нет. Не live |
+| 0.4.9 hashlog | `tests/memory/test_hashlog.py` | не нужно | подмена жеста ломает verify; `episode` пустой |
+
+Неделя 1 **не закрыта** (нет VPS/суток). Неделя 3: журнал на фикстурах есть; живого часа ленты (0.1.4) нет — шаг не «закрыт железом». Неделя 4: календарь/комиссии/дрейф/хеш есть; авторов 20+, LLM-контейнер, signer/тестнет, kill-switch, гейт Ф0 — **нет**. Стратегию отскока не пишем.
 
 Факты Bybit, не догадки:
 - сборка книги — `u` (подряд); `seq` — кросс-номер. [orderbook REST](https://bybit-exchange.github.io/docs/v5/market/orderbook), [WS](https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook)
