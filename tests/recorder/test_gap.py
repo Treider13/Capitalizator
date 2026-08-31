@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from capitalizator.recorder.gap import GapDetector
+import pytest
+
+from capitalizator.recorder.gap import GapDetector, SeqFault
 
 
 def test_seq_skip_5_to_8() -> None:
@@ -32,3 +34,13 @@ def test_contiguous_seq_is_not_a_gap() -> None:
 
 def test_first_seq_is_not_a_gap() -> None:
     assert GapDetector().on_seq(None, 1) is None
+
+
+def test_duplicate_seq_is_not_swallowed() -> None:
+    with pytest.raises(SeqFault, match="not monotonic"):
+        GapDetector().on_seq(5, 5)
+
+
+def test_rewind_seq_is_not_swallowed() -> None:
+    with pytest.raises(SeqFault, match="not monotonic"):
+        GapDetector().on_seq(8, 5)

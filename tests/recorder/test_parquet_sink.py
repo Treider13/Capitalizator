@@ -36,3 +36,13 @@ def test_row_count_matches_accepted(tmp_path: Path) -> None:
     )
     assert path == expected
     assert partition_path(tmp_path, _event(1)) == expected
+
+
+def test_new_sink_reloads_existing_file(tmp_path: Path) -> None:
+    first = ParquetSink(tmp_path)
+    path = first.write(_event(1))
+    first.write(_event(2))
+    second = ParquetSink(tmp_path)
+    second.write(_event(3))
+    assert pq.ParquetFile(path).read().num_rows == 3
+    assert second.accepted_count == 1

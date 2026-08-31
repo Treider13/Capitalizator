@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import threading
+from http.client import HTTPConnection
+from http.server import HTTPServer
+
 import capitalizator.recorder as recorder_pkg
-from capitalizator.recorder.app import RecorderApp
+from capitalizator.recorder.app import RecorderApp, _handler
 
 
 def test_healthz_readyz() -> None:
@@ -35,3 +39,28 @@ def test_live_hour_flag_is_disabled() -> None:
         assert "live WS hour is not enabled" in str(exc)
         return
     raise AssertionError("live hour must refuse")
+
+
+def test_http_healthz_readyz_on_real_port() -> None:
+    app = RecorderApp()
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("GET", "/healthz")
+        assert conn.getresponse().status == 200
+        conn.close()
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("GET", "/readyz")
+        assert conn.getresponse().status == 503
+        conn.close()
+        app.recording = True
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("GET", "/readyz")
+        assert conn.getresponse().status == 200
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
