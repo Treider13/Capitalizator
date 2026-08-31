@@ -101,6 +101,19 @@ def test_empty_jsonl_does_not_claim_recording(tmp_path: Path) -> None:
     assert app.readyz() == 503
 
 
+def test_subscribe_ack_is_not_written(tmp_path: Path) -> None:
+    mixed = tmp_path / "mixed.jsonl"
+    mixed.write_text(
+        '{"op":"subscribe","success":true}\n'
+        '{"T":1725024600000,"s":"BTCUSDT","S":"Buy","v":"0.001","p":"1","i":"a"}\n',
+        encoding="utf-8",
+    )
+    app = RecorderApp()
+    n = pump_jsonl(app, tmp_path / "out", mixed, stream="trades", recv_ts=RECV)
+    assert n == 1
+    assert app.accepted_count == 1
+
+
 def test_non_object_jsonl_line_rejected(tmp_path: Path) -> None:
     bad = tmp_path / "bad.jsonl"
     bad.write_text("[1,2]\n", encoding="utf-8")

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from capitalizator.recorder.normalize import TradesNormalizer
+from capitalizator.recorder.public_ws import is_control_frame
 from capitalizator.types import MarketEvent
 
 
@@ -15,6 +16,7 @@ class BybitTradesWs:
 
     Opening a live socket is a caller concern (VPS, public endpoint, no keys).
     Does not invent a monotonic seq — Bybit publicTrade.seq may repeat.
+    `run()` is the PHASE-BUILD entry: skips subscribe/ping acks.
     """
 
     def __init__(self, normalizer: TradesNormalizer | None = None) -> None:
@@ -30,4 +32,17 @@ class BybitTradesWs:
         out: list[MarketEvent] = []
         for frame in frames:
             out.extend(self.normalizer.normalize_frame(frame, recv_ts=now))
+        return out
+
+    def run(
+        self,
+        frames: Iterable[dict[str, Any]],
+        *,
+        recv_ts: datetime | None = None,
+    ) -> list[MarketEvent]:
+        out: list[MarketEvent] = []
+        for frame in frames:
+            if is_control_frame(frame):
+                continue
+            out.extend(self.ingest_frames([frame], recv_ts=recv_ts))
         return out

@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from capitalizator.book.reconstruct import Book
 from capitalizator.recorder.book_diff import BookDiffNormalizer
+from capitalizator.recorder.ws_trades import BybitTradesWs
+from capitalizator.types import MarketEvent, require_utc
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,13 @@ class ReplayEngine:
             checkpoints.append(BookCheckpoint(seq=book.seq, best_bid=bid, best_ask=ask))
         return checkpoints
 
+    def tape(self, path: Path, *, recv_ts: datetime) -> list[MarketEvent]:
+        """Replay recorded prints. Missing trades.jsonl → empty, not invented."""
+        frames = _load_trade_frames(path)
+        if not frames:
+            return []
+        return BybitTradesWs().run(frames, recv_ts=require_utc(recv_ts))
+
 
 def _load_book_frames(path: Path) -> list[dict[str, Any]]:
     book_path = path / "book.jsonl" if path.is_dir() else path
@@ -60,4 +70,21 @@ def _load_book_frames(path: Path) -> list[dict[str, Any]]:
         frames.append(raw)
     if not frames:
         raise ValueError(f"no book frames in {book_path}")
+    return frames
+
+
+def _load_trade_frames(path: Path) -> list[dict[str, Any]]:
+    if not path.is_dir():
+        return []
+    trade_path = path / "trades.jsonl"
+    if not trade_path.is_file():
+        return []
+    frames: list[dict[str, Any]] = []
+    for line in trade_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        raw = json.loads(line)
+        if not isinstance(raw, dict):
+            raise ValueError("trade jsonl line must be an object")
+        frames.append(raw)
     return frames

@@ -1,17 +1,17 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Последний локальный прогон: **124 passed, 1 skipped** (skip = нет egress на `api.bybit.com`).
+Дата проверки: 2026-08-31. Локальный прогон после этой правки: см. pytest. GitHub Actions на ветке — **startup_failure** (пустой список workflows в API; админа у агента нет). Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
 | −1.1 каркас | pytest `tests/test_import.py` | не нужно | зелёный после прогона |
-| −1.2 замки | ruff + gitleaks-конфиг + хук | хук ставит человек | конфиг есть; хук не установлен в этом облаке автоматически |
+| −1.2 замки | ruff + gitleaks-конфиг + `.github/workflows/lint.yml` | хук и Actions включает человек | конфиг и workflow-файл есть. gitleaks без бинаря = skip, не тихий pass. GH Actions **startup_failure** — не зелёный |
 | −1.3 нет доливки | `tests/risk/test_no_average.py` | не нужно | зелёный после прогона |
 | −1.4 PIT | `tests/test_pit.py` | не нужно | зелёный после прогона |
 | 0.1.1 VPS SG/TYO | — | нет | **не зелёный** |
 | 0.1.2 ключи | `ops/key-checklist.md` шаблон без значений | галочки человек не ставил | шаблон есть; **не зелёный** |
 | 0.1.3 docker healthz | `tests/recorder/test_app.py`, `tests/infra/test_recorder_docker.py` | docker на VPS нет | Dockerfile/compose без ключей; compose up на VPS — **нет** |
-| 0.1.4 WS час BTC | `--from-jsonl` пишет parquet (`tests/recorder/test_pump.py`); 100 мок-сделок | живой час нет | `seq` сделки не выдумываем. `--minutes` без jsonl по-прежнему отказ. Час записи — **нет** |
+| 0.1.4 WS час BTC | `BybitTradesWs.run()` + `--from-jsonl`; topic `publicTrade.BTCUSDT`, URL `wss://stream.bybit.com/v5/public/linear` | живой час нет | ack `op=subscribe` не пишется как сделка. `--minutes` без jsonl — отказ. Час записи — **нет** |
 | 0.1.5 parquet | `tests/recorder/test_parquet_sink.py` | не нужно | зелёный после прогона |
 | 0.1.6 gap | `tests/recorder/test_gap.py` | не нужно | зелёный после прогона |
 | 0.1.7 сутки | `check_uptime` на фикстурах | нет живых суток | инструмент есть; сутки — **не зелёные** |
@@ -21,7 +21,7 @@
 | 0.2.4 ресинк | `tests/book/test_resync.py` | не нужно | синтетический gap → `stream=resync`; книга = снимок; `BybitBookWs` с `fetch_snapshot` тоже; без fetch — `BookDirty`, глубину не выдумываем |
 | 0.2.5 стены | `tests/book/test_wall_watch.py` | не нужно | 50 BTC @ 60000: pull / eaten. Это не вход |
 | 0.2.6 альты | `infra/universe.week0.yaml` = BTC+ETH; `tests/screener/test_universe.py` | нет суток BTC | файл и валидатор есть (200 монет / HTX / без ETH — отказ). Альты **не** дописаны. Live — **не зелёный** |
-| 0.2.7 Nautilus replay | `ReplayEngine` + `tests/exec/test_replay_bit_identical.py` | нет записанного дня | два прогона фикстуры `day_btc_small` = те же `best()`. Дыра без снимка — ошибка. Полный день VPS — **нет**. Nautilus не тянули |
+| 0.2.7 Nautilus replay | `ReplayEngine.run` + `tape`; `tests/exec/test_replay_bit_identical.py` | нет записанного дня | два прогона книги = те же `best()`. Лента 5 сделок из `trades.jsonl`; нет файла — пусто, не выдумка. Полный день VPS — **нет**. Nautilus не тянули |
 | 0.2.8 PIT SQL | `tests/storage/test_pit_query.py` | не нужно | DuckDB по уже видимым строкам; срез 12:00 не видит 12:05; `enable_external_access=false` без тихого pass |
 
 Неделя 1 **не закрыта**. Стратегию отскока не пишем.

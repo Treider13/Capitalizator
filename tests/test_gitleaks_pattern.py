@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "gitleaks" / "fake_secret.txt"
 SRC = ROOT / "src"
@@ -29,7 +31,7 @@ def test_src_has_no_key_literals() -> None:
 def test_gitleaks_fails_on_fixture_if_installed() -> None:
     exe = shutil.which("gitleaks")
     if exe is None:
-        return
+        pytest.skip("gitleaks binary not installed")
     proc = subprocess.run(
         [exe, "detect", "--no-git", "--no-banner", "-s", str(FIXTURE)],
         check=False,

@@ -1,6 +1,6 @@
 # exec
 
-Вход: `ReplayEngine.run(path)` — jsonl книги (фикстура `tests/fixtures/day_btc_small/`).
-Выход: список `BookCheckpoint` с `best()` после каждого кадра.
+Вход: `ReplayEngine.run(path)` — jsonl книги; `tape(path)` — `trades.jsonl` если есть.
+Выход: контрольные `best()`; лента как MarketEvent. Нет файла сделок — пустой список, не выдумка.
 Не делает: live-ордер, fill, стратегию, выдуманный стакан на дыре.
 Ключи не читает.

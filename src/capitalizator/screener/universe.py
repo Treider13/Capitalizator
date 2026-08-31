@@ -77,4 +77,8 @@ def load_universe(path: Path) -> Universe:
 
 
 def default_week0_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "infra" / "universe.week0.yaml"
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "infra" / "universe.week0.yaml"
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError("infra/universe.week0.yaml not found from package tree")

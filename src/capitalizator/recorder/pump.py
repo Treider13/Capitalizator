@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from capitalizator.recorder.app import RecorderApp
+from capitalizator.recorder.public_ws import is_control_frame
 from capitalizator.recorder.sink_parquet import ParquetSink
 from capitalizator.recorder.ws_book import BybitBookWs
 from capitalizator.recorder.ws_trades import BybitTradesWs
@@ -40,21 +41,49 @@ def pump_frames(
     recv_ts: datetime | None = None,
 ) -> int:
     if stream == "trades":
-        worker: BybitTradesWs | BybitBookWs = BybitTradesWs()
-    elif stream == "book":
-        worker = BybitBookWs()
-    else:
-        raise ValueError(f"unknown pump stream {stream!r}; use trades or book")
-    accepted = 0
+        trades = BybitTradesWs()
+        return _write(app, sink, _trade_events(trades, frames, recv_ts=recv_ts))
+    if stream == "book":
+        book = BybitBookWs()
+        return _write(app, sink, _book_events(book, frames, recv_ts=recv_ts))
+    raise ValueError(f"unknown pump stream {stream!r}; use trades or book")
+
+
+def _trade_events(
+    worker: BybitTradesWs,
+    frames: Iterable[dict[str, Any]],
+    *,
+    recv_ts: datetime | None,
+) -> list[Any]:
+    events: list[Any] = []
     for frame in frames:
         when = recv_ts or datetime.now(tz=UTC)
-        for event in worker.ingest_frames([frame], recv_ts=when):
-            sink.write(event)
-            app.accepted_count += 1
-            accepted += 1
-    if accepted:
+        events.extend(worker.run([frame], recv_ts=when))
+    return events
+
+
+def _book_events(
+    worker: BybitBookWs,
+    frames: Iterable[dict[str, Any]],
+    *,
+    recv_ts: datetime | None,
+) -> list[Any]:
+    events: list[Any] = []
+    for frame in frames:
+        if is_control_frame(frame):
+            continue
+        when = recv_ts or datetime.now(tz=UTC)
+        events.extend(worker.ingest_frames([frame], recv_ts=when))
+    return events
+
+
+def _write(app: RecorderApp, sink: ParquetSink, events: list[Any]) -> int:
+    for event in events:
+        sink.write(event)
+        app.accepted_count += 1
+    if events:
         app.recording = True
-    return accepted
+    return len(events)
 
 
 def pump_jsonl(
