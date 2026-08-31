@@ -17,6 +17,10 @@ from capitalizator.zones.model import Zone
 _ADVICE = re.compile(r"лонг|шорт|купи|продай|завтра", re.IGNORECASE)
 
 
+def contains_advice(text: str) -> bool:
+    return bool(_ADVICE.search(text))
+
+
 def _touches_word(n: int) -> str:
     if n % 10 == 1 and n % 100 != 11:
         return "касание"
@@ -68,6 +72,6 @@ def daily_map_report(
     else:
         lines.append(f"Пинг: {ping_ms:.1f} мс.")
     text = "\n".join(lines) + "\n"
-    if _ADVICE.search(text):
+    if contains_advice(text):
         raise ValueError("daily report must not advise")
     return text

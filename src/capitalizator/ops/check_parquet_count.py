@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import pyarrow.parquet as pq
 
+from capitalizator.ops.vault import open_regular
+
 
 def count_rows(path: Path) -> int:
-    return int(pq.ParquetFile(path).read().num_rows)
+    if path.is_symlink():
+        raise ValueError(f"symlink: {path}")
+    fd = open_regular(path)
+    with os.fdopen(fd, "rb") as fh:
+        meta = pq.ParquetFile(fh).metadata
+    if meta is None:
+        raise ValueError(f"parquet metadata missing: {path}")
+    return int(meta.num_rows)
 
 
 def main(argv: list[str] | None = None) -> int:

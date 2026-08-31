@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 import pyarrow.parquet as pq
 
 from capitalizator.recorder.sink_parquet import ParquetSink, partition_path
@@ -55,6 +57,85 @@ def test_snapshot_and_book_diff_and_resync_partitions(tmp_path: Path) -> None:
         )
         assert path == tmp_path / "bybit" / "BTCUSDT" / stream / "date=2026-08-30" / "hour=13.parquet"
         assert pq.ParquetFile(path).read().num_rows == 1
+
+
+def test_failed_write_leaves_old_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sink = ParquetSink(tmp_path)
+    path = sink.write(_event(1))
+    old = path.read_bytes()
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk")
+
+    monkeypatch.setattr(pq, "write_table", boom)
+    with pytest.raises(OSError, match="disk"):
+        sink.write(_event(2))
+    assert path.read_bytes() == old
+    assert list(path.parent.glob("*.tmp")) == []
+
+
+def test_write_does_not_follow_predictable_tmp_symlink(tmp_path: Path) -> None:
+    import os
+
+    secret = tmp_path / "secret"
+    secret.write_bytes(b"KEYMATERIAL")
+    path = partition_path(tmp_path, _event(1))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    planted = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    planted.symlink_to(secret)
+    ParquetSink(tmp_path).write(_event(1))
+    assert secret.read_bytes() == b"KEYMATERIAL"
+    assert path.is_file() and not path.is_symlink()
+    assert pq.ParquetFile(path).read().num_rows == 1
+
+
+def test_write_refuses_directory_symlink(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "bybit").symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink"):
+        ParquetSink(tmp_path).write(_event(1))
+    assert list(outside.rglob("*")) == []
+
+
+def test_write_refuses_lock_fifo(tmp_path: Path) -> None:
+    import os
+
+    path = partition_path(tmp_path, _event(1))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(path.with_name(f"{path.name}.lock"))
+    with pytest.raises(ValueError, match="regular file"):
+        ParquetSink(tmp_path).write(_event(1))
+
+
+def test_write_refuses_lock_symlink(tmp_path: Path) -> None:
+    secret = tmp_path / "secret"
+    secret.write_bytes(b"KEYMATERIAL")
+    path = partition_path(tmp_path, _event(1))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.with_name(f"{path.name}.lock").symlink_to(secret)
+    with pytest.raises(OSError):
+        ParquetSink(tmp_path).write(_event(1))
+    assert secret.read_bytes() == b"KEYMATERIAL"
+
+
+def test_concurrent_writers_keep_all_rows(tmp_path: Path) -> None:
+    errors: list[BaseException] = []
+
+    def go(seq: int) -> None:
+        try:
+            ParquetSink(tmp_path).write(_event(seq))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=go, args=(seq,)) for seq in range(1, 6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    path = partition_path(tmp_path, _event(1))
+    assert pq.ParquetFile(path).read().num_rows == 5
 
 
 def test_new_sink_reloads_existing_file(tmp_path: Path) -> None:

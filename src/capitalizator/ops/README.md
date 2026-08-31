@@ -12,4 +12,14 @@
 
 `gates f0` / `f1` / `f2` / `f3` / `f4` / `f5kill`: сейчас код 2. Пустой журнал ≠ 80/40/100 и не чистый стакан. `infra/phase.yaml` не трогает. Пороги — `infra/gates.yaml` (лишний ключ — отказ).
 
+`vault` / `knowledge` / `backup`: каталог как у Freqtrade `user_data` — знания (SQLite) отдельно от ленты (parquet). Секреты в бэкап не входят. Пустой журнал = 0 строк, не выдумка. `pack` отказывается при ключе в файле, сломанной хеш-цепочке, лишнем файле в `secrets/`. `restore` сверяет sha256 и число строк.
+
+`console`: только GET, `127.0.0.1`. Без `LAYOUT` не поднимается (нужен `--init`). POST/PUT/DELETE/PATCH — 405. Советов «купи / лонг» нет. Поля «vps» нет — железо не выдумываем.
+
+```
+python -m capitalizator.ops.console --userdir ./user_data --init
+python -m capitalizator.ops.backup pack --userdir ./user_data --dest ./cap-backup
+python -m capitalizator.ops.console --userdir ./user_data --serve --port 8082
+```
+
 Не делает: торговлю, чтение ключей.
