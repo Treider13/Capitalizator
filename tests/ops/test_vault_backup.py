@@ -395,6 +395,26 @@ def test_remove_staging_unlinks_symlink_not_target(tmp_path: Path) -> None:
     assert staging.is_symlink() is False
 
 
+def test_knowledge_refuses_existing_file_via_parent_dir_symlink(tmp_path: Path) -> None:
+    """Fact: os.open(path, O_NOFOLLOW) follows a parent dir symlink.
+
+    dest/knowledge → outside; outside/desk.sqlite exists. Knowledge() used to write
+    a SQLite header into the target (is_file True, last component is a regular file).
+    """
+    from capitalizator.ops.knowledge import Knowledge
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "desk.sqlite"
+    victim.write_bytes(b"")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "knowledge").symlink_to(outside)
+    with pytest.raises((VaultError, ValueError), match="symlink"):
+        Knowledge(dest / "knowledge" / "desk.sqlite")
+    assert victim.read_bytes() == b""
+
+
 def test_knowledge_refuses_symlink_db(tmp_path: Path) -> None:
     from capitalizator.ops.knowledge import Knowledge
 

@@ -23,7 +23,7 @@ from capitalizator.ops.daily_map_report import contains_advice
 from capitalizator.ops.vault import (
     Vault,
     VaultError,
-    ensure_real_parent,
+    open_real_dir_fd,
     same_inode,
     write_regular_bytes,
 )
@@ -97,33 +97,40 @@ class Knowledge:
             raise ValueError("O_NOFOLLOW required")
         if path.is_symlink():
             raise ValueError(f"symlink: {path}")
-        if path.is_file():
-            fd = os.open(path, os.O_RDWR | nofollow)
-        elif create:
-            try:
-                ensure_real_parent(path.parent)
-            except VaultError as exc:
-                raise ValueError(str(exc)) from exc
-            if path.parent.is_symlink():
-                raise ValueError(f"symlink: {path.parent}")
-            try:
-                fd = os.open(
-                    path, os.O_RDWR | os.O_CREAT | os.O_EXCL | nofollow, 0o644
-                )
-            except FileExistsError:
-                fd = os.open(path, os.O_RDWR | nofollow)
-        else:
-            self._cx: sqlite3.Connection | None = None
-            return
+        # os.open(path, O_NOFOLLOW) follows a parent dir symlink (last component only).
+        dir_fd = -1
+        fd = -1
         try:
+            try:
+                dir_fd = open_real_dir_fd(path.parent, create=create)
+            except VaultError as exc:
+                if create or "symlink" in str(exc):
+                    raise ValueError(str(exc)) from exc
+                self._cx: sqlite3.Connection | None = None
+                return
+            flags = os.O_RDWR | nofollow
+            if create:
+                try:
+                    fd = os.open(
+                        path.name, flags | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=dir_fd
+                    )
+                except FileExistsError:
+                    fd = os.open(path.name, flags, dir_fd=dir_fd)
+            else:
+                try:
+                    fd = os.open(path.name, flags, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    self._cx = None
+                    return
             created = os.fstat(fd)
             if not stat.S_ISREG(created.st_mode):
                 raise ValueError(f"not a regular file: {path}")
-            if path.is_symlink() or not same_inode(path, created):
-                raise ValueError(f"symlink: {path}")
             self._cx = connect_held_inode(fd)
         finally:
-            os.close(fd)
+            if fd >= 0:
+                os.close(fd)
+            if dir_fd >= 0:
+                os.close(dir_fd)
         if path.is_symlink() or not same_inode(path, created):
             self._cx.close()
             self._cx = None

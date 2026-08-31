@@ -79,19 +79,28 @@ def iter_regular_files(root: Path) -> Iterator[Path]:
 
 
 def open_regular(path: Path, *, flags: int = os.O_RDONLY) -> int:
-    """Open a path that must still be a regular file. O_NOFOLLOW: no symlink swap."""
+    """Open a regular file. os.open(path, O_NOFOLLOW) still follows a *parent* symlink."""
     nofollow = getattr(os, "O_NOFOLLOW", None)
     if nofollow is None:
         raise VaultError("O_NOFOLLOW required")
-    fd = os.open(path, flags | nofollow)
+    dir_fd = open_real_dir_fd(path.parent, create=False)
     try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise VaultError(f"not a regular file: {path}")
-        return fd
-    except Exception:
-        os.close(fd)
-        raise
+        try:
+            fd = os.open(path.name, flags | nofollow, dir_fd=dir_fd)
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise VaultError(f"symlink: {path}") from exc
+            raise
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise VaultError(f"not a regular file: {path}")
+            return fd
+        except Exception:
+            os.close(fd)
+            raise
+    finally:
+        os.close(dir_fd)
 
 
 def same_inode(path: Path, st: os.stat_result) -> bool:
