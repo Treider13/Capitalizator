@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **237 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **252 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -37,7 +37,7 @@
 | 0.4.1 новости | `tests/news/test_pit.py` | не нужно | CSV BLS/Fed: CPI 11 Sep / 14 Oct / 10 Nov (EST 13:30Z); FOMC 16 Sep / 28 Oct. Срез до `known_at` пустой. TG нет |
 | 0.4.7 комиссии | `tests/exec/test_fees.py` | не нужно | VIP0 0.0002/0.00055 ×2; +1R после комиссий меньше на известную величину. Fill по печати, не close |
 | 0.4.8 дрейф | `tests/champion/test_drift_synthetic.py` | не нужно | Page-Hinkley: 0.3→0.7 = drift; плоский 0.3 — нет. Не live |
-| 0.4.9 hashlog | `tests/memory/test_hashlog.py` | не нужно | подмена жеста ломает verify; `episode` пустой |
+| 0.4.9 hashlog | `tests/memory/test_hashlog.py` | не нужно | касание пишет звено; жест — следующее; подмена ломает verify; `episode` пустой |
 | 0.4.3 сводка | `tests/llm/test_no_egress.py`, `test_no_advice.py` | контейнера нет | яд «купи» → `trade_advice=false`; TCP connect в sandbox — ошибка. Модель по сети не вызываем |
 | 0.4.4 signer схема | `tests/signer/test_schema.py` | ключа/тестнета нет | validate: week0 + stop + testnet. Mainnet/SOL — отказ. Ордер не шлём. Ключ не читаем |
 | 0.4.2 авторы | `tests/authors/test_ingest.py` | нет 20 постов | jsonl без `weight`; TG запрещён; `check_author_raw --min 20` = код 2. Посты не выдумывал |
@@ -45,7 +45,12 @@
 | 0.4.6 reconcile | `tests/signer/test_reconcile.py` | тестнета нет | `tick({})` снимает локальный ордер. Мок, не сайт |
 | 0.4.10 гейт Ф0 | `tests/ops/test_gate_f0.py` | нет 30 суток | `gates f0` код 2. `infra/phase.yaml` phase=0, trading_mode=off. Файл не переключаем |
 
-Неделя 1 **не закрыта** (нет VPS/суток). Неделя 3: журнал на фикстурах есть; живого часа нет. Неделя 4: каркас есть; 20 авторов, LLM-контейнер, hello тестнет, kill-switch лог, гейт Ф0 — **красные**. Стратегию отскока не пишем.
+| 1.5.1 размер | `tests/risk/test_sizing.py`, `test_alt_wide_stop.py` | не нужно | 3x стоп 2% при target 1% → отказ (маржа 16.67% > 10%). 20%×5x×4% = 4% риска → отказ. Ордера нет |
+| 1.5.2 краны | `tests/risk/test_halts.py` | не нужно | день −3.1% и liq → нет нового входа |
+| 1.5.3 одна позиция | `tests/risk/test_one_position.py` | не нужно | второй вход reject |
+| 1.5.4 сессия | `tests/risk/test_session.py` | не нужно | 12:00Z reject, 14:10Z accept, 20:00Z reject; ночь 5x всегда reject. `zoneinfo` Europe/Moscow |
+
+Неделя 1 **не закрыта** (нет VPS/суток). Ф1-краны написаны, `trading_mode` остаётся `off`. Стратегию отскока и demo-адаптер не писал. Гейт Ф0 красный.
 
 Факты Bybit, не догадки:
 - сборка книги — `u` (подряд); `seq` — кросс-номер. [orderbook REST](https://bybit-exchange.github.io/docs/v5/market/orderbook), [WS](https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook)

@@ -1,6 +1,6 @@
 # risk
 
-Вход: Intent одной новой идеи.
-Выход: accept / cut_size / reject; manage reduce/flatten/trail.
-Не делает: average_in, add_to_position, pyramid, martingale.
+Вход: плечо, стоп, эквити-счётчики, время, число позиций.
+Выход: accept/reject размера; краны дня/недели/пика; одно место; окно 16:30–19:30 МСК.
+Не делает: average_in, ордер, 5x в Ф1, стратегию отскока, mainnet.
 Ключи не читает.

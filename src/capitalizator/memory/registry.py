@@ -17,6 +17,7 @@ from hashlib import blake2s
 from typing import Literal
 
 from capitalizator.book.reconstruct import Book, _canon
+from capitalizator.memory.hashlog import HashChain, touch_payload
 from capitalizator.tape.classify import TapeClassifier
 from capitalizator.types import MarketEvent, require_utc
 from capitalizator.zones.config import RegistryConfig, load_registry
@@ -68,6 +69,7 @@ class Registry:
         self.config = config or load_registry()
         self.touches: list[Touch] = []
         self._zones: dict[str, Zone] = {}
+        self.chain = HashChain()
 
     def on_trade(self, trade: MarketEvent, zones: Sequence[Zone]) -> list[Touch]:
         if trade.stream != "trades":
@@ -92,6 +94,7 @@ class Registry:
                 continue
             touch = Touch.create(zone_id=zone.zone_id, ts=ts, trade_px=px, trade_qty=qty)
             self.touches.append(touch)
+            self.chain.append(touch_payload(zone_id=zone.zone_id, gesture="pending"))
             pending_zones.add(zone.zone_id)
             opened.append(touch)
         return opened
@@ -183,7 +186,10 @@ class Registry:
         allowed = {"DEFEND", "RETREAT", "IMPROVE", "FADE", "SILENCE"}
         if gesture not in allowed:
             raise ValueError(f"unknown gesture: {gesture!r}")
-        return self._patch(gesture=gesture, touch_id=touch_id)
+        changed = self._patch(gesture=gesture, touch_id=touch_id)
+        for row in changed:
+            self.chain.append(touch_payload(zone_id=row.zone_id, gesture=gesture))
+        return changed
 
     def _patch(self, *, touch_id: str | None = None, **fields: object) -> list[Touch]:
         changed: list[Touch] = []
