@@ -1,0 +1,13 @@
+services:
+  recorder:
+    build:
+      context: ../..
+      dockerfile: infra/recorder/Dockerfile
+    ports:
+      - "8081:8081"
+    # No env_file with keys. Public market data only.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
