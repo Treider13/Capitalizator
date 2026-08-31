@@ -28,6 +28,7 @@ PACKAGES = [
     "capitalizator.memory",
     "capitalizator.champion",
     "capitalizator.exec",
+    "capitalizator.storage",
 ]
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "capitalizator"

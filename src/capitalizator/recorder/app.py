@@ -1,10 +1,11 @@
-"""Recorder process: health only. No signer import. No keys."""
+"""Recorder process: health + injected-frame pump. No signer import. No keys."""
 
 from __future__ import annotations
 
 import argparse
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any
 
 
@@ -56,15 +57,40 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--stream", default="trades")
     parser.add_argument("--minutes", type=int, default=0)
+    parser.add_argument("--from-jsonl", default=None)
+    parser.add_argument("--data-root", default=None)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8081)
     parser.add_argument("--serve", action="store_true")
     args = parser.parse_args(argv)
     app = RecorderApp()
+    if args.from_jsonl:
+        if not args.data_root:
+            raise SystemExit("--data-root is required with --from-jsonl")
+        from capitalizator.recorder.pump import pump_jsonl
+
+        accepted = pump_jsonl(
+            app, Path(args.data_root), Path(args.from_jsonl), stream=args.stream
+        )
+        print(
+            json.dumps(
+                {
+                    "accepted": accepted,
+                    "recording": app.recording,
+                    "readyz": app.readyz(),
+                    "symbol": args.symbol,
+                }
+            )
+        )
+        if args.serve:
+            server = HTTPServer((args.host, args.port), _handler(app))
+            server.serve_forever()
+        return 0
     if args.minutes and args.minutes > 0:
-        # Live hour is step 0.1.4 green on a VPS. This process does not open WS here.
+        # Live hour is step 0.1.4 green on a VPS. This process does not open WS.
         raise SystemExit(
-            "live WS hour is not enabled in this binary; use tests/fixtures and a VPS later"
+            "live WS hour is not enabled in this binary; "
+            "pass --from-jsonl PATH (public wss is VPS step 0.1.4)"
         )
     if args.serve:
         server = HTTPServer((args.host, args.port), _handler(app))

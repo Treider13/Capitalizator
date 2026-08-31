@@ -7,15 +7,16 @@ Docs: https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal
 
-from capitalizator.recorder.rest_snapshot import BookSnapshot, _levels, _require_update_id
+from capitalizator.recorder.rest_snapshot import (
+    BookSnapshot,
+    _levels,
+    _require_update_id,
+    book_times,
+)
 from capitalizator.types import ExchangeName, MarketEvent, require_utc
-
-
-def _ms_to_utc(ms: int | str) -> datetime:
-    return datetime.fromtimestamp(int(ms) / 1000, tz=UTC)
 
 
 class BookDiffNormalizer:
@@ -23,22 +24,26 @@ class BookDiffNormalizer:
         data = frame.get("data") or frame
         if not isinstance(data, dict):
             raise ValueError("book frame data must be an object")
-        kind: Literal["snapshot", "delta"] = frame.get("type") or data.get("type") or "delta"
+        raw_kind = frame.get("type")
+        if raw_kind is None and isinstance(data, dict):
+            raw_kind = data.get("type")
+        if raw_kind is None:
+            raise ValueError("book frame missing type")
+        kind: Literal["snapshot", "delta"] = raw_kind
         if kind not in {"snapshot", "delta"}:
             raise ValueError(f"unknown book type {kind!r}")
-        ts = frame.get("ts") or data.get("ts") or frame.get("cts") or data.get("cts")
-        if ts is None:
-            raise ValueError("book frame missing ts")
         if "s" not in data:
             raise ValueError("book frame missing s")
+        exchange_ts, system_ts = book_times(data, frame)
         cross = data.get("seq")
         snap = BookSnapshot(
             symbol=str(data["s"]),
-            exchange_ts=require_utc(_ms_to_utc(ts)),
+            exchange_ts=exchange_ts,
             seq=_require_update_id(data),
             bids=_levels(list(data.get("b") or [])),
             asks=_levels(list(data.get("a") or [])),
             cross_seq=int(cross) if cross is not None else None,
+            system_ts=system_ts,
         )
         return kind, snap
 
@@ -63,5 +68,6 @@ class BookDiffNormalizer:
                 "asks": list(snap.asks),
                 "kind": kind,
                 "cross_seq": snap.cross_seq,
+                "system_ts": snap.system_ts.isoformat() if snap.system_ts else None,
             },
         )

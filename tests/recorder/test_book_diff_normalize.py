@@ -36,6 +36,8 @@ def test_parse_official_ws_snapshot() -> None:
     assert snap.cross_seq == 7961638724
     assert snap.symbol == "BTCUSDT"
     assert snap.bids[0] == ("16493.50", "0.006")
+    assert snap.exchange_ts == datetime.fromtimestamp(1672304484976 / 1000, tz=UTC)
+    assert snap.system_ts == datetime.fromtimestamp(1672304484978 / 1000, tz=UTC)
 
 
 def test_parse_delta_empty_side() -> None:
@@ -54,6 +56,14 @@ def test_parse_delta_empty_side() -> None:
 def test_unknown_type_is_error() -> None:
     with pytest.raises(ValueError, match="unknown book type"):
         BookDiffNormalizer().parse_frame({"type": "trade", "ts": 1, "data": {"s": "X", "u": 1}})
+
+
+def test_missing_type_is_error_not_silent_delta() -> None:
+    """A REST-shaped payload without type must not be applied as a delta."""
+    with pytest.raises(ValueError, match="missing type"):
+        BookDiffNormalizer().parse_frame(
+            {"ts": 1, "data": {"s": "BTCUSDT", "u": 1, "b": [["1", "1"]], "a": [["2", "1"]]}}
+        )
 
 
 def test_missing_symbol_is_error() -> None:

@@ -1,6 +1,6 @@
 # exec
 
-Вход: replay / demo / (позже) live adapter.
-Выход: симуляция fill, manage 50% на +1R, трейл.
-Не делает: live-ордер в фазе 0, доливка.
+Вход: `ReplayEngine.run(path)` — jsonl книги (фикстура `tests/fixtures/day_btc_small/`).
+Выход: список `BookCheckpoint` с `best()` после каждого кадра.
+Не делает: live-ордер, fill, стратегию, выдуманный стакан на дыре.
 Ключи не читает.

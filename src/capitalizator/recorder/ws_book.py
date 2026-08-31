@@ -2,21 +2,40 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any
 
 from capitalizator.book.reconstruct import Book
+from capitalizator.book.resync import BookResync
 from capitalizator.recorder.book_diff import BookDiffNormalizer
+from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.types import ExchangeName, MarketEvent, require_utc
 
 
 class BybitBookWs:
-    """Snapshot + deltas → MarketEvents. Does not open a live socket."""
+    """Snapshot + deltas → MarketEvents. Does not open a live socket.
 
-    def __init__(self, *, book: Book | None = None) -> None:
+    If `fetch_snapshot` is set, a gap/`BookDirty` discards the failed delta
+    and replaces the book with that snapshot (0.2.4). Without a fetch,
+    the exception still surfaces — we do not invent depth.
+    """
+
+    def __init__(
+        self,
+        *,
+        book: Book | None = None,
+        fetch_snapshot: Callable[[], BookSnapshot] | None = None,
+        symbol: str = "BTCUSDT",
+        exchange: ExchangeName = "bybit",
+    ) -> None:
         self.normalizer = BookDiffNormalizer()
         self.book = book or Book()
+        self.resync = (
+            BookResync(self.book, fetch_snapshot, symbol=symbol, exchange=exchange)
+            if fetch_snapshot is not None
+            else None
+        )
 
     def ingest_frames(
         self,
@@ -30,7 +49,15 @@ class BybitBookWs:
         out: list[MarketEvent] = []
         for frame in frames:
             kind, snap = self.normalizer.parse_frame(frame)
-            if kind == "snapshot":
+            if self.resync is not None:
+                recovered = self.resync.feed(kind, snap, recv_ts=now)
+                if recovered:
+                    out.extend(recovered)
+                    bbo = self._bbo_event(snap.symbol, snap.exchange_ts, now, exchange)
+                    if bbo is not None:
+                        out.append(bbo)
+                    continue
+            elif kind == "snapshot":
                 self.book.apply_snapshot(snap)
             else:
                 self.book.apply_diff(snap.bids, snap.asks, seq=snap.seq)

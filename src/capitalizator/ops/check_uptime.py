@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
+from capitalizator.screener.universe import load_universe
 from capitalizator.types import MarketEvent, require_utc
 
 
@@ -39,11 +40,16 @@ def load_events(root: Path, *, symbol: str) -> list[MarketEvent]:
 
 
 def gap_covers(gaps: list[MarketEvent], start: datetime, end: datetime) -> bool:
+    """A seq-gap event does not mark a time hole unless payload has ts_from/ts_to."""
     start_u = require_utc(start)
     end_u = require_utc(end)
     for gap in gaps:
-        lo = require_utc(gap.exchange_ts)
-        hi = require_utc(gap.recv_ts)
+        raw_from = gap.payload.get("ts_from")
+        raw_to = gap.payload.get("ts_to")
+        if raw_from is None or raw_to is None:
+            continue
+        lo = require_utc(datetime.fromisoformat(str(raw_from)))
+        hi = require_utc(datetime.fromisoformat(str(raw_to)))
         if lo > hi:
             lo, hi = hi, lo
         if lo <= start_u and hi >= end_u:
@@ -89,9 +95,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Uptime check on recorded parquet")
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--symbol", default="BTCUSDT")
+    parser.add_argument("--universe", default=None)
     parser.add_argument("--hours", type=float, required=True)
     parser.add_argument("--max-unmarked-gap-s", type=float, required=True)
     args = parser.parse_args(argv)
+    if args.universe:
+        universe = load_universe(Path(args.universe))
+        spans: list[float] = []
+        for symbol in universe.symbols:
+            events = load_events(Path(args.data_root), symbol=symbol)
+            spans.append(
+                check_uptime(
+                    events,
+                    hours=args.hours,
+                    max_unmarked_gap_s=args.max_unmarked_gap_s,
+                    symbol=symbol,
+                )
+            )
+        print(min(spans) if spans else 0.0)
+        return 0
     events = load_events(Path(args.data_root), symbol=args.symbol)
     span = check_uptime(
         events,

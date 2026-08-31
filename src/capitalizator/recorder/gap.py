@@ -44,7 +44,20 @@ class GapDetector:
         exchange: ExchangeName,
         exchange_ts: datetime,
         recv_ts: datetime,
+        ts_from: datetime | None = None,
+        ts_to: datetime | None = None,
     ) -> MarketEvent:
+        payload: dict[str, object] = {
+            "missing_stream": stream,
+            "seq_from": gap.seq_from,
+            "seq_to": gap.seq_to,
+        }
+        # Time coverage is explicit. exchange_ts/recv_ts are when we noticed,
+        # not the silent interval (often a few ms apart).
+        if ts_from is not None:
+            payload["ts_from"] = require_utc(ts_from).isoformat()
+        if ts_to is not None:
+            payload["ts_to"] = require_utc(ts_to).isoformat()
         return MarketEvent(
             stream="gap",
             exchange=exchange,
@@ -52,9 +65,5 @@ class GapDetector:
             exchange_ts=require_utc(exchange_ts),
             recv_ts=require_utc(recv_ts),
             seq=None,
-            payload={
-                "missing_stream": stream,
-                "seq_from": gap.seq_from,
-                "seq_to": gap.seq_to,
-            },
+            payload=payload,
         )

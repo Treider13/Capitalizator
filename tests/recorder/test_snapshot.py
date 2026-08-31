@@ -31,9 +31,19 @@ def test_parse_official_bybit_rest_example() -> None:
     assert snap.symbol == "BTCUSDT"
     assert snap.seq == 230704  # u, not cross seq
     assert snap.cross_seq == 1432604333
-    assert snap.exchange_ts == datetime.fromtimestamp(1716863719031 / 1000, tz=UTC)
+    # cts (matching engine), not ts (system). Official example: 126 ms apart.
+    assert snap.exchange_ts == datetime.fromtimestamp(1716863718905 / 1000, tz=UTC)
+    assert snap.system_ts == datetime.fromtimestamp(1716863719031 / 1000, tz=UTC)
     assert snap.bids == (("65485.47", "47.081829"),)
     assert snap.asks == (("65557.7", "16.606555"),)
+
+
+def test_cts_is_exchange_ts_when_ts_differs() -> None:
+    snap = RestSnapshot().parse(OFFICIAL_REST)
+    assert snap.exchange_ts != snap.system_ts
+    assert snap.exchange_ts == datetime.fromtimestamp(
+        OFFICIAL_REST["result"]["cts"] / 1000, tz=UTC
+    )
 
 
 def test_parse_uses_u_not_cross_seq_as_apply_id() -> None:
@@ -69,6 +79,21 @@ def test_parse_rejects_missing_symbol() -> None:
         "result": {"ts": 1, "u": 1, "b": [["1", "1"]], "a": [["2", "1"]]},
     }
     with pytest.raises(ValueError, match="missing s"):
+        RestSnapshot().parse(payload)
+
+
+def test_parse_rejects_nonpositive_price() -> None:
+    payload = {
+        "retCode": 0,
+        "result": {
+            "s": "BTCUSDT",
+            "ts": 1,
+            "u": 1,
+            "b": [["0", "1"]],
+            "a": [["2", "1"]],
+        },
+    }
+    with pytest.raises(ValueError, match="price"):
         RestSnapshot().parse(payload)
 
 

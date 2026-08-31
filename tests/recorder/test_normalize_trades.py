@@ -94,6 +94,13 @@ def test_missing_price_is_value_error_not_keyerror() -> None:
         TradesNormalizer().normalize(raw, recv_ts=recv)
 
 
+def test_empty_data_array_is_zero_events() -> None:
+    recv = datetime(2026, 8, 30, 13, 30, 1, tzinfo=UTC)
+    assert TradesNormalizer().normalize_frame(
+        {"topic": "publicTrade.BTCUSDT", "data": []}, recv_ts=recv
+    ) == []
+
+
 def test_zero_qty_rejected() -> None:
     recv = datetime(2026, 8, 30, 13, 30, 1, tzinfo=UTC)
     raw = {"T": 1, "s": "BTCUSDT", "S": "Buy", "v": "0", "p": "1"}

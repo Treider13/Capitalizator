@@ -5,9 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from capitalizator.book.reconstruct import Book
+import pytest
+
+from capitalizator.book.reconstruct import Book, BookDirty
 from capitalizator.book.resync import BookResync
 from capitalizator.recorder.rest_snapshot import BookSnapshot, RestSnapshot
+from capitalizator.recorder.ws_book import BybitBookWs
 
 RECV = datetime(2026, 8, 30, 13, 31, tzinfo=UTC)
 
@@ -89,3 +92,42 @@ def test_on_gap_uses_rest_parser_shape() -> None:
     assert event.payload["update_id"] == 230704
     assert event.payload["cross_seq"] == 1432604333
     assert book.seq == 230704
+
+
+def _frame(kind: str, u: int, bid: str = "100", bid_sz: str = "1") -> dict:
+    return {
+        "topic": "orderbook.200.BTCUSDT",
+        "type": kind,
+        "ts": 1725024600000,
+        "data": {
+            "s": "BTCUSDT",
+            "u": u,
+            "seq": u * 10,
+            "b": [[bid, bid_sz]],
+            "a": [["101", "1"]],
+        },
+    }
+
+
+def test_ws_ingest_without_fetch_still_raises_on_gap() -> None:
+    ws = BybitBookWs()
+    ws.ingest_frames([_frame("snapshot", 10)], recv_ts=RECV)
+    with pytest.raises(BookDirty, match="gap"):
+        ws.ingest_frames([_frame("delta", 20, bid="999", bid_sz="99")], recv_ts=RECV)
+    assert ws.book.seq == 10
+    assert ws.book.level("bid", "999") == 0
+
+
+def test_ws_ingest_with_fetch_resyncs_and_drops_poison() -> None:
+    rest = _snap(50, bid="65485.47", bid_sz="47.081829")
+    ws = BybitBookWs(fetch_snapshot=lambda: rest)
+    events = ws.ingest_frames(
+        [_frame("snapshot", 10), _frame("delta", 20, bid="999", bid_sz="99")],
+        recv_ts=RECV,
+    )
+    streams = [e.stream for e in events]
+    assert "resync" in streams
+    assert "book_diff" not in streams
+    assert ws.book.seq == 50
+    assert ws.book.level("bid", "999") == 0
+    assert ws.book.level("bid", "65485.47") != 0

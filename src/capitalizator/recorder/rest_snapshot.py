@@ -24,11 +24,32 @@ from capitalizator.types import ExchangeName, MarketEvent, require_utc
 @dataclass(frozen=True)
 class BookSnapshot:
     symbol: str
-    exchange_ts: datetime
+    exchange_ts: datetime  # matching-engine time: Bybit `cts`, else `ts`
     seq: int  # Bybit `u`
     bids: tuple[tuple[str, str], ...]
     asks: tuple[tuple[str, str], ...]
     cross_seq: int | None = None  # Bybit `seq`
+    system_ts: datetime | None = None  # Bybit `ts` when both exist
+
+
+def book_times(
+    data: dict[str, Any],
+    frame: dict[str, Any] | None = None,
+) -> tuple[datetime, datetime | None]:
+    """exchange_ts = cts (matches publicTrade.T). Fallback ts. Official WS/REST.
+
+    https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
+    """
+    frame = frame or {}
+    cts = data.get("cts") if data.get("cts") is not None else frame.get("cts")
+    ts = data.get("ts") if data.get("ts") is not None else frame.get("ts")
+    if cts is None and ts is None:
+        raise ValueError("book payload missing cts and ts")
+    engine = datetime.fromtimestamp(int(cts if cts is not None else ts) / 1000, tz=UTC)
+    system = None
+    if ts is not None:
+        system = datetime.fromtimestamp(int(ts) / 1000, tz=UTC)
+    return require_utc(engine), require_utc(system) if system is not None else None
 
 
 def _levels(rows: list[Any]) -> tuple[tuple[str, str], ...]:
@@ -37,8 +58,10 @@ def _levels(rows: list[Any]) -> tuple[tuple[str, str], ...]:
         if not isinstance(row, list | tuple) or len(row) < 2:
             raise ValueError("level must be [price, size]")
         px, sz = str(row[0]), str(row[1])
-        Decimal(px)
+        price = Decimal(px)
         size = Decimal(sz)
+        if price <= 0:
+            raise ValueError(f"level price must be > 0, got {price}")
         if size < 0:
             raise ValueError(f"level size must be >= 0, got {size}")
         out.append((px, sz))
@@ -63,9 +86,7 @@ class RestSnapshot:
         if "s" not in result:
             raise ValueError("snapshot missing s")
         symbol = str(result["s"])
-        ts_ms = result.get("ts") or result.get("cts")
-        if ts_ms is None:
-            raise ValueError("snapshot missing ts")
+        exchange_ts, system_ts = book_times(result)
         bids = _levels(list(result.get("b") or []))
         asks = _levels(list(result.get("a") or []))
         if not bids or not asks:
@@ -73,11 +94,12 @@ class RestSnapshot:
         cross = result.get("seq")
         return BookSnapshot(
             symbol=symbol,
-            exchange_ts=require_utc(datetime.fromtimestamp(int(ts_ms) / 1000, tz=UTC)),
+            exchange_ts=exchange_ts,
             seq=_require_update_id(result),
             bids=bids,
             asks=asks,
             cross_seq=int(cross) if cross is not None else None,
+            system_ts=system_ts,
         )
 
     def fetch(self, symbol: str, *, opener: Any | None = None) -> BookSnapshot:
@@ -110,6 +132,7 @@ class RestSnapshot:
                 "bids": list(snap.bids),
                 "asks": list(snap.asks),
                 "cross_seq": snap.cross_seq,
+                "system_ts": snap.system_ts.isoformat() if snap.system_ts else None,
             },
         )
 
