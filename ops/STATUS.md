@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **252 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **278 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -45,12 +45,14 @@
 | 0.4.6 reconcile | `tests/signer/test_reconcile.py` | тестнета нет | `tick({})` снимает локальный ордер. Мок, не сайт |
 | 0.4.10 гейт Ф0 | `tests/ops/test_gate_f0.py` | нет 30 суток | `gates f0` код 2. `infra/phase.yaml` phase=0, trading_mode=off. Файл не переключаем |
 
-| 1.5.1 размер | `tests/risk/test_sizing.py`, `test_alt_wide_stop.py` | не нужно | 3x стоп 2% при target 1% → отказ (маржа 16.67% > 10%). 20%×5x×4% = 4% риска → отказ. Ордера нет |
-| 1.5.2 краны | `tests/risk/test_halts.py` | не нужно | день −3.1% и liq → нет нового входа |
-| 1.5.3 одна позиция | `tests/risk/test_one_position.py` | не нужно | второй вход reject |
-| 1.5.4 сессия | `tests/risk/test_session.py` | не нужно | 12:00Z reject, 14:10Z accept, 20:00Z reject; ночь 5x всегда reject. `zoneinfo` Europe/Moscow |
+| 1.5.1 размер | `tests/risk/test_sizing.py`, `test_alt_wide_stop.py` | не нужно | `Sizing.compute(100000, 3, 0.02, 0.01)` → отказ (16.67% > 10%). 20%×5×4% = 4% при target 1.2% → отказ **из-за риска**, не только из-за капа 3x. Ордера нет |
+| 1.5.2 краны | `tests/risk/test_halts.py` | не нужно | `Halts.state`; день −3% / неделя −6% / пик −25% / liq. После liq reason не переписывается. Flatten — `RiskEngine.on_flat`, не этот класс |
+| 1.5.3 одна позиция | `tests/risk/test_one_position.py` | не нужно | `RiskEngine._open_position: Position \| None`. Второй вход reject. `PositionBook` убран — второй счётчик врал бы |
+| 1.5.4 сессия | `tests/risk/test_session.py`, `test_us_data_day.py` | не нужно | 12:00Z reject, 14:10Z accept, 20:00Z reject; ночь 5x всегда reject. Окно из `infra/time.yaml` + `zoneinfo`. CPI 11 Sep / 10 Nov (EST) / FOMC 16 Sep до 13:30Z = `us_data_day`. 24ч-кат **не** включён (2.11.7) |
+| 1.5.5 demo adapter | `tests/exec/test_demo_mode_no_mainnet.py` | hello нет | `trading_mode=off` → отказ. Инжект `demo` → `{mode: demo, status: not_sent}`. Host mainnet в `exec/`+`signer/` нет. **Hello лимит+cancel на демо — нет** (ключа/тестнета нет) |
+| 1.5.6 стоп | `tests/signer/test_stop_required.py` | биржа нет | нет `stop_px` → ValidationError; ноль → ValueError. HTTP 4xx нет — процесса signer нет. Ордер не шлём |
 
-Неделя 1 **не закрыта** (нет VPS/суток). Ф1-краны написаны, `trading_mode` остаётся `off`. Стратегию отскока и demo-адаптер не писал. Гейт Ф0 красный.
+Неделя 1 **не закрыта** (нет VPS/суток). Гейт Ф0 красный. `trading_mode=off`. Стратегию отскока (1.6.*) **не** писал: hello демо красный, гейт Ф0 красный. Не «всё реализовано».
 
 Факты Bybit, не догадки:
 - сборка книги — `u` (подряд); `seq` — кросс-номер. [orderbook REST](https://bybit-exchange.github.io/docs/v5/market/orderbook), [WS](https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook)

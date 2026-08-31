@@ -1,27 +1,30 @@
-from capitalizator.risk.halts import Halts
-from capitalizator.risk.positions import PositionBook
+from capitalizator.risk.halts import Halt, Halts
 from capitalizator.risk.schema import (
     FORBIDDEN_ACTIONS,
     Intent,
     ManageAction,
     ManageIntent,
+    Position,
     RiskAction,
     RiskDecision,
     RiskEngine,
 )
-from capitalizator.risk.session import allow_entry
-from capitalizator.risk.sizing import Sizer
+from capitalizator.risk.session import SessionWindow, allow_entry
+from capitalizator.risk.sizing import Sizer, Sizing
 
 __all__ = [
     "FORBIDDEN_ACTIONS",
+    "Halt",
     "Halts",
     "Intent",
     "ManageAction",
     "ManageIntent",
-    "PositionBook",
+    "Position",
     "RiskAction",
     "RiskDecision",
     "RiskEngine",
+    "SessionWindow",
     "Sizer",
+    "Sizing",
     "allow_entry",
 ]

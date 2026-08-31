@@ -1,0 +1,15 @@
+# PHASE-BUILD «Окна времени». Session reads tz/window/US classes.
+# pre_event_* and fomc_blackout_et are frozen here for 2.11.7 — session does not apply them.
+session_tz: Europe/Moscow
+session_start: "16:30"
+session_end: "19:30"
+us_tz: America/New_York
+us_data_classes: [CPI, FOMC, NFP, PCE]
+fomc_blackout_et:
+  start: "14:00"
+  end: "15:00"
+pre_event_hours: 24
+pre_event_size_mult: 0.5
+first_minute_s: 60
+dead_man_s: 30
+reconcile_s: 60

@@ -3,6 +3,8 @@
 risk% = margin% × lev × stop%.
 raw_margin = target_risk / (lev × stop_frac).
 If raw > 10% equity cap → reject (do not raise lev). F1 max lev = 3.
+
+PHASE-BUILD artifact: Sizing.compute(equity, lev, stop_frac, target_risk).
 """
 
 from __future__ import annotations
@@ -89,3 +91,47 @@ class Sizer:
             account_risk=self.target_risk,
             lev=lev,
         )
+
+    def compute(
+        self,
+        equity: Decimal,
+        lev: Decimal,
+        stop_frac: Decimal,
+        target_risk: Decimal | None = None,
+    ) -> SizeDecision:
+        """Spec name. Cap is 10% of this equity. Does not raise lev."""
+        if equity <= 0:
+            raise ValueError("equity must be > 0")
+        target = self.target_risk if target_risk is None else target_risk
+        if target <= 0:
+            raise ValueError("target_risk must be > 0")
+        if stop_frac <= 0:
+            raise ValueError("stop_frac must be > 0")
+        if lev > self.max_lev:
+            return SizeDecision(
+                action="reject",
+                reason="lev above F1 max 3x",
+                margin_frac=None,
+                account_risk=None,
+                lev=lev,
+            )
+        cap_abs = self.cap_margin * equity
+        raw_abs = (target * equity) / (lev * stop_frac)
+        if raw_abs > cap_abs:
+            return SizeDecision(
+                action="reject",
+                reason="стоп слишком широк для 10% и этого плеча",
+                margin_frac=None,
+                account_risk=None,
+                lev=lev,
+            )
+        return SizeDecision(
+            action="accept",
+            reason="ok",
+            margin_frac=raw_abs / equity,
+            account_risk=target,
+            lev=lev,
+        )
+
+
+Sizing = Sizer
