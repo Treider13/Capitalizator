@@ -52,6 +52,8 @@ class PtfTable:
     ) -> PtfRow:
         if stat.n < 0:
             raise ValueError("n must be >= 0")
+        if stat.hours <= 0:
+            raise ValueError("hours must be > 0")
         if stat.hours > WINDOW_H:
             raise ValueError("class hours cannot exceed the 3h session window")
         cap = POST_GATE_RISK if gate_passed else F1_RISK
@@ -65,7 +67,7 @@ class PtfTable:
             hours=stat.hours,
             risk_frac=risk_frac,
             rho=got,
-            pickable=stat.n >= N_MIN_PICK and got is not None,
+            pickable=stat.n >= N_MIN_PICK and got is not None and got > 0,
         )
 
     def pick(self, rows: list[PtfRow]) -> str | None:

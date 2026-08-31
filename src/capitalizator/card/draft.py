@@ -70,8 +70,14 @@ def apply_bind(card: CardDraft, index: int, receipt: BindReceipt) -> CardDraft:
         raise ValueError("claim index out of range")
     if card.claims[index].value != receipt.claim:
         raise ValueError("receipt does not match claim")
-    if receipt.verdict == "VERIFIED" and not receipt.sql_path:
-        raise ValueError("VERIFIED requires a query file")
+    if receipt.verdict == "VERIFIED":
+        if not receipt.sql_path:
+            raise ValueError("VERIFIED requires a query file")
+        query = Path(receipt.sql_path)
+        if not query.is_file():
+            raise ValueError("VERIFIED requires a query file")
+        if query.read_text(encoding="utf-8").strip() != receipt.claim:
+            raise ValueError("query file no longer matches claim")
     claims = list(card.claims)
     claims[index] = claims[index].model_copy(update={"verdict": receipt.verdict})
     return card.model_copy(update={"claims": claims})

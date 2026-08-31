@@ -1,14 +1,19 @@
-"""1.7.3 — first fact is a gesture with n≥20. SILENCE / n<20 → shadow, no sizeup.
+"""1.7.3 / 2.11.4 — first fact is the fastest claim with our frequency.
 
-Does not open a position. Does not map DEFEND to more lots.
+n<20 / SILENCE → shadow. Size never grows. A human first_fact field is not
+this module: CardDraft forbids extra keys. Does not open a position.
 """
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
 N_MIN = 20
+_HORIZON = re.compile(r"^(\d+)(s|m|h|d)$")
+_UNIT_S = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
 @dataclass(frozen=True)
@@ -18,9 +23,42 @@ class FirstFact:
     size_mult: Decimal
 
 
+@dataclass(frozen=True)
+class RankedClaim:
+    value: str
+    horizon: str
+    n: int
+
+
 def resolve(gesture: str | None, n: int) -> FirstFact:
     if n < 0:
         raise ValueError("n must be >= 0")
     if gesture is None or gesture == "SILENCE" or n < N_MIN:
         return FirstFact(tag="shadow_gesture", first_fact=None, size_mult=Decimal("1"))
     return FirstFact(tag="first_fact", first_fact=gesture, size_mult=Decimal("1"))
+
+
+def horizon_seconds(horizon: str) -> int:
+    match = _HORIZON.fullmatch(horizon.strip().lower())
+    if match is None:
+        raise ValueError(f"horizon must be Ns|Nm|Nh|Nd, got {horizon!r}")
+    qty = int(match.group(1))
+    if qty <= 0:
+        raise ValueError("horizon quantity must be > 0")
+    return qty * _UNIT_S[match.group(2)]
+
+
+def pick_by_horizon(claims: Sequence[RankedClaim]) -> FirstFact:
+    """argmin horizon among claims with n≥20. Not a human-typed first_fact."""
+    ready: list[RankedClaim] = []
+    for claim in claims:
+        if claim.n < 0:
+            raise ValueError("n must be >= 0")
+        if claim.n < N_MIN or claim.value == "SILENCE" or not claim.value.strip():
+            continue
+        horizon_seconds(claim.horizon)
+        ready.append(claim)
+    if not ready:
+        return FirstFact(tag="shadow_gesture", first_fact=None, size_mult=Decimal("1"))
+    best = min(ready, key=lambda c: horizon_seconds(c.horizon))
+    return FirstFact(tag="first_fact", first_fact=best.value, size_mult=Decimal("1"))

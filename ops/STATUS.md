@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **373 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **390 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -60,8 +60,8 @@
 | 1.6.6 episode | `tests/exec/test_episodes.py`, `tests/ops/test_day_episodes.py` | нет демо-входов | лог пустой; `day_episodes` без файла → n=0. mode=live отказ |
 
 | 1.7.1 карточка | `tests/card/test_require_card.py`, `test_card_before_intent.py` | нет живых карточек | `propose` требует файл **и** несущий VERIFIED после `ManualVerifier.bind`. VERIFIED в JSON файла → отказ. pending-файл один → None |
-| 1.7.2 костыль | `tests/verifier/test_manual_bind.py`, `tests/card/test_load_bearing.py` | не SQL на проде | `bind` возвращает `BindReceipt`, не строку. Сырое `"VERIFIED"` в `apply_bind` — отказ. VERIFIED без пути запроса — отказ. «23 из 31» без файла → UNVERIFIABLE |
-| 1.7.3 first_fact | `tests/card/test_first_fact_no_sizeup.py` | n жестов <20 | n=19 / SILENCE → `shadow_gesture`, `size_mult=1`. n=20 не увеличивает лот |
+| 1.7.2 костыль | `tests/verifier/test_manual_bind.py`, `tests/card/test_load_bearing.py` | не SQL на проде | `BindReceipt`. Сырое `"VERIFIED"` — отказ. Нет файла / подмена текста после bind — отказ. «23 из 31» без файла → UNVERIFIABLE |
+| 1.7.3 first_fact | `tests/card/test_first_fact_no_sizeup.py`, `test_first_fact_argmin.py` | n жестов <20 | n=19 / SILENCE → тень, `size_mult=1`. `pick_by_horizon`: 8s бьёт 1d только при n≥20. Поле `first_fact` в JSON карточки — отказ (extra=forbid). Не Ф2-вход |
 | 1.7.4 1–3/день | `tests/risk/test_max_three.py` | не нужно | 4-й `propose` → None |
 | 1.7.5 тень ширины | `tests/champion/test_no_auto_promote.py` | ордеров нет | отчёт 0.8 и 1.2; `promote()` отказ; чемпион не сменён |
 | 1.8.1 skip | `tests/ops/test_check_skips.py` | недели сессии нет | нет файла → n=0, код 2. Не рисуем «зелёную неделю скипов» |
@@ -69,9 +69,10 @@
 | 1.8.3 avg R | `ops/gate_f1.sql` | нет 80 демо | SQL есть; строк episode нет. avg_r не выдумываем |
 | 1.8.4 гейт Ф1 | `tests/ops/test_gate_f1.py` | нет 80 демо | `gates f1` код 2. Считаются только closed demo bounce с fill_qty>0. Пустой dict не строка. G1.3 = `average_in` в FORBIDDEN, не grep. `phase.yaml` не трогаем |
 
-| PTF бумага | `tests/champion/test_ptf.py` | нет живых классов | ρ = E[R]×риск%/часы. n=19 → ρ=`None`; n=138 не pickable; часы>3 отказ; риск>1% без гейта отказ; `world_return_rank()` всегда `None`. Живой таблицы нет — ранга нет |
-| WJD бумага | `tests/jury/test_desk.py`, `tests/memory/test_stamp_jury.py` | нет живых меток на касаниях | THROUGH×DEFEND = SPLIT, не среднее. n<20 CAV/ZLG → SILENCE. `stamp_jury` пишет метку в реестр. `propose` Ф1 жюри **не** читает (гейт Ф1 красный; вето BTC = 2.9, не открывали) |
+| PTF бумага | `tests/champion/test_ptf.py` | нет живых классов | ρ = E[R]×риск%/часы. n=19 → ρ=`None`; n=138 не pickable; часы≤0 или >3 отказ; ρ≤0 не pickable; риск>1% без гейта отказ; `world_return_rank()` всегда `None` |
+| WJD бумага | `tests/jury/test_desk.py`, `test_weights.py`, `tests/memory/test_stamp_jury.py` | нет живых меток | THROUGH×DEFEND = SPLIT. Вес = n/(n+20)×hit только после экзамена; до n=20 веса равны. `weight_opens_size` всегда false. `propose` жюри не читает |
 | saved-R бумага | `tests/memory/test_saved_r.py` | нет живых скипов с исходом | пустой итог `None`, не ноль. skip bounce → later break = +1R; later bounce = missed, не прибыль. Чужая причина — отказ. Не PnL |
+| LLM не ставит вердикт | `tests/llm/test_cannot_verify.py` | контейнера нет | в `llm/` нет присваивания VERIFIED. Это не красная команда Ф2 и не модель по сети |
 
 Неделя 1 **не закрыта** (нет VPS/суток). Гейт Ф0 красный. Гейт Ф1 красный (0 closed demo bounce). `trading_mode=off`. Код 1.6–1.8 + PTF/WJD на ветке, **ордеров нет**, hello демо красный. Не «всё реализовано». Не топ мира по %: пустая PTF → ρ неизвестен, титула нет.
 

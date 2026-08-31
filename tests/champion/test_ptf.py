@@ -75,3 +75,16 @@ def test_hours_beyond_session_window_raises() -> None:
 
 def test_empty_table_has_no_pick() -> None:
     assert PtfTable().pick([]) is None
+
+
+def test_hours_zero_raises() -> None:
+    with pytest.raises(ValueError, match="hours"):
+        PtfTable().evaluate(_stat(n=19, hours="0"))
+
+
+def test_negative_rho_is_not_pickable() -> None:
+    row = PtfTable().evaluate(_stat(n=139, avg_r="-0.2"))
+    assert row.rho is not None
+    assert row.rho < 0
+    assert row.pickable is False
+    assert PtfTable().pick([row]) is None
