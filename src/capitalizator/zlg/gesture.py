@@ -61,6 +61,8 @@ class ZLG:
     ) -> GestureResult:
         if q <= 0:
             raise ValueError("q must be > 0")
+        if mid == touch.trade_px:
+            raise ValueError("mid must differ from trade_px to split in/back")
         t0 = require_utc(touch.ts)
         t1 = t0 + timedelta(seconds=self.config.zlg_window_s)
         a_same = a_back = a_in = a_opp = Decimal("0")

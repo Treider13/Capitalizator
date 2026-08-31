@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from capitalizator.memory.registry import Touch
 from capitalizator.zlg.gesture import ZLG, BookAdd, BookSide
 
@@ -64,6 +66,18 @@ def test_fade() -> None:
 def test_silence_when_add_below_gamma_q() -> None:
     """γ=0.25, q=4 → threshold 1. Add 0.5 → SILENCE."""
     assert _label(_add("bid", "100", "0.5")) == "SILENCE"
+
+
+def test_mid_equals_print_is_error() -> None:
+    with pytest.raises(ValueError, match="mid"):
+        _zlg().classify(
+            TOUCH,
+            [_add("bid", "100", "2")],
+            Q,
+            hit_side="bid",
+            mid=Decimal("100"),
+            opp_best=OPP,
+        )
 
 
 def test_add_before_print_ignored() -> None:

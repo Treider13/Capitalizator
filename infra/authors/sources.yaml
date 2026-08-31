@@ -1,0 +1,12 @@
+# Legal source kinds only. No Telegram scrape.
+# A URL is added after a human has opened that feed once.
+# This file is the allow-list, not a downloaded week of posts.
+allowed_kinds:
+  - rss
+  - reddit_json
+  - tradingview_own
+forbidden_kinds:
+  - telegram
+  - scrape
+  - tip
+sources: []

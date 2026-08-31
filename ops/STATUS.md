@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **223 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **237 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -25,7 +25,7 @@
 | 0.2.8 PIT SQL | `tests/storage/test_pit_query.py` | не нужно | DuckDB по уже видимым строкам; срез 12:00 не видит 12:05; `enable_external_access=false` без тихого pass |
 | 0.3.1 зоны | `tests/zones/test_no_lookahead.py`, `test_double_run.py` | не нужно | `prior_day_hl` + свинг; бар t+1 не создаёт зону до t; `zone_id` = blake2s. ICT/FVG нет |
 | 0.3.2 HTF | `tests/zones/test_htf_bias.py` | не нужно | long/short/box/unknown по закрытым 4h; будущий бар не переворачивает срез |
-| CAV запись | `tests/patterns/test_cav.py` | не нужно | REJECT/THROUGH/COMPRESS/NOISE на закрытой свече. Не вход |
+| CAV запись | `tests/patterns/test_cav.py` | не нужно | REJECT/THROUGH/COMPRESS/DRIFT/NOISE на закрытой свече. Не вход |
 | registry | `infra/registry.yaml` | не нужно | числа из PHASE-BUILD; лишний ключ — отказ |
 | 0.3.3 касания | `tests/memory/test_touch_outcome.py` | нет живого часа | pending→bounce/break/die; чужой символ с той же ценой — не касание. Live-ленты нет |
 | 0.3.4 лента/OFI | `tests/tape/test_classify.py`, `test_eaten.py`, `test_ofi.py` | нет живого часа | taker = поле side; eaten = ≥50% `depth_near` за 8 с; OFI = CKS `e_n`, не CVD. Поле без книги не заполняем |
@@ -40,8 +40,12 @@
 | 0.4.9 hashlog | `tests/memory/test_hashlog.py` | не нужно | подмена жеста ломает verify; `episode` пустой |
 | 0.4.3 сводка | `tests/llm/test_no_egress.py`, `test_no_advice.py` | контейнера нет | яд «купи» → `trade_advice=false`; TCP connect в sandbox — ошибка. Модель по сети не вызываем |
 | 0.4.4 signer схема | `tests/signer/test_schema.py` | ключа/тестнета нет | validate: week0 + stop + testnet. Mainnet/SOL — отказ. Ордер не шлём. Ключ не читаем |
+| 0.4.2 авторы | `tests/authors/test_ingest.py` | нет 20 постов | jsonl без `weight`; TG запрещён; `check_author_raw --min 20` = код 2. Посты не выдумывал |
+| 0.4.5 dead-man | `tests/signer/test_deadman.py` | тестнета нет | тишина >30 с → `cancel_all` (колбэк). Не биржа |
+| 0.4.6 reconcile | `tests/signer/test_reconcile.py` | тестнета нет | `tick({})` снимает локальный ордер. Мок, не сайт |
+| 0.4.10 гейт Ф0 | `tests/ops/test_gate_f0.py` | нет 30 суток | `gates f0` код 2. `infra/phase.yaml` phase=0, trading_mode=off. Файл не переключаем |
 
-Неделя 1 **не закрыта** (нет VPS/суток). Неделя 3: журнал на фикстурах есть; живого часа ленты (0.1.4) нет — шаг не «закрыт железом». Неделя 4: календарь/комиссии/дрейф/хеш/сводка-без-сети/схема signer есть; 20 авторов, живой LLM-контейнер, hello тестнет, dead-man, reconcile, гейт Ф0 — **нет**. Стратегию отскока не пишем.
+Неделя 1 **не закрыта** (нет VPS/суток). Неделя 3: журнал на фикстурах есть; живого часа нет. Неделя 4: каркас есть; 20 авторов, LLM-контейнер, hello тестнет, kill-switch лог, гейт Ф0 — **красные**. Стратегию отскока не пишем.
 
 Факты Bybit, не догадки:
 - сборка книги — `u` (подряд); `seq` — кросс-номер. [orderbook REST](https://bybit-exchange.github.io/docs/v5/market/orderbook), [WS](https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook)

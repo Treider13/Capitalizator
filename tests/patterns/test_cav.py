@@ -60,6 +60,12 @@ def test_mid_range_miss_is_noise() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box") == "NOISE"
 
 
+def test_close_inside_without_wick_beyond_is_drift() -> None:
+    """INVENTION-JURY: in the zone, no reject, no close beyond → DRIFT."""
+    bar = _bar(low="100.0", high="101.0", close="100.1")
+    assert label(ZONE, bar, t=T, htf_bias="box") == "DRIFT"
+
+
 def test_small_range_inside_zone_is_compress() -> None:
     closed = []
     start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
