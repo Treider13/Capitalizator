@@ -24,6 +24,7 @@ from capitalizator.ops.vault import (
     mkstemp_at,
     open_real_dir_fd,
     replace_at,
+    write_all,
 )
 from capitalizator.types import MarketEvent
 
@@ -115,7 +116,7 @@ class ParquetSink:
             pq.write_table(table, buf)
             fd, tmp_name = mkstemp_at(dir_fd, prefix=f"{path.name}.", suffix=".tmp")
             created = os.fstat(fd)
-            os.write(fd, buf.getvalue())
+            write_all(fd, buf.getvalue())
             os.fsync(fd)
             os.close(fd)
             fd = -1

@@ -53,6 +53,8 @@ user_data/          ← VPS пишет, ноут копирует (rsync / pack)
 - **`shutil.copy2` / `copytree(symlinks=False)`** — документация Python: цель симлинка *вклеивается*. Копируем через `O_NOFOLLOW`. Restore только listed-файлы на staging, потом `rename`. Сбой не оставляет dest.
 - **Staging `.{имя}.{pid}`** — то же семейство, что `{pid}.tmp`: имя угадывается (`/tmp/cap-bak`). `Path.exists()` ходит в симлинк. `shutil.rmtree` на 3.12 по dir-симлинку бросает OSError и цель не трогает — но чужой каталог с этим именем мы бы снесли. Staging — `mkdirat` на держащемся `dir_fd` родителя, не `mkdtemp(dir=parent)`.
 - **`Path.rmtree` / `Path.rename` после подмены dest.parent.** Факт: родитель сменили на симлинк → `_remove_staging` сносил дерево жертвы (`keep` исчез); `Path.rename` переименовывал каталог в цели, не наш staging. Очистка и `renameat` — только через `dir_fd`. Висячий корень vault — отказ, не `mkdir` цели.
+- **Один `os.write`.** POSIX не обещает записать весь буфер. Факт: подмена `os.write` → dest = `H` вместо `HELLO-WORLD`; `copy_regular` оставлял `A`. Пишем циклом, как `write_all`. После `renameat` — `fsync` каталога.
+- **`desk.sqlite` был `0o644`.** Журнал читал любой локальный пользователь. Создание и повторный `create=True` — `0o600` (как `conf/` у Hummingbot). `load_vault` отказывается, если `secrets/` — симлинк.
 - Чтение отчёта / sha256 / parquet — тот же fd, не `path.open` (он следует за ссылкой).
 - Консоль: нет поля `vps: false` (это была выдумка); без `LAYOUT` сервер **не** рисует хранилище; PUT/DELETE/PATCH = 405; симлинк в `tape/` не читает; исключение → 500 `error`, не traceback.
 

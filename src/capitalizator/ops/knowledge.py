@@ -116,7 +116,7 @@ class Knowledge:
             if create:
                 try:
                     fd = os.open(
-                        path.name, flags | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=dir_fd
+                        path.name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dir_fd
                     )
                 except FileExistsError:
                     fd = os.open(path.name, flags, dir_fd=dir_fd)
@@ -135,6 +135,8 @@ class Knowledge:
             # even when the URI is mode=ro (select 1 succeeds; pack then snapshots).
             if not create and created.st_size == 0:
                 raise ValueError(f"empty knowledge db: {path}")
+            if create:
+                os.fchmod(fd, 0o600)
             self._cx = connect_held_inode(fd, readonly=not create)
         finally:
             if fd >= 0:

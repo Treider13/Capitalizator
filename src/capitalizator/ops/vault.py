@@ -202,6 +202,7 @@ def promote_dir_at(dir_fd: int, src_name: str, dest_name: str) -> None:
         st = os.stat(dest_name, dir_fd=dir_fd, follow_symlinks=False)
     except FileNotFoundError:
         os.rename(src_name, dest_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        os.fsync(dir_fd)
         return
     if stat.S_ISLNK(st.st_mode):
         raise VaultError(f"symlink: {dest_name}")
@@ -215,6 +216,17 @@ def promote_dir_at(dir_fd: int, src_name: str, dest_name: str) -> None:
         os.close(empty_fd)
     os.rmdir(dest_name, dir_fd=dir_fd)
     os.rename(src_name, dest_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    os.fsync(dir_fd)
+
+
+def write_all(fd: int, data: bytes) -> None:
+    """os.write may return short. POSIX / Go Write / Rust write_all loop until done."""
+    view = memoryview(data)
+    while view:
+        n = os.write(fd, view)
+        if n <= 0:
+            raise VaultError("short write")
+        view = view[n:]
 
 
 def mkstemp_at(dir_fd: int, *, prefix: str, suffix: str) -> tuple[int, str]:
@@ -253,6 +265,7 @@ def replace_at(dir_fd: int, tmp_name: str, dest_name: str, created: os.stat_resu
     finally:
         os.close(chk)
     os.replace(tmp_name, dest_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    os.fsync(dir_fd)
     dest_fd = -1
     try:
         dest_fd = os.open(dest_name, os.O_RDONLY | nofollow, dir_fd=dir_fd)
@@ -318,7 +331,7 @@ def write_regular_bytes(path: Path, data: bytes) -> None:
     try:
         fd, tmp_name = mkstemp_at(dir_fd, prefix=f".{path.name}.", suffix=".tmp")
         created = os.fstat(fd)
-        os.write(fd, data)
+        write_all(fd, data)
         os.fsync(fd)
         os.close(fd)
         fd = -1
@@ -356,7 +369,7 @@ def copy_regular(src: Path, dest: Path) -> None:
             chunk = os.read(src_fd, 65536)
             if not chunk:
                 break
-            os.write(out_fd, chunk)
+            write_all(out_fd, chunk)
         os.fsync(out_fd)
         os.close(out_fd)
         out_fd = -1
@@ -509,4 +522,8 @@ def load_vault(root: Path) -> Vault:
         if not folder.is_dir():
             raise FileNotFoundError(f"vault layer missing: {folder.name}")
         assert_no_symlink_components(vault.root, folder)
+    if vault.secrets.is_symlink() or (
+        vault.secrets.exists() and not vault.secrets.is_dir()
+    ):
+        raise VaultError("secrets/ exists and is not a real directory")
     return vault

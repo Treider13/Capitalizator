@@ -352,6 +352,76 @@ def test_pack_dest_file_is_refused(tmp_path: Path) -> None:
         pack(vault, dest)
 
 
+def test_write_regular_retries_short_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fact: a single os.write may return 1 byte. Dest used to keep only 'H'."""
+    import os
+
+    from capitalizator.ops.vault import write_regular_bytes
+
+    real = os.write
+
+    def short(fd: int, data: bytes) -> int:
+        return real(fd, data[:1] if len(data) > 1 else data)
+
+    monkeypatch.setattr(os, "write", short)
+    dest = tmp_path / "out.txt"
+    write_regular_bytes(dest, b"HELLO-WORLD")
+    assert dest.read_bytes() == b"HELLO-WORLD"
+
+
+def test_copy_regular_retries_short_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from capitalizator.ops.vault import copy_regular
+
+    real = os.write
+
+    def short(fd: int, data: bytes) -> int:
+        return real(fd, data[:1] if len(data) > 1 else data)
+
+    monkeypatch.setattr(os, "write", short)
+    src = tmp_path / "src.txt"
+    src.write_bytes(b"ABCDEFGHIJ")
+    dest = tmp_path / "dest" / "out.txt"
+    copy_regular(src, dest)
+    assert dest.read_bytes() == b"ABCDEFGHIJ"
+
+
+def test_knowledge_creates_mode_0600(tmp_path: Path) -> None:
+    from capitalizator.ops.knowledge import Knowledge
+
+    path = tmp_path / "desk.sqlite"
+    Knowledge(path).close()
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_knowledge_tightens_existing_644(tmp_path: Path) -> None:
+    from capitalizator.ops.knowledge import Knowledge
+
+    path = tmp_path / "desk.sqlite"
+    Knowledge(path).close()
+    path.chmod(0o644)
+    Knowledge(path).close()
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_load_vault_refuses_secrets_symlink(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    outside = tmp_path / "decoy"
+    outside.mkdir()
+    (outside / "README.md").write_text("ok\n", encoding="utf-8")
+    import shutil
+
+    shutil.rmtree(vault.secrets)
+    vault.secrets.symlink_to(outside)
+    with pytest.raises(VaultError, match="secrets"):
+        load_vault(vault.root)
+
+
 def test_copy_regular_refuses_hardlink_on_open_fd(tmp_path: Path) -> None:
     """Walk already refuses nlink>1. Copy must refuse on the fd it actually reads:
 
