@@ -160,6 +160,63 @@ def open_real_dir_fd(directory: Path, *, create: bool = True) -> int:
         raise
 
 
+def mkdtemp_dir_at(dir_fd: int, *, prefix: str, suffix: str) -> str:
+    """Exclusive mkdirat. tempfile.mkdtemp(dir=parent) follows a swapped parent."""
+    for _ in range(128):
+        name = f"{prefix}{secrets.token_hex(8)}{suffix}"
+        try:
+            os.mkdir(name, 0o700, dir_fd=dir_fd)
+            return name
+        except FileExistsError:
+            continue
+    raise VaultError("mkdtemp_dir_at exhausted")
+
+
+def remove_tree_at(dir_fd: int, name: str) -> None:
+    """Remove name inside dir_fd. Never follow a symlink — unlink the name."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise VaultError("O_NOFOLLOW required")
+    try:
+        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        os.unlink(name, dir_fd=dir_fd)
+        return
+    child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | nofollow, dir_fd=dir_fd)
+    try:
+        for child in os.listdir(child_fd):
+            remove_tree_at(child_fd, child)
+    finally:
+        os.close(child_fd)
+    os.rmdir(name, dir_fd=dir_fd)
+
+
+def promote_dir_at(dir_fd: int, src_name: str, dest_name: str) -> None:
+    """renameat staging → dest. Path.rename follows a swapped parent (Linux)."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise VaultError("O_NOFOLLOW required")
+    try:
+        st = os.stat(dest_name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        os.rename(src_name, dest_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        return
+    if stat.S_ISLNK(st.st_mode):
+        raise VaultError(f"symlink: {dest_name}")
+    if not stat.S_ISDIR(st.st_mode):
+        raise VaultError(f"dest not a directory: {dest_name}")
+    empty_fd = os.open(dest_name, os.O_RDONLY | os.O_DIRECTORY | nofollow, dir_fd=dir_fd)
+    try:
+        if os.listdir(empty_fd):
+            raise VaultError(f"dest not empty: {dest_name}")
+    finally:
+        os.close(empty_fd)
+    os.rmdir(dest_name, dir_fd=dir_fd)
+    os.rename(src_name, dest_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+
+
 def mkstemp_at(dir_fd: int, *, prefix: str, suffix: str) -> tuple[int, str]:
     nofollow = getattr(os, "O_NOFOLLOW", None)
     if nofollow is None:
@@ -401,6 +458,8 @@ def mkdir_real_parents(root: Path, directory: Path) -> None:
 
 
 def init_vault(root: Path) -> Vault:
+    if root.is_symlink() and not root.exists():
+        raise VaultError(f"vault root is a dangling symlink: {root}")
     vault = Vault(root=root.resolve())
     if vault.root.exists() and vault.root.is_symlink():
         raise VaultError(f"vault root is a symlink: {vault.root}")

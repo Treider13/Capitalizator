@@ -10,8 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
-import tempfile
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,8 +27,12 @@ from capitalizator.ops.vault import (
     init_vault,
     iter_regular_files,
     load_vault,
+    mkdtemp_dir_at,
+    open_real_dir_fd,
     open_regular,
+    promote_dir_at,
     read_regular_text,
+    remove_tree_at,
     write_regular_text,
 )
 
@@ -233,17 +235,65 @@ def _safe_under(root: Path, rel: str) -> Path:
 
 
 def _remove_staging(path: Path) -> None:
-    """Never rmtree through a symlink. exists() follows; unlink the name instead."""
-    if path.is_symlink() or (path.exists() and not path.is_dir()):
-        path.unlink()
+    """Never rmtree through a swapped parent. exists()/Path.rmtree follow."""
+    try:
+        parent_fd = open_real_dir_fd(path.parent, create=False)
+    except VaultError:
+        # Parent is a symlink (or gone). Last-component symlink: unlink the name.
+        # Do not rmtree — that is how a swapped parent deletes a victim tree.
+        if path.is_symlink():
+            path.unlink()
         return
-    if path.is_dir():
-        shutil.rmtree(path)
+    try:
+        remove_tree_at(parent_fd, path.name)
+    finally:
+        os.close(parent_fd)
 
 
 def _make_staging(parent: Path, dest_name: str, *, suffix: str) -> Path:
-    """Exclusive random dir. Predictable .{name}.{pid} is the same class as {pid}.tmp."""
-    return Path(tempfile.mkdtemp(prefix=f".{dest_name}.", suffix=suffix, dir=str(parent)))
+    """Exclusive mkdirat. tempfile.mkdtemp(dir=parent) follows a swapped parent."""
+    try:
+        parent_fd = open_real_dir_fd(parent, create=True)
+    except VaultError as exc:
+        raise BackupError(str(exc)) from exc
+    try:
+        name = mkdtemp_dir_at(parent_fd, prefix=f".{dest_name}.", suffix=suffix)
+        return parent / name
+    finally:
+        os.close(parent_fd)
+
+
+def _mkdir_layers_at(parent_fd: int, staging_name: str) -> None:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise BackupError("O_NOFOLLOW required")
+    staging_fd = os.open(
+        staging_name, os.O_RDONLY | os.O_DIRECTORY | nofollow, dir_fd=parent_fd
+    )
+    try:
+        for name in ("knowledge", "reports", "tape"):
+            os.mkdir(name, 0o755, dir_fd=staging_fd)
+    finally:
+        os.close(staging_fd)
+
+
+def _stage_dest(dest: Path, *, suffix: str) -> tuple[int, str, Path]:
+    """Hold dest.parent dir_fd, exclusive staging name. Path.rename follows a swap."""
+    if dest.is_symlink():
+        raise BackupError(f"symlink: {dest}")
+    dest = dest.resolve()
+    try:
+        parent_fd = open_real_dir_fd(dest.parent, create=True)
+    except VaultError as exc:
+        raise BackupError(str(exc)) from exc
+    try:
+        staging_name = mkdtemp_dir_at(
+            parent_fd, prefix=f".{dest.name}.", suffix=suffix
+        )
+    except Exception:
+        os.close(parent_fd)
+        raise
+    return parent_fd, staging_name, dest.parent / staging_name
 
 
 def _knowledge_counts(vault: Vault) -> dict[str, int]:
@@ -270,14 +320,10 @@ def pack(
 ) -> dict[str, Any]:
     load_vault(vault.root)
     assert_no_secrets(vault)
+    parent_fd, staging_name, staging = _stage_dest(dest, suffix=".partial")
     dest = dest.resolve()
-    parent = dest.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    staging = _make_staging(parent, dest.name, suffix=".partial")
     try:
-        (staging / "knowledge").mkdir()
-        (staging / "reports").mkdir()
-        (staging / "tape").mkdir()
+        _mkdir_layers_at(parent_fd, staging_name)
         write_regular_text(staging / "LAYOUT", "1\n")
         if vault.db_path.is_symlink():
             raise BackupError(f"symlink: {vault.db_path}")
@@ -329,16 +375,20 @@ def pack(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         )
         verify_backup(staging)
-        if dest.exists():
-            if not dest.is_dir():
-                raise BackupError(f"backup dest not a directory: {dest}")
-            if any(dest.iterdir()):
-                raise BackupError(f"backup dest not empty: {dest}")
-            dest.rmdir()
-        staging.rename(dest)
+        try:
+            promote_dir_at(parent_fd, staging_name, dest.name)
+        except VaultError as exc:
+            raise BackupError(str(exc)) from exc
+        staging_name = ""
     except Exception:
-        _remove_staging(staging)
+        if staging_name:
+            try:
+                remove_tree_at(parent_fd, staging_name)
+            except OSError:
+                pass
         raise
+    finally:
+        os.close(parent_fd)
     return manifest
 
 
@@ -416,6 +466,8 @@ def restore(backup: Path, dest: Path) -> Vault:
     copy into dest used to leave a dirty tree (and a leaked file).
     """
     manifest = verify_backup(backup)
+    if dest.is_symlink():
+        raise BackupError(f"symlink: {dest}")
     dest = dest.resolve()
     if dest.exists() and not dest.is_dir():
         raise BackupError(f"restore dest not a directory: {dest}")
@@ -424,13 +476,10 @@ def restore(backup: Path, dest: Path) -> Vault:
     files = manifest.get("files")
     if not isinstance(files, dict):
         raise BackupError("manifest.files missing")
-    parent = dest.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    staging = _make_staging(parent, dest.name, suffix=".restore")
+    parent_fd, staging_name, staging = _stage_dest(dest, suffix=".restore")
+    dest = dest.resolve()
     try:
-        (staging / "knowledge").mkdir()
-        (staging / "reports").mkdir()
-        (staging / "tape").mkdir()
+        _mkdir_layers_at(parent_fd, staging_name)
         layout_src = backup / "LAYOUT"
         if layout_src.is_symlink() or not layout_src.is_file():
             raise BackupError("LAYOUT missing or symlink")
@@ -455,12 +504,20 @@ def restore(backup: Path, dest: Path) -> Vault:
                 raise BackupError("restore parquet file count mismatch")
             if int(expect.get("parquet_rows", -1)) != rows_n:
                 raise BackupError("restore parquet row count mismatch")
-        if dest.exists():
-            dest.rmdir()
-        staging.rename(dest)
+        try:
+            promote_dir_at(parent_fd, staging_name, dest.name)
+        except VaultError as exc:
+            raise BackupError(str(exc)) from exc
+        staging_name = ""
     except Exception:
-        _remove_staging(staging)
+        if staging_name:
+            try:
+                remove_tree_at(parent_fd, staging_name)
+            except OSError:
+                pass
         raise
+    finally:
+        os.close(parent_fd)
     return load_vault(dest)
 
 

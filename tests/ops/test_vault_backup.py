@@ -423,6 +423,80 @@ def test_pack_does_not_touch_predictable_pid_staging(tmp_path: Path) -> None:
     assert (outside / "keep").read_text(encoding="utf-8") == "secret"
 
 
+def test_remove_staging_does_not_rmtree_through_swapped_parent(tmp_path: Path) -> None:
+    """Fact: after dest.parent is swapped for a symlink, Path.rmtree follows
+    and deletes the victim tree. Cleanup must use the parent dir_fd or refuse."""
+    from capitalizator.ops.backup import _make_staging, _remove_staging
+
+    parent = tmp_path / "cap-bak"
+    parent.mkdir()
+    staging = _make_staging(parent, "out", suffix=".partial")
+    (staging / "LAYOUT").write_text("1\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / staging.name
+    victim.mkdir()
+    (victim / "keep").write_text("VICTIM", encoding="utf-8")
+    parent.rename(tmp_path / "cap-bak.real")
+    (tmp_path / "cap-bak").symlink_to(outside)
+    _remove_staging(staging)
+    assert (victim / "keep").read_text(encoding="utf-8") == "VICTIM"
+
+
+def test_pack_parent_swap_does_not_delete_victim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fact: Path.rename and shutil.rmtree follow a swapped dest.parent.
+
+    Hold the parent inode; on failure remove_tree_at that fd, not the Path.
+    """
+    import capitalizator.ops.backup as bak
+
+    vault = init_vault(tmp_path / "desk")
+    dest_parent = tmp_path / "bak-parent"
+    dest_parent.mkdir()
+    dest = dest_parent / "out"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_mkdir = bak._mkdir_layers_at
+
+    def swap_after(parent_fd: int, staging_name: str) -> None:
+        real_mkdir(parent_fd, staging_name)
+        planted = outside / staging_name
+        planted.mkdir()
+        (planted / "keep").write_text("VICTIM", encoding="utf-8")
+        dest_parent.rename(tmp_path / "bak-parent.real")
+        (tmp_path / "bak-parent").symlink_to(outside)
+
+    monkeypatch.setattr(bak, "_mkdir_layers_at", swap_after)
+    with pytest.raises((BackupError, VaultError), match="symlink"):
+        pack(vault, dest)
+    keeps = list(outside.rglob("keep"))
+    assert len(keeps) == 1
+    assert keeps[0].read_text(encoding="utf-8") == "VICTIM"
+    leftovers = list((tmp_path / "bak-parent.real").glob(".out.*"))
+    assert leftovers == []
+
+
+def test_init_refuses_dangling_root(tmp_path: Path) -> None:
+    root = tmp_path / "dangle-root"
+    root.symlink_to(tmp_path / "created-by-init")
+    with pytest.raises(VaultError, match="dangling symlink"):
+        init_vault(root)
+    assert not (tmp_path / "created-by-init").exists()
+
+
+def test_pack_refuses_dest_symlink(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    dest = tmp_path / "bak"
+    dest.symlink_to(outside)
+    with pytest.raises(BackupError, match="symlink"):
+        pack(vault, dest)
+    assert list(outside.iterdir()) == []
+
+
 def test_remove_staging_unlinks_symlink_not_target(tmp_path: Path) -> None:
     from capitalizator.ops.backup import _remove_staging
 
