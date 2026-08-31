@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-08-31. Локально: **624 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-08-31. Локально: **626 passed, 1 skipped** (skip = нет egress на `api.bybit.com`). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | 0.1.2 ключи | `ops/key-checklist.md` шаблон без значений | галочки человек не ставил | шаблон есть; **не зелёный** |
 | 0.1.3 docker healthz | `tests/recorder/test_app.py`, `tests/infra/test_recorder_docker.py` | docker на VPS нет | Dockerfile/compose без ключей; compose up на VPS — **нет** |
 | 0.1.4 WS час BTC | `BybitTradesWs.run()` + `--from-jsonl`; p50/p95 `recv-exchange` в JSON | живой час нет | ack не сделка. `--minutes` без jsonl — отказ. Час записи — **нет** |
-| 0.1.5 parquet | `tests/recorder/test_parquet_sink.py` | не нужно | `mkstemp`+fd+inode `replace`; lock `O_NOFOLLOW`; два писателя — flock + перечит. Счётчик — `metadata.num_rows` через fd. Зелёный после прогона |
+| 0.1.5 parquet | `tests/recorder/test_parquet_sink.py` | не нужно | `mkstemp`+fd+inode `replace`; lock `O_NOFOLLOW`; mkdir по одному имени (не в dir-симлинк); два писателя — flock + перечит. Счётчик — `metadata.num_rows` через fd. Зелёный после прогона |
 | 0.1.6 gap | `tests/recorder/test_gap.py` | не нужно | зелёный после прогона |
 | 0.1.7 сутки | `check_uptime` на фикстурах | нет живых суток | инструмент есть; сутки — **не зелёные** |
 | 0.2.1 REST snapshot | `tests/recorder/test_snapshot.py` | curl с VPS нет | `exchange_ts` = `cts` (движок, стыкуется с `T` сделки), не системный `ts` |
