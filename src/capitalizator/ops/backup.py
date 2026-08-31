@@ -252,6 +252,8 @@ def pack(
         (staging / "reports").mkdir()
         (staging / "tape").mkdir()
         (staging / "LAYOUT").write_text("1\n", encoding="utf-8")
+        if vault.db_path.is_symlink():
+            raise BackupError(f"symlink: {vault.db_path}")
         if vault.db_path.is_file():
             kn = Knowledge(vault.db_path, create=False)
             try:
