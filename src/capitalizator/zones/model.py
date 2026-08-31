@@ -24,6 +24,7 @@ class Bar:
     high: Decimal
     low: Decimal
     close: Decimal
+    volume: Decimal | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.open_ts)
@@ -32,6 +33,8 @@ class Bar:
             raise ValueError("bar close_ts must be >= open_ts")
         if self.high < self.low:
             raise ValueError("bar high must be >= low")
+        if self.volume is not None and self.volume < 0:
+            raise ValueError("bar volume must be >= 0")
 
 
 @dataclass(frozen=True)

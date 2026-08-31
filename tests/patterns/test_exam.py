@@ -1,0 +1,151 @@
+"""Hostile exam: last-price, ATR residual, 5-day PnL share, direction ≠ vol."""
+
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+
+from capitalizator.patterns.exam import ExamCase, hostile_exam
+
+SRC = Path(__file__).resolve().parents[2] / "src" / "capitalizator" / "patterns" / "exam.py"
+
+
+def test_empty_sample_is_none() -> None:
+    out = hostile_exam([])
+    assert out.n == 0
+    assert out.beat_last_price is None
+    assert out.direction_hit is None
+    assert out.vol_rank_hit is None
+
+
+def test_pred_worse_than_last_price_does_not_beat() -> None:
+    rows = [
+        ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10")),
+        ExamCase(pred=Decimal("8"), last=Decimal("10"), actual=Decimal("10")),
+    ]
+    out = hostile_exam(rows)
+    assert out.n == 2
+    assert out.beat_last_price == Decimal("0")
+
+
+def test_exact_next_close_beats_last_price() -> None:
+    rows = [ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("11"))]
+    assert hostile_exam(rows).beat_last_price == Decimal("1")
+
+
+def test_residual_is_median_error_over_atr() -> None:
+    rows = [
+        ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("2")),
+        ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("2")),
+        ExamCase(pred=Decimal("10"), last=Decimal("10"), actual=Decimal("10"), atr=None),
+    ]
+    assert hostile_exam(rows).residual_after_atr == Decimal("0.75")
+
+
+def test_pnl_share_needs_five_days_and_positive_total() -> None:
+    four = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 1, d), pnl=Decimal("1"))
+        for d in range(1, 5)
+    ]
+    assert hostile_exam(four).pnl_share_best_5_days is None
+    days = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 1, d), pnl=pnl)
+        for d, pnl in (
+            (1, Decimal("91")),
+            (2, Decimal("1")),
+            (3, Decimal("1")),
+            (4, Decimal("1")),
+            (5, Decimal("1")),
+            (6, Decimal("5")),
+        )
+    ]
+    share = hostile_exam(days).pnl_share_best_5_days
+    assert share == Decimal("95") / Decimal("100")
+    lost = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 2, d), pnl=Decimal("-1"))
+        for d in range(1, 6)
+    ]
+    assert hostile_exam(lost).pnl_share_best_5_days is None
+
+
+def test_direction_and_vol_rank_are_separate() -> None:
+    rows = [
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("12"),
+            pred_vol_rank=Decimal("0.9"),
+            actual_vol=Decimal("1"),
+        ),
+        ExamCase(
+            pred=Decimal("9"),
+            last=Decimal("10"),
+            actual=Decimal("8"),
+            pred_vol_rank=Decimal("0.1"),
+            actual_vol=Decimal("9"),
+        ),
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("12"),
+            pred_vol_rank=Decimal("0.8"),
+            actual_vol=Decimal("2"),
+        ),
+        ExamCase(
+            pred=Decimal("9"),
+            last=Decimal("10"),
+            actual=Decimal("8"),
+            pred_vol_rank=Decimal("0.2"),
+            actual_vol=Decimal("8"),
+        ),
+    ]
+    out = hostile_exam(rows)
+    assert out.direction_hit == Decimal("1")
+    assert out.vol_rank_hit is not None
+    assert out.vol_rank_hit < 0
+
+
+def test_two_runs_bit_identical() -> None:
+    rows = [
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("11"),
+            atr=Decimal("2"),
+            day=date(2026, 1, 1),
+            pnl=Decimal("1"),
+            pred_vol_rank=Decimal("0.4"),
+            actual_vol=Decimal("3"),
+        ),
+        ExamCase(
+            pred=Decimal("9"),
+            last=Decimal("10"),
+            actual=Decimal("9"),
+            atr=Decimal("2"),
+            day=date(2026, 1, 2),
+            pnl=Decimal("2"),
+            pred_vol_rank=Decimal("0.6"),
+            actual_vol=Decimal("4"),
+        ),
+    ]
+
+    def run() -> tuple[object, ...]:
+        out = hostile_exam(rows)
+        return (
+            out.n,
+            out.beat_last_price,
+            out.residual_after_atr,
+            out.pnl_share_best_5_days,
+            out.direction_hit,
+            out.vol_rank_hit,
+        )
+
+    assert run() == run()
+
+
+def test_exam_source_has_no_numpy() -> None:
+    text = SRC.read_text(encoding="utf-8")
+    assert "numpy" not in text
+    assert "import np" not in text
+    assert "np." not in text

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import blake2s
 from typing import Literal
@@ -41,6 +41,10 @@ class Touch:
     cav_label: str | None = None
     jury: str | None = None
     rho_class_id: str | None = None
+    w_now: Decimal | None = None
+    w_rank: Decimal | None = None
+    bar_quality: str | None = None
+    session_hour: int | None = None
 
     @classmethod
     def create(
@@ -199,6 +203,42 @@ class Registry:
         if cav_label not in allowed:
             raise ValueError(f"unknown cav: {cav_label!r}")
         return self._patch(cav_label=cav_label, touch_id=touch_id)
+
+    def fill_width(
+        self,
+        *,
+        w_now: Decimal | None,
+        w_rank: Decimal | None,
+        touch_id: str | None = None,
+    ) -> list[Touch]:
+        """Journal only. Does not open size. Does not append the hash chain."""
+        if w_now is not None and w_now < 0:
+            raise ValueError("w_now must be >= 0")
+        if w_rank is not None and (w_rank < 0 or w_rank > 1):
+            raise ValueError("w_rank must be in [0, 1]")
+        return self._patch(w_now=w_now, w_rank=w_rank, touch_id=touch_id)
+
+    def fill_bar_quality(self, *, quality: str, touch_id: str | None = None) -> list[Touch]:
+        """Journal only. live | stagnant | illiquid. Does not append the hash chain."""
+        if quality not in {"live", "stagnant", "illiquid"}:
+            raise ValueError(f"unknown bar_quality: {quality!r}")
+        return self._patch(bar_quality=quality, touch_id=touch_id)
+
+    def fill_session_hour(self, *, touch_id: str | None = None) -> list[Touch]:
+        """UTC hour of touch.ts. Journal only — never part of rho_class_id."""
+        changed: list[Touch] = []
+        next_rows: list[Touch] = []
+        for touch in self.touches:
+            if touch_id is not None and touch.touch_id != touch_id:
+                next_rows.append(touch)
+                continue
+            row = replace(touch, session_hour=touch.ts.astimezone(UTC).hour)
+            next_rows.append(row)
+            changed.append(row)
+        if touch_id is not None and not changed:
+            raise KeyError(touch_id)
+        self.touches = next_rows
+        return changed
 
     def stamp_jury(
         self,
