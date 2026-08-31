@@ -130,6 +130,17 @@ def test_serve_without_layout_does_not_invent_vault(tmp_path: Path) -> None:
         main(["--userdir", str(tmp_path / "missing"), "--serve"])
 
 
+def test_snapshot_refuses_symlink_db(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    real = vault.db_path
+    other = tmp_path / "other.sqlite"
+    real.rename(other)
+    real.symlink_to(other)
+    with pytest.raises(ValueError, match="symlink"):
+        desk_snapshot(vault)
+
+
 def test_snapshot_refuses_tape_symlink(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     target = tmp_path / "outside.txt"

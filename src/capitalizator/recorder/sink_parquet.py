@@ -1,19 +1,22 @@
 """Append MarketEvents to hourly Parquet partitions. Count is exact.
 
-Write goes to a sibling tmp file, then replace(). A live pack never copies a
-half-written parquet (the old complete file stays until the rename).
+Write goes to a mkstemp inode, then replace only if that name still is our file.
+A live pack never copies a half-written parquet. Two writers take flock and reread.
 """
 
 from __future__ import annotations
 
 import fcntl
+import io
 import json
 import os
+import tempfile
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from capitalizator.ops.vault import open_regular, replace_if_same, same_inode
 from capitalizator.types import MarketEvent
 
 SCHEMA = pa.schema(
@@ -55,8 +58,9 @@ def _row(event: MarketEvent) -> dict:
 
 
 def _read_existing(path: Path) -> pa.Table:
-    # ParquetFile avoids hive-partition columns inferred from date= dirs.
-    return pq.ParquetFile(path).read()
+    fd = open_regular(path)
+    with os.fdopen(fd, "rb") as fh:
+        return pq.ParquetFile(fh).read()
 
 
 class ParquetSink:
@@ -70,27 +74,41 @@ class ParquetSink:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.is_symlink():
             raise ValueError(f"symlink: {path}")
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
         lock_path = path.with_name(f"{path.name}.lock")
-        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | nofollow, 0o644)
+        tmp: Path | None = None
+        created = None
+        fd = -1
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             rows: list[dict] = []
+            if path.is_symlink():
+                raise ValueError(f"symlink: {path}")
             if path.exists():
-                if path.is_symlink():
-                    raise ValueError(f"symlink: {path}")
                 rows.extend(_read_existing(path).to_pylist())
             rows.append(_row(event))
             table = pa.Table.from_pylist(rows, schema=SCHEMA)
-            tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-            try:
-                pq.write_table(table, tmp)
-                tmp.replace(path)
-            except Exception:
-                if tmp.exists() and not tmp.is_symlink():
-                    tmp.unlink()
-                raise
+            buf = io.BytesIO()
+            pq.write_table(table, buf)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f"{path.name}.", suffix=".tmp", dir=str(path.parent)
+            )
+            tmp = Path(tmp_name)
+            created = os.fstat(fd)
+            os.write(fd, buf.getvalue())
+            os.fsync(fd)
+            os.close(fd)
+            fd = -1
+            replace_if_same(tmp, path, created)
             self._rows[path] = rows
             self.accepted_count += 1
             return path
+        except Exception:
+            if fd >= 0:
+                os.close(fd)
+            if tmp is not None and created is not None and same_inode(tmp, created):
+                tmp.unlink()
+            raise
         finally:
             os.close(lock_fd)

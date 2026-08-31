@@ -43,8 +43,10 @@ user_data/          ← VPS пишет, ноут копирует (rsync / pack)
 - **Живой `shutil.copy` sqlite** — порча при открытой записи (документация SQLite / практика Freqtrade: не копировать файл на горячую). Пишем через `Connection.backup`. Счётчики берём **со снимка**, не с живого файла (иначе запись между `COUNT` и backup рвёт manifest).
 - **Эпизод/отчёт вне цепочки** — тихий `UPDATE episodes` раньше проходил verify. Теперь строка пишется в той же `BEGIN IMMEDIATE`, что и звено; `verify_tables()` сверяет повтор со таблицами.
 - **`verify`/`pack` не создают sqlite в источнике**, если его не было.
-- **Parquet** пишется в `*.tmp` и `replace()`; два писателя — `fcntl.LOCK_EX` и перечит с диска (иначе последняя запись затирает чужие строки). Счётчик строк — `metadata.num_rows`, не `read()` всего часа.
+- **Parquet** — `mkstemp` + запись в fd + `replace` только если имя всё ещё наш inode. Предсказуемый `{pid}.tmp`-симлинк больше не затирает цель. Два писателя — `fcntl.LOCK_EX` + `O_NOFOLLOW` на `.lock` и перечит с диска. Счётчик — `metadata.num_rows` через fd, не `read()` всего часа.
+- **`sqlite3.connect(path)` ходит по симлинку.** `desk.sqlite` → чужой файл консоль бы открыла. Отказ. Snapshot: serialize в память, байты в mkstemp, `replace` — цель старого симлинка не трогаем.
 - **`shutil.copy2` / `copytree(symlinks=False)`** — документация Python: цель симлинка *вклеивается*. Копируем через `O_NOFOLLOW`. Restore только listed-файлы на staging, потом `rename`. Сбой не оставляет dest.
+- Чтение отчёта / sha256 / parquet — тот же fd, не `path.open` (он следует за ссылкой).
 - Консоль: нет поля `vps: false` (это была выдумка); без `LAYOUT` сервер **не** рисует хранилище; PUT/DELETE/PATCH = 405; симлинк в `tape/` не читает; исключение → 500 `error`, не traceback.
 
 ## Экран с ноута

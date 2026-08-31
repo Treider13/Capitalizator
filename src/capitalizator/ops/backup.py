@@ -28,6 +28,7 @@ from capitalizator.ops.vault import (
     iter_regular_files,
     load_vault,
     open_regular,
+    read_regular_text,
 )
 
 # Built at runtime from codes so src and bytecode never hold the literal.
@@ -66,21 +67,22 @@ class BackupError(ValueError):
     pass
 
 
-def _sha256(path: Path) -> str:
+def _digest_size(path: Path) -> tuple[str, int]:
     try:
         fd = open_regular(path)
     except VaultError as exc:
         raise BackupError(str(exc)) from exc
     digest = hashlib.sha256()
     try:
+        size = os.fstat(fd).st_size
         while True:
             chunk = os.read(fd, 65536)
             if not chunk:
                 break
             digest.update(chunk)
+        return digest.hexdigest(), size
     finally:
         os.close(fd)
-    return digest.hexdigest()
 
 
 def _iter_files(root: Path) -> Iterable[Path]:
@@ -135,7 +137,10 @@ def assert_no_secrets(vault: Vault) -> None:
         for path in _iter_files(layer):
             if path.suffix in {".sqlite", ".parquet"}:
                 continue
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            try:
+                text = read_regular_text(path)
+            except VaultError as exc:
+                raise BackupError(str(exc)) from exc
             hits = scan_secret_text(text)
             if hits:
                 raise BackupError(f"secret pattern in {path}: {hits[0]}")
@@ -157,7 +162,12 @@ def _parquet_stats(tape: Path) -> tuple[int, int]:
     files = [path for path in _iter_files(tape) if path.suffix in TAPE_SUFFIX]
     rows = 0
     for path in files:
-        meta = pq.ParquetFile(path).metadata
+        try:
+            fd = open_regular(path)
+        except VaultError as exc:
+            raise BackupError(str(exc)) from exc
+        with os.fdopen(fd, "rb") as fh:
+            meta = pq.ParquetFile(fh).metadata
         if meta is None:
             raise BackupError(f"parquet metadata missing: {path}")
         rows += int(meta.num_rows)
@@ -174,7 +184,8 @@ def _file_records(vault: Vault, *, with_tape: bool) -> dict[str, dict[str, int |
             continue
         for path in _iter_files(layer):
             rel = path.relative_to(vault.root).as_posix()
-            records[rel] = {"sha256": _sha256(path), "bytes": path.stat().st_size}
+            digest, size = _digest_size(path)
+            records[rel] = {"sha256": digest, "bytes": size}
     return records
 
 
@@ -299,9 +310,12 @@ def pack(
 
 def _require_manifest(backup: Path) -> dict[str, Any]:
     path = backup / "manifest.json"
-    if not path.is_file():
+    if path.is_symlink() or not path.is_file():
         raise BackupError("manifest.json missing")
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(read_regular_text(path))
+    except VaultError as exc:
+        raise BackupError(str(exc)) from exc
     if not isinstance(raw, dict):
         raise BackupError("manifest must be an object")
     return raw
@@ -326,11 +340,12 @@ def _check_listed_files(root: Path, files: dict[str, Any]) -> None:
         path = _safe_under(root, str(rel))
         if not isinstance(meta, dict):
             raise BackupError(f"bad file record: {rel}")
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             raise BackupError(f"missing listed file: {rel}")
-        if _sha256(path) != meta.get("sha256"):
+        digest, size = _digest_size(path)
+        if digest != meta.get("sha256"):
             raise BackupError(f"sha256 mismatch: {rel}")
-        if path.stat().st_size != meta.get("bytes"):
+        if size != meta.get("bytes"):
             raise BackupError(f"size mismatch: {rel}")
 
 

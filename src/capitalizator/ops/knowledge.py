@@ -10,7 +10,9 @@ verify_tables() replays those links; a silent UPDATE of episodes fails pack.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +20,7 @@ from typing import Any
 
 from capitalizator.memory.hashlog import GENESIS, HashChain, HashLink
 from capitalizator.ops.daily_map_report import contains_advice
-from capitalizator.ops.vault import Vault
+from capitalizator.ops.vault import Vault, replace_if_same, same_inode
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -71,10 +73,14 @@ def report_payload(*, day: str, kind: str, body: str) -> str:
 class Knowledge:
     def __init__(self, path: Path, *, create: bool = True) -> None:
         self.path = path
+        if path.is_symlink():
+            raise ValueError(f"symlink: {path}")
         if not path.is_file() and not create:
             self._cx: sqlite3.Connection | None = None
             return
         path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink():
+            raise ValueError(f"symlink: {path}")
         self._cx = sqlite3.connect(path, timeout=5.0)
         self._cx.isolation_level = None
         self._cx.row_factory = sqlite3.Row
@@ -106,16 +112,32 @@ class Knowledge:
         if self._cx is None:
             raise FileNotFoundError("no knowledge db to snapshot")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            dest.unlink()
-        dst = sqlite3.connect(dest, timeout=5.0)
+        mem = sqlite3.connect(":memory:")
         try:
-            self._cx.backup(dst)
-            row = dst.execute("PRAGMA integrity_check").fetchone()
+            self._cx.backup(mem)
+            row = mem.execute("PRAGMA integrity_check").fetchone()
             if row is None or str(row[0]) != "ok":
                 raise ValueError("integrity_check failed after snapshot")
+            blob = mem.serialize()
         finally:
-            dst.close()
+            mem.close()
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{dest.name}.", suffix=".tmp", dir=str(dest.parent)
+        )
+        tmp = Path(tmp_name)
+        created = os.fstat(fd)
+        try:
+            os.write(fd, blob)
+            os.fsync(fd)
+            os.close(fd)
+            fd = -1
+            replace_if_same(tmp, dest, created)
+        except Exception:
+            if fd >= 0:
+                os.close(fd)
+            if same_inode(tmp, created):
+                tmp.unlink()
+            raise
 
     def _insert_link(self, payload: str) -> HashLink:
         if self._cx is None:

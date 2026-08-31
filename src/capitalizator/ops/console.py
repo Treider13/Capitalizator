@@ -17,7 +17,13 @@ from urllib.parse import parse_qs, urlparse
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.phase import trading_mode
-from capitalizator.ops.vault import Vault, init_vault, iter_regular_files, load_vault
+from capitalizator.ops.vault import (
+    Vault,
+    init_vault,
+    iter_regular_files,
+    load_vault,
+    open_regular,
+)
 
 ADVICE_WORDS = ("лонг", "шорт", "купи", "продай", "завтра")
 
@@ -30,10 +36,14 @@ def _parquet_counts(tape: Path) -> tuple[int, int]:
     files = [path for path in iter_regular_files(tape) if path.suffix == ".parquet"]
     rows = 0
     if files:
+        import os
+
         import pyarrow.parquet as pq
 
         for path in files:
-            meta = pq.ParquetFile(path).metadata
+            fd = open_regular(path)
+            with os.fdopen(fd, "rb") as fh:
+                meta = pq.ParquetFile(fh).metadata
             if meta is None:
                 raise ValueError(f"parquet metadata missing: {path}")
             rows += int(meta.num_rows)
@@ -247,6 +257,7 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
             self._reject_write()
 
         def do_GET(self) -> None:  # noqa: N802
+            started = False
             try:
                 parsed = urlparse(self.path)
                 path = parsed.path
@@ -264,14 +275,20 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 else:
                     body, code, ctype = b"not-found", 404, "text/plain; charset=utf-8"
                 self.send_response(code)
+                started = True
                 self.send_header("Content-Type", ctype)
                 self.end_headers()
                 self.wfile.write(body)
             except Exception:
-                self.send_response(500)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(b"error")
+                if started:
+                    return
+                try:
+                    self.send_response(500)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(b"error")
+                except Exception:
+                    return
 
     return Handler
 

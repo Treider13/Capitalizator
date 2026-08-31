@@ -363,6 +363,39 @@ def test_failed_restore_does_not_create_dest(
     assert leftovers == []
 
 
+def test_knowledge_refuses_symlink_db(tmp_path: Path) -> None:
+    from capitalizator.ops.knowledge import Knowledge
+
+    real = tmp_path / "real.sqlite"
+    Knowledge(real).close()
+    link = tmp_path / "desk.sqlite"
+    link.symlink_to(real)
+    with pytest.raises(ValueError, match="symlink"):
+        Knowledge(link)
+
+
+def test_snapshot_does_not_write_through_symlink(tmp_path: Path) -> None:
+    from capitalizator.ops.knowledge import Knowledge
+
+    src = tmp_path / "src.sqlite"
+    kn = Knowledge(src)
+    kn.append_link("zone|DEFEND")
+    secret = tmp_path / "secret"
+    secret.write_bytes(b"KEYMATERIAL")
+    dest = tmp_path / "out.sqlite"
+    dest.symlink_to(secret)
+    kn.snapshot_to(dest)
+    kn.close()
+    assert secret.read_bytes() == b"KEYMATERIAL"
+    assert dest.is_symlink() is False
+    kn2 = Knowledge(dest, create=False)
+    try:
+        assert kn2.counts()["hash_links"] == 1
+        assert kn2.verify_ok()
+    finally:
+        kn2.close()
+
+
 def test_lock_file_is_not_packed(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     ParquetSink(vault.tape).write(_event())

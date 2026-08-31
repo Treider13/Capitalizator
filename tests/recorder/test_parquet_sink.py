@@ -74,6 +74,32 @@ def test_failed_write_leaves_old_file(tmp_path: Path, monkeypatch: pytest.Monkey
     assert list(path.parent.glob("*.tmp")) == []
 
 
+def test_write_does_not_follow_predictable_tmp_symlink(tmp_path: Path) -> None:
+    import os
+
+    secret = tmp_path / "secret"
+    secret.write_bytes(b"KEYMATERIAL")
+    path = partition_path(tmp_path, _event(1))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    planted = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    planted.symlink_to(secret)
+    ParquetSink(tmp_path).write(_event(1))
+    assert secret.read_bytes() == b"KEYMATERIAL"
+    assert path.is_file() and not path.is_symlink()
+    assert pq.ParquetFile(path).read().num_rows == 1
+
+
+def test_write_refuses_lock_symlink(tmp_path: Path) -> None:
+    secret = tmp_path / "secret"
+    secret.write_bytes(b"KEYMATERIAL")
+    path = partition_path(tmp_path, _event(1))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.with_name(f"{path.name}.lock").symlink_to(secret)
+    with pytest.raises(OSError):
+        ParquetSink(tmp_path).write(_event(1))
+    assert secret.read_bytes() == b"KEYMATERIAL"
+
+
 def test_concurrent_writers_keep_all_rows(tmp_path: Path) -> None:
     errors: list[BaseException] = []
 

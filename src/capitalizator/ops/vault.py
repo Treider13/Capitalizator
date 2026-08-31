@@ -92,11 +92,49 @@ def open_regular(path: Path, *, flags: int = os.O_RDONLY) -> int:
         raise
 
 
+def same_inode(path: Path, st: os.stat_result) -> bool:
+    try:
+        cur = os.lstat(path)
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(cur.st_mode)
+        and cur.st_ino == st.st_ino
+        and cur.st_dev == st.st_dev
+    )
+
+
+def replace_if_same(tmp: Path, dest: Path, created: os.stat_result) -> None:
+    """rename only if the name still points at the inode we wrote (not a planted symlink)."""
+    if not same_inode(tmp, created):
+        raise VaultError(f"tmp was replaced: {tmp}")
+    os.replace(tmp, dest)
+
+
+def read_regular_bytes(path: Path) -> bytes:
+    fd = open_regular(path)
+    try:
+        parts: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            parts.append(chunk)
+        return b"".join(parts)
+    finally:
+        os.close(fd)
+
+
+def read_regular_text(path: Path) -> str:
+    return read_regular_bytes(path).decode("utf-8", errors="ignore")
+
+
 def copy_regular(src: Path, dest: Path) -> None:
     """Copy via fds. shutil.copy2 follows a symlink planted after the walk."""
     fd = open_regular(src)
     tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
     out: int | None = None
+    created: os.stat_result | None = None
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         out = os.open(
@@ -109,14 +147,17 @@ def copy_regular(src: Path, dest: Path) -> None:
             if not chunk:
                 break
             os.write(out, chunk)
+        created = os.fstat(out)
         os.fsync(out)
         os.close(out)
         out = None
-        os.replace(tmp, dest)
+        replace_if_same(tmp, dest, created)
     except Exception:
         if out is not None:
             os.close(out)
-        if tmp.exists() and not tmp.is_symlink():
+        if created is not None and same_inode(tmp, created):
+            tmp.unlink()
+        elif created is None and tmp.exists() and not tmp.is_symlink():
             tmp.unlink()
         raise
     finally:
