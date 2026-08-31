@@ -47,6 +47,7 @@ user_data/          ← VPS пишет, ноут копирует (rsync / pack)
 - **`sqlite3.connect(path)` ходит по симлинку.** Файл создаём `O_EXCL|O_NOFOLLOW`, после `connect` сверяем inode. Snapshot: serialize → mkstemp → `replace`. Цель старого симлинка не трогаем.
 - **`os.replace(tmp, dest)` после проверки inode:** если *tmp* успели сменить на симлинк, rename **переносит ссылку** на dest. После rename сверяем inode; если dest — ссылка, `unlink` снимает имя, не цель.
 - **`Path.write_text` / `read_text` ходят по ссылке.** LAYOUT и README пишем через `write_regular_text`.
+- **`Path.mkdir(exist_ok=True)` ходит в симлинк-каталог.** После mkdir проверяем цепочку имён (`assert_no_symlink_components`). Писатель ленты не пишет в `tape/bybit` → чужое.
 - **`shutil.copy2` / `copytree(symlinks=False)`** — документация Python: цель симлинка *вклеивается*. Копируем через `O_NOFOLLOW`. Restore только listed-файлы на staging, потом `rename`. Сбой не оставляет dest.
 - Чтение отчёта / sha256 / parquet — тот же fd, не `path.open` (он следует за ссылкой).
 - Консоль: нет поля `vps: false` (это была выдумка); без `LAYOUT` сервер **не** рисует хранилище; PUT/DELETE/PATCH = 405; симлинк в `tape/` не читает; исключение → 500 `error`, не traceback.

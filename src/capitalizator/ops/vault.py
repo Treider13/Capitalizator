@@ -142,6 +142,8 @@ def read_regular_text(path: Path) -> str:
 def write_regular_text(path: Path, text: str) -> None:
     """Write via mkstemp inode. Path.write_text follows a planted symlink."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent.is_symlink():
+        raise VaultError(f"symlink: {path.parent}")
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
     )
@@ -164,32 +166,29 @@ def write_regular_text(path: Path, text: str) -> None:
 def copy_regular(src: Path, dest: Path) -> None:
     """Copy via fds. shutil.copy2 follows a symlink planted after the walk."""
     fd = open_regular(src)
-    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
-    out: int | None = None
-    created: os.stat_result | None = None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.parent.is_symlink():
+        os.close(fd)
+        raise VaultError(f"symlink: {dest.parent}")
+    out_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{dest.name}.", suffix=".tmp", dir=str(dest.parent)
+    )
+    tmp = Path(tmp_name)
+    created = os.fstat(out_fd)
     try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        out = os.open(
-            tmp,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o644,
-        )
         while True:
             chunk = os.read(fd, 65536)
             if not chunk:
                 break
-            os.write(out, chunk)
-        created = os.fstat(out)
-        os.fsync(out)
-        os.close(out)
-        out = None
+            os.write(out_fd, chunk)
+        os.fsync(out_fd)
+        os.close(out_fd)
+        out_fd = -1
         replace_if_same(tmp, dest, created)
     except Exception:
-        if out is not None:
-            os.close(out)
-        if created is not None and same_inode(tmp, created):
-            tmp.unlink()
-        elif created is None and tmp.exists() and not tmp.is_symlink():
+        if out_fd >= 0:
+            os.close(out_fd)
+        if same_inode(tmp, created):
             tmp.unlink()
         raise
     finally:
@@ -203,6 +202,44 @@ def _require_real_dir(path: Path, *, name: str) -> None:
         raise VaultError(f"vault layer is not a directory: {name}")
 
 
+def assert_no_symlink_components(root: Path, path: Path) -> None:
+    """pathlib mkdir(exist_ok=True) follows a directory symlink. Refuse any link in the chain."""
+    if root.is_symlink():
+        raise VaultError(f"symlink: {root}")
+    try:
+        rel = path.relative_to(root)
+    except ValueError as exc:
+        raise VaultError(f"path escapes: {path}") from exc
+    cur = root
+    for part in rel.parts:
+        cur = cur / part
+        if cur.is_symlink():
+            raise VaultError(f"symlink: {cur}")
+
+
+def mkdir_real_parents(root: Path, directory: Path) -> None:
+    """Create directory one name at a time. Do not follow a planted dir symlink."""
+    if root.is_symlink() or not root.is_dir():
+        raise VaultError(f"symlink: {root}")
+    try:
+        rel = directory.relative_to(root)
+    except ValueError as exc:
+        raise VaultError(f"path escapes: {directory}") from exc
+    cur = root
+    for part in rel.parts:
+        nxt = cur / part
+        if nxt.is_symlink():
+            raise VaultError(f"symlink: {nxt}")
+        if nxt.exists():
+            if not nxt.is_dir():
+                raise VaultError(f"not a directory: {nxt}")
+        else:
+            nxt.mkdir()
+            if nxt.is_symlink() or not nxt.is_dir():
+                raise VaultError(f"symlink: {nxt}")
+        cur = nxt
+
+
 def init_vault(root: Path) -> Vault:
     vault = Vault(root=root.resolve())
     if vault.root.exists() and vault.root.is_symlink():
@@ -214,13 +251,16 @@ def init_vault(root: Path) -> Vault:
                 f"vault layer exists and is not a real directory: {folder.name}"
             )
         folder.mkdir(exist_ok=True)
+        if folder.is_symlink() or not folder.is_dir():
+            raise VaultError(f"vault layer is not a real directory: {folder.name}")
+        assert_no_symlink_components(vault.root, folder)
     if vault.layout_path.is_symlink():
         raise VaultError("LAYOUT is a symlink")
     write_regular_text(vault.layout_path, f"{LAYOUT_VERSION}\n")
     readme = vault.secrets / "README.md"
     if not vault.secrets.exists():
         vault.secrets.mkdir()
-    elif vault.secrets.is_symlink() or not vault.secrets.is_dir():
+    if vault.secrets.is_symlink() or not vault.secrets.is_dir():
         raise VaultError("secrets/ exists and is not a real directory")
     if readme.is_symlink():
         raise VaultError("secrets/README.md is a symlink")
@@ -245,4 +285,5 @@ def load_vault(root: Path) -> Vault:
         _require_real_dir(folder, name=folder.name)
         if not folder.is_dir():
             raise FileNotFoundError(f"vault layer missing: {folder.name}")
+        assert_no_symlink_components(vault.root, folder)
     return vault

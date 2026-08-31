@@ -83,6 +83,8 @@ class Knowledge:
             fd = os.open(path, os.O_RDWR | nofollow)
         elif create:
             path.parent.mkdir(parents=True, exist_ok=True)
+            if path.parent.is_symlink():
+                raise ValueError(f"symlink: {path.parent}")
             try:
                 fd = os.open(
                     path, os.O_RDWR | os.O_CREAT | os.O_EXCL | nofollow, 0o644

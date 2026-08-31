@@ -89,6 +89,15 @@ def test_write_does_not_follow_predictable_tmp_symlink(tmp_path: Path) -> None:
     assert pq.ParquetFile(path).read().num_rows == 1
 
 
+def test_write_refuses_directory_symlink(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "bybit").symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink"):
+        ParquetSink(tmp_path).write(_event(1))
+    assert list(outside.rglob("*")) == []
+
+
 def test_write_refuses_lock_symlink(tmp_path: Path) -> None:
     secret = tmp_path / "secret"
     secret.write_bytes(b"KEYMATERIAL")

@@ -436,6 +436,16 @@ def test_replace_if_same_unlinks_result_symlink(
     assert dest.exists() is False
 
 
+def test_init_refuses_layer_dir_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "desk"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "knowledge").symlink_to(outside)
+    with pytest.raises(VaultError, match="symlink|real directory"):
+        init_vault(root)
+
+
 def test_init_refuses_layout_symlink(tmp_path: Path) -> None:
     root = tmp_path / "desk"
     root.mkdir()

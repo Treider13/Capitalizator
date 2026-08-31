@@ -16,7 +16,13 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from capitalizator.ops.vault import open_regular, replace_if_same, same_inode
+from capitalizator.ops.vault import (
+    assert_no_symlink_components,
+    mkdir_real_parents,
+    open_regular,
+    replace_if_same,
+    same_inode,
+)
 from capitalizator.types import MarketEvent
 
 SCHEMA = pa.schema(
@@ -71,10 +77,17 @@ class ParquetSink:
 
     def write(self, event: MarketEvent) -> Path:
         path = partition_path(self.data_root, event)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.data_root.exists():
+            self.data_root.mkdir(parents=True)
+        if self.data_root.is_symlink() or not self.data_root.is_dir():
+            raise ValueError(f"symlink: {self.data_root}")
+        mkdir_real_parents(self.data_root, path.parent)
+        assert_no_symlink_components(self.data_root, path)
         if path.is_symlink():
             raise ValueError(f"symlink: {path}")
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            raise ValueError("O_NOFOLLOW required")
         lock_path = path.with_name(f"{path.name}.lock")
         lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | nofollow, 0o644)
         tmp: Path | None = None
