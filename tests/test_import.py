@@ -30,6 +30,8 @@ PACKAGES = [
     "capitalizator.champion",
     "capitalizator.exec",
     "capitalizator.storage",
+    "capitalizator.desk",
+    "capitalizator.ops",
 ]
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "capitalizator"

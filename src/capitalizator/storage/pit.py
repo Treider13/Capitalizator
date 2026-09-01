@@ -44,9 +44,9 @@ class PitStore:
                     stream VARCHAR,
                     exchange VARCHAR,
                     symbol VARCHAR,
-                    exchange_ts TIMESTAMPTZ,
-                    recv_ts TIMESTAMPTZ,
-                    known_at TIMESTAMPTZ,
+                    exchange_ts TIMESTAMP,
+                    recv_ts TIMESTAMP,
+                    known_at TIMESTAMP,
                     seq BIGINT
                 )
                 """
@@ -59,9 +59,9 @@ class PitStore:
                             r["stream"],
                             r["exchange"],
                             r["symbol"],
-                            r["exchange_ts"],
-                            r["recv_ts"],
-                            r["known_at"],
+                            r["exchange_ts"].replace(tzinfo=None),
+                            r["recv_ts"].replace(tzinfo=None),
+                            r["known_at"].replace(tzinfo=None),
                             r["seq"],
                         )
                         for r in rows

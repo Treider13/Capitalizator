@@ -27,8 +27,8 @@ class NewsStore:
                 CREATE TABLE news (
                     event_id VARCHAR,
                     class VARCHAR,
-                    event_time TIMESTAMPTZ,
-                    known_at TIMESTAMPTZ,
+                    event_time TIMESTAMP,
+                    known_at TIMESTAMP,
                     assets VARCHAR,
                     raw VARCHAR,
                     our_reaction_coef DOUBLE
@@ -42,8 +42,8 @@ class NewsStore:
                         (
                             r.event_id,
                             r.event_class,
-                            r.event_time,
-                            r.known_at,
+                            r.event_time.replace(tzinfo=None),
+                            r.known_at.replace(tzinfo=None),
                             ";".join(r.assets),
                             r.raw,
                             r.our_reaction_coef,
