@@ -208,6 +208,34 @@ def test_exact_15pct_is_not_a_gap() -> None:
     assert len(segs[0]) == 2
 
 
+def test_early_gap_appended_last_is_not_the_segment_cut() -> None:
+    """List order is not time. priors[-1] without a sort would empty the ATR window."""
+    priors = [_bar(i, close="101", open_="101") for i in range(15)]
+    early = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 11, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 11, 14, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    current = _bar(17, close="101", open_="101")
+    mixed = priors + [early]
+    assert mixed[-1].close == Decimal("80")
+    assert abs(current.open - mixed[-1].close) / mixed[-1].close > JUMP_RATIO_15M
+    assert len(last_gap_segment(mixed, current, t=T)) == 15
+    assert last_gap_segment(mixed, current, t=T) == priors
+
+
+def test_14pct_into_current_keeps_segment() -> None:
+    priors = [_bar(i, close="100", open_="100") for i in range(15)]
+    current = _bar(17, close="114", open_="114")
+    assert abs(current.open - priors[-1].close) / priors[-1].close < JUMP_RATIO_15M
+    assert len(last_gap_segment(priors, current, t=T)) == 15
+
+
 def test_exact_15pct_into_current_keeps_segment() -> None:
     """Jump is strict >15%. Equality into the labeled bar must not empty ATR."""
     priors = [_bar(i, close="100", open_="100") for i in range(15)]

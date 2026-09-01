@@ -82,6 +82,27 @@ def test_offset_t_has_no_width_on_later_utc_bar() -> None:
     assert last_gap_segment(hist, bar, t=t) == []
 
 
+def test_early_gap_appended_last_still_has_width() -> None:
+    """An early 80 stuffed at list end must not look like a jump into the current bar."""
+    hist = [_bar(i) for i in range(15)]
+    early = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 11, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 11, 14, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    bar = _bar(20, high="100.2", low="100.1")
+    mixed = hist + [early]
+    assert mixed[-1].close == Decimal("80")
+    assert abs(bar.open - mixed[-1].close) / mixed[-1].close > Decimal("0.15")
+    assert width_now_from_history(bar, hist, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert width_now_from_history(bar, mixed, t=NOW) == Decimal("0.1") / Decimal("2")
+
+
 def test_unclosed_bar_has_no_width() -> None:
     """Range is not a fact until close_ts < t. Do not journal a forming bar."""
     hist = [_bar(i) for i in range(15)]

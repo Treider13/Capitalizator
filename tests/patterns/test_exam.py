@@ -49,6 +49,11 @@ def test_zero_atr_is_excluded_from_residual() -> None:
     assert hostile_exam(only_none).residual_after_atr is None
 
 
+def test_residual_of_one_value_is_that_value() -> None:
+    rows = [ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("2"))]
+    assert hostile_exam(rows).residual_after_atr == Decimal("1")
+
+
 def test_residual_is_median_error_over_atr() -> None:
     rows = [
         ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("2")),

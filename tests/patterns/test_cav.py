@@ -142,6 +142,41 @@ def test_reversed_history_still_compresses() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=list(reversed(closed))) == "COMPRESS"
 
 
+def test_early_gap_appended_last_still_compresses() -> None:
+    """Identical-TR reverse does not lock sort. An early 80 at list end is a false gap if unsorted."""
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    closed = []
+    for i in range(15):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    early = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 11, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 11, 14, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    mixed = closed + [early]
+    assert mixed[-1].close == Decimal("80")
+    assert abs(bar.open - mixed[-1].close) / mixed[-1].close > Decimal("0.15")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=mixed) == "COMPRESS"
+
+
 def test_small_range_inside_zone_is_compress() -> None:
     closed = []
     start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
