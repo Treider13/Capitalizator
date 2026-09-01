@@ -214,3 +214,24 @@ def test_book_diff_after_touch_is_zlg_defend(tmp_path: Path) -> None:
     st = desk.state_for("BTCUSDT")
     assert st.adds
     assert st.adds[0].qty == Decimal("5")
+
+
+def test_btc_htf_close_writes_regime_bus(tmp_path: Path) -> None:
+    """§6.7: BTC loop writes BtcBus. Else alts never see regime and BtcVeto is dead."""
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    day = datetime(2026, 8, 30, tzinfo=UTC)
+    for hour, high, low, close in ((0, "10", "8", "9"), (4, "11", "8", "10"), (8, "20", "12", "19")):
+        desk.on_bar_close(
+            Bar(
+                symbol="BTCUSDT",
+                tf="4h",
+                open_ts=day.replace(hour=hour),
+                close_ts=day.replace(hour=hour + 4),
+                open=Decimal(close),
+                high=Decimal(high),
+                low=Decimal(low),
+                close=Decimal(close),
+            )
+        )
+    assert desk.btc.regime == "trend"

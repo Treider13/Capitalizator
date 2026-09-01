@@ -15,6 +15,8 @@ from uuid import uuid4
 from capitalizator.book.reconstruct import Book, BookDirty
 from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
+from capitalizator.btc.break_def import Break
+from capitalizator.btc.regime import BtcRegime
 from capitalizator.btc.veto import BtcVeto
 from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.desk.pictures import needs_new_card, picture_for
@@ -106,6 +108,7 @@ class DeskLoop:
         self.zones_map = ZoneMap(self.config)
         self.first_minute = FirstMinute()
         self.btc_veto = BtcVeto()
+        self.btc_regime = BtcRegime(self.zones_map)
         self.manager = TradeManager()
 
     def state_for(self, symbol: str) -> SymbolState:
@@ -210,11 +213,46 @@ class DeskLoop:
         st.bars.append(bar)
         if bar.symbol == "BTCUSDT":
             self.btc.bars.append(bar)
+            self._publish_btc_bus(st, bar)
         if st.last_touch is None:
             return []
         if bar.tf != self.config.working_tf:
             return []
         return self._eval_cav_and_jury(st, bar)
+
+    def _publish_btc_bus(self, st: SymbolState, bar: Bar) -> None:
+        """BTC symbol loop writes the alt bus. Unknown HTF stays None."""
+        closed_at = bar.close_ts + timedelta(microseconds=1)
+        news_at = None
+        for row in self.calendar:
+            if row.known_at <= closed_at:
+                news_at = row.known_at
+                break
+        label = self.btc_regime.classify(
+            closed_at,
+            symbol="BTCUSDT",
+            bars=st.bars,
+            news_known_at=news_at,
+        )
+        if label is not None:
+            self.btc.regime = label
+        if bar.tf != self.config.working_tf:
+            return
+        self.btc.broke_support = False
+        self.btc.broke_resistance = False
+        for zone in self.registry._zones.values():
+            if zone.symbol != "BTCUSDT":
+                continue
+            eaten = any(
+                touch.zone_id == zone.zone_id and touch.tape_eaten
+                for touch in self.registry.touches
+            )
+            if not Break.detect(zone=zone, bar=bar, tape_eaten=eaten, t=closed_at):
+                continue
+            if zone.side == "support":
+                self.btc.broke_support = True
+            else:
+                self.btc.broke_resistance = True
 
     def on_trade(self, trade: MarketEvent, zones: list[Zone]) -> list[dict[str, Any]]:
         require_utc(trade.exchange_ts)
