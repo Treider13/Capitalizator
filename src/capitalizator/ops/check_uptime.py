@@ -49,8 +49,12 @@ def gap_covers(gaps: list[MarketEvent], start: datetime, end: datetime) -> bool:
         raw_to = gap.payload.get("ts_to")
         if raw_from is None or raw_to is None:
             continue
-        lo = require_utc(datetime.fromisoformat(str(raw_from)))
-        hi = require_utc(datetime.fromisoformat(str(raw_to)))
+        try:
+            lo = require_utc(datetime.fromisoformat(str(raw_from)))
+            hi = require_utc(datetime.fromisoformat(str(raw_to)))
+        except (TypeError, ValueError):
+            # Naive or unparsable clocks are not a cover. Same as a seq-gap.
+            continue
         if lo > hi:
             lo, hi = hi, lo
         if lo <= start_u and hi >= end_u:

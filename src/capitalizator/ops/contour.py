@@ -25,7 +25,7 @@ from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.phase import trading_mode
 from capitalizator.ops.vault import Vault, iter_regular_files, open_regular
 from capitalizator.patterns.cav import label as cav_label
-from capitalizator.types import MarketEvent
+from capitalizator.types import MarketEvent, require_utc
 from capitalizator.zlg.gesture import ZLG, BookAdd
 from capitalizator.zones.map import HtfBias
 from capitalizator.zones.model import Bar
@@ -211,7 +211,10 @@ def observe(
 
     One ObserveIn is one book / one bar. Several unlabeled touches without
     touch_id is an error — we do not paint a later print with an earlier book.
-    A bar of another symbol is an error before any fill. mid == print is
+    A bar of another symbol is an error before any fill. A tape print of
+    another symbol is the same error while tape is still empty. Naive
+    news_known_at is an error before any fill while BTC is still empty —
+    require_utc after tape/ZLG/CAV leaves a half-card. mid == print is
     an error only when tape or ZLG is still empty — a BTC-only retry must
     not freeze the card if the book has since centered on the print.
     Missing BTC does not stamp jury. htf_bias=unknown lets btc_bars speak;
@@ -227,6 +230,12 @@ def observe(
     zone = reg.zone(touch.zone_id)
     if touch.cav_label is None and inp.cav_bar.symbol != zone.symbol:
         raise ValueError(f"observe bar {inp.cav_bar.symbol} is not zone {zone.symbol}")
+    if touch.tape_eaten is None:
+        for trade in inp.trades:
+            if trade.symbol != zone.symbol:
+                raise ValueError(f"observe trade {trade.symbol} is not zone {zone.symbol}")
+    if touch.btc_regime is None and inp.news_known_at is not None:
+        require_utc(inp.news_known_at)
     if touch.tape_eaten is None or touch.gesture is None:
         if not inp.book.ready:
             raise ValueError("observe needs a ready book")

@@ -72,6 +72,31 @@ def test_seq_gap_without_time_range_does_not_cover_silence() -> None:
         check_uptime(events, hours=120 / 3600, max_unmarked_gap_s=10, symbol="BTCUSDT")
 
 
+def test_naive_gap_clock_does_not_cover() -> None:
+    """Naive ts_from is not a cover. Same as a seq-gap without a time range."""
+    start = datetime(2026, 8, 30, 13, 0, 0, tzinfo=UTC)
+    end = start + timedelta(seconds=120)
+    gap = MarketEvent(
+        stream="gap",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=start,
+        recv_ts=end,
+        seq=None,
+        payload={
+            "ts_from": start.replace(tzinfo=None).isoformat(),
+            "ts_to": end.replace(tzinfo=None).isoformat(),
+        },
+    )
+    with pytest.raises(SystemExit, match="unmarked gap"):
+        check_uptime(
+            [_trade(0), _trade(120), gap],
+            hours=120 / 3600,
+            max_unmarked_gap_s=10,
+            symbol="BTCUSDT",
+        )
+
+
 def test_other_symbol_gap_does_not_cover() -> None:
     """An ETH gap must not mark a BTC hole. hours24 inherits this law."""
     events = [_trade(0), _trade(120), _gap(0, 120, symbol="ETHUSDT")]

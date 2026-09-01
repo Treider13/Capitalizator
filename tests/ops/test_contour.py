@@ -624,6 +624,173 @@ def test_observe_btc_retry_ignores_centered_book() -> None:
     assert stamped[0].gesture == "DEFEND"
 
 
+def test_observe_naive_news_writes_nothing() -> None:
+    """require_utc(news) after tape/ZLG/CAV leaves a half-card. Refuse first."""
+    reg = _reg()
+    inp = ObserveIn(
+        book=_book(),
+        trades=[_trade(PRINT, qty="1", side="sell")],
+        adds=[
+            BookAdd(
+                ts=PRINT + timedelta(seconds=1),
+                side="bid",
+                px=Decimal("100"),
+                qty=Decimal("2"),
+            )
+        ],
+        cav_bar=_bar(),
+        htf_bias="box",
+        news_known_at=datetime(2026, 8, 30, 16, 0),
+    )
+    with pytest.raises(TypeError, match="naive"):
+        observe(reg, inp, contour_on=True)
+    row = reg.touches[0]
+    assert row.tape_eaten is None
+    assert row.gesture is None
+    assert row.cav_label is None
+    assert row.btc_regime is None
+    assert row.jury is None
+
+
+def test_observe_known_news_labels_news() -> None:
+    inp = ObserveIn(
+        book=_book(),
+        trades=[_trade(PRINT, qty="1", side="sell")],
+        adds=[
+            BookAdd(
+                ts=PRINT + timedelta(seconds=1),
+                side="bid",
+                px=Decimal("100"),
+                qty=Decimal("2"),
+            )
+        ],
+        cav_bar=_bar(),
+        htf_bias="box",
+        news_known_at=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    row = observe(_reg(), inp, contour_on=True)[0]
+    assert row.btc_regime == "news"
+    assert row.jury == "SILENCE"
+    assert row.tape_eaten is False
+    assert row.gesture == "DEFEND"
+
+
+def test_observe_foreign_trades_write_nothing() -> None:
+    """A BTC tape must not paint an ETH print. Same family as the other-symbol bar."""
+    eth = Zone.create(
+        symbol="ETHUSDT",
+        tf="1d",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
+    eth_bar = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+    )
+    eth_print = MarketEvent(
+        stream="trades",
+        exchange="bybit",
+        symbol="ETHUSDT",
+        exchange_ts=PRINT,
+        recv_ts=PRINT,
+        seq=None,
+        payload={"px": "100.1", "qty": "4", "side": "buy"},
+    )
+    reg = Registry(tick_size=TICK)
+    assert len(reg.on_trade(eth_print, [eth])) == 1
+    inp = ObserveIn(
+        book=_book(),
+        trades=[_trade(PRINT, qty="1", side="sell")],
+        adds=[
+            BookAdd(
+                ts=PRINT + timedelta(seconds=1),
+                side="bid",
+                px=Decimal("100"),
+                qty=Decimal("2"),
+            )
+        ],
+        cav_bar=eth_bar,
+        htf_bias="box",
+    )
+    with pytest.raises(ValueError, match="not zone"):
+        observe(reg, inp, contour_on=True)
+    row = reg.touches[0]
+    assert row.tape_eaten is None
+    assert row.gesture is None
+    assert row.cav_label is None
+    assert row.jury is None
+
+
+def test_observe_btc_retry_ignores_foreign_trades() -> None:
+    """Tape is already a fact. A later ETH print must not block the BTC stamp."""
+    reg = _reg()
+    pending = ObserveIn(
+        book=_book(),
+        trades=[_trade(PRINT, qty="1", side="sell")],
+        adds=[
+            BookAdd(
+                ts=PRINT + timedelta(seconds=1),
+                side="bid",
+                px=Decimal("100"),
+                qty=Decimal("2"),
+            )
+        ],
+        cav_bar=_bar(),
+        htf_bias="unknown",
+    )
+    assert observe(reg, pending, contour_on=True)[0].jury is None
+    eth_print = MarketEvent(
+        stream="trades",
+        exchange="bybit",
+        symbol="ETHUSDT",
+        exchange_ts=PRINT,
+        recv_ts=PRINT,
+        seq=None,
+        payload={"px": "100.1", "qty": "1", "side": "sell"},
+    )
+    later = ObserveIn(
+        book=Book(),
+        trades=[eth_print],
+        adds=[],
+        cav_bar=_bar(),
+        htf_bias="box",
+    )
+    stamped = observe(reg, later, contour_on=True)
+    assert stamped[0].btc_regime == "box"
+    assert stamped[0].jury == "SILENCE"
+    assert stamped[0].tape_eaten is False
+    assert stamped[0].gesture == "DEFEND"
+
+
+def test_hours24_naive_gap_clock_is_red() -> None:
+    """A gap without tz is not a cover. The button stays grey, not a crash."""
+    end = T0 + timedelta(hours=24)
+    naive = MarketEvent(
+        stream="gap",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=T0,
+        recv_ts=end,
+        seq=None,
+        payload={
+            "ts_from": T0.replace(tzinfo=None).isoformat(),
+            "ts_to": end.replace(tzinfo=None).isoformat(),
+        },
+    )
+    ok, span = hours24([_trade(T0), _trade(end), naive])
+    assert ok is False
+    assert span == 86400
+
+
 def test_observe_btc_retry_allows_unready_book() -> None:
     """BTC-only retry must not demand a live book. Tape/ZLG are already facts."""
     reg = _reg()
