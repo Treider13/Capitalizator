@@ -20,13 +20,13 @@ from capitalizator.ops.contour import status as contour_status
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.phase import load_phase, trading_mode
-from capitalizator.risk.session import load_time_config
 from capitalizator.ops.product import (
     hello_recorded,
     read_user_mode,
     set_user_mode,
 )
-from capitalizator.screener.universe import load_desk_universe
+from capitalizator.ops.touch_screen import latest as latest_touch
+from capitalizator.ops.touch_screen import render_html as render_touch_html
 from capitalizator.ops.vault import (
     Vault,
     init_vault,
@@ -34,6 +34,8 @@ from capitalizator.ops.vault import (
     load_vault,
     open_regular,
 )
+from capitalizator.risk.session import load_time_config
+from capitalizator.screener.universe import load_desk_universe
 
 ADVICE_WORDS = ("лонг", "шорт", "купи", "продай", "завтра")
 
@@ -106,6 +108,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     n_touches = 0
     journal: list[dict[str, Any]] = []
     overlays: list[dict[str, str | None]] = []
+    touch_snap: dict[str, Any] | None = None
     knowledge = open_knowledge(vault, create=False)
     try:
         counts = knowledge.counts()
@@ -126,6 +129,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
             journal = knowledge.journal_rows()
             overlays = knowledge.overlay_rows()
             n_touches = len(journal)
+        touch_snap = latest_touch(knowledge) if knowledge.available() else None
     finally:
         knowledge.close()
     files_n, rows_n = _parquet_counts(vault.tape)
@@ -177,6 +181,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
             "overlay": overlays,
         },
         "taps": _desk_taps(),
+        "touch": touch_snap,
     }
     text = json.dumps(snap, ensure_ascii=False)
     if contains_advice(text):
@@ -243,6 +248,21 @@ def _page(snap: dict[str, Any]) -> str:
     contour = html.escape(str(snap["contour"]))
     hours24 = bool(snap["hours24"])
     can_enable = bool(snap["can_enable"])
+    touch = snap.get("touch")
+    if touch is None:
+        touch_block = '<p class="empty">касаний нет</p>'
+    else:
+        touch_block = (
+            f"<pre>{html.escape(str(touch.get('text') or touch.get('line') or ''))}</pre>"
+        )
+    hello_txt = hello_banner or "testnet hello есть"
+    vs_line = (
+        f"тень {int(vs.get('shadow') or 0)} · "
+        f"демо {int(vs.get('demo') or 0)} · "
+        f"лайв {int(vs.get('live') or 0)}"
+    )
+    risk_txt = taps.get("target_risk")
+    risk_line = html.escape(str(risk_txt if risk_txt is not None else "—"))
     if snap["contour"] == "on":
         contour_note = "Контур включён. Метки пишутся. Ордеров нет."
         contour_form = ""
@@ -340,7 +360,7 @@ def _page(snap: dict[str, Any]) -> str:
     <section class="card">
       <h2>Режим человека</h2>
       <div class="num">{user_mode}</div>
-      <p><span class="pill {"ok" if hello_ok else "bad"}">{hello_banner or "testnet hello есть"}</span></p>
+      <p><span class="pill {"ok" if hello_ok else "bad"}">{hello_txt}</span></p>
       <form method="post" action="/api/mode">
         <input type="hidden" name="ack" value="1"/>
         <button type="submit" name="mode" value="off">off</button>
@@ -377,7 +397,7 @@ def _page(snap: dict[str, Any]) -> str:
     </section>
     <section class="card">
       <h2>Тень / демо / лайв</h2>
-      <p>тень {int(vs.get("shadow") or 0)} · демо {int(vs.get("demo") or 0)} · лайв {int(vs.get("live") or 0)}</p>
+      <p>{vs_line}</p>
     </section>
     <section class="card">
       <h2>Жюри дня</h2>
@@ -390,12 +410,16 @@ def _page(snap: dict[str, Any]) -> str:
         <li>reconcile_s: {int(taps.get("reconcile_s") or 0)}</li>
         <li>first_minute_s: {int(taps.get("first_minute_s") or 0)}</li>
         <li>max_lev: {int(taps.get("max_lev") or 0)}</li>
-        <li>target_risk: {html.escape(str(taps.get("target_risk") if taps.get("target_risk") is not None else "—"))}</li>
+        <li>target_risk: {risk_line}</li>
       </ul>
     </section>
     <section class="card wide">
       <h2>Вселенная · {int(snap.get("n_symbols") or 0)}</h2>
       <p>{symbols_html}</p>
+    </section>
+    <section class="card wide">
+      <h2>Касание</h2>
+      {touch_block}
     </section>
     <section class="card wide">
       <h2>CAV × ZLG × outcome</h2>
@@ -632,6 +656,14 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     day = qs.get("day", [None])[0]
                     body = render_html(app.vault, day=day).encode()
                     code, ctype = 200, "text/html; charset=utf-8"
+                elif path == "/touch":
+                    snap = desk_snapshot(app.vault)
+                    body = render_touch_html(snap.get("touch")).encode()
+                    code, ctype = 200, "text/html; charset=utf-8"
+                elif path == "/api/touch":
+                    snap = desk_snapshot(app.vault)
+                    body = json.dumps(snap.get("touch"), ensure_ascii=False).encode()
+                    code, ctype = 200, "application/json; charset=utf-8"
                 else:
                     body, code, ctype = b"not-found", 404, "text/plain; charset=utf-8"
                 self.send_response(code)

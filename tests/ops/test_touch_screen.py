@@ -1,0 +1,98 @@
+"""P7 — full touch page shows B + A marks. No advice. No orders."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from pathlib import Path
+
+from capitalizator.card.live import CardLive, VolumeSnapshot
+from capitalizator.ops.console import desk_snapshot, render_html
+from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.touch_screen import render_html as render_touch
+from capitalizator.ops.touch_screen import touch_screen
+from capitalizator.ops.vault import init_vault
+
+NOW = datetime(2026, 8, 30, 14, 0, tzinfo=UTC)
+
+
+def _card() -> CardLive:
+    return CardLive(
+        symbol="BTCUSDT",
+        bearing_verdict="propose",
+        known_at=NOW,
+        fib_zone="OTE",
+        fib_level="0.718",
+        rsi_htf="52",
+        gex_bg="+2.1M",
+        fvg_status="filled",
+        sweep_status="done",
+        pluses=("session_profile", "htf_ok", "rvol_above_2"),
+        minuses=("base_rate_unknown", "spread_cost"),
+        volume=VolumeSnapshot(rvol="2.3", poc="100", vah="101", val="99"),
+    )
+
+
+def test_p7_screen_has_b_and_a() -> None:
+    screen = touch_screen(
+        symbol="BTCUSDT",
+        card=_card(),
+        jury="ACCORD",
+        cav="REJECT",
+        zlg="DEFEND",
+        tape_eaten=False,
+        btc="box",
+        n_cav=20,
+        n_zlg=20,
+    )
+    assert screen["line"].startswith("[TOUCH] BTCUSDT | B:propose | A:ACCORD")
+    assert screen["b"]["fib"] == "0.718(OTE)"
+    assert screen["b"]["rvol"] == "2.3"
+    assert screen["a"]["cav"] == "REJECT"
+    assert screen["a"]["zlg"] == "DEFEND"
+    assert "--- B ---" in screen["text"]
+    assert "--- A ---" in screen["text"]
+    page = render_touch(screen)
+    assert "0.718(OTE)" in page
+    assert "REJECT" in page
+    assert "ордеров нет" in page.lower()
+    for word in ("лонг", "шорт", "купи", "продай", "завтра"):
+        assert word not in page.lower()
+        assert word not in screen["text"].lower()
+
+
+def test_p7_empty_screen_is_honest() -> None:
+    page = render_touch(None)
+    assert "касаний нет" in page
+
+
+def test_p7_console_snapshot_includes_touch(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    card = _card()
+    kn.put_card_live("BTCUSDT", card.to_payload())
+    kn.put_journal_touch(
+        "t1",
+        {
+            "symbol": "BTCUSDT",
+            "jury": "ACCORD",
+            "cav_label": "REJECT",
+            "zlg_label": "DEFEND",
+            "tape_eaten": False,
+            "btc_state": "box",
+            "n_cav": 20,
+            "n_zlg": 20,
+        },
+    )
+    kn.close()
+    snap = desk_snapshot(vault)
+    assert snap["touch"] is not None
+    assert snap["touch"]["a"]["jury"] == "ACCORD"
+    html = render_html(vault)
+    assert "[TOUCH] BTCUSDT" in html
+    assert "--- B ---" in html
+
+
+def test_p7_module_has_no_signer() -> None:
+    import capitalizator.ops.touch_screen as pkg
+
+    assert "signer" not in pkg.__dict__

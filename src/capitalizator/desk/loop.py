@@ -455,7 +455,12 @@ class DeskLoop:
         )
         self.knowledge.put_journal_touch(
             touch.touch_id,
-            {**journal, "touch_id": touch.touch_id, "touch_line": line},
+            {
+                **journal,
+                "touch_id": touch.touch_id,
+                "symbol": zone.symbol,
+                "touch_line": line,
+            },
         )
 
     def _eval_cav_and_jury(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
@@ -677,6 +682,7 @@ class DeskLoop:
         line = touch_line(symbol=st.symbol, card=card, jury=jury)
         extra = {
             "touch_id": row.touch_id,
+            "symbol": st.symbol,
             "idea": idea,
             "picture": picture,
             "imbalance": None if imb is None else str(imb),
