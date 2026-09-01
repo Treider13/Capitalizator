@@ -73,6 +73,27 @@ def test_residual_is_median_error_over_atr() -> None:
     assert hostile_exam(rows).residual_after_atr == Decimal("0.75")
 
 
+def test_residual_median_is_not_the_mean() -> None:
+    """Two residuals share a mean and a median. Mean of 1, 2, 10 is 13/3, not 2."""
+    rows = [
+        ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("2")),
+        ExamCase(pred=Decimal("14"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("2")),
+        ExamCase(pred=Decimal("30"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("2")),
+    ]
+    assert hostile_exam(rows).residual_after_atr == Decimal("2")
+    assert sum((Decimal("1"), Decimal("2"), Decimal("10"))) / Decimal("3") != Decimal("2")
+
+
+def test_last_price_tie_stays_in_the_beat_denominator() -> None:
+    """One beat + one equal error is 1/2. Dropping ties from n would report 1."""
+    rows = [
+        ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("11")),
+        ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("10.5")),
+    ]
+    assert abs(rows[1].pred - rows[1].actual) == abs(rows[1].last - rows[1].actual)
+    assert hostile_exam(rows).beat_last_price == Decimal("1") / Decimal("2")
+
+
 def test_five_zero_pnl_days_have_no_share() -> None:
     """total=0 is not a share. Returning 0 would look like 'no concentration'."""
     rows = [

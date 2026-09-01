@@ -177,9 +177,10 @@ def test_early_gap_appended_last_still_compresses() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=mixed) == "COMPRESS"
 
 
-def test_small_range_inside_zone_is_compress() -> None:
+def _atr15(*, close: str = "101") -> list[Bar]:
     closed = []
     start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    px = Decimal(close)
     for i in range(15):
         ts = start.replace(minute=i)
         closed.append(
@@ -188,14 +189,26 @@ def test_small_range_inside_zone_is_compress() -> None:
                 tf="15m",
                 open_ts=ts,
                 close_ts=ts.replace(second=30),
-                open=Decimal("101"),
-                high=Decimal("102"),
-                low=Decimal("100"),
-                close=Decimal("101"),
+                open=px,
+                high=px + Decimal("1"),
+                low=px - Decimal("1"),
+                close=px,
             )
         )
+    return closed
+
+
+def test_small_range_inside_zone_is_compress() -> None:
     bar = _bar(low="100.05", high="100.15", close="100.10")
-    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
+
+
+def test_range_equal_to_atr_is_drift_not_compress() -> None:
+    """COMPRESS is range < ATR, not <=. Body is 0 here — |close−open| < ATR would fake COMPRESS."""
+    bar = _bar(low="100.0", high="102.0", close="100.10")
+    assert (bar.high - bar.low) == Decimal("2")
+    assert abs(bar.close - bar.open) == Decimal("0")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "DRIFT"
 
 
 def test_offset_t_does_not_close_a_later_utc_bar() -> None:
@@ -360,6 +373,22 @@ def test_stagnant_would_be_reject_is_noise() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
 
 
+def test_stagnant_would_be_through_is_noise() -> None:
+    """Quality is not only a REJECT gate. A dead through-bar is still NOISE."""
+    closed = [_hist(i, close="99.8") for i in range(4)]
+    bar = _bar(low="99.5", high="100.1", close="99.8")
+    assert label(ZONE, bar, t=T, htf_bias="box") == "THROUGH"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
+
+
+def test_stagnant_would_be_compress_is_noise() -> None:
+    """15 same-close ATR bars + a tight print is COMPRESS unless quality runs first."""
+    closed = [_hist(i, close="100.10") for i in range(15)]
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
+
+
 def test_four_same_closes_is_still_reject() -> None:
     closed = [_hist(i, close="100.1") for i in range(3)]
     bar = _bar(low="99.9", high="100.5", close="100.1")
@@ -379,6 +408,23 @@ def test_illiquid_would_be_reject_is_noise() -> None:
         close=Decimal("100.1"),
         volume=Decimal("0"),
     )
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
+
+
+def test_illiquid_would_be_through_is_noise() -> None:
+    closed = [_hist(0, close="101", volume=Decimal("0"))]
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("99.8"),
+        high=Decimal("100.1"),
+        low=Decimal("99.5"),
+        close=Decimal("99.8"),
+        volume=Decimal("0"),
+    )
+    assert label(ZONE, bar, t=T, htf_bias="box") == "THROUGH"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
 
 
