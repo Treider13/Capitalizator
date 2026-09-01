@@ -30,15 +30,15 @@ def test_recorder_does_not_import_signer() -> None:
     assert "signer" not in recorder_pkg.__dict__
 
 
-def test_live_hour_flag_is_disabled() -> None:
+def test_live_minutes_requires_data_root() -> None:
     from capitalizator.recorder.app import main
 
     try:
         main(["--minutes", "60"])
     except SystemExit as exc:
-        assert "live WS hour is not enabled" in str(exc)
+        assert "data-root" in str(exc)
         return
-    raise AssertionError("live hour must refuse")
+    raise AssertionError("minutes without data-root must refuse")
 
 
 def test_http_healthz_readyz_on_real_port() -> None:

@@ -15,6 +15,8 @@ def test_repo_file_matches_phase_build_keys() -> None:
     cfg = load_registry(REPO)
     assert cfg.working_tf == "15m"
     assert cfg.htf == "4h"
+    assert cfg.htf_d1 == "1d"
+    assert cfg.mid_band_ticks == 2
     assert cfg.epsilon_ticks == 2
     assert cfg.bounce_away_ticks == 8
     assert cfg.zlg_window_s == 8

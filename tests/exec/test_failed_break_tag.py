@@ -61,8 +61,8 @@ def test_tag_does_not_count_as_breakout_or_bounce() -> None:
     assert FailedBreak.counts_as_bounce(TAG) is False
 
 
-def test_bounce_source_does_not_import_failed_break() -> None:
+def test_bounce_source_handles_failed_break_idea() -> None:
     text = (SRC / "strategy_bounce.py").read_text(encoding="utf-8")
     assert "FailedBreak" not in text
-    assert "failed_break" not in text
+    assert "failed_break" in text
     assert 'SETUP_TAG = "bounce"' in text

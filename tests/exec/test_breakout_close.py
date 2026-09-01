@@ -66,8 +66,8 @@ def test_close_eaten_btc_when_enabled() -> None:
     )
 
 
-def test_bounce_does_not_import_breakout_close() -> None:
+def test_bounce_uses_breakout_close_atom() -> None:
     text = (SRC / "strategy_bounce.py").read_text(encoding="utf-8")
-    assert "BreakoutClose" not in text
+    assert "BreakoutClose" in text
     assert "strategy_breakout" not in text
     assert not (SRC / "strategy_breakout.py").is_file()

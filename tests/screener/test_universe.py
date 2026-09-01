@@ -46,11 +46,21 @@ def test_two_hundred_rejected() -> None:
         validate_universe({"exchange": "bybit", "category": "linear", "symbols": symbols})
 
 
-def test_sixteen_rejected() -> None:
-    symbols = ["BTCUSDT", "ETHUSDT"] + [f"ALT{i}USDT" for i in range(14)]
-    assert len(symbols) == 16
+def test_twenty_five_rejected() -> None:
+    symbols = ["BTCUSDT", "ETHUSDT"] + [f"ALT{i}USDT" for i in range(23)]
+    assert len(symbols) == 25
     with pytest.raises(UniverseError, match="wide universe"):
         validate_universe({"exchange": "bybit", "category": "linear", "symbols": symbols})
+
+
+def test_twenty_four_is_legal_shape() -> None:
+    from capitalizator.screener.universe import default_desk_path, load_desk_universe
+
+    uni = load_desk_universe()
+    assert len(uni.symbols) == 24
+    assert uni.symbols[0] == "BTCUSDT"
+    assert uni.symbols[1] == "ETHUSDT"
+    assert default_desk_path().name == "universe.yaml"
 
 
 def test_htx_rejected() -> None:

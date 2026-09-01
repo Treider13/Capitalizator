@@ -42,36 +42,15 @@ def _snap(**overrides: object) -> BounceSnapshot:
     return BounceSnapshot(**raw)  # type: ignore[arg-type]
 
 
-def test_f1_default_ignores_eaten() -> None:
+def test_product_records_tape_and_does_not_filter() -> None:
     strat = BounceStrategy(
         risk=RiskEngine(),
         halts=Halts(start_equity=Decimal("100000")),
         desk_mode="demo",
         require_card=False,
     )
-    assert strat.check_tape is False
-    got = strat.propose(_snap(tape_eaten=True))
-    assert isinstance(got, Intent)
-
-
-def test_eaten_blocks_when_flag_on() -> None:
-    strat = BounceStrategy(
-        risk=RiskEngine(),
-        halts=Halts(start_equity=Decimal("100000")),
-        desk_mode="demo",
-        require_card=False,
-        check_tape=True,
-    )
-    assert strat.propose(_snap(tape_eaten=True)) is None
+    assert strat.check_tape is True
+    assert strat.check_wall is True
+    assert isinstance(strat.propose(_snap(tape_eaten=True)), Intent)
     assert isinstance(strat.propose(_snap(tape_eaten=False)), Intent)
-
-
-def test_unknown_tape_is_not_a_clean_book() -> None:
-    strat = BounceStrategy(
-        risk=RiskEngine(),
-        halts=Halts(start_equity=Decimal("100000")),
-        desk_mode="demo",
-        require_card=False,
-        check_tape=True,
-    )
-    assert strat.propose(_snap()) is None
+    assert isinstance(strat.propose(_snap()), Intent)

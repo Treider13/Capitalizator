@@ -21,9 +21,14 @@ _DAY = _FIX_TS.strftime("%Y-%m-%d")
 _HOUR = _FIX_TS.strftime("%H")
 
 
-def test_minutes_without_jsonl_still_refuses_live() -> None:
-    with pytest.raises(SystemExit, match="live WS hour is not enabled"):
+def test_minutes_without_jsonl_needs_data_root() -> None:
+    with pytest.raises(SystemExit, match="data-root"):
         main(["--minutes", "60"])
+
+
+def test_minutes_without_jsonl_runs_live_empty(tmp_path: Path) -> None:
+    code = main(["--minutes", "1", "--data-root", str(tmp_path), "--symbol", "BTCUSDT"])
+    assert code == 0
 
 
 def test_from_jsonl_trades_writes_exact_count(tmp_path: Path) -> None:

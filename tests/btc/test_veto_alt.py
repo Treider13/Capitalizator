@@ -39,8 +39,8 @@ def test_wick_is_not_broke_so_allow() -> None:
     assert BtcVeto().allow(alt_side="buy", btc_broke=False, btc_zone_side="support") is True
 
 
-def test_propose_source_does_not_import_veto() -> None:
+def test_propose_source_calls_btc_veto() -> None:
+    """Product: BtcVeto.allow() is always on the entry path for alts."""
     text = SRC.read_text(encoding="utf-8")
-    assert "from capitalizator.btc" not in text
-    assert "import BtcVeto" not in text
-    assert "BtcVeto()" not in text
+    assert "BtcVeto" in text
+    assert "btc_veto.allow" in text

@@ -13,6 +13,8 @@ REQUIRED = (
     "bounce_away_ticks",
     "working_tf",
     "htf",
+    "htf_d1",
+    "mid_band_ticks",
     "touch_pending_timeout_h",
     "die_no_touch_h",
     "zlg_window_s",
@@ -33,6 +35,8 @@ class RegistryConfig:
     bounce_away_ticks: int
     working_tf: str
     htf: str
+    htf_d1: str
+    mid_band_ticks: int
     touch_pending_timeout_h: int
     die_no_touch_h: int
     zlg_window_s: int
@@ -65,6 +69,8 @@ def load_registry(path: Path | None = None) -> RegistryConfig:
         bounce_away_ticks=_int(raw, "bounce_away_ticks"),
         working_tf=str(raw["working_tf"]),
         htf=str(raw["htf"]),
+        htf_d1=str(raw["htf_d1"]),
+        mid_band_ticks=_int(raw, "mid_band_ticks"),
         touch_pending_timeout_h=_int(raw, "touch_pending_timeout_h"),
         die_no_touch_h=_int(raw, "die_no_touch_h"),
         zlg_window_s=_int(raw, "zlg_window_s"),

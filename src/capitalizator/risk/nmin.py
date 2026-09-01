@@ -8,6 +8,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 N_MIN = 20
+NMIN_SIZE = Decimal("0")
 QUARTER = Decimal("0.25")
 
 

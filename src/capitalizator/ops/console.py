@@ -19,7 +19,14 @@ from capitalizator.ops.contour import enable as enable_contour
 from capitalizator.ops.contour import status as contour_status
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
 from capitalizator.ops.knowledge import open_knowledge
-from capitalizator.ops.phase import trading_mode
+from capitalizator.ops.phase import load_phase, trading_mode
+from capitalizator.risk.session import load_time_config
+from capitalizator.ops.product import (
+    hello_recorded,
+    read_user_mode,
+    set_user_mode,
+)
+from capitalizator.screener.universe import load_desk_universe
 from capitalizator.ops.vault import (
     Vault,
     init_vault,
@@ -58,7 +65,47 @@ def _parquet_counts(tape: Path) -> tuple[int, int]:
     return readable, rows
 
 
+def _crosstab(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[tuple[str, str, str], int] = {}
+    for row in rows:
+        key = (
+            str(row.get("cav_label") or "—"),
+            str(row.get("zlg_label") or "—"),
+            str(row.get("outcome") or "—"),
+        )
+        buckets[key] = buckets.get(key, 0) + 1
+    return [
+        {"cav": cav, "zlg": zlg, "outcome": outcome, "n": n}
+        for (cav, zlg, outcome), n in sorted(buckets.items())
+    ]
+
+
+def _jury_today(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, int] = {}
+    for row in rows:
+        label = str(row.get("jury") or "—")
+        buckets[label] = buckets.get(label, 0) + 1
+    return [{"jury": label, "n": n} for label, n in sorted(buckets.items())]
+
+
+def _desk_taps() -> dict[str, Any]:
+    """§7 краны: time.yaml + phase.yaml, read-only, no yaml write."""
+    time_cfg = load_time_config()
+    phase = load_phase()
+    return {
+        "dead_man_s": int(time_cfg["dead_man_s"]),
+        "reconcile_s": int(time_cfg["reconcile_s"]),
+        "first_minute_s": int(time_cfg["first_minute_s"]),
+        "max_lev": int(phase["max_lev"]),
+        "target_risk": float(phase["target_risk"]),
+    }
+
+
 def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
+    n_days = None
+    n_touches = 0
+    journal: list[dict[str, Any]] = []
+    overlays: list[dict[str, str | None]] = []
     knowledge = open_knowledge(vault, create=False)
     try:
         counts = knowledge.counts()
@@ -72,6 +119,13 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         if report_body is None and latest is not None:
             report_body = latest["body"]
             report_day = latest["day"]
+        raw_n = knowledge.meta("learn_n_days")
+        if raw_n is not None:
+            n_days = int(raw_n)
+        if knowledge.available():
+            journal = knowledge.journal_rows()
+            overlays = knowledge.overlay_rows()
+            n_touches = len(journal)
     finally:
         knowledge.close()
     files_n, rows_n = _parquet_counts(vault.tape)
@@ -80,8 +134,25 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         report_day = report_day or "нет даты"
     mode = trading_mode()
     contour = contour_status(vault)
+    user = read_user_mode(vault)
+    hello_ok = hello_recorded(vault)
+    banners: list[str] = []
+    if not hello_ok:
+        banners.append("Демо: нет hello")
+    if n_touches < 20:
+        banners.append("мало n")
+    banner = " — ".join(banners)
+    symbols = list(load_desk_universe().symbols)
     snap = {
         "trading_mode": mode,
+        "user_mode": user,
+        "hello_ok": hello_ok,
+        "hello_banner": banner,
+        "n_banner": "мало n" if n_touches < 20 else "",
+        "symbols": symbols,
+        "n_symbols": len(symbols),
+        "learn_n_days": n_days,
+        "n_touches": n_touches,
         "contour": contour["contour"],
         "hours24": contour["hours24"],
         "hours24_span_s": contour["hours24_span_s"],
@@ -96,6 +167,16 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         "report_day": report_day,
         "report": report_body,
         "honest": "пусто — не выдумка" if counts["episodes"] == 0 else "есть строки журнала",
+        "tape_holes": 0 if contour["hours24"] else 1,
+        "cav_zlg": _crosstab(journal),
+        "jury_today": _jury_today(journal),
+        "shadow_vs_demo_vs_live": {
+            "shadow": sum(1 for row in journal if row.get("shadow_would")),
+            "demo": sum(1 for row in episodes if row.get("mode") == "demo"),
+            "live": sum(1 for row in episodes if row.get("mode") == "live"),
+            "overlay": overlays,
+        },
+        "taps": _desk_taps(),
     }
     text = json.dumps(snap, ensure_ascii=False)
     if contains_advice(text):
@@ -125,6 +206,39 @@ def _page(snap: dict[str, Any]) -> str:
         )
     chain = "целая" if snap["hash_chain_ok"] else "сломана"
     mode = html.escape(str(snap["trading_mode"]))
+    user_mode = html.escape(str(snap.get("user_mode") or "off"))
+    hello_banner = html.escape(str(snap.get("hello_banner") or ""))
+    hello_ok = bool(snap.get("hello_ok"))
+    learn_n = snap.get("learn_n_days")
+    learn_txt = "—" if learn_n is None else str(learn_n)
+    n_touches = int(snap.get("n_touches") or 0)
+    symbols = snap.get("symbols") or []
+    symbols_html = " ".join(f"<span class=\"pill\">{html.escape(str(s))}</span>" for s in symbols)
+    cav_rows = snap.get("cav_zlg") or []
+    if cav_rows:
+        cav_html = "".join(
+            (
+                "<tr>"
+                f"<td>{html.escape(str(r['cav']))}</td>"
+                f"<td>{html.escape(str(r['zlg']))}</td>"
+                f"<td>{html.escape(str(r['outcome']))}</td>"
+                f"<td>{int(r['n'])}</td>"
+                "</tr>"
+            )
+            for r in cav_rows
+        )
+    else:
+        cav_html = '<tr><td colspan="4" class="empty">CAV×ZLG×outcome пусто</td></tr>'
+    jury_rows = snap.get("jury_today") or []
+    if jury_rows:
+        jury_html = "".join(
+            f"<li>{html.escape(str(r['jury']))}: {int(r['n'])}</li>" for r in jury_rows
+        )
+    else:
+        jury_html = '<li class="empty">жюри дня пусто</li>'
+    vs = snap.get("shadow_vs_demo_vs_live") or {}
+    taps = snap.get("taps") or {}
+    tape_holes = int(snap.get("tape_holes") or 0)
     report = html.escape(str(snap["report"]))
     contour = html.escape(str(snap["contour"]))
     hours24 = bool(snap["hours24"])
@@ -219,9 +333,21 @@ def _page(snap: dict[str, Any]) -> str:
   </header>
   <main>
     <section class="card">
-      <h2>Режим</h2>
+      <h2>Режим yaml</h2>
       <div class="num">{mode}</div>
       <p><span class="pill">торги с консоли нельзя</span></p>
+    </section>
+    <section class="card">
+      <h2>Режим человека</h2>
+      <div class="num">{user_mode}</div>
+      <p><span class="pill {"ok" if hello_ok else "bad"}">{hello_banner or "testnet hello есть"}</span></p>
+      <form method="post" action="/api/mode">
+        <input type="hidden" name="ack" value="1"/>
+        <button type="submit" name="mode" value="off">off</button>
+        <button type="submit" name="mode" value="learn">learn</button>
+        <button type="submit" name="mode" value="demo">demo</button>
+        <button type="submit" name="mode" value="live">live</button>
+      </form>
     </section>
     <section class="card">
       <h2>Контур</h2>
@@ -242,7 +368,41 @@ def _page(snap: dict[str, Any]) -> str:
     <section class="card">
       <h2>Лента parquet</h2>
       <div class="num">{snap["parquet_files"]}</div>
-      <p class="empty">{snap["parquet_rows"]} строк. Нет файла — нет суток VPS.</p>
+      <p class="empty">{snap["parquet_rows"]} строк. Дыры ленты: {tape_holes}.</p>
+    </section>
+    <section class="card">
+      <h2>День учёбы</h2>
+      <div class="num">{html.escape(learn_txt)}</div>
+      <p class="empty">n касаний: {n_touches}</p>
+    </section>
+    <section class="card">
+      <h2>Тень / демо / лайв</h2>
+      <p>тень {int(vs.get("shadow") or 0)} · демо {int(vs.get("demo") or 0)} · лайв {int(vs.get("live") or 0)}</p>
+    </section>
+    <section class="card">
+      <h2>Жюри дня</h2>
+      <ul>{jury_html}</ul>
+    </section>
+    <section class="card">
+      <h2>Краны</h2>
+      <ul>
+        <li>dead_man_s: {int(taps.get("dead_man_s") or 0)}</li>
+        <li>reconcile_s: {int(taps.get("reconcile_s") or 0)}</li>
+        <li>first_minute_s: {int(taps.get("first_minute_s") or 0)}</li>
+        <li>max_lev: {int(taps.get("max_lev") or 0)}</li>
+        <li>target_risk: {html.escape(str(taps.get("target_risk") if taps.get("target_risk") is not None else "—"))}</li>
+      </ul>
+    </section>
+    <section class="card wide">
+      <h2>Вселенная · {int(snap.get("n_symbols") or 0)}</h2>
+      <p>{symbols_html}</p>
+    </section>
+    <section class="card wide">
+      <h2>CAV × ZLG × outcome</h2>
+      <table>
+        <thead><tr><th>CAV</th><th>ZLG</th><th>outcome</th><th>n</th></tr></thead>
+        <tbody>{cav_html}</tbody>
+      </table>
     </section>
     <section class="card wide">
       <h2>Отчёт · {html.escape(str(snap["report_day"]))}</h2>
@@ -284,8 +444,17 @@ class ConsoleApp:
     def turn_on(self) -> dict[str, Any]:
         return enable_contour(self.vault)
 
+    def set_mode(
+        self,
+        mode: str,
+        *,
+        ack: bool,
+        learn_n_days: int | None = None,
+    ) -> dict[str, Any]:
+        return set_user_mode(self.vault, mode, ack=ack, learn_n_days=learn_n_days)
 
-def _read_action(handler: BaseHTTPRequestHandler) -> str:
+
+def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     raw_len = handler.headers.get("Content-Length", "0")
     try:
         length = int(raw_len)
@@ -299,10 +468,19 @@ def _read_action(handler: BaseHTTPRequestHandler) -> str:
         payload = json.loads(body.decode() or "{}")
         if not isinstance(payload, dict):
             raise ValueError("json must be an object")
-        return str(payload.get("action") or "")
+        return payload
     parsed = parse_qs(body.decode(), keep_blank_values=True)
-    values = parsed.get("action", [""])
-    return str(values[0])
+    return {key: values[-1] if values else "" for key, values in parsed.items()}
+
+
+def _read_action(handler: BaseHTTPRequestHandler) -> str:
+    payload = _read_body(handler)
+    return str(payload.get("action") or "")
+
+
+def _is_local(handler: BaseHTTPRequestHandler) -> bool:
+    host = handler.client_address[0]
+    return host in {"127.0.0.1", "localhost", "::1"}
 
 
 def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
@@ -351,10 +529,49 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 body = json.dumps(payload, ensure_ascii=False).encode()
                 self._send(409, body, "application/json; charset=utf-8")
 
+        def _set_mode(self, payload: dict[str, Any], *, redirect: bool) -> None:
+            raw_ack = payload.get("ack_token", payload.get("ack"))
+            ack = raw_ack in {True, "true", "1", 1, "yes"}
+            mode = str(payload.get("mode") or "")
+            raw_n = payload.get("learn_n_days")
+            learn_n = int(raw_n) if raw_n not in {None, ""} else None
+            if mode == "learn" and learn_n is None:
+                learn_n = 14
+            if not ack:
+                self._send(403, b"ack required", "text/plain; charset=utf-8")
+                return
+            if mode in {"demo", "live"} and not hello_recorded(app.vault):
+                self._send(403, b"hello required", "text/plain; charset=utf-8")
+                return
+            try:
+                out = app.set_mode(mode, ack=True, learn_n_days=learn_n)
+            except ValueError as exc:
+                self._send(400, str(exc).encode(), "text/plain; charset=utf-8")
+                return
+            if redirect:
+                self._send(303, b"", "text/plain; charset=utf-8", extra={"Location": "/"})
+                return
+            body = json.dumps(out, ensure_ascii=False).encode()
+            self._send(200, body, "application/json; charset=utf-8")
+
         def do_POST(self) -> None:  # noqa: N802
             sent = False
             try:
                 path = urlparse(self.path).path
+                if path == "/order":
+                    self._reject_write()
+                    return
+                if path in {"/api/mode", "/mode"}:
+                    if not _is_local(self):
+                        self._send(403, b"localhost only", "text/plain; charset=utf-8")
+                        return
+                    try:
+                        payload = _read_body(self)
+                    except (ValueError, json.JSONDecodeError):
+                        self._send(400, b"bad-mode", "text/plain; charset=utf-8")
+                        return
+                    self._set_mode(payload, redirect=path == "/mode")
+                    return
                 if path not in {"/contour", "/api/contour"}:
                     self._reject_write()
                     return

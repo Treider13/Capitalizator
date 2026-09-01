@@ -1,0 +1,237 @@
+"""Desk organism: per-symbol machine, book_pre, shadow always, send only gated."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+
+from capitalizator.book.reconstruct import Book
+from capitalizator.desk.loop import DeskLoop
+from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.product import mark_hello
+from capitalizator.ops.vault import init_vault
+from capitalizator.recorder.rest_snapshot import BookSnapshot
+from capitalizator.memory.registry import Touch
+from capitalizator.types import MarketEvent
+from capitalizator.zones.model import Bar, Zone
+
+TICK = Decimal("0.1")
+CREATED = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+WINDOW = datetime(2026, 8, 31, 14, 10, tzinfo=UTC)
+ZONE = Zone.create(
+    symbol="BTCUSDT",
+    tf="15m",
+    side="support",
+    lo=Decimal("100"),
+    hi=Decimal("101"),
+    method="prior_day_hl",
+    created_as_of=CREATED,
+)
+ETH_ZONE = Zone.create(
+    symbol="ETHUSDT",
+    tf="15m",
+    side="support",
+    lo=Decimal("100"),
+    hi=Decimal("101"),
+    method="prior_day_hl",
+    created_as_of=CREATED,
+)
+
+
+def _trade(ts: datetime, symbol: str = "BTCUSDT") -> MarketEvent:
+    return MarketEvent(
+        stream="trades",
+        exchange="bybit",
+        symbol=symbol,
+        exchange_ts=ts,
+        recv_ts=ts,
+        payload={"px": "100.5", "qty": "1", "side": "sell"},
+    )
+
+
+def _book() -> Book:
+    book = Book(tick_size="0.1")
+    book.apply_snapshot(
+        BookSnapshot(
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW,
+            seq=1,
+            bids=(("100.4", "20"),),
+            asks=(("100.6", "20"),),
+        )
+    )
+    return book
+
+
+def _bar(ts: datetime, symbol: str = "BTCUSDT") -> Bar:
+    return Bar(
+        symbol=symbol,
+        tf="15m",
+        open_ts=ts - timedelta(minutes=15),
+        close_ts=ts,
+        open=Decimal("100.5"),
+        high=Decimal("101"),
+        low=Decimal("100.2"),
+        close=Decimal("100.6"),
+    )
+
+
+def test_symbols_are_independent(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.on_book("BTCUSDT", _book())
+    desk.on_book("ETHUSDT", _book())
+    desk.on_trade(_trade(WINDOW, "BTCUSDT"), [ZONE])
+    desk.on_trade(_trade(WINDOW, "ETHUSDT"), [ETH_ZONE])
+    assert desk.state_for("BTCUSDT").state == "ARM_ZLG"
+    assert desk.state_for("ETHUSDT").state == "ARM_ZLG"
+    desk.tick(WINDOW + timedelta(seconds=8))
+    assert desk.state_for("BTCUSDT").state == "LABEL_ZLG"
+    assert desk.state_for("ETHUSDT").state == "LABEL_ZLG"
+
+
+def test_book_pre_is_frozen_at_touch(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    book = _book()
+    desk.on_book("BTCUSDT", book)
+    desk.on_trade(_trade(WINDOW), [ZONE])
+    pre = desk.state_for("BTCUSDT").book_pre
+    assert pre is not None
+    book.apply_snapshot(
+        BookSnapshot(
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW,
+            seq=2,
+            bids=(("100.4", "1"),),
+            asks=(("100.6", "20"),),
+        )
+    )
+    assert pre.level("bid", "100.4") == Decimal("20")
+    assert book.level("bid", "100.4") == Decimal("1")
+
+
+def test_demo_window_enqueues_after_accord(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    mark_hello(vault, ok=True)
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="demo", tick_size=TICK)
+    desk.registry._zones[ZONE.zone_id] = ZONE
+    for i in range(20):
+        touch = replace(
+            Touch.create(
+                zone_id=ZONE.zone_id,
+                ts=CREATED + timedelta(seconds=i + 1),
+                trade_px=Decimal("100.5"),
+                trade_qty=Decimal("1"),
+            ),
+            outcome="bounce",
+            cav_label="REJECT",
+            gesture="DEFEND",
+            tape_eaten=False,
+            btc_regime="box",
+        )
+        desk.registry.touches.append(touch)
+    desk.on_book("BTCUSDT", _book())
+    desk.on_trade(_trade(WINDOW), [ZONE])
+    live = desk.state_for("BTCUSDT").last_touch
+    assert live is not None
+    desk.registry._patch(
+        touch_id=live.touch_id, overwrite=True, bearing_verdict="VERIFIED"
+    )
+    desk.tick(WINDOW + timedelta(seconds=8))
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    assert events
+    journal = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    assert journal is not None
+    if journal["jury"] == "ACCORD":
+        assert events[0]["sent"] is True
+        assert desk.knowledge.pending_intents()
+    else:
+        assert events[0]["sent"] is False
+
+
+def test_snapshot_event_applies_to_book(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW,
+            recv_ts=WINDOW,
+            seq=1,
+            payload={"bids": [["100.4", "20"]], "asks": [["100.6", "20"]]},
+        )
+    )
+    book = desk.state_for("BTCUSDT").book
+    assert book.ready is True
+    assert book.best() == (Decimal("100.4"), Decimal("100.6"))
+
+
+def test_book_diff_after_touch_is_zlg_defend(tmp_path: Path) -> None:
+    """§6.4 / wave 3: tape book_diff must become BookAdd. Else VPS ZLG is always SILENCE."""
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW,
+            recv_ts=WINDOW,
+            seq=1,
+            payload={"bids": [["100.4", "20"]], "asks": [["100.6", "20"]]},
+        )
+    )
+    desk.on_event(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW,
+            recv_ts=WINDOW,
+            payload={"px": "100.4", "qty": "1", "side": "sell"},
+        ),
+        [ZONE],
+    )
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW + timedelta(seconds=1),
+            recv_ts=WINDOW + timedelta(seconds=1),
+            seq=2,
+            payload={"bids": [["100.4", "25"]], "asks": []},
+        )
+    )
+    events = desk.tick(WINDOW + timedelta(seconds=8))
+    assert events
+    assert events[0]["gesture"] == "DEFEND"
+    st = desk.state_for("BTCUSDT")
+    assert st.adds
+    assert st.adds[0].qty == Decimal("5")
+
+
+def test_btc_htf_close_writes_regime_bus(tmp_path: Path) -> None:
+    """§6.7: BTC loop writes BtcBus. Else alts never see regime and BtcVeto is dead."""
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    day = datetime(2026, 8, 30, tzinfo=UTC)
+    for hour, high, low, close in ((0, "10", "8", "9"), (4, "11", "8", "10"), (8, "20", "12", "19")):
+        desk.on_bar_close(
+            Bar(
+                symbol="BTCUSDT",
+                tf="4h",
+                open_ts=day.replace(hour=hour),
+                close_ts=day.replace(hour=hour + 4),
+                open=Decimal(close),
+                high=Decimal(high),
+                low=Decimal(low),
+                close=Decimal(close),
+            )
+        )
+    assert desk.btc.regime == "trend"

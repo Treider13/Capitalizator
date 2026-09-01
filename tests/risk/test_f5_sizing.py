@@ -25,12 +25,14 @@ def test_current_phase_is_not_f5() -> None:
 
 
 def test_f5_only_after_g4_and_main() -> None:
-    assert f5_target(equity_source="main", gate_f4=True) == F5_TARGET
+    assert f5_target(equity_source="main", gate_f4=True, ack=True) == F5_TARGET
     assert F5_TARGET == Decimal("0.012")
-    assert f5_target(equity_source="main", gate_f4=False) is None
-    assert f5_target(equity_source="micro_subaccount", gate_f4=True) is None
-    assert f5_target(equity_source="demo", gate_f4=True) is None
-    assert active_target(equity_source="main", gate_f4=True) == Decimal("0.012")
+    assert f5_target(equity_source="main", gate_f4=False, ack=True) is None
+    assert f5_target(equity_source="main", gate_f4=True, ack=False) is None
+    assert f5_target(equity_source="micro_subaccount", gate_f4=True, ack=True) is None
+    assert f5_target(equity_source="demo", gate_f4=True, ack=True) is None
+    assert active_target(equity_source="main", gate_f4=True, ack=True) == Decimal("0.012")
+    assert active_target(equity_source="main", gate_f4=True, ack=False) == F1_TARGET
 
 
 def test_yaml_cap_matches_module() -> None:
@@ -41,6 +43,6 @@ def test_yaml_cap_matches_module() -> None:
 
 def test_f5_does_not_write_phase() -> None:
     before = PHASE.read_text(encoding="utf-8")
-    f5_target(equity_source="main", gate_f4=True)
-    active_target(equity_source="main", gate_f4=True)
+    f5_target(equity_source="main", gate_f4=True, ack=True)
+    active_target(equity_source="main", gate_f4=True, ack=True)
     assert PHASE.read_text(encoding="utf-8") == before

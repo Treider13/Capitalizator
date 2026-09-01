@@ -68,16 +68,17 @@ def test_silence_when_add_below_gamma_q() -> None:
     assert _label(_add("bid", "100", "0.5")) == "SILENCE"
 
 
-def test_mid_equals_print_is_error() -> None:
-    with pytest.raises(ValueError, match="mid"):
-        _zlg().classify(
-            TOUCH,
-            [_add("bid", "100", "2")],
-            Q,
-            hit_side="bid",
-            mid=Decimal("100"),
-            opp_best=OPP,
-        )
+def test_mid_equals_print_is_silence() -> None:
+    got = _zlg().classify(
+        TOUCH,
+        [_add("bid", "100", "2")],
+        Q,
+        hit_side="bid",
+        mid=Decimal("100"),
+        opp_best=OPP,
+    )
+    assert got.gesture == "SILENCE"
+    assert got.a_same == Decimal("0")
 
 
 def test_add_before_print_ignored() -> None:

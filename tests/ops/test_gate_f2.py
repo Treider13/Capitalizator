@@ -22,4 +22,4 @@ def test_f2_fails_closed_today() -> None:
     assert checks["G2.6_redteam_ci"] is False
     assert checks["G2_breakout_off"] is True
     assert checks["G2_parsed_50"] is False
-    assert checks["G2_veto_not_in_propose"] is True
+    assert checks["G2_veto_in_propose"] is True

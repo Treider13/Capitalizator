@@ -30,8 +30,9 @@ def test_two_builds_same_ids() -> None:
     a = engine.build("BTCUSDT", t, bars)
     b = engine.build("BTCUSDT", t, bars)
     assert [z.zone_id for z in a] == [z.zone_id for z in b]
-    assert len(a) == 2
+    assert {z.method for z in a} >= {"prior_day_hl", "vp_hyp"}
     assert {z.side for z in a} == {"support", "resistance"}
+    assert len(a) >= 2
 
 
 def test_zone_id_is_blake2s_of_fields() -> None:

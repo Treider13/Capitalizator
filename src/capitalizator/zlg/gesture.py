@@ -58,11 +58,18 @@ class ZLG:
         hit_side: BookSide,
         mid: Decimal,
         opp_best: Decimal,
+        book_ready: bool = True,
     ) -> GestureResult:
         if q <= 0:
             raise ValueError("q must be > 0")
-        if mid == touch.trade_px:
-            raise ValueError("mid must differ from trade_px to split in/back")
+        if (not book_ready) or mid == touch.trade_px:
+            return GestureResult(
+                gesture="SILENCE",
+                a_same=Decimal("0"),
+                a_back=Decimal("0"),
+                a_in=Decimal("0"),
+                a_opp=Decimal("0"),
+            )
         t0 = require_utc(touch.ts)
         t1 = t0 + timedelta(seconds=self.config.zlg_window_s)
         a_same = a_back = a_in = a_opp = Decimal("0")

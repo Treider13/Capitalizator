@@ -251,8 +251,6 @@ def observe(
         if bid is None or ask is None:
             raise ValueError("observe needs both sides of the book")
         mid = (bid + ask) / 2
-        if mid == touch.trade_px:
-            raise ValueError("observe needs mid != trade_px")
         if touch.tape_eaten is None:
             reg.fill_tape(book=inp.book, trades=inp.trades, touch_id=tid)
         live = _row(reg, tid)

@@ -26,13 +26,29 @@ def book_topic(symbol: str, *, depth: int = BOOK_DEPTH) -> str:
     return f"orderbook.{depth}.{symbol}"
 
 
+def funding_topic(symbol: str) -> str:
+    return f"tickers.{symbol}"
+
+
 def subscribe_payload(symbol: str, stream: str) -> dict[str, Any]:
     if stream == "trades":
         args = [trade_topic(symbol)]
     elif stream == "book":
         args = [book_topic(symbol)]
+    elif stream in {"funding", "oi", "ticker"}:
+        args = [funding_topic(symbol)]
     else:
         raise ValueError(f"unknown stream {stream!r}")
+    return {"op": "subscribe", "args": args}
+
+
+def subscribe_many(symbols: list[str], streams: list[str]) -> dict[str, Any]:
+    """One multiplex subscribe for the desk universe. No keys."""
+    args: list[str] = []
+    for symbol in symbols:
+        for stream in streams:
+            payload = subscribe_payload(symbol, stream)
+            args.extend(payload["args"])
     return {"op": "subscribe", "args": args}
 
 

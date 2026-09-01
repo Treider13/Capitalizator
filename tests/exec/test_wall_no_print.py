@@ -1,4 +1,4 @@
-"""2.10.2 — wall without tape is not an entry when the flag is on."""
+"""2.10.2 — wall is a journal column. Product propose does not filter on it."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def _snap(**overrides: object) -> BounceSnapshot:
     return BounceSnapshot(**raw)  # type: ignore[arg-type]
 
 
-def test_wall_no_print_blocks_when_flag_on() -> None:
+def test_wall_is_journal_only_when_flag_on() -> None:
     strat = BounceStrategy(
         risk=RiskEngine(),
         halts=Halts(start_equity=Decimal("100000")),
@@ -50,11 +50,11 @@ def test_wall_no_print_blocks_when_flag_on() -> None:
         require_card=False,
         check_wall=True,
     )
-    assert strat.propose(_snap(wall_no_print=True)) is None
+    assert isinstance(strat.propose(_snap(wall_no_print=True)), Intent)
     assert isinstance(strat.propose(_snap(wall_no_print=False)), Intent)
 
 
-def test_unknown_wall_is_not_an_entry() -> None:
+def test_unknown_wall_is_still_an_intent() -> None:
     strat = BounceStrategy(
         risk=RiskEngine(),
         halts=Halts(start_equity=Decimal("100000")),
@@ -62,4 +62,4 @@ def test_unknown_wall_is_not_an_entry() -> None:
         require_card=False,
         check_wall=True,
     )
-    assert strat.propose(_snap()) is None
+    assert isinstance(strat.propose(_snap()), Intent)

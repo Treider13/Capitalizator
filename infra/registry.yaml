@@ -3,6 +3,8 @@ epsilon_ticks: 2
 bounce_away_ticks: 8
 working_tf: "15m"
 htf: "4h"
+htf_d1: "1d"
+mid_band_ticks: 2
 touch_pending_timeout_h: 6
 die_no_touch_h: 24
 zlg_window_s: 8

@@ -40,7 +40,7 @@ def test_naive_clock_is_rejected() -> None:
         FirstMinute().blocks(datetime(2026, 8, 31, 14, 15), CLOSE)
 
 
-def test_bounce_source_does_not_call_first_minute() -> None:
+def test_bounce_source_uses_first_minute() -> None:
     bounce = (SRC / "strategy_bounce.py").read_text(encoding="utf-8")
-    assert "FirstMinute" not in bounce
-    assert "first_minute" not in bounce
+    assert "FirstMinute" in bounce
+    assert "first_minute" in bounce

@@ -5,6 +5,8 @@ from capitalizator.jury.desk import (
     decide,
     rho_class_id,
     voices_for_bounce,
+    voices_for_breakout,
+    voices_for_failed_break,
 )
 from capitalizator.jury.weights import (
     channel_weight,
@@ -19,5 +21,7 @@ __all__ = [
     "rank_weight",
     "rho_class_id",
     "voices_for_bounce",
+    "voices_for_breakout",
+    "voices_for_failed_break",
     "weight_opens_size",
 ]

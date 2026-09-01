@@ -89,3 +89,30 @@ def load_bearing_ok(card: CardDraft) -> bool:
     if not bearing:
         return False
     return all(c.verdict == "VERIFIED" for c in bearing)
+
+
+def pending_card(
+    *,
+    thesis: str,
+    as_of: datetime,
+    card_id: str,
+    n_claims: int = 5,
+) -> CardDraft:
+    """5–7 pending claims. Verdict is never written by an LLM."""
+    if n_claims < 5 or n_claims > 7:
+        raise ValueError("card draft must have 5–7 claims")
+    when = require_utc(as_of)
+    claims = [
+        Claim(
+            type="pending",
+            subject=f"{card_id}:{index}",
+            value=f"pending-{index}",
+            as_of=when,
+            known_at=when,
+            horizon="8s",
+            load_bearing=index == 0,
+            verdict="pending",
+        )
+        for index in range(n_claims)
+    ]
+    return CardDraft(thesis=thesis, claims=claims)

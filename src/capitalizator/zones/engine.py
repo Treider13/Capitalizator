@@ -35,7 +35,11 @@ class ZoneEngine:
         visible.sort(key=lambda b: b.close_ts)
         out: list[Zone] = []
         out.extend(self._prior_day(symbol, when, visible))
+        out.extend(self._prior_session(symbol, when, visible))
         out.extend(self._swings(symbol, visible))
+        out.extend(self._rounds(symbol, when, visible))
+        out.extend(self._cluster(symbol, visible))
+        out.extend(self._vp_hyp(symbol, when, visible))
         out.sort(key=lambda z: (z.created_as_of, z.method, z.side, z.lo))
         return out
 
@@ -97,6 +101,124 @@ class ZoneEngine:
         if last_res is not None:
             out.append(last_res)
         return out
+
+    def _prior_session(self, symbol: str, t: datetime, visible: list[Bar]) -> list[Zone]:
+        """Previous Moscow desk window 13:30–16:30 UTC. No future bars."""
+        from datetime import time
+        from zoneinfo import ZoneInfo
+
+        msk = ZoneInfo("Europe/Moscow")
+        local = t.astimezone(msk)
+        start = datetime.combine(local.date(), time(16, 30), tzinfo=msk)
+        if local.timetz().replace(tzinfo=None) < time(16, 30):
+            start = start - timedelta(days=1)
+        prev_start = start - timedelta(days=1)
+        prev_end = prev_start + timedelta(hours=3)
+        session = [
+            b
+            for b in visible
+            if prev_start <= b.close_ts.astimezone(msk) < prev_end
+        ]
+        if not session:
+            return []
+        high = max(b.high for b in session)
+        low = min(b.low for b in session)
+        created = prev_end.astimezone(UTC)
+        if created >= t:
+            return []
+        return [
+            self._zone(
+                symbol, "1d", "support", *self._band(low, "support"), "prior_session_hl", created
+            ),
+            self._zone(
+                symbol,
+                "1d",
+                "resistance",
+                *self._band(high, "resistance"),
+                "prior_session_hl",
+                created,
+            ),
+        ]
+
+    def _rounds(self, symbol: str, t: datetime, visible: list[Bar]) -> list[Zone]:
+        work = [b for b in visible if b.tf == self.config.working_tf]
+        if not work:
+            return []
+        last = work[-1]
+        raw = last.close
+        step = Decimal("1") if raw >= 100 else Decimal("0.1")
+        level = (raw / step).to_integral_value() * step
+        created = last.close_ts
+        if created >= t:
+            return []
+        return [
+            self._zone(
+                symbol, last.tf, "support", *self._band(level, "support"), "round", created
+            ),
+            self._zone(
+                symbol,
+                last.tf,
+                "resistance",
+                *self._band(level, "resistance"),
+                "round",
+                created,
+            ),
+        ]
+
+    def _cluster(self, symbol: str, visible: list[Bar]) -> list[Zone]:
+        work = [b for b in visible if b.tf == self.config.working_tf]
+        if len(work) < 5:
+            return []
+        window = work[-8:]
+        lows = sorted(b.low for b in window)
+        highs = sorted(b.high for b in window)
+        lo = lows[len(lows) // 2]
+        hi = highs[len(highs) // 2]
+        created = window[-1].close_ts
+        width = self.tick_size * self.config.epsilon_ticks
+        if hi - lo > width * 20:
+            return []
+        return [
+            self._zone(
+                symbol,
+                window[-1].tf,
+                "support",
+                lo,
+                lo + width,
+                "cluster_edge",
+                created,
+            ),
+            self._zone(
+                symbol,
+                window[-1].tf,
+                "resistance",
+                hi - width,
+                hi,
+                "cluster_edge",
+                created,
+            ),
+        ]
+
+    def _vp_hyp(self, symbol: str, t: datetime, visible: list[Bar]) -> list[Zone]:
+        day = [b for b in visible if b.close_ts.date() == (t.date() - timedelta(days=1))]
+        if not day:
+            return []
+        vol = [b.volume if b.volume and b.volume > 0 else Decimal("1") for b in day]
+        total = sum(vol, Decimal("0"))
+        if total <= 0:
+            return []
+        typical = sum(((b.high + b.low + b.close) / 3) * v for b, v in zip(day, vol, strict=True))
+        poc = typical / total
+        created = datetime(t.year, t.month, t.day, tzinfo=UTC)
+        if created >= t:
+            return []
+        width = self.tick_size * self.config.epsilon_ticks
+        return [
+            self._zone(symbol, "1d", "support", poc, poc + width, "vp_hyp", created),
+            self._zone(
+                symbol, "1d", "resistance", poc - width, poc, "vp_hyp", created
+            ),
+        ]
 
     def _zone(
         self,
