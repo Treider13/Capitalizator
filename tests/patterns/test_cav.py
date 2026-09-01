@@ -999,6 +999,59 @@ def test_gap_into_current_does_not_borrow_old_atr() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
 
 
+def test_eth_gap_stays_drift_when_later_btc_hides_the_jump() -> None:
+    """15 ETH at 130 + later BTC at current open. Counting every symbol would COMPRESS."""
+    eth_zone = Zone.create(
+        symbol="ETHUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    closed = []
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="ETHUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("130"),
+                high=Decimal("131"),
+                low=Decimal("129"),
+                close=Decimal("130"),
+            )
+        )
+    btc = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("100.10"),
+        high=Decimal("100.15"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+    )
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.10"),
+        high=Decimal("100.15"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+    )
+    assert closed[-1].close_ts < btc.close_ts < eth.close_ts
+    assert abs(eth.open - closed[-1].close) / closed[-1].close > Decimal("0.15")
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=closed + [btc]) == "DRIFT"
+
+
 def test_gap_into_current_stays_drift_when_later_eth_hides_the_jump() -> None:
     """15 BTC at 130 + later ETH at current open. Mixed last-prior has no jump → COMPRESS."""
     closed = []
@@ -1499,6 +1552,36 @@ def test_through_does_not_go_noise_when_last_two_would_be_illiquid_only_via_eth_
     assert label(ZONE, bar, t=T, htf_bias="box") == "THROUGH"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "THROUGH"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "THROUGH"
+
+
+def test_through_does_not_go_noise_when_last_two_would_be_illiquid_only_via_1h_zero() -> None:
+    """15m vol=1 + 1h vol=0 closing after it + through vol=0. Mixed last-2 is ILLIQUID → NOISE."""
+    neighbor = _hist(0, volume=Decimal("1"))
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("99.8"),
+        high=Decimal("100.1"),
+        low=Decimal("99.5"),
+        close=Decimal("99.8"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < hourly.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "THROUGH"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor, hourly]) == "THROUGH"
 
 
 def test_missing_volume_is_not_illiquid() -> None:

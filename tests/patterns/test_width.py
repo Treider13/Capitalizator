@@ -650,6 +650,49 @@ def test_fourteen_hourly_and_one_15m_do_not_make_width() -> None:
     assert width_now_from_history(hourly, fourteen + [foreign], t=NOW) is None
 
 
+def test_fifteen_eth_lose_width_when_later_btc_hides_a_real_jump() -> None:
+    """15 ETH at 130 + later BTC at current open. Counting every symbol keeps ATR."""
+    fifteen = []
+    for i in range(15):
+        ts = T0 + timedelta(minutes=15 * i)
+        fifteen.append(
+            Bar(
+                symbol="ETHUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("130"),
+                high=Decimal("131"),
+                low=Decimal("129"),
+                close=Decimal("130"),
+            )
+        )
+    btc = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 20),
+        close_ts=T0 + timedelta(minutes=15 * 21),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert fifteen[-1].close_ts < btc.close_ts < eth.close_ts
+    assert abs(eth.open - fifteen[-1].close) / fifteen[-1].close > Decimal("0.15")
+    assert width_now_from_history(eth, fifteen, t=NOW) is None
+    assert width_now_from_history(eth, fifteen + [btc], t=NOW) is None
+
+
 def test_fifteen_btc_lose_width_when_later_eth_hides_a_real_jump() -> None:
     """15 BTC at 130 + later ETH at current open. Mixed last-prior has no jump and journals width."""
     fifteen = [_bar(i, open_="130", close="130", high="131", low="129") for i in range(15)]
