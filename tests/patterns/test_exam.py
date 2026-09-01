@@ -103,6 +103,16 @@ def test_residual_median_is_not_the_mean() -> None:
     assert sum((Decimal("1"), Decimal("2"), Decimal("10"))) / Decimal("3") != Decimal("2")
 
 
+def test_last_price_beat_uses_the_whole_sample() -> None:
+    """Last-2 of beat,miss,beat is 1/2. The sample is 2/3."""
+    rows = [
+        ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("11")),
+        ExamCase(pred=Decimal("9"), last=Decimal("10"), actual=Decimal("11")),
+        ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("11")),
+    ]
+    assert hostile_exam(rows).beat_last_price == Decimal("2") / Decimal("3")
+
+
 def test_last_price_tie_stays_in_the_beat_denominator() -> None:
     """One beat + one equal error is 1/2. Dropping ties from n would report 1."""
     rows = [
