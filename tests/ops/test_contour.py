@@ -488,3 +488,45 @@ def test_observe_unknown_btc_does_not_freeze_jury() -> None:
     second = observe(reg, _observe_in(), contour_on=True)
     assert second[0].btc_regime == "box"
     assert second[0].jury == "SILENCE"
+
+
+def test_observe_btc_retry_ignores_centered_book() -> None:
+    """Tape/ZLG already written. A later book with mid == print must still stamp BTC."""
+    reg = _reg()
+    pending = ObserveIn(
+        book=_book(),
+        trades=[_trade(PRINT, qty="1", side="sell")],
+        adds=[
+            BookAdd(
+                ts=PRINT + timedelta(seconds=1),
+                side="bid",
+                px=Decimal("100"),
+                qty=Decimal("2"),
+            )
+        ],
+        cav_bar=_bar(),
+        htf_bias="unknown",
+    )
+    assert observe(reg, pending, contour_on=True)[0].jury is None
+    centered = Book(tick_size="0.1")
+    centered.apply_snapshot(
+        BookSnapshot(
+            symbol="BTCUSDT",
+            exchange_ts=PRINT,
+            seq=1,
+            bids=(("100.0", "10"),),
+            asks=(("100.2", "1"),),
+        )
+    )
+    later = ObserveIn(
+        book=centered,
+        trades=[],
+        adds=[],
+        cav_bar=_bar(),
+        htf_bias="box",
+    )
+    stamped = observe(reg, later, contour_on=True)
+    assert stamped[0].btc_regime == "box"
+    assert stamped[0].jury == "SILENCE"
+    assert stamped[0].tape_eaten is False
+    assert stamped[0].gesture == "DEFEND"

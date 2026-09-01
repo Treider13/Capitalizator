@@ -211,8 +211,9 @@ def observe(
 
     One ObserveIn is one book / one bar. Several unlabeled touches without
     touch_id is an error — we do not paint a later print with an earlier book.
-    A bar of another symbol is an error. mid == print is an error before
-    any fill — ZLG cannot split in/back, and we must not leave a half-card.
+    A bar of another symbol is an error before any fill. mid == print is
+    an error only when tape or ZLG is still empty — a BTC-only retry must
+    not freeze the card if the book has since centered on the print.
     Missing BTC does not stamp jury.
     n_cav / n_zlg count only the same symbol — ETH history does not unlock BTC.
     """
@@ -221,33 +222,34 @@ def observe(
     touch = _pick_touch(reg, touch_id)
     if touch is None:
         return []
-    if not inp.book.ready:
-        raise ValueError("observe needs a ready book")
-    bid, ask = inp.book.best()
-    if bid is None or ask is None:
-        raise ValueError("observe needs both sides of the book")
-    mid = (bid + ask) / 2
     tid = touch.touch_id
     zone = reg.zone(touch.zone_id)
-    if inp.cav_bar.symbol != zone.symbol:
+    if touch.cav_label is None and inp.cav_bar.symbol != zone.symbol:
         raise ValueError(f"observe bar {inp.cav_bar.symbol} is not zone {zone.symbol}")
-    if mid == touch.trade_px:
-        raise ValueError("observe needs mid != trade_px")
-    if touch.tape_eaten is None:
-        reg.fill_tape(book=inp.book, trades=inp.trades, touch_id=tid)
-    live = _row(reg, tid)
-    if live.gesture is None:
-        hit_side = "bid" if zone.side == "support" else "ask"
-        opp_best = ask if hit_side == "bid" else bid
-        result = ZLG(tick_size=reg.tick_size, config=reg.config).classify(
-            live,
-            inp.adds,
-            live.trade_qty,
-            hit_side=hit_side,
-            mid=mid,
-            opp_best=opp_best,
-        )
-        reg.fill_gesture(gesture=result.gesture, touch_id=tid)
+    if touch.tape_eaten is None or touch.gesture is None:
+        if not inp.book.ready:
+            raise ValueError("observe needs a ready book")
+        bid, ask = inp.book.best()
+        if bid is None or ask is None:
+            raise ValueError("observe needs both sides of the book")
+        mid = (bid + ask) / 2
+        if mid == touch.trade_px:
+            raise ValueError("observe needs mid != trade_px")
+        if touch.tape_eaten is None:
+            reg.fill_tape(book=inp.book, trades=inp.trades, touch_id=tid)
+        live = _row(reg, tid)
+        if live.gesture is None:
+            hit_side = "bid" if zone.side == "support" else "ask"
+            opp_best = ask if hit_side == "bid" else bid
+            result = ZLG(tick_size=reg.tick_size, config=reg.config).classify(
+                live,
+                inp.adds,
+                live.trade_qty,
+                hit_side=hit_side,
+                mid=mid,
+                opp_best=opp_best,
+            )
+            reg.fill_gesture(gesture=result.gesture, touch_id=tid)
     live = _row(reg, tid)
     if live.cav_label is None:
         cav = cav_label(
