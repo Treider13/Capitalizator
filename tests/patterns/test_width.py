@@ -404,6 +404,17 @@ def test_labeled_bar_in_history_does_not_complete_width() -> None:
     assert width_now_from_history(bar, fourteen + [bar], t=NOW) is None
 
 
+def test_same_close_ts_twin_does_not_complete_width() -> None:
+    """A different bar with the same close_ts is not a prior. `is bar` would leak ATR."""
+    fourteen = [_bar(i) for i in range(14)]
+    bar = _bar(20, high="100.2", low="100.1")
+    twin = _bar(20, high="102", low="100")
+    assert twin.close_ts == bar.close_ts
+    assert twin is not bar
+    assert atr(fourteen + [twin]) == Decimal("2")
+    assert width_now_from_history(bar, fourteen + [twin], t=NOW) is None
+
+
 def test_foreign_symbol_history_does_not_make_width() -> None:
     hist = []
     for i in range(15):

@@ -87,6 +87,25 @@ def test_htf_against_is_noise() -> None:
     assert label(ZONE, bar, t=T, htf_bias="short") == "NOISE"
 
 
+def test_htf_against_through_is_noise() -> None:
+    """HTF is not only a REJECT gate. A through-bar against the bounce side is still NOISE."""
+    bar = _bar(low="99.5", high="100.1", close="99.8")
+    assert label(ZONE, bar, t=T, htf_bias="box") == "THROUGH"
+    assert label(ZONE, bar, t=T, htf_bias="short") == "NOISE"
+
+
+def test_htf_against_compress_is_noise() -> None:
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
+    assert label(ZONE, bar, t=T, htf_bias="short", closed_bars=_atr15()) == "NOISE"
+
+
+def test_htf_with_us_still_compresses() -> None:
+    """Support bounce is long. `htf != box` would NOISE a same-side HTF."""
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert label(ZONE, bar, t=T, htf_bias="long", closed_bars=_atr15()) == "COMPRESS"
+
+
 def test_mid_range_miss_is_noise() -> None:
     bar = _bar(low="110", high="111", close="110.5")
     assert label(ZONE, bar, t=T, htf_bias="box") == "NOISE"
@@ -119,6 +138,41 @@ def test_labeled_bar_in_history_does_not_complete_atr() -> None:
     bar = _bar(low="100.05", high="100.15", close="100.10")
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed + [bar]) == "DRIFT"
+
+
+def test_same_close_ts_twin_does_not_complete_atr() -> None:
+    """A different object with the same close_ts is not a prior. `is current` would leak ATR."""
+    closed = []
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    for i in range(14):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    twin = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=bar.open_ts,
+        close_ts=bar.close_ts,
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    assert twin.close_ts == bar.close_ts
+    assert twin is not bar
+    assert atr(closed + [twin]) == Decimal("2")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed + [twin]) == "DRIFT"
 
 
 def test_reversed_history_still_compresses() -> None:
