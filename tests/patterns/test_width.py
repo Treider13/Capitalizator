@@ -433,6 +433,13 @@ def test_other_zone_is_not_a_prior() -> None:
     assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) is None
 
 
+def test_z1_history_does_not_rank_z2() -> None:
+    """Hardcoded `zone_id==z1` would unlock rank on a z2 query. Filter is the requested zone."""
+    hist = [_sample(i, "1") for i in range(20)]
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) == Decimal("1")
+    assert width_rank(zone_id="z2", now=NOW, w_now=Decimal("2"), history=hist) is None
+
+
 def test_future_sample_is_invisible() -> None:
     hist = [_sample(i, "1") for i in range(20)]
     cut = T0 + timedelta(minutes=19)
