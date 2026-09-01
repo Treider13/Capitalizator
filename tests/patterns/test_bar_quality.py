@@ -181,6 +181,34 @@ def test_three_btc_and_one_eth_do_not_stagnate() -> None:
     assert classify_bar_quality([_bar(i, close="100") for i in range(4)], current, t=T) == STAGNANT
 
 
+def test_stagnant_last_five_ignores_foreign_symbol_different_close() -> None:
+    """4 same BTC + ETH 200 + current 100. Mixed last-5 is broken. Same-series last-5 is STAGNANT."""
+    hist = [_bar(i, close="100") for i in range(4)] + [_bar(4, close="200", symbol="ETHUSDT")]
+    current = _bar(5, close="100")
+    assert classify_bar_quality(hist[:4], current, t=T) == STAGNANT
+    assert classify_bar_quality(hist, current, t=T) == STAGNANT
+
+
+def test_stagnant_last_five_ignores_foreign_tf_different_close() -> None:
+    """4 same 15m + 1h 200 between them and current. Mixed last-5 is broken. Same-tf last-5 is STAGNANT."""
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 13, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 20, tzinfo=UTC),
+        open=Decimal("200"),
+        high=Decimal("201"),
+        low=Decimal("199"),
+        close=Decimal("200"),
+    )
+    hist = [_bar(i, close="100") for i in range(4)] + [hourly]
+    current = _bar(5, close="100")
+    assert hourly.close_ts < current.close_ts
+    assert _bar(3, close="100").close_ts < hourly.close_ts
+    assert classify_bar_quality(hist[:4], current, t=T) == STAGNANT
+    assert classify_bar_quality(hist, current, t=T) == STAGNANT
+
+
 def test_three_15m_and_one_1h_do_not_stagnate() -> None:
     """3 same 15m + 1h + current is 5 prints. Counting every tf would STAGNANT."""
     hourly = Bar(
@@ -810,6 +838,47 @@ def test_14pct_into_current_keeps_segment() -> None:
     assert len(last_gap_segment(priors, current, t=T)) == 15
 
 
+def test_foreign_symbol_last_in_time_does_not_fake_a_jump_into_current() -> None:
+    """15 BTC at 101 + later ETH at 80. Mixed last-prior is a >15% jump. Same-series last is not."""
+    priors = [_bar(i, close="101", open_="101") for i in range(15)]
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 50, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    current = _bar(17, close="101", open_="101")
+    assert priors[-1].close_ts < eth.close_ts < current.close_ts
+    assert abs(current.open - eth.close) / eth.close > JUMP_RATIO_15M
+    assert abs(current.open - priors[-1].close) / priors[-1].close < JUMP_RATIO_15M
+    assert last_gap_segment(priors, current, t=T) == priors
+    assert last_gap_segment(priors + [eth], current, t=T) == priors
+
+
+def test_foreign_tf_last_in_time_does_not_fake_a_jump_into_current() -> None:
+    """15 15m at 101 + later 1h at 80. Mixed last-prior is a >15% jump. Same-tf last is not."""
+    priors = [_bar(i, close="101", open_="101") for i in range(15)]
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 50, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 10, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    current = _bar(17, close="101", open_="101")
+    assert priors[-1].close_ts < hourly.close_ts < current.close_ts
+    assert abs(current.open - hourly.close) / hourly.close > JUMP_RATIO_15M
+    assert last_gap_segment(priors, current, t=T) == priors
+    assert last_gap_segment(priors + [hourly], current, t=T) == priors
+
+
 def test_exact_15pct_into_current_keeps_segment() -> None:
     """Jump is strict >15%. Equality into the labeled bar must not empty ATR."""
     priors = [_bar(i, close="100", open_="100") for i in range(15)]
@@ -915,6 +984,47 @@ def test_other_symbol_zero_volume_is_not_illiquid() -> None:
     current = _bar(1, close="101", volume=Decimal("0"))
     assert prior_same_tf(hist, current, t=T) == []
     assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
+def test_illiquid_last_two_does_not_use_foreign_symbol_zero_as_neighbor() -> None:
+    """15m BTC vol=1 + 15m ETH vol=0 + current 15m BTC vol=0. Mixed last-2 is two zeros."""
+    hist = [
+        _bar(0, close="100", volume=Decimal("1")),
+        _bar(1, close="100", symbol="ETHUSDT", volume=Decimal("0")),
+    ]
+    current = _bar(2, close="101", volume=Decimal("0"))
+    assert classify_bar_quality([hist[0]], current, t=T) == LIVE
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+    assert classify_bar_quality(
+        [_bar(1, close="100", volume=Decimal("0"))],
+        current,
+        t=T,
+    ) == ILLIQUID
+
+
+def test_illiquid_last_two_does_not_use_foreign_tf_zero_as_neighbor() -> None:
+    """15m vol=1 + 1h vol=0 closing after it + current 15m vol=0. Mixed last-2 is two zeros."""
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 12, 10, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 20, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+        volume=Decimal("0"),
+    )
+    hist = [_bar(0, close="100", volume=Decimal("1")), hourly]
+    current = _bar(2, close="101", volume=Decimal("0"))
+    assert _bar(0).close_ts < hourly.close_ts < current.close_ts
+    assert classify_bar_quality([hist[0]], current, t=T) == LIVE
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+    assert classify_bar_quality(
+        [_bar(1, close="100", volume=Decimal("0"))],
+        current,
+        t=T,
+    ) == ILLIQUID
 
 
 def test_btc_zero_volume_does_not_illiquid_an_eth_bar() -> None:

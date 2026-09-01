@@ -296,6 +296,26 @@ def test_fourteen_btc_and_one_eth_do_not_compress() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed + [eth]) == "DRIFT"
 
 
+def test_fifteen_btc_still_compress_when_later_eth_looks_like_a_jump() -> None:
+    """15 BTC + later ETH at 80. Mixed last-prior jumps into current and empties ATR → DRIFT."""
+    closed = _atr15()
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert closed[-1].close_ts < eth.close_ts < bar.close_ts
+    assert abs(bar.open - eth.close) / eth.close > Decimal("0.15")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed + [eth]) == "COMPRESS"
+
+
 def test_fourteen_15m_and_one_1h_do_not_compress() -> None:
     """14 15m + 1h is 15 bars. Counting every tf would COMPRESS (or split_on_gaps raise)."""
     closed = _atr15()[:14]
@@ -856,6 +876,66 @@ def test_hourly_zero_volume_does_not_make_reject_noise() -> None:
     assert hourly[0].close_ts < bar.close_ts
     assert prior_same_tf(hourly, bar, t=T) == []
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=hourly) == "REJECT"
+
+
+def test_reject_does_not_go_noise_when_last_two_would_be_illiquid_only_via_eth_zero() -> None:
+    """15m BTC vol=1 + 15m ETH vol=0 + reject vol=0. Mixed last-2 is ILLIQUID → NOISE."""
+    neighbor = _hist(0, volume=Decimal("1"))
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "REJECT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "REJECT"
+
+
+def test_reject_does_not_go_noise_when_last_two_would_be_illiquid_only_via_1h_zero() -> None:
+    """15m vol=1 + 1h vol=0 closing after it + reject vol=0. Mixed last-2 is ILLIQUID → NOISE."""
+    neighbor = _hist(0, volume=Decimal("1"))
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < hourly.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "REJECT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor, hourly]) == "REJECT"
 
 
 def test_15m_zero_volume_does_not_noise_a_1h_reject() -> None:

@@ -563,6 +563,45 @@ def test_fourteen_15m_and_one_1h_do_not_make_width() -> None:
     assert width_now_from_history(bar, fourteen + [hourly], t=NOW) is None
 
 
+def test_fourteen_btc_and_one_eth_do_not_make_width() -> None:
+    """14 BTC + 1 ETH is 15 bars. Counting every symbol would journal width (or atr() raise)."""
+    fourteen = [_bar(i) for i in range(14)]
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    bar = _bar(20, high="100.2", low="100.1")
+    assert eth.close_ts < bar.close_ts
+    assert width_now_from_history(bar, fourteen, t=NOW) is None
+    assert width_now_from_history(bar, fourteen + [eth], t=NOW) is None
+
+
+def test_fifteen_btc_keep_width_when_later_eth_looks_like_a_jump() -> None:
+    """15 BTC + later ETH at 80. Mixed last-prior jumps into current and empties ATR."""
+    fifteen = [_bar(i) for i in range(15)]
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    bar = _bar(20, high="100.2", low="100.1")
+    assert fifteen[-1].close_ts < eth.close_ts < bar.close_ts
+    assert abs(bar.open - eth.close) / eth.close > Decimal("0.15")
+    assert width_now_from_history(bar, fifteen, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert width_now_from_history(bar, fifteen + [eth], t=NOW) == Decimal("0.1") / Decimal("2")
+
+
 def test_foreign_symbol_history_does_not_make_width() -> None:
     hist = []
     for i in range(15):
