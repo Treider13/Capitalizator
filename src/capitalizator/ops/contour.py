@@ -205,7 +205,8 @@ def observe(
 
     One ObserveIn is one book / one bar. Several unlabeled touches without
     touch_id is an error — we do not paint a later print with an earlier book.
-    A bar of another symbol is an error before any fill. A tape print of
+    A bar of another symbol or tf is an error before any fill — CAV NOISE
+    would freeze the first fact. A tape print of
     another symbol is the same error while tape is still empty. A gap of
     another symbol is not a print — skip it. Naive
     news_known_at is an error before any fill while BTC is still empty —
@@ -225,8 +226,13 @@ def observe(
         return []
     tid = touch.touch_id
     zone = reg.zone(touch.zone_id)
-    if touch.cav_label is None and inp.cav_bar.symbol != zone.symbol:
-        raise ValueError(f"observe bar {inp.cav_bar.symbol} is not zone {zone.symbol}")
+    if touch.cav_label is None and (
+        inp.cav_bar.symbol != zone.symbol or inp.cav_bar.tf != zone.tf
+    ):
+        raise ValueError(
+            f"observe bar {inp.cav_bar.symbol} {inp.cav_bar.tf} "
+            f"is not zone {zone.symbol} {zone.tf}"
+        )
     if touch.tape_eaten is None:
         for trade in inp.trades:
             if trade.stream != "trades":

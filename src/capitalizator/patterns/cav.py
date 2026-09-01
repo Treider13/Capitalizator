@@ -2,17 +2,27 @@
 
 INVENTION-JURY.md: REJECT / THROUGH / COMPRESS / DRIFT / NOISE.
 THROUGH and REJECT only after close_ts < t. Unclosed bar → NOISE.
+stagnant / illiquid K-line → NOISE. A jump gap is not NOISE; it only splits ATR.
 HTF against the bounce side → NOISE. Bar that does not touch the zone → NOISE.
-COMPRESS uses range < ATR of the last 14 closed bars (k=1, the unit in the formula).
+Wrong symbol or tf vs the zone → NOISE.
+COMPRESS uses range < mean TR of the last 14 steps after the last gap
+(needs 15 closed bars in that segment; k=1). A jump into the labeled bar
+starts a new segment — old ATR is not borrowed.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from decimal import Decimal
 from typing import Literal
 
+from capitalizator.patterns.bar_quality import (
+    ILLIQUID,
+    STAGNANT,
+    atr,
+    classify_bar_quality,
+    last_gap_segment,
+)
 from capitalizator.types import require_utc
 from capitalizator.zones.map import HtfBias
 from capitalizator.zones.model import Bar, Zone
@@ -24,19 +34,6 @@ def _touches(bar: Bar, zone: Zone) -> bool:
     if bar.symbol != zone.symbol:
         return False
     return bar.low <= zone.hi and bar.high >= zone.lo
-
-
-def _atr(bars: Sequence[Bar], n: int = 14) -> Decimal | None:
-    if len(bars) < n + 1:
-        return None
-    window = bars[-(n + 1) :]
-    total = Decimal("0")
-    prev = window[0]
-    for bar in window[1:]:
-        tr = max(bar.high - bar.low, abs(bar.high - prev.close), abs(bar.low - prev.close))
-        total += tr
-        prev = bar
-    return total / n
 
 
 def label(
@@ -51,7 +48,12 @@ def label(
     when = require_utc(t)
     if bar.close_ts >= when:
         return "NOISE"
+    if bar.symbol != zone.symbol or bar.tf != zone.tf:
+        return "NOISE"
     if not _touches(bar, zone):
+        return "NOISE"
+    quality = classify_bar_quality(closed_bars, bar, t=when)
+    if quality in {STAGNANT, ILLIQUID}:
         return "NOISE"
     bounce_side = "long" if zone.side == "support" else "short"
     if htf_bias not in {"unknown", "box"} and htf_bias != bounce_side:
@@ -71,14 +73,12 @@ def label(
         or (zone.side == "resistance" and bar.high > zone.hi)
     ):
         return "REJECT"
-    atr = _atr(
-        [
-            b
-            for b in closed_bars
-            if b.close_ts < when and b.tf == bar.tf and b.symbol == bar.symbol
-        ]
-    )
-    if atr is not None and (bar.high - bar.low) < atr and zone.lo <= bar.close <= zone.hi:
+    atr_value = atr(last_gap_segment(closed_bars, bar, t=when))
+    if (
+        atr_value is not None
+        and (bar.high - bar.low) < atr_value
+        and zone.lo <= bar.close <= zone.hi
+    ):
         return "COMPRESS"
     if zone.lo <= bar.close <= zone.hi:
         return "DRIFT"

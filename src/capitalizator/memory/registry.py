@@ -41,6 +41,13 @@ class Touch:
     cav_label: str | None = None
     jury: str | None = None
     rho_class_id: str | None = None
+    w_now: Decimal | None = None
+    w_rank: Decimal | None = None
+    bar_quality: str | None = None
+    session_hour: int | None = None
+
+    def __post_init__(self) -> None:
+        require_utc(self.ts)
 
     @classmethod
     def create(
@@ -225,6 +232,55 @@ class Registry:
             raise ValueError(f"unknown cav: {cav_label!r}")
         return self._patch(cav_label=cav_label, touch_id=touch_id)
 
+    def fill_width(
+        self,
+        *,
+        w_now: Decimal | None,
+        w_rank: Decimal | None,
+        touch_id: str | None = None,
+    ) -> list[Touch]:
+        """Journal only. Does not open size. Does not append the hash chain."""
+        if w_now is not None and w_now < 0:
+            raise ValueError("w_now must be >= 0")
+        if w_rank is not None and (w_rank < 0 or w_rank > 1):
+            raise ValueError("w_rank must be in [0, 1]")
+        if w_rank is not None and w_now is None:
+            raise ValueError("w_rank requires w_now")
+        return self._patch(
+            w_now=w_now,
+            w_rank=w_rank,
+            touch_id=touch_id,
+            overwrite=True,
+            require_touch_id=False,
+        )
+
+    def fill_bar_quality(self, *, quality: str, touch_id: str | None = None) -> list[Touch]:
+        """Journal only. live | stagnant | illiquid. Does not append the hash chain."""
+        if quality not in {"live", "stagnant", "illiquid"}:
+            raise ValueError(f"unknown bar_quality: {quality!r}")
+        return self._patch(
+            bar_quality=quality,
+            touch_id=touch_id,
+            overwrite=True,
+            require_touch_id=False,
+        )
+
+    def fill_session_hour(self, *, touch_id: str | None = None) -> list[Touch]:
+        """UTC hour of touch.ts. Journal only — never part of rho_class_id."""
+        changed: list[Touch] = []
+        next_rows: list[Touch] = []
+        for touch in self.touches:
+            if touch_id is not None and touch.touch_id != touch_id:
+                next_rows.append(touch)
+                continue
+            row = replace(touch, session_hour=require_utc(touch.ts).hour)
+            next_rows.append(row)
+            changed.append(row)
+        if touch_id is not None and not changed:
+            raise KeyError(touch_id)
+        self.touches = next_rows
+        return changed
+
     def stamp_jury(
         self,
         *,
@@ -273,9 +329,17 @@ class Registry:
         self.touches = next_rows
         return changed
 
-    def _patch(self, *, touch_id: str | None = None, **fields: object) -> list[Touch]:
-        """Write empty fields only. A later fill must not overwrite a fact."""
-        self._require_touch_id_if_many(touch_id, what="fill")
+    def _patch(
+        self,
+        *,
+        touch_id: str | None = None,
+        overwrite: bool = False,
+        require_touch_id: bool = True,
+        **fields: object,
+    ) -> list[Touch]:
+        """Voices: write empty keys only. Journal: overwrite=True may restamp every row."""
+        if require_touch_id:
+            self._require_touch_id_if_many(touch_id, what="fill")
         if touch_id is not None and not any(t.touch_id == touch_id for t in self.touches):
             raise KeyError(touch_id)
         changed: list[Touch] = []
@@ -284,10 +348,14 @@ class Registry:
             if touch_id is not None and touch.touch_id != touch_id:
                 next_rows.append(touch)
                 continue
-            if all(getattr(touch, key) is not None for key in fields):
-                next_rows.append(touch)
-                continue
-            row = replace(touch, **fields)
+            if overwrite:
+                row = replace(touch, **fields)
+            else:
+                write = {key: value for key, value in fields.items() if getattr(touch, key) is None}
+                if not write:
+                    next_rows.append(touch)
+                    continue
+                row = replace(touch, **write)
             next_rows.append(row)
             changed.append(row)
         self.touches = next_rows

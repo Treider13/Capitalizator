@@ -99,7 +99,7 @@ def _bar(*, close_ts: datetime | None = None) -> Bar:
     end = close_ts or datetime(2026, 8, 30, 16, 15, tzinfo=UTC)
     return Bar(
         symbol="BTCUSDT",
-        tf="15m",
+        tf="1d",
         open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
         close_ts=end,
         open=Decimal("100.1"),
@@ -596,6 +596,36 @@ def test_observe_refuses_other_symbol_bar() -> None:
     assert reg.touches[0].cav_label is None
 
 
+def test_observe_refuses_other_tf_bar() -> None:
+    """A 15m close is not the zone's 1d vote. CAV NOISE would freeze the first fact."""
+    reg = _reg()
+    base = _observe_in()
+    wrong = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+    )
+    inp = ObserveIn(
+        book=base.book,
+        trades=base.trades,
+        adds=base.adds,
+        cav_bar=wrong,
+        htf_bias=base.htf_bias,
+    )
+    with pytest.raises(ValueError, match="not zone"):
+        observe(reg, inp, contour_on=True)
+    row = reg.touches[0]
+    assert row.tape_eaten is None
+    assert row.gesture is None
+    assert row.cav_label is None
+    assert row.jury is None
+
+
 def test_observe_n_is_per_symbol() -> None:
     """20 ETH REJECT must not unlock CAV on the first BTC print."""
     reg = _reg()
@@ -845,7 +875,7 @@ def test_observe_foreign_trades_write_nothing() -> None:
     )
     eth_bar = Bar(
         symbol="ETHUSDT",
-        tf="15m",
+        tf="1d",
         open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
         close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
         open=Decimal("100.1"),
@@ -900,7 +930,7 @@ def test_observe_foreign_gap_does_not_freeze() -> None:
     )
     eth_bar = Bar(
         symbol="ETHUSDT",
-        tf="15m",
+        tf="1d",
         open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
         close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
         open=Decimal("100.1"),

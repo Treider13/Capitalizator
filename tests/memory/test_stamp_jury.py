@@ -125,6 +125,15 @@ def test_fill_does_not_overwrite_a_written_label() -> None:
     assert reg.touches[0].btc_regime == "box"
 
 
+def test_patch_does_not_overwrite_a_set_sibling() -> None:
+    """One empty field must not let a later _patch rewrite a written voice."""
+    reg = _reg()
+    reg.fill_cav(cav_label="REJECT")
+    changed = reg._patch(cav_label="THROUGH", gesture="DEFEND")
+    assert changed[0].cav_label == "REJECT"
+    assert changed[0].gesture == "DEFEND"
+
+
 def test_two_runs_same_jury() -> None:
     def run() -> tuple[str | None, str | None]:
         reg = _reg()
