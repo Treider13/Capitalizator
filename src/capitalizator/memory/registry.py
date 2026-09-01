@@ -156,12 +156,30 @@ class Registry:
             return replace(touch, outcome="die")
         return touch
 
-    def fill_tape(self, *, book: Book, trades: Sequence[MarketEvent]) -> list[Touch]:
-        """Set tape_eaten from book_pre + prints in the touch window. Does not open size."""
+    def fill_tape(
+        self,
+        *,
+        book: Book,
+        trades: Sequence[MarketEvent],
+        touch_id: str | None = None,
+    ) -> list[Touch]:
+        """Set tape_eaten from book_pre + prints in the touch window. Does not open size.
+
+        touch_id pins one row. One book must not paint another touch.
+        Several unlabeled rows without touch_id is an error.
+        """
+        if touch_id is not None and not any(t.touch_id == touch_id for t in self.touches):
+            raise KeyError(touch_id)
+        unlabeled = [t for t in self.touches if t.tape_eaten is None]
+        if touch_id is None and len(unlabeled) > 1:
+            raise ValueError("fill_tape needs touch_id when several touches lack tape")
         clf = TapeClassifier()
         changed: list[Touch] = []
         next_rows: list[Touch] = []
         for touch in self.touches:
+            if touch_id is not None and touch.touch_id != touch_id:
+                next_rows.append(touch)
+                continue
             if touch.tape_eaten is not None:
                 next_rows.append(touch)
                 continue

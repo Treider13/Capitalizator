@@ -164,3 +164,56 @@ def test_registry_fill_tape_is_deterministic() -> None:
 
     assert run() is True
     assert run() == run()
+
+
+def test_fill_tape_touch_id_leaves_other_unlabeled() -> None:
+    later = Zone.create(
+        symbol="BTCUSDT",
+        tf="1d",
+        side="support",
+        lo=Decimal("101"),
+        hi=Decimal("101.2"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
+    reg = Registry(tick_size=TICK)
+    first = reg.on_trade(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=PRINT,
+            recv_ts=PRINT,
+            seq=None,
+            payload={"px": "100.1", "qty": "6", "side": "sell"},
+        ),
+        [ZONE],
+    )
+    second = reg.on_trade(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=PRINT + timedelta(seconds=30),
+            recv_ts=PRINT + timedelta(seconds=30),
+            seq=None,
+            payload={"px": "101.1", "qty": "6", "side": "sell"},
+        ),
+        [ZONE, later],
+    )
+    assert len(first) == 1
+    assert len(second) == 1
+    with pytest.raises(ValueError, match="touch_id"):
+        reg.fill_tape(book=_book(bid_sz="10"), trades=[_sell("6")])
+    assert reg.touches[0].tape_eaten is None
+    assert reg.touches[1].tape_eaten is None
+    with pytest.raises(KeyError):
+        reg.fill_tape(book=_book(bid_sz="10"), trades=[_sell("6")], touch_id="missing")
+    changed = reg.fill_tape(
+        book=_book(bid_sz="10"),
+        trades=[_sell("6")],
+        touch_id=first[0].touch_id,
+    )
+    assert changed[0].tape_eaten is True
+    assert reg.touches[0].tape_eaten is True
+    assert reg.touches[1].tape_eaten is None

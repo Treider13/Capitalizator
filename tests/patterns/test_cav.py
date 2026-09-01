@@ -60,6 +60,21 @@ def test_mid_range_miss_is_noise() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box") == "NOISE"
 
 
+def test_other_symbol_bar_is_noise() -> None:
+    """Same prices on ETH do not vote on a BTC zone."""
+    bar = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+    )
+    assert label(ZONE, bar, t=T, htf_bias="box") == "NOISE"
+
+
 def test_close_inside_without_wick_beyond_is_drift() -> None:
     """INVENTION-JURY: in the zone, no reject, no close beyond → DRIFT."""
     bar = _bar(low="100.0", high="101.0", close="100.1")

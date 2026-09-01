@@ -252,3 +252,77 @@ def test_http_enable_after_hours24(tmp_path: Path) -> None:
         server.shutdown()
         server.server_close()
     assert trading_mode() == "off"
+
+
+def test_http_form_enable_redirects(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    _hours24_tape(vault.tape)
+    app = ConsoleApp(vault)
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request(
+            "POST",
+            "/contour",
+            body="action=on",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp = conn.getresponse()
+        assert resp.status == 303
+        assert resp.getheader("Location") == "/"
+        resp.read()
+        conn.close()
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("GET", "/")
+        page = conn.getresponse().read().decode()
+        assert "Контур включён" in page
+        assert "Включить контур" not in page
+        conn.close()
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request(
+            "POST",
+            "/contour",
+            body="action=off",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        bad = conn.getresponse()
+        assert bad.status == 400
+        assert bad.read() == b"bad-action"
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert trading_mode() == "off"
+
+
+def test_http_form_without_hours24_is_409_html(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    app = ConsoleApp(vault)
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request(
+            "POST",
+            "/contour",
+            body="action=on",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp = conn.getresponse()
+        assert resp.status == 409
+        page = resp.read().decode()
+        assert "text/html" in (resp.getheader("Content-Type") or "")
+        assert "Суток ленты нет" in page
+        assert "disabled" in page
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert trading_mode() == "off"

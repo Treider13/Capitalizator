@@ -139,7 +139,11 @@ def status(vault: Vault, *, symbol: str = "BTCUSDT") -> dict[str, Any]:
 
 
 def enable(vault: Vault, *, symbol: str = "BTCUSDT") -> dict[str, Any]:
-    """Human switch. Refuses unless hours24 is green. Does not change trading_mode."""
+    """Human switch. Refuses unless hours24 is green. Does not change trading_mode.
+
+    hours24 is checked again after the db is open, so a stale green snapshot
+    cannot write on if the tape went red in between.
+    """
     snap = status(vault, symbol=symbol)
     if snap["contour"] == "on":
         out = dict(snap)
@@ -147,25 +151,70 @@ def enable(vault: Vault, *, symbol: str = "BTCUSDT") -> dict[str, Any]:
         return out
     if not snap["hours24"]:
         raise ContourNotReady("hours24 red")
+    mode_before = snap["trading_mode"]
     knowledge = open_knowledge(vault, create=True)
     try:
+        if knowledge.meta(META_KEY) == "on":
+            return _ok_status(vault, symbol=symbol, mode_before=mode_before)
+        ok, _span = hours24(load_tape_events(vault, symbol=symbol), symbol=symbol)
+        if not ok:
+            raise ContourNotReady("hours24 red")
         knowledge.set_meta(META_KEY, "on")
     finally:
         knowledge.close()
-    if trading_mode() != snap["trading_mode"]:
+    return _ok_status(vault, symbol=symbol, mode_before=mode_before)
+
+
+def _ok_status(vault: Vault, *, symbol: str, mode_before: str) -> dict[str, Any]:
+    if trading_mode() != mode_before:
         raise RuntimeError("enable must not change trading_mode")
     out = status(vault, symbol=symbol)
     out["ok"] = True
     if out["contour"] != "on":
         raise RuntimeError("enable wrote nothing")
-    if out["trading_mode"] != snap["trading_mode"]:
+    if out["trading_mode"] != mode_before:
         raise RuntimeError("enable must not change trading_mode")
     return out
 
 
-def observe(reg: Registry, inp: ObserveIn, *, contour_on: bool) -> list[Touch]:
-    """Glue tape + CAV + ZLG + BTC + jury. No-op when contour is off. No size."""
+def _row(reg: Registry, touch_id: str) -> Touch:
+    for touch in reg.touches:
+        if touch.touch_id == touch_id:
+            return touch
+    raise KeyError(touch_id)
+
+
+def _pick_touch(reg: Registry, touch_id: str | None) -> Touch | None:
+    pending = [touch for touch in reg.touches if touch.jury is None]
+    if touch_id is not None:
+        if not any(touch.touch_id == touch_id for touch in reg.touches):
+            raise KeyError(touch_id)
+        for touch in pending:
+            if touch.touch_id == touch_id:
+                return touch
+        return None
+    if len(pending) > 1:
+        raise ValueError("observe needs touch_id when several touches lack jury")
+    return pending[0] if pending else None
+
+
+def observe(
+    reg: Registry,
+    inp: ObserveIn,
+    *,
+    contour_on: bool,
+    touch_id: str | None = None,
+) -> list[Touch]:
+    """Glue tape + CAV + ZLG + BTC + jury on **one** touch. No-op when off. No size.
+
+    One ObserveIn is one book / one bar. Several unlabeled touches without
+    touch_id is an error — we do not paint a later print with an earlier book.
+    A bar of another symbol is an error. Missing BTC does not stamp jury.
+    """
     if not contour_on:
+        return []
+    touch = _pick_touch(reg, touch_id)
+    if touch is None:
         return []
     if not inp.book.ready:
         raise ValueError("observe needs a ready book")
@@ -173,52 +222,61 @@ def observe(reg: Registry, inp: ObserveIn, *, contour_on: bool) -> list[Touch]:
     if bid is None or ask is None:
         raise ValueError("observe needs both sides of the book")
     mid = (bid + ask) / 2
-    zlg = ZLG(tick_size=reg.tick_size, config=reg.config)
-    btc = BtcRegime()
-    changed: list[Touch] = []
-    for touch in list(reg.touches):
-        if touch.jury is not None:
-            continue
-        zone = reg.zone(touch.zone_id)
-        if touch.tape_eaten is None:
-            reg.fill_tape(book=inp.book, trades=inp.trades)
-        if touch.gesture is None:
-            hit_side = "bid" if zone.side == "support" else "ask"
-            opp_best = ask if hit_side == "bid" else bid
-            result = zlg.classify(
-                touch,
-                inp.adds,
-                touch.trade_qty,
-                hit_side=hit_side,
-                mid=mid,
-                opp_best=opp_best,
-            )
-            reg.fill_gesture(gesture=result.gesture, touch_id=touch.touch_id)
-        if touch.cav_label is None:
-            cav = cav_label(
-                zone,
-                inp.cav_bar,
-                t=touch.ts,
-                htf_bias=inp.htf_bias,
-                closed_bars=inp.closed_bars,
-            )
-            reg.fill_cav(cav_label=cav, touch_id=touch.touch_id)
-        if touch.btc_regime is None:
-            regime = btc.classify(
-                touch.ts,
-                bars=inp.btc_bars,
-                htf_bias=inp.htf_bias,
-                news_known_at=inp.news_known_at,
-            )
-            if regime is not None:
-                reg.fill_btc(regime=regime, touch_id=touch.touch_id)
-        live = next(row for row in reg.touches if row.touch_id == touch.touch_id)
-        n_cav = sum(1 for row in reg.touches if row.cav_label == live.cav_label)
-        n_zlg = sum(1 for row in reg.touches if row.gesture == live.gesture)
-        stamped = reg.stamp_jury(
-            n_cav=n_cav,
-            n_zlg=n_zlg,
-            touch_id=touch.touch_id,
+    tid = touch.touch_id
+    zone = reg.zone(touch.zone_id)
+    if inp.cav_bar.symbol != zone.symbol:
+        raise ValueError(f"observe bar {inp.cav_bar.symbol} is not zone {zone.symbol}")
+    if touch.tape_eaten is None:
+        reg.fill_tape(book=inp.book, trades=inp.trades, touch_id=tid)
+    live = _row(reg, tid)
+    if live.gesture is None:
+        hit_side = "bid" if zone.side == "support" else "ask"
+        opp_best = ask if hit_side == "bid" else bid
+        result = ZLG(tick_size=reg.tick_size, config=reg.config).classify(
+            live,
+            inp.adds,
+            live.trade_qty,
+            hit_side=hit_side,
+            mid=mid,
+            opp_best=opp_best,
         )
-        changed.extend(stamped)
-    return changed
+        reg.fill_gesture(gesture=result.gesture, touch_id=tid)
+    live = _row(reg, tid)
+    if live.cav_label is None:
+        cav = cav_label(
+            zone,
+            inp.cav_bar,
+            t=live.ts,
+            htf_bias=inp.htf_bias,
+            closed_bars=inp.closed_bars,
+        )
+        reg.fill_cav(cav_label=cav, touch_id=tid)
+    live = _row(reg, tid)
+    if live.btc_regime is None:
+        regime = BtcRegime().classify(
+            live.ts,
+            bars=inp.btc_bars,
+            htf_bias=inp.htf_bias,
+            news_known_at=inp.news_known_at,
+        )
+        if regime is not None:
+            reg.fill_btc(regime=regime, touch_id=tid)
+    live = _row(reg, tid)
+    if live.btc_regime is None:
+        return [live]
+    n_cav = sum(1 for row in reg.touches if row.cav_label == live.cav_label)
+    n_zlg = sum(1 for row in reg.touches if row.gesture == live.gesture)
+    return reg.stamp_jury(n_cav=n_cav, n_zlg=n_zlg, touch_id=tid)
+
+
+def observe_if_on(
+    vault: Vault,
+    reg: Registry,
+    inp: ObserveIn,
+    *,
+    touch_id: str | None = None,
+) -> list[Touch]:
+    """Production glue. Reads the switch. A bool cannot bypass the button."""
+    if contour_state(vault) != "on":
+        return []
+    return observe(reg, inp, contour_on=True, touch_id=touch_id)
