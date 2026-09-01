@@ -15,6 +15,7 @@ from capitalizator.patterns.bar_quality import (
     atr,
     classify_bar_quality,
     last_gap_segment,
+    prior_same_tf,
     split_on_gaps,
 )
 from capitalizator.zones.model import Bar
@@ -205,9 +206,13 @@ def test_last_gap_segment_empty_when_current_jumps() -> None:
 
 
 def test_wrong_tf_is_not_a_stagnant_prior() -> None:
+    """4 same-symbol 1h closes before the 15m bar would be stagnant if tf filter dropped.
+
+    A same-day 12:00+hours fixture leaves only two hourly closes before _bar(10)=14:45.
+    """
     hist = []
     for i in range(4):
-        ts = datetime(2026, 8, 30, 12, 0, tzinfo=UTC) + timedelta(hours=i)
+        ts = datetime(2026, 8, 29, 0, 0, tzinfo=UTC) + timedelta(hours=i)
         hist.append(
             Bar(
                 symbol="BTCUSDT",
@@ -221,4 +226,6 @@ def test_wrong_tf_is_not_a_stagnant_prior() -> None:
             )
         )
     current = _bar(10, close="100")
+    assert sum(1 for b in hist if b.close_ts < current.close_ts) == 4
+    assert prior_same_tf(hist, current, t=T) == []
     assert classify_bar_quality(hist, current, t=T) == LIVE
