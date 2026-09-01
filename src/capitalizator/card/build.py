@@ -6,10 +6,13 @@ from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 
+from capitalizator.card.gex import OptionRow
+from capitalizator.card.labels import BLabels, compute_b_labels
 from capitalizator.card.live import CardLive, VolumeSnapshot
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.screener.universe import load_desk_universe
 from capitalizator.types import require_utc
+from capitalizator.zones.model import Bar
 
 IMMINENT_HOURS = 2
 
@@ -20,18 +23,27 @@ def from_news(
     now: datetime,
     calendar: tuple[NewsRow, ...],
     volume: VolumeSnapshot | None = None,
-    fib_zone: str = "OTE",
-    fib_level: str | None = "0.718",
-    rsi_htf: str | None = "52",
-    gex_bg: str | None = "+2.1M",
-    fvg_status: str = "filled",
-    sweep_status: str = "done",
+    bars: Sequence[Bar] | None = None,
+    option_chain: Sequence[OptionRow] | None = None,
+    fib_zone: str | None = None,
+    fib_level: str | None = None,
+    rsi_htf: str | None = None,
+    gex_bg: str | None = None,
+    fvg_status: str | None = None,
+    sweep_status: str | None = None,
+    ob_status: str | None = None,
+    bos_status: str | None = None,
     venue: str = "perp",
     universe: Sequence[str] | None = None,
     spot_acked: bool = False,
 ) -> CardLive:
     when = require_utc(now)
     vol = volume or VolumeSnapshot()
+    labels = (
+        compute_b_labels(bars, chain=option_chain)
+        if bars
+        else BLabels()
+    )
     names = frozenset(universe) if universe is not None else frozenset(load_desk_universe().symbols)
     hits = [
         row
@@ -142,18 +154,28 @@ def from_news(
         bearing_verdict=bearing,  # type: ignore[arg-type]
         known_at=when,
         macro_multiplier=macro,
-        fib_zone=fib_zone,  # type: ignore[arg-type]
-        fib_level=fib_level,
-        rsi_htf=rsi_htf,
-        gex_bg=gex_bg,
-        fvg_status=fvg_status,  # type: ignore[arg-type]
-        sweep_status=sweep_status,  # type: ignore[arg-type]
+        fib_zone=_pick(fib_zone, labels.fib_zone, "none"),  # type: ignore[arg-type]
+        fib_level=fib_level if fib_level is not None else labels.fib_level,
+        rsi_htf=rsi_htf if rsi_htf is not None else labels.rsi_htf,
+        gex_bg=gex_bg if gex_bg is not None else labels.gex_bg,
+        fvg_status=_pick(fvg_status, labels.fvg_status, "none"),  # type: ignore[arg-type]
+        sweep_status=_pick(sweep_status, labels.sweep_status, "none"),  # type: ignore[arg-type]
+        ob_status=ob_status if ob_status is not None else labels.ob_status,
+        bos_status=bos_status if bos_status is not None else labels.bos_status,
         market_regime="range" if vol.vah and vol.val else "none",
         volume=vol,
         pluses=tuple(pluses),
         minuses=tuple(minuses),
         venue=venue,  # type: ignore[arg-type]
     )
+
+
+def _pick(explicit: str | None, computed: str | None, empty: str) -> str:
+    if explicit is not None:
+        return explicit
+    if computed is not None:
+        return computed
+    return empty
 
 
 def timedelta_hours(later: datetime, now: datetime) -> float:

@@ -45,6 +45,8 @@ def touch_screen(
         "gex": card.gex_bg if card and card.gex_bg else "-",
         "fvg": card.fvg_status if card else "none",
         "sweep": card.sweep_status if card else "none",
+        "ob": card.ob_status if card and card.ob_status else "-",
+        "bos": card.bos_status if card and card.bos_status else "-",
         "regime": card.market_regime if card else "none",
         "rvol": card.volume.rvol if card and card.volume.rvol else "-",
         "poc": card.volume.poc if card and card.volume.poc else "-",
@@ -71,7 +73,7 @@ def touch_screen(
         f"--- B ---\n"
         f"verdict:{b['verdict']} macro:{b['macro']} venue:{b['venue']}\n"
         f"fib:{b['fib']} rsi:{b['rsi']} gex:{b['gex']}\n"
-        f"fvg:{b['fvg']} sweep:{b['sweep']} regime:{b['regime']}\n"
+        f"fvg:{b['fvg']} sweep:{b['sweep']} ob:{b['ob']} bos:{b['bos']} regime:{b['regime']}\n"
         f"poc:{b['poc']} vah:{b['vah']} val:{b['val']} rvol:{b['rvol']}\n"
         f"plus:{plus}\n"
         f"minus:{minus}\n"
@@ -131,7 +133,8 @@ def render_html(screen: dict[str, Any] | None) -> str:
 <tr><th>verdict</th><td>{html.escape(str(b["verdict"]))}</td><th>macro</th><td>{html.escape(str(b["macro"]))}</td></tr>
 <tr><th>fib</th><td>{html.escape(str(b["fib"]))}</td><th>rsi</th><td>{html.escape(str(b["rsi"]))}</td></tr>
 <tr><th>gex</th><td>{html.escape(str(b["gex"]))}</td><th>fvg</th><td>{html.escape(str(b["fvg"]))}</td></tr>
-<tr><th>sweep</th><td>{html.escape(str(b["sweep"]))}</td><th>regime</th><td>{html.escape(str(b["regime"]))}</td></tr>
+<tr><th>sweep</th><td>{html.escape(str(b["sweep"]))}</td><th>ob/bos</th><td>{html.escape(str(b["ob"]))}/{html.escape(str(b["bos"]))}</td></tr>
+<tr><th>regime</th><td>{html.escape(str(b["regime"]))}</td></tr>
 <tr><th>poc</th><td>{html.escape(str(b["poc"]))}</td><th>vah/val</th><td>{html.escape(str(b["vah"]))}/{html.escape(str(b["val"]))}</td></tr>
 <tr><th>rvol</th><td>{html.escape(str(b["rvol"]))}</td><th>venue</th><td>{html.escape(str(b["venue"]))}</td></tr>
 </table>

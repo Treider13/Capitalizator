@@ -338,8 +338,15 @@ class DeskLoop:
             return CardLive.from_payload(raw)
         if not self.calendar:
             return None
-        vol = volume_snapshot(self.state_for(symbol).bars)
-        return card_from_news(symbol=symbol, now=now, calendar=self.calendar, volume=vol)
+        bars = self.state_for(symbol).bars
+        vol = volume_snapshot(bars)
+        return card_from_news(
+            symbol=symbol,
+            now=now,
+            calendar=self.calendar,
+            volume=vol,
+            bars=bars,
+        )
 
     def _b_veto_touch(
         self,

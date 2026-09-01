@@ -25,7 +25,14 @@ class ZoneEngine:
         self.tick_size = tick_size
         self.config = config or load_registry()
 
-    def build(self, symbol: str, t: datetime, bars: Sequence[Bar]) -> list[Zone]:
+    def build(
+        self,
+        symbol: str,
+        t: datetime,
+        bars: Sequence[Bar],
+        *,
+        poc: Decimal | None = None,
+    ) -> list[Zone]:
         when = require_utc(t)
         visible = [
             b
@@ -39,7 +46,7 @@ class ZoneEngine:
         out.extend(self._swings(symbol, visible))
         out.extend(self._rounds(symbol, when, visible))
         out.extend(self._cluster(symbol, visible))
-        out.extend(self._vp_hyp(symbol, when, visible))
+        out.extend(self._poc_from_card(symbol, when, visible, poc))
         out.sort(key=lambda z: (z.created_as_of, z.method, z.side, z.lo))
         return out
 
@@ -199,25 +206,23 @@ class ZoneEngine:
             ),
         ]
 
-    def _vp_hyp(self, symbol: str, t: datetime, visible: list[Bar]) -> list[Zone]:
-        day = [b for b in visible if b.close_ts.date() == (t.date() - timedelta(days=1))]
-        if not day:
+    def _poc_from_card(
+        self,
+        symbol: str,
+        t: datetime,
+        visible: list[Bar],
+        poc: Decimal | None,
+    ) -> list[Zone]:
+        """POC comes from the B card volume snapshot. No VWAP stand-in."""
+        if poc is None or poc <= 0 or not visible:
             return []
-        vol = [b.volume if b.volume and b.volume > 0 else Decimal("1") for b in day]
-        total = sum(vol, Decimal("0"))
-        if total <= 0:
-            return []
-        typical = sum(((b.high + b.low + b.close) / 3) * v for b, v in zip(day, vol, strict=True))
-        poc = typical / total
-        created = datetime(t.year, t.month, t.day, tzinfo=UTC)
+        created = visible[-1].close_ts
         if created >= t:
             return []
         width = self.tick_size * self.config.epsilon_ticks
         return [
             self._zone(symbol, "1d", "support", poc, poc + width, "vp_hyp", created),
-            self._zone(
-                symbol, "1d", "resistance", poc - width, poc, "vp_hyp", created
-            ),
+            self._zone(symbol, "1d", "resistance", poc - width, poc, "vp_hyp", created),
         ]
 
     def _zone(

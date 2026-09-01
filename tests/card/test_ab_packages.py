@@ -227,6 +227,19 @@ def test_p0_red_fib_is_split_even_without_zlg() -> None:
     assert row.skip_reason == "b_marks"
 
 
+def test_p0_from_news_has_no_fake_greens() -> None:
+    card = from_news(symbol="BTCUSDT", now=NOW, calendar=())
+    assert card.rsi_htf is None
+    assert card.gex_bg is None
+    assert card.fvg_status == "none"
+    assert card.sweep_status == "none"
+    assert card.fib_zone == "none"
+    assert card.ob_status is None
+    assert card.bos_status is None
+    assert card.mark_green()["gex"] is None
+    assert card.context_ok() is False
+
+
 def test_p1_fomc_in_two_hours_is_veto() -> None:
     cal = (
         _news(
@@ -237,6 +250,11 @@ def test_p1_fomc_in_two_hours_is_veto() -> None:
     )
     card = from_news(symbol="BTCUSDT", now=NOW, calendar=cal)
     assert card.bearing_verdict == "veto"
+    assert card.rsi_htf is None
+    assert card.gex_bg is None
+    assert card.fvg_status == "none"
+    assert card.sweep_status == "none"
+    assert card.context_ok() is False
     assert any("fomc" in m for m in card.minuses)
     reg = _reg()
     row = observe(reg, _observe_in(card=card), contour_on=True)[0]
@@ -301,6 +319,9 @@ def test_p2_eth_negative_flattens() -> None:
     )
     card = from_news(symbol="ETHUSDT", now=NOW, calendar=cal)
     assert card.bearing_verdict == "veto"
+    assert card.rsi_htf is None
+    assert card.gex_bg is None
+    assert card.fvg_status == "none"
     assert "coin_negative" in card.minuses
     assert 5 <= len(card.pluses) + len(card.minuses) <= 7
     reg = _reg(ETH_ZONE, px="3005", symbol="ETHUSDT")

@@ -6,9 +6,11 @@ from collections.abc import Sequence
 from decimal import Decimal
 
 from capitalizator.card.live import VolumeSnapshot
+from capitalizator.card.params import VALUE_AREA_FRAC
 from capitalizator.zones.model import Bar
 
-VALUE_FRAC = Decimal("0.70")
+# Alias kept for callers; 70% Market Profile (not 68% 1σ).
+VALUE_FRAC = VALUE_AREA_FRAC
 
 
 def snapshot(

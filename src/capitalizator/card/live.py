@@ -12,6 +12,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import uuid4
 
+from capitalizator.card.gex import gex_is_green
 from capitalizator.types import require_utc
 
 Bearing = Literal["veto", "cut_size", "propose", "hold"]
@@ -19,8 +20,10 @@ FibZone = Literal["OTE", "in_05_1", "forbidden_0_05", "none"]
 SweepStatus = Literal["done", "pending", "none"]
 FvgStatus = Literal["filled", "open", "none"]
 Regime = Literal["trend", "range", "none"]
+SmcStatus = Literal["bull", "bear"]
 
 MARK_KEYS = ("fib", "sweep", "gex", "fvg", "jury_b")
+REQUIRED_MARKS = ("fib", "sweep", "fvg", "jury_b")
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,8 @@ class CardLive:
     gex_bg: str | None = None
     fvg_status: FvgStatus = "none"
     sweep_status: SweepStatus = "none"
+    ob_status: SmcStatus | None = None
+    bos_status: SmcStatus | None = None
     market_regime: Regime = "none"
     jury_b_for: int = 0
     jury_b_n: int = 0
@@ -72,21 +77,24 @@ class CardLive:
         if not self.card_id:
             object.__setattr__(self, "card_id", uuid4().hex)
 
-    def mark_green(self) -> dict[str, bool]:
-        gex = (self.gex_bg or "").strip()
+    def mark_green(self) -> dict[str, bool | None]:
+        """None-marks are red. GEX None is optional (skipped, does not vote)."""
         return {
             "fib": self.fib_zone in {"OTE", "in_05_1"},
             "sweep": self.sweep_status == "done",
-            "gex": bool(gex) and not gex.startswith("-"),
+            "gex": gex_is_green(self.gex_bg),
             "fvg": self.fvg_status == "filled",
             "jury_b": self.jury_b_n == 0 or self.jury_b_for >= 3,
         }
 
     def green_count(self) -> int:
-        return sum(1 for ok in self.mark_green().values() if ok)
+        return sum(1 for ok in self.mark_green().values() if ok is True)
 
     def context_ok(self) -> bool:
         if self.fib_zone == "forbidden_0_05" or self.sweep_status == "pending":
+            return False
+        marks = self.mark_green()
+        if any(marks[key] is not True for key in REQUIRED_MARKS):
             return False
         return self.green_count() >= 4
 
@@ -111,6 +119,8 @@ class CardLive:
             "gex_bg": self.gex_bg,
             "fvg_status": self.fvg_status,
             "sweep_status": self.sweep_status,
+            "ob_status": self.ob_status,
+            "bos_status": self.bos_status,
             "market_regime": self.market_regime,
             "jury_b_for": self.jury_b_for,
             "jury_b_n": self.jury_b_n,
@@ -154,6 +164,8 @@ class CardLive:
             gex_bg=raw.get("gex_bg"),
             fvg_status=raw.get("fvg_status") or "none",  # type: ignore[arg-type]
             sweep_status=raw.get("sweep_status") or "none",  # type: ignore[arg-type]
+            ob_status=raw.get("ob_status"),
+            bos_status=raw.get("bos_status"),
             market_regime=raw.get("market_regime") or "none",  # type: ignore[arg-type]
             jury_b_for=int(raw.get("jury_b_for") or 0),
             jury_b_n=int(raw.get("jury_b_n") or 0),

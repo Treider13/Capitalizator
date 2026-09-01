@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -95,8 +96,23 @@ def zones_for_trade(
     tf = desk.config.working_tf
     st = desk.state_for(event.symbol)
     work = [b for b in st.bars if b.tf == tf]
-    built = engine.build(event.symbol, event.exchange_ts, work)
+    poc = _card_poc(desk, event.symbol)
+    built = engine.build(event.symbol, event.exchange_ts, work, poc=poc)
     return list(extra_zones) + built
+
+
+def _card_poc(desk: DeskLoop, symbol: str) -> Decimal | None:
+    raw = desk.knowledge.get_card_live(symbol)
+    if not isinstance(raw, dict):
+        return None
+    vol = raw.get("volume")
+    if not isinstance(vol, dict) or not vol.get("poc"):
+        return None
+    try:
+        value = Decimal(str(vol["poc"]))
+    except Exception:
+        return None
+    return value if value > 0 else None
 
 
 def close_due_bars(desk: DeskLoop, symbol: str, now: datetime) -> list[dict[str, Any]]:
