@@ -57,6 +57,7 @@ from capitalizator.tape.ofi import OFI
 from capitalizator.types import MarketEvent, require_utc
 from capitalizator.zlg.gesture import ZLG, BookAdd
 from capitalizator.zones.config import load_registry
+from capitalizator.zones.engine import MAP_VOTE_METHODS
 from capitalizator.zones.map import ZoneMap
 from capitalizator.zones.model import Bar, Zone
 
@@ -152,10 +153,24 @@ class DeskLoop:
         return raw == "on"
 
     def persist_zones(self, zones: Sequence[Zone]) -> None:
-        if not self.knowledge.available():
+        if not self.knowledge.available() or not zones:
             return
-        for zone in zones:
-            self.knowledge.put_zone(
+        vote = self.config.working_tf
+        symbols = {z.symbol for z in zones}
+        drop_ids: list[str] = []
+        for row in self.knowledge.list_zones():
+            if str(row.get("symbol") or "") not in symbols:
+                continue
+            method = str(row.get("method") or "")
+            if method not in MAP_VOTE_METHODS:
+                continue
+            if str(row.get("tf") or "") == vote:
+                continue
+            zid = row.get("zone_id")
+            if zid:
+                drop_ids.append(str(zid))
+        puts = [
+            (
                 zone.zone_id,
                 {
                     "zone_id": zone.zone_id,
@@ -168,6 +183,9 @@ class DeskLoop:
                     "created_as_of": zone.created_as_of.isoformat(),
                 },
             )
+            for zone in zones
+        ]
+        self.knowledge.apply_zone_writes(drop_ids=drop_ids, puts=puts)
 
     def _remember_book(self, st: SymbolState, when: datetime) -> None:
         if not st.book.ready:

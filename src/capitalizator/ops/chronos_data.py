@@ -17,7 +17,8 @@ from capitalizator.ops.gates_from_sqlite import gates_from_sqlite
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import Vault
 from capitalizator.risk.session import MSK, load_time_config
-from capitalizator.zones.engine import ZoneEngine
+from capitalizator.zones.config import load_registry
+from capitalizator.zones.engine import MAP_VOTE_METHODS, ZoneEngine
 from capitalizator.zones.model import Bar
 
 
@@ -168,15 +169,25 @@ def zones_for(vault: Vault, *, symbol: str, now: datetime | None = None) -> list
         stored = knowledge.list_zones(symbol=symbol) if knowledge.available() else []
     finally:
         knowledge.close()
-    if stored:
+    vote = load_registry().working_tf
+
+    def _stale_map(row: dict[str, Any]) -> bool:
+        return (
+            str(row.get("method") or "") in MAP_VOTE_METHODS
+            and str(row.get("tf") or "") != vote
+        )
+
+    kept = [row for row in stored if not _stale_map(row)]
+    had_stale = len(kept) < len(stored)
+    if stored and not had_stale:
         return stored
     when = now or datetime.now(tz=UTC)
     events = [e for e in load_tape(vault.tape) if e.symbol == symbol and e.stream == "trades"]
     raw_bars = closed_bars_from_trades(
-        events, symbol=symbol, tf="15m", now=when, already=set()
+        events, symbol=symbol, tf=vote, now=when, already=set()
     )
     built = ZoneEngine(tick_size=Decimal("0.1")).build(symbol, when, raw_bars)
-    return [
+    rebuilt = [
         {
             "zone_id": z.zone_id,
             "symbol": z.symbol,
@@ -189,6 +200,14 @@ def zones_for(vault: Vault, *, symbol: str, now: datetime | None = None) -> list
         }
         for z in built
     ]
+    if not had_stale:
+        return rebuilt
+    merged = {str(row["zone_id"]): row for row in rebuilt}
+    for row in kept:
+        zid = str(row.get("zone_id") or "")
+        if zid:
+            merged[zid] = row
+    return list(merged.values())
 
 
 def book_for(vault: Vault, *, symbol: str) -> dict[str, Any]:

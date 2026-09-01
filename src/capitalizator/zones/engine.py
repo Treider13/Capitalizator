@@ -10,9 +10,16 @@ from capitalizator.types import require_utc
 from capitalizator.zones.config import RegistryConfig, load_registry
 from capitalizator.zones.model import Bar, Zone, ZoneMethod, ZoneSide
 
+# Levels whose price comes from a day/session/card, but CAV votes working_tf.
+MAP_VOTE_METHODS = frozenset({"prior_day_hl", "prior_session_hl", "vp_hyp"})
+
 
 class ZoneEngine:
-    """prior_day_hl + last confirmed swing. Methods not in the enum cannot exist."""
+    """prior_day_hl + last confirmed swing. Methods not in the enum cannot exist.
+
+    Map levels (prior_day / session / card POC) use working_tf. CAV compares bar.tf
+    to zone.tf and the desk only votes on the working close — a 1d tag made NOISE.
+    """
 
     def __init__(
         self,
@@ -66,12 +73,18 @@ class ZoneEngine:
         created = datetime(t.year, t.month, t.day, tzinfo=UTC)
         if created >= t:
             return []
+        vote_tf = self.config.working_tf
         return [
             self._zone(
-                symbol, "1d", "support", *self._band(low, "support"), "prior_day_hl", created
+                symbol, vote_tf, "support", *self._band(low, "support"), "prior_day_hl", created
             ),
             self._zone(
-                symbol, "1d", "resistance", *self._band(high, "resistance"), "prior_day_hl", created
+                symbol,
+                vote_tf,
+                "resistance",
+                *self._band(high, "resistance"),
+                "prior_day_hl",
+                created,
             ),
         ]
 
@@ -133,13 +146,19 @@ class ZoneEngine:
         created = prev_end.astimezone(UTC)
         if created >= t:
             return []
+        vote_tf = self.config.working_tf
         return [
             self._zone(
-                symbol, "1d", "support", *self._band(low, "support"), "prior_session_hl", created
+                symbol,
+                vote_tf,
+                "support",
+                *self._band(low, "support"),
+                "prior_session_hl",
+                created,
             ),
             self._zone(
                 symbol,
-                "1d",
+                vote_tf,
                 "resistance",
                 *self._band(high, "resistance"),
                 "prior_session_hl",
@@ -220,9 +239,10 @@ class ZoneEngine:
         if created >= t:
             return []
         width = self.tick_size * self.config.epsilon_ticks
+        vote_tf = self.config.working_tf
         return [
-            self._zone(symbol, "1d", "support", poc, poc + width, "vp_hyp", created),
-            self._zone(symbol, "1d", "resistance", poc - width, poc, "vp_hyp", created),
+            self._zone(symbol, vote_tf, "support", poc, poc + width, "vp_hyp", created),
+            self._zone(symbol, vote_tf, "resistance", poc - width, poc, "vp_hyp", created),
         ]
 
     def _zone(
