@@ -714,6 +714,51 @@ def test_fifteen_btc_lose_width_when_later_eth_hides_a_real_jump() -> None:
     assert width_now_from_history(bar, fifteen + [eth], t=NOW) is None
 
 
+def test_fifteen_hourly_lose_width_when_later_15m_hides_a_real_jump() -> None:
+    """15 1h at 130 + later 15m at current open. Mixed last-prior has no jump and journals width."""
+    fifteen = []
+    start = datetime(2026, 8, 29, 0, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start + timedelta(hours=i)
+        fifteen.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ts,
+                close_ts=ts + timedelta(hours=1),
+                open=Decimal("130"),
+                high=Decimal("131"),
+                low=Decimal("129"),
+                close=Decimal("130"),
+            )
+        )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 17, 30, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert fifteen[-1].close_ts < foreign.close_ts < hourly.close_ts
+    assert hourly.close_ts < NOW
+    assert abs(hourly.open - fifteen[-1].close) / fifteen[-1].close > Decimal("0.15")
+    assert width_now_from_history(hourly, fifteen, t=NOW) is None
+    assert width_now_from_history(hourly, fifteen + [foreign], t=NOW) is None
+
+
 def test_fifteen_btc_keep_width_when_later_eth_looks_like_a_jump() -> None:
     """15 BTC + later ETH at 80. Mixed last-prior jumps into current and empties ATR."""
     fifteen = [_bar(i) for i in range(15)]
