@@ -94,6 +94,19 @@ def test_residual_is_median_error_over_atr() -> None:
     assert hostile_exam(rows).residual_after_atr == Decimal("0.75")
 
 
+def test_n_is_the_case_count_not_the_residual_count() -> None:
+    """n is the finished sample. Two atr-less rows + one residual must not report n=1."""
+    rows = [
+        ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=None),
+        ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("0")),
+        ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("2")),
+    ]
+    out = hostile_exam(rows)
+    assert out.n == 3
+    assert out.residual_after_atr == Decimal("1")
+    assert out.beat_last_price == Decimal("0")
+
+
 def test_residual_median_uses_the_whole_sample() -> None:
     """Last-5 of 1,2,3,4,5,100 is 4. First-5 is 3. All six even-n median is 3.5."""
     rows = [
@@ -377,6 +390,27 @@ def test_vol_rank_ic_uses_average_ranks_for_a_partial_tie() -> None:
             actual_vol=Decimal(a),
         )
         for p, a in ((1, 1), (2, 2), (2, 3), (3, 4))
+    ]
+    ic = hostile_exam(rows).vol_rank_ic
+    assert ic is not None
+    assert ic != Decimal("1")
+    assert Decimal("0.94") < ic < Decimal("0.96")
+
+
+def test_vol_rank_ic_midranks_actual_ties() -> None:
+    """actual 1,10,10,100. Midranks 1,2.5,2.5,4 vs pred 1,2,3,4 ≈ 0.949.
+
+    Raw Pearson of the volumes is ~0.82. List-order ranks on the tie are IC=1.
+    """
+    rows = [
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("12"),
+            pred_vol_rank=Decimal(p),
+            actual_vol=Decimal(a),
+        )
+        for p, a in ((1, 1), (2, 10), (3, 10), (4, 100))
     ]
     ic = hostile_exam(rows).vol_rank_ic
     assert ic is not None
