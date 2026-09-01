@@ -115,6 +115,16 @@ def test_fill_and_stamp_need_touch_id_when_several() -> None:
     assert reg.touches[1].gesture is None
 
 
+def test_fill_does_not_overwrite_a_written_label() -> None:
+    reg = _reg()
+    reg.fill_cav(cav_label="REJECT")
+    assert reg.fill_cav(cav_label="THROUGH") == []
+    assert reg.touches[0].cav_label == "REJECT"
+    reg.fill_btc(regime="box")
+    assert reg.fill_btc(regime="news") == []
+    assert reg.touches[0].btc_regime == "box"
+
+
 def test_two_runs_same_jury() -> None:
     def run() -> tuple[str | None, str | None]:
         reg = _reg()

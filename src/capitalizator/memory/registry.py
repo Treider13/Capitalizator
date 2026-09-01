@@ -274,17 +274,21 @@ class Registry:
         return changed
 
     def _patch(self, *, touch_id: str | None = None, **fields: object) -> list[Touch]:
+        """Write empty fields only. A later fill must not overwrite a fact."""
         self._require_touch_id_if_many(touch_id, what="fill")
+        if touch_id is not None and not any(t.touch_id == touch_id for t in self.touches):
+            raise KeyError(touch_id)
         changed: list[Touch] = []
         next_rows: list[Touch] = []
         for touch in self.touches:
             if touch_id is not None and touch.touch_id != touch_id:
                 next_rows.append(touch)
                 continue
+            if all(getattr(touch, key) is not None for key in fields):
+                next_rows.append(touch)
+                continue
             row = replace(touch, **fields)
             next_rows.append(row)
             changed.append(row)
-        if touch_id is not None and not changed:
-            raise KeyError(touch_id)
         self.touches = next_rows
         return changed

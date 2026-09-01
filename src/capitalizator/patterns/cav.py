@@ -71,7 +71,13 @@ def label(
         or (zone.side == "resistance" and bar.high > zone.hi)
     ):
         return "REJECT"
-    atr = _atr([b for b in closed_bars if b.close_ts < when and b.tf == bar.tf])
+    atr = _atr(
+        [
+            b
+            for b in closed_bars
+            if b.close_ts < when and b.tf == bar.tf and b.symbol == bar.symbol
+        ]
+    )
     if atr is not None and (bar.high - bar.low) < atr and zone.lo <= bar.close <= zone.hi:
         return "COMPRESS"
     if zone.lo <= bar.close <= zone.hi:
