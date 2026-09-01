@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -162,6 +162,89 @@ def test_naive_touch_ts_rejected_by_session_hour() -> None:
     ]
     with pytest.raises(TypeError, match="naive"):
         reg.fill_session_hour()
+
+
+def test_offset_timezone_session_hour_is_utc_not_local() -> None:
+    """+3 16:30 is 13:30Z. ts.hour would be 16 — that is not the journal field."""
+    plus3 = timezone(timedelta(hours=3))
+    ts = datetime(2026, 8, 30, 16, 30, tzinfo=plus3)
+    assert ts.hour == 16
+    reg = Registry(tick_size=TICK)
+    zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1d",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
+    reg.on_trade(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=ts,
+            recv_ts=ts,
+            seq=None,
+            payload={"px": "100.1", "qty": "0.001", "side": "buy"},
+        ),
+        [zone],
+    )
+    assert reg.fill_session_hour()[0].session_hour == 13
+    direct = Registry(tick_size=TICK)
+    direct.touches = [
+        Touch(
+            touch_id="off",
+            zone_id=ZONE.zone_id,
+            ts=ts,
+            trade_px=Decimal("100.1"),
+            trade_qty=Decimal("0.001"),
+            outcome="pending",
+        )
+    ]
+    assert direct.fill_session_hour()[0].session_hour == 13
+
+
+def test_two_touches_keep_their_own_utc_hours() -> None:
+    born = datetime(2026, 8, 29, 12, 0, tzinfo=UTC)
+    first_zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1d",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="prior_day_hl",
+        created_as_of=born,
+    )
+    other = Zone.create(
+        symbol="BTCUSDT",
+        tf="1d",
+        side="support",
+        lo=Decimal("100.05"),
+        hi=Decimal("100.25"),
+        method="prior_day_hl",
+        created_as_of=born,
+    )
+    reg = Registry(tick_size=TICK)
+    night = datetime(2026, 8, 30, 0, 15, tzinfo=UTC)
+    day = datetime(2026, 8, 30, 16, 30, tzinfo=UTC)
+    for ts, zones in ((night, [first_zone]), (day, [other])):
+        reg.on_trade(
+            MarketEvent(
+                stream="trades",
+                exchange="bybit",
+                symbol="BTCUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                seq=None,
+                payload={"px": "100.1", "qty": "0.001", "side": "buy"},
+            ),
+            zones,
+        )
+    assert len(reg.touches) == 2
+    hours = sorted(t.session_hour for t in reg.fill_session_hour())
+    assert hours == [0, 16]
 
 
 def test_midnight_utc_session_hour_is_zero() -> None:

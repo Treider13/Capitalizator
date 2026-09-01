@@ -20,17 +20,21 @@ T0 = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 NOW = datetime(2026, 8, 30, 18, 0, tzinfo=UTC)
 
 
-def _bar(i: int, *, high: str = "102", low: str = "100", open_: str = "101", close: str = "101") -> Bar:
+def _bar(i: int, *, high: str = "102", low: str = "100", open_: str | None = None, close: str | None = None) -> Bar:
     ts = T0 + timedelta(minutes=15 * i)
+    hi, lo = Decimal(high), Decimal(low)
+    mid = (hi + lo) / Decimal("2")
+    op = Decimal(open_) if open_ is not None else mid
+    cl = Decimal(close) if close is not None else mid
     return Bar(
         symbol="BTCUSDT",
         tf="15m",
         open_ts=ts,
         close_ts=ts + timedelta(minutes=15),
-        open=Decimal(open_),
-        high=Decimal(high),
-        low=Decimal(low),
-        close=Decimal(close),
+        open=op,
+        high=hi,
+        low=lo,
+        close=cl,
     )
 
 
@@ -63,7 +67,7 @@ def test_unclosed_bar_has_no_width() -> None:
         tf="15m",
         open_ts=NOW - timedelta(minutes=15),
         close_ts=NOW,
-        open=Decimal("101"),
+        open=Decimal("100.15"),
         high=Decimal("100.2"),
         low=Decimal("100.1"),
         close=Decimal("100.15"),
