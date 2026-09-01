@@ -14,6 +14,8 @@
 8. Консоль: `127.0.0.1:8082`, туннель `ssh -L 8082:127.0.0.1:8082`. `POST /order` = 405.
 9. Signer — отдельный процесс. Desk пишет `intent_queue`. Ключ только у signer.
 10. Dead-man 30 с, reconcile 60 с. Ночной replay + daily report + overlay. Карточка-черновик: 5–7 pending, вердикт не от LLM.
+11. Desk: `python -m capitalizator.desk --userdir ./user_data --serve` читает `tape/` (parquet рекордера), пишет journal + тень + `intent_queue`. `--once` — один проход без сети. SIGINT/SIGTERM останавливают `--serve`.
+12. Signer: `python -m capitalizator.signer --userdir ./user_data --serve` снимает очередь и бьёт dead-man 30 с. Withdraw в процессе нет — галочка в `ops/key-checklist.md` до ключа.
 
 ## Не ставить в первый релиз
 

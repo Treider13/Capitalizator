@@ -587,9 +587,11 @@ class DeskLoop:
         extras = tuple(extra_zones)
 
         def advance(when: datetime) -> None:
+            # Plan: LABEL_ZLG (8s) then CAV on a closed bar, then JURY.
+            # Catch-up `--once` lands both clocks in one now= — tick first.
+            out.extend(self.tick(when))
             for symbol in list(self.symbols):
                 out.extend(close_due_bars(self, symbol, when))
-            out.extend(self.tick(when))
 
         for event in _ordered_events(events):
             if isinstance(event, dict):

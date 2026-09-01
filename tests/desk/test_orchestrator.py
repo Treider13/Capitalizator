@@ -213,6 +213,23 @@ def test_run_once_reads_parquet_tape(tmp_path: Path) -> None:
     knowledge.close()
 
 
+def test_play_late_now_labels_zlg_before_jury(tmp_path: Path) -> None:
+    """`--once` catch-up: now is hours later. Tick ZLG before the closed-bar jury."""
+    trades = _load_trades()
+    events = [*_book_events(trades[0]), trades[0]]
+    late = trades[0].exchange_ts + timedelta(hours=2)
+    desk = _desk(tmp_path, user_mode="off")
+    out = desk.play(events, extra_zones=(ZONE,), now=late)
+    kinds = [e.get("event") for e in out]
+    assert kinds.index("zlg") < kinds.index("jury")
+    live = [t for t in desk.registry.touches if t.ts >= trades[0].exchange_ts]
+    assert live
+    assert live[-1].gesture is not None
+    journal = desk.knowledge.get_journal_touch(live[-1].touch_id)
+    assert journal is not None
+    assert journal["zlg_label"] is not None
+
+
 def test_main_once_walks_empty_tape(tmp_path: Path) -> None:
     root = tmp_path / "cli"
     assert main(["--userdir", str(root), "--init", "--once"]) == 0
