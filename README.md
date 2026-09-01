@@ -29,6 +29,7 @@
 Откуда «+35–40% за месяц с нуля» (август 2026): [`docs/ALGORITHMS-35PCT-MONTH.md`](docs/ALGORITHMS-35PCT-MONTH.md).  
 Грааль **только после обучения**, ощущение «мы устарели», и **тень 24/7 / сделки только в окне**: [`docs/GRAIL-AFTER-TRAINING.md`](docs/GRAIL-AFTER-TRAINING.md).  
 Полная тень **всеми** факторами (новости, книга, ZLG/CAV/жюри, без заглушек): [`docs/SHADOW-LEARN-24-7.md`](docs/SHADOW-LEARN-24-7.md).  
+Что **доделать и досвязать** (короткий чеклист): [`docs/SHADOW-WIRE-CHECKLIST.md`](docs/SHADOW-WIRE-CHECKLIST.md).  
 Кто реально прибыльный на **криптофьючерсах** (не звёзды): [`docs/FUTURES-BOTS-RESULTS.md`](docs/FUTURES-BOTS-RESULTS.md).  
 Перепись **150** топовых ботов/движков против стола (вечер 30.08): [`docs/CENSUS-150.md`](docs/CENSUS-150.md).  
 Мировой поиск (CN/IN/JP/KR, языки, Gitee/GitLab): [`docs/WORLD-SEARCH.md`](docs/WORLD-SEARCH.md) — пустой продукт пуст не только на EN GitHub.  
