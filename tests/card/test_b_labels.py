@@ -54,8 +54,8 @@ def _bar(
 
 def _ohlc(rows: list[tuple[str, str, str, str]], *, tf: str = "1h") -> list[Bar]:
     return [
-        _bar(i, open_=o, high=h, low=l, close=c, tf=tf)
-        for i, (o, h, l, c) in enumerate(rows)
+        _bar(i, open_=o, high=h, low=lo, close=c, tf=tf)
+        for i, (o, h, lo, c) in enumerate(rows)
     ]
 
 
