@@ -107,6 +107,42 @@ def test_plus530_t_has_no_width_on_1300z_bar() -> None:
     assert width_now_from_history(bar, hist, t=t530) is None
 
 
+def test_plus9_close_ts_has_width_at_utc_noon() -> None:
+    """+9 16:30 close is 07:30Z. Clock 16:30 > 12:00 would drop width on a closed bar."""
+    plus9 = timezone(timedelta(hours=9))
+    t = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    start = datetime(2026, 8, 30, 3, 30, tzinfo=UTC)
+    hist = []
+    for i in range(15):
+        ts = start + timedelta(minutes=15 * i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=plus9),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=plus9),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert bar.close_ts.hour == 16
+    assert t.hour == 12
+    assert bar.close_ts < t
+    assert width_now_from_history(bar, hist, t=t) == Decimal("0.1") / Decimal("2")
+
+
 def test_offset_t_has_no_width_on_later_utc_bar() -> None:
     """+3 16:45 is 13:45Z. Clock 16:30<16:45 would journal width on an open bar."""
     plus3 = timezone(timedelta(hours=3))

@@ -506,6 +506,43 @@ def test_plus530_t_does_not_stagnate_a_1315z_bar() -> None:
     assert last_gap_segment(hist, current, t=t530) == []
 
 
+def test_plus9_close_ts_is_closed_at_utc_noon() -> None:
+    """+9 16:30 close is 07:30Z. Clock 16:30 > 12:00 would keep a closed bar LIVE."""
+    plus9 = timezone(timedelta(hours=9))
+    t = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    start = datetime(2026, 8, 30, 6, 0, tzinfo=UTC)
+    hist = []
+    for i in range(4):
+        ts = start + timedelta(minutes=15 * i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("100"),
+                high=Decimal("101"),
+                low=Decimal("99"),
+                close=Decimal("100"),
+            )
+        )
+    current = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=plus9),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=plus9),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    assert current.close_ts.hour == 16
+    assert t.hour == 12
+    assert current.close_ts < t
+    assert classify_bar_quality(hist, current, t=t) == STAGNANT
+    assert last_gap_segment(hist, current, t=t) == hist
+
+
 def test_unclosed_zero_volume_is_live_not_illiquid() -> None:
     hist = [_bar(0, close="100", volume=Decimal("0"))]
     current = Bar(

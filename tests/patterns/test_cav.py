@@ -453,6 +453,43 @@ def test_plus530_t_does_not_close_a_1300z_bar() -> None:
     assert label(ZONE, bar, t=t530, htf_bias="box", closed_bars=_atr15()) == "NOISE"
 
 
+def test_plus9_close_ts_compresses_at_utc_noon() -> None:
+    """+9 16:30 close is 07:30Z. Clock 16:30 > 12:00 would NOISE a bar that already closed."""
+    plus9 = timezone(timedelta(hours=9))
+    t = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    start = datetime(2026, 8, 30, 3, 30, tzinfo=UTC)
+    closed = []
+    for i in range(15):
+        ts = start + timedelta(minutes=15 * i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=plus9),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=plus9),
+        open=Decimal("100.10"),
+        high=Decimal("100.15"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+    )
+    assert bar.close_ts.hour == 16
+    assert t.hour == 12
+    assert bar.close_ts < t
+    assert closed[-1].close_ts < bar.close_ts
+    assert label(ZONE, bar, t=t, htf_bias="box", closed_bars=closed) == "COMPRESS"
+
+
 def test_offset_t_does_not_close_a_later_utc_bar() -> None:
     """+3 16:45 is 13:45Z. Clock 16:30<16:45 would COMPRESS a bar that is still open."""
     plus3 = timezone(timedelta(hours=3))
