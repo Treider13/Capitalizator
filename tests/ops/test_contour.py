@@ -887,6 +887,81 @@ def test_observe_foreign_trades_write_nothing() -> None:
     assert row.jury is None
 
 
+def test_observe_foreign_gap_does_not_freeze() -> None:
+    """A BTC gap in the list is not an ETH print. Mixed tape must still stamp."""
+    eth = Zone.create(
+        symbol="ETHUSDT",
+        tf="1d",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
+    eth_bar = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+    )
+    eth_open = MarketEvent(
+        stream="trades",
+        exchange="bybit",
+        symbol="ETHUSDT",
+        exchange_ts=PRINT,
+        recv_ts=PRINT,
+        seq=None,
+        payload={"px": "100.1", "qty": "4", "side": "buy"},
+    )
+    eth_sell = MarketEvent(
+        stream="trades",
+        exchange="bybit",
+        symbol="ETHUSDT",
+        exchange_ts=PRINT,
+        recv_ts=PRINT,
+        seq=None,
+        payload={"px": "100.1", "qty": "1", "side": "sell"},
+    )
+    btc_gap = MarketEvent(
+        stream="gap",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=PRINT,
+        recv_ts=PRINT + timedelta(seconds=1),
+        seq=None,
+        payload={
+            "ts_from": PRINT.isoformat(),
+            "ts_to": (PRINT + timedelta(seconds=1)).isoformat(),
+        },
+    )
+    reg = Registry(tick_size=TICK)
+    assert len(reg.on_trade(eth_open, [eth])) == 1
+    inp = ObserveIn(
+        book=_book(),
+        trades=[eth_sell, btc_gap],
+        adds=[
+            BookAdd(
+                ts=PRINT + timedelta(seconds=1),
+                side="bid",
+                px=Decimal("100"),
+                qty=Decimal("2"),
+            )
+        ],
+        cav_bar=eth_bar,
+        htf_bias="box",
+    )
+    row = observe(reg, inp, contour_on=True)[0]
+    assert row.tape_eaten is False
+    assert row.gesture == "DEFEND"
+    assert row.cav_label == "REJECT"
+    assert row.btc_regime == "box"
+    assert row.jury == "SILENCE"
+
+
 def test_observe_naive_add_writes_nothing() -> None:
     """ZLG require_utc(add.ts) runs after fill_tape. A naive add — even outside
     the 8s window — must not leave tape written and gesture empty."""

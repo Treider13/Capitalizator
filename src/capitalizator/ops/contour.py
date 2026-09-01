@@ -206,7 +206,8 @@ def observe(
     One ObserveIn is one book / one bar. Several unlabeled touches without
     touch_id is an error — we do not paint a later print with an earlier book.
     A bar of another symbol is an error before any fill. A tape print of
-    another symbol is the same error while tape is still empty. Naive
+    another symbol is the same error while tape is still empty. A gap of
+    another symbol is not a print — skip it. Naive
     news_known_at is an error before any fill while BTC is still empty —
     require_utc after tape/ZLG/CAV leaves a half-card. Naive add.ts is
     an error before any fill while ZLG is still empty — ZLG require_utc
@@ -228,6 +229,8 @@ def observe(
         raise ValueError(f"observe bar {inp.cav_bar.symbol} is not zone {zone.symbol}")
     if touch.tape_eaten is None:
         for trade in inp.trades:
+            if trade.stream != "trades":
+                continue
             if trade.symbol != zone.symbol:
                 raise ValueError(f"observe trade {trade.symbol} is not zone {zone.symbol}")
     if touch.btc_regime is None and inp.news_known_at is not None:
