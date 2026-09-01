@@ -214,6 +214,63 @@ def test_width_uses_last_atr_window_not_the_first() -> None:
     assert width_now_from_history(bar, hist, t=NOW) == Decimal("0.1") / Decimal("2")
 
 
+def test_width_uses_mean_true_range_not_median() -> None:
+    """Same 14% open series as ATR: w_now is 0.1 / (40/14), not 0.1/2."""
+    start = T0
+    hist = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=start,
+            close_ts=start + timedelta(minutes=15),
+            open=Decimal("100"),
+            high=Decimal("102"),
+            low=Decimal("100"),
+            close=Decimal("100"),
+        )
+    ]
+    ts = start + timedelta(minutes=15)
+    hist.append(
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=ts,
+            close_ts=ts + timedelta(minutes=15),
+            open=Decimal("114"),
+            high=Decimal("114"),
+            low=Decimal("113"),
+            close=Decimal("114"),
+        )
+    )
+    for i in range(2, 15):
+        ts = start + timedelta(minutes=15 * i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("114"),
+                high=Decimal("116"),
+                low=Decimal("114"),
+                close=Decimal("114"),
+            )
+        )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 16),
+        close_ts=T0 + timedelta(minutes=15 * 16 + 15),
+        open=Decimal("114.05"),
+        high=Decimal("114.1"),
+        low=Decimal("114.0"),
+        close=Decimal("114.05"),
+    )
+    assert abs(hist[1].open - hist[0].close) / hist[0].close < Decimal("0.15")
+    assert atr(hist) == Decimal("40") / Decimal("14")
+    assert width_now_from_history(bar, hist, t=NOW) == Decimal("0.1") / (Decimal("40") / Decimal("14"))
+
+
 def test_down_open_gap_close_back_has_no_width() -> None:
     """Gap is the open, not the close. A 16% down open that closes back would keep ATR if close-to-close."""
     hist = [_bar(i, open_="100", close="100") for i in range(15)]

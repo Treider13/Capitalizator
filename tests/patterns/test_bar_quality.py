@@ -244,6 +244,55 @@ def test_atr_uses_the_last_window() -> None:
     assert atr(series) == Decimal("2")
 
 
+def test_atr_is_mean_true_range_not_median_or_high_low() -> None:
+    """14% open is not a gap. TR=14 then 13×2: mean 40/14. Median TR=2. Mean high-low=27/14."""
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    bars = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=start,
+            close_ts=start + timedelta(minutes=15),
+            open=Decimal("100"),
+            high=Decimal("102"),
+            low=Decimal("100"),
+            close=Decimal("100"),
+        )
+    ]
+    ts = start + timedelta(minutes=15)
+    bars.append(
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=ts,
+            close_ts=ts + timedelta(minutes=15),
+            open=Decimal("114"),
+            high=Decimal("114"),
+            low=Decimal("113"),
+            close=Decimal("114"),
+        )
+    )
+    for i in range(2, 15):
+        ts = start + timedelta(minutes=15 * i)
+        bars.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("114"),
+                high=Decimal("116"),
+                low=Decimal("114"),
+                close=Decimal("114"),
+            )
+        )
+    assert abs(bars[1].open - bars[0].close) / bars[0].close == Decimal("0.14")
+    assert (bars[1].high - bars[1].low) == Decimal("1")
+    assert atr(bars) == Decimal("40") / Decimal("14")
+    assert atr(bars) != Decimal("2")
+    assert atr(bars) != Decimal("27") / Decimal("14")
+
+
 def test_negative_volume_rejected() -> None:
     with pytest.raises(ValueError, match="volume"):
         _bar(0, volume=Decimal("-1"))

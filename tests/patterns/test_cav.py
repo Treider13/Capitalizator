@@ -251,6 +251,57 @@ def test_compress_uses_last_atr_window_not_the_first() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
 
 
+def test_compress_uses_mean_true_range_not_median() -> None:
+    """Range 2.2 < mean TR 40/14 and > median TR 2. Median ATR would be DRIFT."""
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    closed = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=start,
+            close_ts=start.replace(second=30),
+            open=Decimal("100"),
+            high=Decimal("102"),
+            low=Decimal("100"),
+            close=Decimal("100"),
+        )
+    ]
+    ts = start.replace(minute=1)
+    closed.append(
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=ts,
+            close_ts=ts.replace(second=30),
+            open=Decimal("114"),
+            high=Decimal("114"),
+            low=Decimal("113"),
+            close=Decimal("114"),
+        )
+    )
+    for i in range(2, 15):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("114"),
+                high=Decimal("116"),
+                low=Decimal("114"),
+                close=Decimal("114"),
+            )
+        )
+    bar = _bar(low="100.0", high="102.2", close="100.10")
+    assert (bar.high - bar.low) == Decimal("2.2")
+    assert abs(bar.open - closed[-1].close) / closed[-1].close < Decimal("0.15")
+    assert atr(closed) == Decimal("40") / Decimal("14")
+    assert (bar.high - bar.low) < atr(closed)
+    assert (bar.high - bar.low) > Decimal("2")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"
+
+
 def test_offset_t_does_not_close_a_later_utc_bar() -> None:
     """+3 16:45 is 13:45Z. Clock 16:30<16:45 would COMPRESS a bar that is still open."""
     plus3 = timezone(timedelta(hours=3))
