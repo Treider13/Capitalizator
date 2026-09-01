@@ -95,6 +95,17 @@ def test_stagnant_is_the_last_five_closes() -> None:
     assert classify_bar_quality(hist, current, t=T) == LIVE
 
 
+def test_stagnant_sorts_before_the_last_five() -> None:
+    """Late 101 first in the list: last-five without a sort are five 100s."""
+    late = _bar(4, close="101")
+    early = [_bar(i, close="100") for i in range(4)]
+    current = _bar(5, close="100")
+    hist = [late] + early
+    assert hist[0].close == Decimal("101")
+    assert all(b.close == Decimal("100") for b in hist[1:])
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
 def test_two_zero_volume_bars_are_illiquid() -> None:
     hist = [_bar(0, close="100", volume=Decimal("0"))]
     current = _bar(1, close="101", volume=Decimal("0"))
@@ -116,6 +127,16 @@ def test_illiquid_is_the_last_two_zero_volumes() -> None:
     """A zero-vol bar earlier in the series is not the neighbor. Two zeros anywhere would fake ILLIQUID."""
     hist = [_bar(0, close="100", volume=Decimal("0")), _bar(1, close="101", volume=Decimal("1"))]
     current = _bar(2, close="102", volume=Decimal("0"))
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
+def test_illiquid_sorts_before_the_last_two() -> None:
+    """Early zero last in the list: last-two without a sort are two zeros."""
+    early_zero = _bar(0, close="100", volume=Decimal("0"))
+    later_vol = _bar(1, close="101", volume=Decimal("1"))
+    current = _bar(2, close="102", volume=Decimal("0"))
+    hist = [later_vol, early_zero]
+    assert hist[-1].volume == Decimal("0")
     assert classify_bar_quality(hist, current, t=T) == LIVE
 
 
