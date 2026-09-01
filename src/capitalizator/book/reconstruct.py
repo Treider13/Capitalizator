@@ -128,3 +128,12 @@ class Book:
     def level(self, side: Side, px: str) -> Decimal:
         book = self._bids if side == "bid" else self._asks
         return book.get(Decimal(px), Decimal("0"))
+
+    def snapshot_copy(self) -> Book:
+        """Deep copy of levels at this instant. Used as book_pre on a touch."""
+        clone = Book(tick_size=str(self.tick_size))
+        clone._bids = dict(self._bids)
+        clone._asks = dict(self._asks)
+        clone._seq = self._seq
+        clone._ready = self._ready
+        return clone
