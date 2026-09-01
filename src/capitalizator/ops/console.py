@@ -300,7 +300,10 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
     if path == "/api/news":
         return {"events": chronos_data.news_rows()}
     if path == "/api/authors":
-        return {"posts": chronos_data.author_rows(vault), "sources": []}
+        return {
+            "posts": chronos_data.author_rows(vault),
+            "sources": chronos_data.author_sources(),
+        }
     if path == "/api/llm_summary":
         return chronos_data.llm_summary(vault)
     if path == "/api/gates":

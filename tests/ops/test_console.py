@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from http.client import HTTPConnection
 from http.server import HTTPServer
 from pathlib import Path
@@ -444,3 +445,207 @@ def test_chronos_api_empty_shapes(tmp_path: Path) -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+def _json_get(host: str, port: int, path: str) -> dict:
+    conn = HTTPConnection(host, port, timeout=3)
+    conn.request("GET", path)
+    resp = conn.getresponse()
+    assert resp.status == 200, path
+    payload = json.loads(resp.read().decode())
+    conn.close()
+    return payload
+
+
+def test_chronos_api_reads_vault_not_examples(tmp_path: Path) -> None:
+    """Seeded parquet + journal must surface as-is. A second tape must differ."""
+    from capitalizator.book.reconstruct import Book
+    from capitalizator.desk.loop import DeskLoop
+    from capitalizator.recorder.rest_snapshot import BookSnapshot
+    from capitalizator.zones.model import Bar, Zone
+
+    vault = init_vault(tmp_path / "desk")
+    knowledge = open_knowledge(vault)
+    created = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    window = datetime(2026, 8, 31, 14, 10, tzinfo=UTC)
+    zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("101"),
+        method="prior_day_hl",
+        created_as_of=created,
+    )
+    book = Book(tick_size="0.1")
+    book.apply_snapshot(
+        BookSnapshot(
+            symbol="BTCUSDT",
+            exchange_ts=window,
+            seq=1,
+            bids=(("100.4", "20"),),
+            asks=(("100.6", "20"),),
+        )
+    )
+    trade = MarketEvent(
+        stream="trades",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=window,
+        recv_ts=window,
+        payload={"px": "100.4", "qty": "1", "side": "sell"},
+    )
+    ParquetSink(vault.tape).write(trade)
+    ParquetSink(vault.tape).write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=window + timedelta(minutes=20),
+            recv_ts=window + timedelta(minutes=20),
+            payload={"px": "100.8", "qty": "2", "side": "buy"},
+        )
+    )
+    desk = DeskLoop(knowledge=knowledge, user_mode="off", tick_size=Decimal("0.1"))
+    snapshot = MarketEvent(
+        stream="snapshot",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=window,
+        recv_ts=window,
+        seq=1,
+        payload={"bids": [["100.4", "20"]], "asks": [["100.6", "20"]]},
+    )
+    desk.on_event(snapshot)
+    desk.on_book("BTCUSDT", book)
+    desk.on_event(trade, [zone])
+    desk.tick(window + timedelta(seconds=8))
+    events = desk.on_bar_close(
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=window,
+            close_ts=window + timedelta(minutes=15),
+            open=Decimal("100.4"),
+            high=Decimal("100.6"),
+            low=Decimal("99.9"),
+            close=Decimal("100.4"),
+        )
+    )
+    touch_id = events[0]["touch_id"]
+    journal = knowledge.get_journal_touch(touch_id)
+    assert journal is not None
+    knowledge.save_report(day="2026-08-31", kind="map", body="Касаний 1. Жюри без совета.")
+    knowledge.close()
+
+    app = ConsoleApp(vault)
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        status = _json_get(host, port, "/api/status")
+        assert status["last_price"]["BTCUSDT"] == "100.4"
+        assert status["last_jury"]["BTCUSDT"]["jury"] == journal["jury"]
+        assert status["last_jury"]["BTCUSDT"]["jury"] in {"ACCORD", "SPLIT", "VETO", "SILENCE"}
+
+        trades = _json_get(host, port, "/api/trades?symbol=BTCUSDT&limit=50")
+        assert [row["px"] for row in trades["trades"]] == ["100.4", "100.8"]
+        assert trades["trades"][-1]["side"] == "buy"
+
+        other = _json_get(host, port, "/api/trades?symbol=ETHUSDT&limit=50")
+        assert other["trades"] == []
+
+        bars = _json_get(host, port, "/api/bars?symbol=BTCUSDT&tf=15m&limit=200")
+        assert bars["bars"], "closed bars must come from parquet trades"
+        assert all(row["symbol"] == "BTCUSDT" for row in bars["bars"])
+        eth_bars = _json_get(host, port, "/api/bars?symbol=ETHUSDT&tf=15m&limit=200")
+        assert eth_bars["bars"] == []
+
+        book_payload = _json_get(host, port, "/api/book?symbol=BTCUSDT")
+        assert book_payload["bids"][0][0] == "100.4"
+        assert book_payload["asks"][0][0] == "100.6"
+        empty_book = _json_get(host, port, "/api/book?symbol=ETHUSDT")
+        assert empty_book["bids"] == []
+        assert empty_book["asks"] == []
+
+        zones = _json_get(host, port, "/api/zones?symbol=BTCUSDT")
+        assert zones["zones"]
+        assert zones["zones"][0]["lo"] == "100"
+        assert zones["zones"][0]["hi"] == "101"
+
+        latest = _json_get(host, port, "/api/touch/latest?symbol=BTCUSDT")
+        assert latest["touch"] is not None
+        assert latest["touch"]["touch_id"] == touch_id
+        assert latest["touch"]["jury"] == journal["jury"]
+        assert latest["touch"]["cav_label"] == journal["cav_label"]
+        assert latest["touch"]["card_id"] == journal["card_id"]
+        assert latest["touch"]["claims"]
+        missing = _json_get(host, port, "/api/touch/latest?symbol=ETHUSDT")
+        assert missing["touch"] is None
+
+        dash = _json_get(host, port, "/api/dashboard")
+        assert dash["last_touch"]["touch_id"] == touch_id
+        assert dash["last_price"]["BTCUSDT"] == "100.4"
+
+        news = _json_get(host, port, "/api/news")
+        classes = {row["class"] for row in news["events"]}
+        assert {"CPI", "FOMC", "NFP", "PCE"} <= classes
+
+        authors = _json_get(host, port, "/api/authors")
+        assert authors["posts"] == []
+        assert authors["sources"] == []
+
+        llm = _json_get(host, port, "/api/llm_summary")
+        assert "Касаний 1" in llm["summary"]
+        assert llm["trade_advice"] is False
+
+        hello = _json_get(host, port, "/api/hello/status")
+        assert hello == {"hello_ok": False, "real": False}
+
+        gates = _json_get(host, port, "/api/gates")
+        assert gates["n_touches"] == 1
+        assert gates["phases"]["f0"]["have"] == 1
+        assert gates["phases"]["f0"]["ok"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    other_vault = init_vault(tmp_path / "other")
+    open_knowledge(other_vault).close()
+    later = datetime(2026, 8, 31, 16, 0, tzinfo=UTC)
+    ParquetSink(other_vault.tape).write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=later,
+            recv_ts=later,
+            payload={"px": "25000", "qty": "3", "side": "buy"},
+        )
+    )
+    ParquetSink(other_vault.tape).write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=later + timedelta(minutes=20),
+            recv_ts=later + timedelta(minutes=20),
+            payload={"px": "25100", "qty": "1", "side": "sell"},
+        )
+    )
+    app2 = ConsoleApp(other_vault)
+    server2 = HTTPServer(("127.0.0.1", 0), _handler(app2))
+    thread2 = threading.Thread(target=server2.serve_forever, daemon=True)
+    thread2.start()
+    host2, port2 = server2.server_address[:2]
+    try:
+        alt = _json_get(host2, port2, "/api/trades?symbol=BTCUSDT&limit=50")
+        assert [row["px"] for row in alt["trades"]] == ["25000", "25100"]
+        alt_bars = _json_get(host2, port2, "/api/bars?symbol=BTCUSDT&tf=15m&limit=200")
+        assert alt_bars["bars"] != bars["bars"]
+        alt_touch = _json_get(host2, port2, "/api/touch/latest")
+        assert alt_touch["touch"] is None
+    finally:
+        server2.shutdown()
+        server2.server_close()

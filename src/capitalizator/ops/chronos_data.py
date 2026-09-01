@@ -240,8 +240,18 @@ def news_rows() -> list[dict[str, Any]]:
     ]
 
 
+def author_sources() -> list[dict[str, Any]]:
+    try:
+        book = load_sources(default_sources_path())
+    except FileNotFoundError:
+        return []
+    return [
+        {"id": src.source_id, "kind": src.kind, "url": src.url}
+        for src in book.sources
+    ]
+
+
 def author_rows(vault: Vault) -> list[dict[str, Any]]:
-    load_sources(default_sources_path())
     path = vault.root / "authors.jsonl"
     if not path.is_file():
         return []
