@@ -46,6 +46,9 @@ class Touch:
     bar_quality: str | None = None
     session_hour: int | None = None
 
+    def __post_init__(self) -> None:
+        require_utc(self.ts)
+
     @classmethod
     def create(
         cls,

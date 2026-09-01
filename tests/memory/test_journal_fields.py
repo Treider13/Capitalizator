@@ -147,10 +147,9 @@ def test_fill_width_on_one_touch_does_not_write_the_other() -> None:
     assert by_id[second.touch_id].w_rank is None
 
 
-def test_naive_touch_ts_rejected_by_session_hour() -> None:
-    """Naive ts.astimezone(UTC) follows the host TZ — that is not a journal fact."""
-    reg = Registry(tick_size=TICK)
-    reg.touches = [
+def test_naive_touch_ts_rejected() -> None:
+    """Touch.ts follows Bar: naive is forbidden at construction, not only at fill."""
+    with pytest.raises(TypeError, match="naive"):
         Touch(
             touch_id="naive",
             zone_id=ZONE.zone_id,
@@ -159,9 +158,6 @@ def test_naive_touch_ts_rejected_by_session_hour() -> None:
             trade_qty=Decimal("0.001"),
             outcome="pending",
         )
-    ]
-    with pytest.raises(TypeError, match="naive"):
-        reg.fill_session_hour()
 
 
 def test_offset_timezone_session_hour_is_utc_not_local() -> None:

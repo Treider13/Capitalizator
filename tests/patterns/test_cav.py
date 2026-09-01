@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from capitalizator.patterns.cav import label
@@ -359,13 +359,13 @@ def test_foreign_symbol_and_tf_do_not_feed_atr() -> None:
                 close=Decimal("101"),
             )
         )
-        ht = start.replace(hour=i % 12)
+        ht = start + timedelta(hours=i)
         hourly.append(
             Bar(
                 symbol="BTCUSDT",
                 tf="1h",
                 open_ts=ht,
-                close_ts=ht.replace(minute=59),
+                close_ts=ht + timedelta(minutes=59),
                 open=Decimal("101"),
                 high=Decimal("102"),
                 low=Decimal("100"),
