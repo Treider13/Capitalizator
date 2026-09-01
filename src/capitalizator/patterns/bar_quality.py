@@ -97,12 +97,13 @@ def last_gap_segment(
 
 
 def atr(bars: Sequence[Bar], n: int = ATR_N) -> Decimal | None:
-    """Mean true range over the last n steps (same formula CAV already used). Needs n+1 bars."""
+    """Mean true range over the last n steps in close-time order. Needs n+1 bars."""
     if n <= 0:
         raise ValueError("atr n must be > 0")
-    if len(bars) < n + 1:
+    ordered = sorted(bars, key=lambda b: (b.close_ts, b.open_ts))
+    if len(ordered) < n + 1:
         return None
-    window = bars[-(n + 1) :]
+    window = ordered[-(n + 1) :]
     total = Decimal("0")
     prev = window[0]
     for bar in window[1:]:

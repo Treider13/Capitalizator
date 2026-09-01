@@ -397,6 +397,34 @@ def test_atr_uses_the_last_window() -> None:
     assert atr(series) == Decimal("2")
 
 
+def test_atr_sorts_before_the_last_window() -> None:
+    """Last 15 in list order is not last in time. An early wide bar at the end must not enter ATR."""
+    tight = [_bar(i, close="101", open_="101") for i in range(15)]
+    early = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 8, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 8, 15, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("90"),
+        low=Decimal("80"),
+        close=Decimal("80"),
+    )
+    mixed = tight + [early]
+    last_tr = max(
+        early.high - early.low,
+        abs(early.high - tight[-1].close),
+        abs(early.low - tight[-1].close),
+    )
+    list_order = (Decimal("2") * Decimal("13") + last_tr) / Decimal("14")
+    assert mixed[-1].close == Decimal("80")
+    assert list_order == Decimal("47") / Decimal("14")
+    assert atr(tight) == Decimal("2")
+    assert atr([early] + tight) == Decimal("2")
+    assert atr(mixed) == Decimal("2")
+    assert atr(mixed) != list_order
+
+
 def test_atr_is_mean_true_range_not_median_or_high_low() -> None:
     """14% open is not a gap. TR=14 then 13×2: mean 40/14. Median TR=2. Mean high-low=27/14."""
     start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)

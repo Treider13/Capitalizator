@@ -701,6 +701,14 @@ def test_stagnant_would_be_reject_is_noise() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
 
 
+def test_stagnant_with_us_htf_is_still_noise() -> None:
+    """HTF with-us is not a quality bypass. Stagnant reject-shape + long is still NOISE."""
+    closed = [_hist(i, close="100.1") for i in range(4)]
+    bar = _bar(low="99.9", high="100.5", close="100.1")
+    assert label(ZONE, bar, t=T, htf_bias="long") == "REJECT"
+    assert label(ZONE, bar, t=T, htf_bias="long", closed_bars=closed) == "NOISE"
+
+
 def test_stagnant_would_be_through_is_noise() -> None:
     """Quality is not only a REJECT gate. A dead through-bar is still NOISE."""
     closed = [_hist(i, close="99.8") for i in range(4)]
