@@ -106,6 +106,40 @@ def test_htf_with_us_still_compresses() -> None:
     assert label(ZONE, bar, t=T, htf_bias="long", closed_bars=_atr15()) == "COMPRESS"
 
 
+def test_htf_unknown_still_through() -> None:
+    """unknown is not against. Dropping it from the allow-set would NOISE a real THROUGH."""
+    bar = _bar(low="99.5", high="100.1", close="99.8")
+    assert label(ZONE, bar, t=T, htf_bias="unknown") == "THROUGH"
+
+
+def test_htf_with_us_still_through() -> None:
+    bar = _bar(low="99.5", high="100.1", close="99.8")
+    assert label(ZONE, bar, t=T, htf_bias="long") == "THROUGH"
+
+
+def test_resistance_htf_against_is_noise() -> None:
+    """Resistance bounce is short. Hardcoding against==short would miss long."""
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    reject = _bar(low="99.8", high="100.4", close="100.1")
+    through = _bar(low="100.1", high="100.4", close="100.3")
+    tight = _bar(low="100.05", high="100.15", close="100.10")
+    assert label(res, reject, t=T, htf_bias="box") == "REJECT"
+    assert label(res, reject, t=T, htf_bias="long") == "NOISE"
+    assert label(res, through, t=T, htf_bias="box") == "THROUGH"
+    assert label(res, through, t=T, htf_bias="long") == "NOISE"
+    assert label(res, tight, t=T, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
+    assert label(res, tight, t=T, htf_bias="long", closed_bars=_atr15()) == "NOISE"
+    assert label(res, tight, t=T, htf_bias="short", closed_bars=_atr15()) == "COMPRESS"
+
+
 def test_mid_range_miss_is_noise() -> None:
     bar = _bar(low="110", high="111", close="110.5")
     assert label(ZONE, bar, t=T, htf_bias="box") == "NOISE"

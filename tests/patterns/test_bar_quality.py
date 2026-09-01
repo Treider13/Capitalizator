@@ -97,6 +97,16 @@ def test_same_close_ts_twin_is_not_a_stagnant_prior() -> None:
     assert classify_bar_quality(hist + [twin], current, t=T) == LIVE
 
 
+def test_same_close_ts_twin_is_not_an_illiquid_prior() -> None:
+    """A twin zero-vol bar with the current close_ts is not the neighbor."""
+    current = _bar(5, close="101", volume=Decimal("0"))
+    twin = _bar(5, close="100", volume=Decimal("0"))
+    assert twin.close_ts == current.close_ts
+    assert twin is not current
+    assert classify_bar_quality([], current, t=T) == LIVE
+    assert classify_bar_quality([twin], current, t=T) == LIVE
+
+
 def test_stagnant_is_the_last_five_closes() -> None:
     """Five equal closes in the series is not enough if the last five are broken."""
     hist = [_bar(i, close="100") for i in range(4)] + [_bar(4, close="101")]
