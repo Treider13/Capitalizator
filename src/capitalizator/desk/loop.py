@@ -153,10 +153,13 @@ class DeskLoop:
         return raw == "on"
 
     def persist_zones(self, zones: Sequence[Zone]) -> None:
-        if not self.knowledge.available():
+        if not self.knowledge.available() or not zones:
             return
         vote = self.config.working_tf
+        symbols = {z.symbol for z in zones}
         for row in self.knowledge.list_zones():
+            if str(row.get("symbol") or "") not in symbols:
+                continue
             method = str(row.get("method") or "")
             if method not in MAP_VOTE_METHODS:
                 continue

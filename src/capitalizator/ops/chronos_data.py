@@ -170,13 +170,16 @@ def zones_for(vault: Vault, *, symbol: str, now: datetime | None = None) -> list
     finally:
         knowledge.close()
     vote = load_registry().working_tf
-    stale_map = any(
-        str(row.get("method") or "") in MAP_VOTE_METHODS
-        and str(row.get("tf") or "") != vote
+    kept = [
+        row
         for row in stored
-    )
-    if stored and not stale_map:
-        return stored
+        if not (
+            str(row.get("method") or "") in MAP_VOTE_METHODS
+            and str(row.get("tf") or "") != vote
+        )
+    ]
+    if kept:
+        return kept
     when = now or datetime.now(tz=UTC)
     events = [e for e in load_tape(vault.tape) if e.symbol == symbol and e.stream == "trades"]
     raw_bars = closed_bars_from_trades(
