@@ -5,10 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
-
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from capitalizator.ops.check_uptime import check_uptime, load_events, main
 from capitalizator.recorder.sink_parquet import SCHEMA, ParquetSink

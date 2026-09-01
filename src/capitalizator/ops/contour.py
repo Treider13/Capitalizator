@@ -211,7 +211,9 @@ def observe(
 
     One ObserveIn is one book / one bar. Several unlabeled touches without
     touch_id is an error — we do not paint a later print with an earlier book.
-    A bar of another symbol is an error. Missing BTC does not stamp jury.
+    A bar of another symbol is an error. mid == print is an error before
+    any fill — ZLG cannot split in/back, and we must not leave a half-card.
+    Missing BTC does not stamp jury.
     n_cav / n_zlg count only the same symbol — ETH history does not unlock BTC.
     """
     if not contour_on:
