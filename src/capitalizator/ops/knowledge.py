@@ -737,6 +737,18 @@ class Knowledge:
     def put_zone(self, zone_id: str, payload: Mapping[str, Any]) -> None:
         self._put_keyed_payload("zone", "zone_id", zone_id, payload)
 
+    def drop_zone(self, zone_id: str) -> None:
+        """Remove one zone row. PK is zone_id; a tf change is a new row, not REPLACE."""
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            self._cx.execute("DELETE FROM zone WHERE zone_id = ?", (str(zone_id),))
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+
     def list_zones(self, *, symbol: str | None = None) -> list[dict[str, Any]]:
         rows = self._list_payloads("zone")
         if symbol is None:

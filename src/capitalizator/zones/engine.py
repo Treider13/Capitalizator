@@ -10,6 +10,9 @@ from capitalizator.types import require_utc
 from capitalizator.zones.config import RegistryConfig, load_registry
 from capitalizator.zones.model import Bar, Zone, ZoneMethod, ZoneSide
 
+# Levels whose price comes from a day/session/card, but CAV votes working_tf.
+MAP_VOTE_METHODS = frozenset({"prior_day_hl", "prior_session_hl", "vp_hyp"})
+
 
 class ZoneEngine:
     """prior_day_hl + last confirmed swing. Methods not in the enum cannot exist.

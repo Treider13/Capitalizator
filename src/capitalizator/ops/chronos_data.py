@@ -17,7 +17,8 @@ from capitalizator.ops.gates_from_sqlite import gates_from_sqlite
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import Vault
 from capitalizator.risk.session import MSK, load_time_config
-from capitalizator.zones.engine import ZoneEngine
+from capitalizator.zones.config import load_registry
+from capitalizator.zones.engine import MAP_VOTE_METHODS, ZoneEngine
 from capitalizator.zones.model import Bar
 
 
@@ -168,12 +169,18 @@ def zones_for(vault: Vault, *, symbol: str, now: datetime | None = None) -> list
         stored = knowledge.list_zones(symbol=symbol) if knowledge.available() else []
     finally:
         knowledge.close()
-    if stored:
+    vote = load_registry().working_tf
+    stale_map = any(
+        str(row.get("method") or "") in MAP_VOTE_METHODS
+        and str(row.get("tf") or "") != vote
+        for row in stored
+    )
+    if stored and not stale_map:
         return stored
     when = now or datetime.now(tz=UTC)
     events = [e for e in load_tape(vault.tape) if e.symbol == symbol and e.stream == "trades"]
     raw_bars = closed_bars_from_trades(
-        events, symbol=symbol, tf="15m", now=when, already=set()
+        events, symbol=symbol, tf=vote, now=when, already=set()
     )
     built = ZoneEngine(tick_size=Decimal("0.1")).build(symbol, when, raw_bars)
     return [
