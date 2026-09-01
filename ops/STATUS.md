@@ -1,6 +1,6 @@
 # Статус шагов (честно)
 
-Дата проверки: 2026-09-01. Локально: **851 passed, 2 skipped** (skip = нет egress на `api.bybit.com`; нет бинаря gitleaks). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
+Дата проверки: 2026-09-01. Локально: **854 passed, 2 skipped** (skip = нет egress на `api.bybit.com`; нет бинаря gitleaks). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
 |---|---|---|---|
