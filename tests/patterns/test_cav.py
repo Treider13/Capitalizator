@@ -714,6 +714,34 @@ def test_small_range_inside_zone_is_compress() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
 
 
+def test_tight_range_close_on_zone_lo_is_compress() -> None:
+    """COMPRESS allows close on the edge. `lo < close < hi` would leave this DRIFT."""
+    bar = _bar(low="100.0", high="100.15", close="100")
+    assert bar.close == ZONE.lo
+    assert bar.low >= ZONE.lo
+    assert (bar.high - bar.low) < Decimal("2")
+    assert label(ZONE, bar, t=T, htf_bias="box") == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
+
+
+def test_tight_range_close_on_resistance_hi_is_compress() -> None:
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    bar = _bar(low="100.05", high="100.2", close="100.2")
+    assert bar.close == res.hi
+    assert bar.high <= res.hi
+    assert (bar.high - bar.low) < Decimal("2")
+    assert label(res, bar, t=T, htf_bias="box") == "DRIFT"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
+
+
 def test_tight_range_close_above_zone_is_not_compress() -> None:
     """COMPRESS needs close inside. A touch with range < ATR and close above the box is NOISE."""
     bar = _bar(low="100.15", high="100.25", close="100.22")
