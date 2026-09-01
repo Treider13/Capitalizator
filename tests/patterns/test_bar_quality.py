@@ -205,6 +205,63 @@ def test_last_gap_segment_empty_when_current_jumps() -> None:
     assert len(last_gap_segment(priors, cont, t=T)) == 15
 
 
+def test_wrong_tf_zero_volume_is_not_illiquid() -> None:
+    """One 1h zero-vol bar closed before current would be illiquid if tf filter dropped."""
+    ts = datetime(2026, 8, 29, 0, 0, tzinfo=UTC)
+    hist = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="1h",
+            open_ts=ts,
+            close_ts=ts + timedelta(hours=1),
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=Decimal("0"),
+        )
+    ]
+    current = _bar(10, close="101", volume=Decimal("0"))
+    assert hist[0].close_ts < current.close_ts
+    assert prior_same_tf(hist, current, t=T) == []
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
+def test_other_symbol_zero_volume_is_not_illiquid() -> None:
+    hist = [_bar(0, close="100", symbol="ETHUSDT", volume=Decimal("0"))]
+    current = _bar(1, close="101", volume=Decimal("0"))
+    assert prior_same_tf(hist, current, t=T) == []
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
+def test_later_zero_volume_is_not_illiquid() -> None:
+    hist = [_bar(6, close="100", volume=Decimal("0"))]
+    current = _bar(4, close="101", volume=Decimal("0"))
+    assert hist[0].close_ts > current.close_ts
+    assert hist[0].close_ts < T
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
+def test_unclosed_prior_does_not_make_stagnant() -> None:
+    """A forming bar in history is not a close fact. 3 closed + unclosed + current = 4."""
+    hist = [_bar(i, close="100") for i in range(3)]
+    hist.append(
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=T - timedelta(minutes=15),
+            close_ts=T,
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+        )
+    )
+    current = _bar(4, close="100")
+    assert hist[-1].close_ts >= T
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
 def test_wrong_tf_is_not_a_stagnant_prior() -> None:
     """4 same-symbol 1h closes before the 15m bar would be stagnant if tf filter dropped.
 

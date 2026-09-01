@@ -227,6 +227,62 @@ def _hist(i: int, *, close: str = "101", volume: Decimal | None = None) -> Bar:
     )
 
 
+def test_hourly_same_close_does_not_make_reject_noise() -> None:
+    """4 same-symbol 1h closes equal to the reject close → stagnant NOISE if tf filter dropped."""
+    hourly = []
+    for i in range(4):
+        ht = datetime(2026, 8, 29, 0, 0, tzinfo=UTC) + timedelta(hours=i)
+        hourly.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ht,
+                close_ts=ht + timedelta(hours=1),
+                open=Decimal("100.1"),
+                high=Decimal("101.1"),
+                low=Decimal("99.1"),
+                close=Decimal("100.1"),
+            )
+        )
+    bar = _bar(low="99.9", high="100.5", close="100.1")
+    assert sum(1 for b in hourly if b.close_ts < bar.close_ts) == 4
+    assert prior_same_tf(hourly, bar, t=T) == []
+    assert label(ZONE, bar, t=T, htf_bias="box") == "REJECT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=hourly) == "REJECT"
+
+
+def test_hourly_zero_volume_does_not_make_reject_noise() -> None:
+    """1h zero-vol + reject zero-vol → illiquid NOISE if tf filter dropped."""
+    ht = datetime(2026, 8, 29, 0, 0, tzinfo=UTC)
+    hourly = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="1h",
+            open_ts=ht,
+            close_ts=ht + timedelta(hours=1),
+            open=Decimal("101"),
+            high=Decimal("102"),
+            low=Decimal("100"),
+            close=Decimal("101"),
+            volume=Decimal("0"),
+        )
+    ]
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert hourly[0].close_ts < bar.close_ts
+    assert prior_same_tf(hourly, bar, t=T) == []
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=hourly) == "REJECT"
+
+
 def test_stagnant_would_be_reject_is_noise() -> None:
     closed = [_hist(i, close="100.1") for i in range(4)]
     bar = _bar(low="99.9", high="100.5", close="100.1")

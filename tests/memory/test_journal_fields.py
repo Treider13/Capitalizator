@@ -12,6 +12,7 @@ import pytest
 from capitalizator.jury import desk
 from capitalizator.memory.hashlog import touch_payload
 from capitalizator.memory.registry import Registry, Touch
+from capitalizator.patterns.bar_quality import QUALITY_LABELS
 from capitalizator.types import MarketEvent
 from capitalizator.zones.model import Zone
 
@@ -88,6 +89,14 @@ def test_unknown_quality_rejected() -> None:
     reg = _reg()
     with pytest.raises(ValueError, match="bar_quality"):
         reg.fill_bar_quality(quality="gap")
+
+
+def test_fill_quality_accepts_exactly_quality_labels() -> None:
+    """Registry set must stay the same three labels classify_bar_quality returns."""
+    assert QUALITY_LABELS == frozenset({"live", "stagnant", "illiquid"})
+    reg = _reg()
+    for quality in sorted(QUALITY_LABELS):
+        assert reg.fill_bar_quality(quality=quality)[0].bar_quality == quality
 
 
 def test_w_rank_outside_unit_rejected() -> None:

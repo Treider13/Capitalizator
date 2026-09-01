@@ -53,10 +53,21 @@ def test_width_from_history_uses_post_gap_segment() -> None:
     hist = [_bar(i) for i in range(15)]
     bar = _bar(20, high="100.2", low="100.1")
     assert width_now_from_history(bar, hist, t=NOW) == Decimal("0.1") / Decimal("2")
-    gapped = [_bar(0, open_="80", close="80", high="81", low="79")] + [
-        _bar(i + 1, open_="101", close="101") for i in range(3)
-    ]
+    # 17 pre-gap + 3 post-gap = 20. Combined ATR exists; a 4-bar fixture
+    # would be None even without a split and does not lock the cut.
+    pre = [_bar(i, open_="80", close="80", high="81", low="79") for i in range(17)]
+    post = [_bar(i, open_="101", close="101") for i in range(17, 20)]
+    gapped = pre + post
+    assert len(gapped) == 20
+    assert atr(gapped) is not None
+    assert abs(bar.open - post[-1].close) / post[-1].close < Decimal("0.15")
+    assert len(last_gap_segment(gapped, bar, t=NOW)) == 3
     assert width_now_from_history(bar, gapped, t=NOW) is None
+    long_post = [_bar(i, open_="80", close="80", high="81", low="79") for i in range(5)] + [
+        _bar(i, open_="101", close="101") for i in range(5, 20)
+    ]
+    assert len(last_gap_segment(long_post, bar, t=NOW)) == 15
+    assert width_now_from_history(bar, long_post, t=NOW) == Decimal("0.1") / Decimal("2")
 
 
 def test_unclosed_bar_has_no_width() -> None:
