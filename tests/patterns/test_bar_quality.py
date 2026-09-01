@@ -1643,3 +1643,86 @@ def test_bar_closing_during_current_breaks_stagnant_last_five() -> None:
     assert current.open_ts < mid.close_ts < current.close_ts
     assert classify_bar_quality(hist, current, t=T) == STAGNANT
     assert classify_bar_quality(hist + [mid], current, t=T) == LIVE
+
+
+def test_stagnant_last_five_orders_by_close_not_open() -> None:
+    """101 closes before a long 100. Open-order last-5 still sees 101 → LIVE."""
+    p0 = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 15, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    short_break = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    later = [_bar(i, close="100") for i in (15, 16)]
+    # _bar(15)=15:45-16:00, _bar(16)=16:00-16:15. One more 100 that closes after those.
+    c100 = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 10, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    long_same = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 14, 45, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 12, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    current = _bar(17, close="100")
+    hist = [p0, short_break, *later, c100, long_same]
+    assert short_break.open_ts > long_same.open_ts
+    assert short_break.close_ts < later[0].close_ts < c100.close_ts < long_same.close_ts < current.close_ts
+    assert classify_bar_quality(hist, current, t=T) == STAGNANT
+    assert classify_bar_quality(list(reversed(hist)), current, t=T) == STAGNANT
+
+
+def test_stagnant_last_five_orders_by_close_not_open_keeps_live() -> None:
+    """101 closes last on the early-open long bar. Open-order last-5 drops it → false STAGNANT."""
+    hundreds = [_bar(i, close="100") for i in (14, 15, 16)]
+    extra = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 35, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    long_break = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 14, 45, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 12, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    current = _bar(17, close="100")
+    hist = [extra, *hundreds, long_break]
+    assert long_break.open_ts < extra.open_ts
+    assert extra.close_ts < hundreds[0].close_ts < long_break.close_ts < current.close_ts
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+    assert classify_bar_quality(list(reversed(hist)), current, t=T) == LIVE

@@ -215,6 +215,22 @@ def test_htf_unknown_still_through() -> None:
     assert label(ZONE, bar, t=T, htf_bias="unknown") == "THROUGH"
 
 
+def test_htf_unknown_still_reject() -> None:
+    """unknown is not a THROUGH-only allow. Dropping it would NOISE a real REJECT."""
+    bar = _bar(low="99.9", high="100.5", close="100.1")
+    assert label(ZONE, bar, t=T, htf_bias="unknown") == "REJECT"
+
+
+def test_htf_unknown_still_drift() -> None:
+    bar = _bar(low="100.0", high="101.0", close="100.1")
+    assert label(ZONE, bar, t=T, htf_bias="unknown") == "DRIFT"
+
+
+def test_htf_unknown_still_compress() -> None:
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert label(ZONE, bar, t=T, htf_bias="unknown", closed_bars=_atr15()) == "COMPRESS"
+
+
 def test_htf_with_us_still_through() -> None:
     bar = _bar(low="99.5", high="100.1", close="99.8")
     assert label(ZONE, bar, t=T, htf_bias="long") == "THROUGH"
@@ -241,6 +257,9 @@ def test_resistance_htf_against_is_noise() -> None:
     assert label(res, tight, t=T, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
     assert label(res, tight, t=T, htf_bias="long", closed_bars=_atr15()) == "NOISE"
     assert label(res, tight, t=T, htf_bias="short", closed_bars=_atr15()) == "COMPRESS"
+    assert label(res, reject, t=T, htf_bias="unknown") == "REJECT"
+    assert label(res, through, t=T, htf_bias="unknown") == "THROUGH"
+    assert label(res, tight, t=T, htf_bias="unknown", closed_bars=_atr15()) == "COMPRESS"
 
 
 def test_mid_range_miss_is_noise() -> None:
@@ -3644,3 +3663,88 @@ def test_reject_does_not_go_noise_when_later_close_has_volume() -> None:
     assert short_zero.close_ts < long_vol.close_ts < bar.close_ts
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[long_vol, short_zero]) == "REJECT"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[short_zero, long_vol]) == "REJECT"
+
+
+def test_reject_goes_noise_when_stagnant_last_five_order_by_close_not_open() -> None:
+    """101 closes before a long 100.1. Open-order last-5 still sees 101 → false REJECT."""
+    p0 = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 15, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("101.1"),
+        low=Decimal("99.1"),
+        close=Decimal("100.1"),
+    )
+    short_break = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    later = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=datetime(2026, 8, 30, 15, 45, tzinfo=UTC) + timedelta(minutes=15 * i),
+            close_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC) + timedelta(minutes=15 * i),
+            open=Decimal("100.1"),
+            high=Decimal("101.1"),
+            low=Decimal("99.1"),
+            close=Decimal("100.1"),
+        )
+        for i in range(2)
+    ]
+    tail = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 8, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("101.1"),
+        low=Decimal("99.1"),
+        close=Decimal("100.1"),
+    )
+    long_same = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 14, 45, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 12, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("101.1"),
+        low=Decimal("99.1"),
+        close=Decimal("100.1"),
+    )
+    bar = _bar(low="99.9", high="100.5", close="100.1")
+    hist = [p0, short_break, *later, tail, long_same]
+    assert short_break.open_ts > long_same.open_ts
+    assert short_break.close_ts < later[0].close_ts < tail.close_ts < long_same.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box") == "REJECT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=hist) == "NOISE"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=list(reversed(hist))) == "NOISE"
+
+
+def test_reject_stays_reject_when_breaking_close_is_last_despite_early_open() -> None:
+    """101 closes last on the early-open long bar. Open-order last-5 drops it → false NOISE."""
+    later = [_hist(i, close="100.1") for i in (10, 11, 12, 13)]
+    long_break = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 11, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 10, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    bar = _bar(low="99.9", high="100.5", close="100.1")
+    hist = [*later, long_break]
+    assert long_break.open_ts < later[0].open_ts
+    assert later[-1].close_ts < long_break.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=hist) == "REJECT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=list(reversed(hist))) == "REJECT"
