@@ -87,11 +87,29 @@ def main(argv: list[str] | None = None) -> int:
             server.serve_forever()
         return 0
     if args.minutes and args.minutes > 0:
-        # Live hour is step 0.1.4 green on a VPS. This process does not open WS.
-        raise SystemExit(
-            "live WS hour is not enabled in this binary; "
-            "pass --from-jsonl PATH (public wss is VPS step 0.1.4)"
+        if not args.data_root:
+            raise SystemExit("--data-root is required with --minutes")
+        from capitalizator.recorder.live import run_live
+
+        accepted = run_live(
+            app,
+            minutes=args.minutes,
+            symbol=args.symbol,
+            data_root=Path(args.data_root),
+            stream=args.stream,
         )
+        print(
+            json.dumps(
+                {
+                    "accepted": accepted,
+                    "recording": app.recording,
+                    "readyz": app.readyz(),
+                    "symbol": args.symbol,
+                    "live": True,
+                }
+            )
+        )
+        return 0
     if args.serve:
         server = HTTPServer((args.host, args.port), _handler(app))
         server.serve_forever()
