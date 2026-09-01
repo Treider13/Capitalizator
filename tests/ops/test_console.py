@@ -298,7 +298,7 @@ def test_http_form_enable_redirects(tmp_path: Path) -> None:
         conn.request("GET", "/")
         page = conn.getresponse().read().decode()
         assert "Контур включён" in page
-        assert "Включить контур" not in page
+        assert '<button type="submit">Включить контур</button>' not in page
         conn.close()
         conn = HTTPConnection(host, port, timeout=2)
         conn.request(
@@ -442,6 +442,8 @@ def test_chronos_api_empty_shapes(tmp_path: Path) -> None:
         conn.close()
         assert "ХРОНОС" in page
         assert "Касаний нет" in page
+        assert 'id="contour-box"' in page
+        assert "fib / rsi / fvg / sweep / gex" in page
     finally:
         server.shutdown()
         server.server_close()

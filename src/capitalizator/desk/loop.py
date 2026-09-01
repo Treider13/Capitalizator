@@ -105,6 +105,7 @@ class DeskLoop:
         self.session = SessionWindow()
         self.risk = RiskEngine()
         self.halts = Halts(start_equity=Decimal("100000"))
+        self.macro = MacroRules(enabled=True)
         self.strategy = BounceStrategy(
             risk=self.risk,
             halts=self.halts,
@@ -115,6 +116,7 @@ class DeskLoop:
             require_jury=True,
             check_tape=True,
             check_wall=True,
+            macro=self.macro,
         )
         self.zlg = ZLG(tick_size=tick_size, config=self.config)
         self.tape = TapeClassifier()
@@ -128,7 +130,6 @@ class DeskLoop:
         self.open_card_id: dict[str, str] = {}
         self.walls: dict[str, WallWatch] = {}
         self.prs: dict[str, PRS] = {}
-        self.macro = MacroRules(enabled=True)
         self._width_history: list[WidthSample] = []
 
     def state_for(self, symbol: str) -> SymbolState:

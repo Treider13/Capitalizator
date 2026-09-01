@@ -39,6 +39,10 @@ def unsigned_from_intent(
     qty = payload.get("qty")
     if qty is None:
         qty = "0.001"
+    mult = Decimal(str(payload.get("size_mult") or "1"))
+    if mult <= 0:
+        raise ValueError("size_mult must be > 0")
+    qty = Decimal(str(qty)) * mult
     limit = payload.get("limit_px", payload.get("entry"))
     if limit is None:
         raise ValueError("limit/entry required")

@@ -114,6 +114,11 @@
     <span class="dead">заявка закрыта</span>
     <span class="dead">вход закрыт</span>
   </header>
+  <section id="contour-box" style="margin:8px;">
+    <h2>Контур</h2>
+    <div id="contour-status" class="empty">контур —</div>
+    <div id="contour-action"></div>
+  </section>
   <div class="grid">
     <div class="col">
       <section>
@@ -140,6 +145,7 @@
       <section>
         <h2>Почему сейчас</h2>
         <div class="why" id="why"></div>
+        <div id="unset-atoms" class="empty">fib / rsi / fvg / sweep / gex — нет данных</div>
       </section>
     </div>
   </div>
@@ -253,6 +259,16 @@
       document.getElementById("why").innerHTML = items.map(([k, v]) =>
         `<article><b>${esc(k)}</b><div>${esc(v) || "—"}</div></article>`
       ).join("");
+      const unset = [
+        ["fib", t.fib_trend],
+        ["rsi", t.rsi_value],
+        ["fvg", t.fvg_present],
+        ["sweep", t.sweep_wick],
+        ["gex", t.gex_bg]
+      ];
+      document.getElementById("unset-atoms").textContent = unset
+        .map(([k, v]) => k + " " + (v == null || v === "" ? "нет данных" : String(v)))
+        .join(" · ");
     }
     async function refresh() {
       const [status, bars, zones, book, trades, touch, dash, news, authors, llm, gates, hello] = await Promise.all([
@@ -280,6 +296,32 @@
       const helloEl = document.getElementById("hello");
       helloEl.textContent = h.hello_ok ? "флаг hello, не биржа" : "hello нет (флаг, не биржа)";
       helloEl.className = "pill " + (h.hello_ok ? "ok" : "bad");
+      const contour = st.contour || "off";
+      const hours24 = !!st.hours24;
+      const canEnable = !!st.can_enable;
+      const span = st.hours24_span_s;
+      let contourTxt = "контур " + contour;
+      contourTxt += hours24 ? " · сутки ленты есть" : " · суток ленты нет";
+      if (span != null) contourTxt += " · " + span + " с";
+      document.getElementById("contour-status").textContent = contourTxt;
+      document.getElementById("contour-status").className = contour === "on" ? "pill ok" : "empty";
+      const action = document.getElementById("contour-action");
+      if (contour === "on") {
+        action.innerHTML = "";
+      } else {
+        action.innerHTML = '<button type="button" id="contour-on"' + (canEnable ? "" : " disabled") + ">Включить контур</button>";
+        const btn = document.getElementById("contour-on");
+        if (btn && canEnable) {
+          btn.onclick = async () => {
+            await fetch("/api/contour", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({action: "on"})
+            });
+            refresh();
+          };
+        }
+      }
       const barRows = (bars && bars.bars) || [];
       const zoneRows = (zones && zones.zones) || [];
       paintChart(barRows, zoneRows, touch && touch.touch);
