@@ -1110,6 +1110,30 @@ def test_btc_history_does_not_compress_an_eth_zone() -> None:
     assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=_atr15()) == "DRIFT"
 
 
+def test_15m_history_does_not_compress_a_1h_zone() -> None:
+    """Hardcoded `tf==15m` would COMPRESS a 1h zone. Filter is current.tf, not a fixed working TF."""
+    hourly_zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1h",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.10"),
+        high=Decimal("100.15"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+    )
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=_atr15()) == "DRIFT"
+
+
 def test_future_bar_does_not_create_compress() -> None:
     """14 priors → no ATR. A later bar before t must not complete the window."""
     closed = []

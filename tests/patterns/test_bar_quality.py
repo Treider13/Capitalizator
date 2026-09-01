@@ -180,6 +180,24 @@ def test_btc_history_does_not_stagnate_an_eth_bar() -> None:
     assert classify_bar_quality(hist, _bar(4, close="100"), t=T) == STAGNANT
 
 
+def test_15m_history_does_not_stagnate_a_1h_bar() -> None:
+    """Hardcoded `tf==15m` would STAGNANT a 1h print. Filter is current.tf."""
+    hist = [_bar(i, close="100") for i in range(4)]
+    current = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    assert current.close_ts < T
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+    assert classify_bar_quality(hist, _bar(4, close="100"), t=T) == STAGNANT
+
+
 def test_later_bar_is_not_a_prior() -> None:
     hist = [_bar(i, close="100") for i in range(3)] + [_bar(6, close="100")]
     current = _bar(4, close="100")

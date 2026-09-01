@@ -248,6 +248,26 @@ def test_hourly_history_does_not_make_width() -> None:
     assert width_now_from_history(bar, hourly, t=NOW) is None
 
 
+def test_15m_history_does_not_width_a_1h_bar() -> None:
+    """Hardcoded `tf==15m` would journal 0.1/2 on a 1h bar. Filter is current.tf."""
+    hist = [_bar(i) for i in range(15)]
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 17, 0, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert hourly.close_ts < NOW
+    assert atr(hist) == Decimal("2")
+    assert width_now_from_history(_bar(20, high="100.2", low="100.1"), hist, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert prior_same_tf(hist, hourly, t=NOW) == []
+    assert width_now_from_history(hourly, hist, t=NOW) is None
+
+
 def test_width_uses_last_atr_window_not_the_first() -> None:
     """5 wide + 15 tight: first-15 ATR is 60/14. Last 14 TRs are 2 — w_now must be 0.1/2."""
     start = T0
