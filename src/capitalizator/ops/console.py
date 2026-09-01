@@ -19,7 +19,8 @@ from capitalizator.ops.contour import enable as enable_contour
 from capitalizator.ops.contour import status as contour_status
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
 from capitalizator.ops.knowledge import open_knowledge
-from capitalizator.ops.phase import trading_mode
+from capitalizator.ops.phase import load_phase, trading_mode
+from capitalizator.risk.session import load_time_config
 from capitalizator.ops.product import (
     hello_recorded,
     read_user_mode,
@@ -85,6 +86,19 @@ def _jury_today(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         label = str(row.get("jury") or "—")
         buckets[label] = buckets.get(label, 0) + 1
     return [{"jury": label, "n": n} for label, n in sorted(buckets.items())]
+
+
+def _desk_taps() -> dict[str, Any]:
+    """§7 краны: time.yaml + phase.yaml, read-only, no yaml write."""
+    time_cfg = load_time_config()
+    phase = load_phase()
+    return {
+        "dead_man_s": int(time_cfg["dead_man_s"]),
+        "reconcile_s": int(time_cfg["reconcile_s"]),
+        "first_minute_s": int(time_cfg["first_minute_s"]),
+        "max_lev": int(phase["max_lev"]),
+        "target_risk": float(phase["target_risk"]),
+    }
 
 
 def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
@@ -162,6 +176,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
             "live": sum(1 for row in episodes if row.get("mode") == "live"),
             "overlay": overlays,
         },
+        "taps": _desk_taps(),
     }
     text = json.dumps(snap, ensure_ascii=False)
     if contains_advice(text):
@@ -222,6 +237,7 @@ def _page(snap: dict[str, Any]) -> str:
     else:
         jury_html = '<li class="empty">жюри дня пусто</li>'
     vs = snap.get("shadow_vs_demo_vs_live") or {}
+    taps = snap.get("taps") or {}
     tape_holes = int(snap.get("tape_holes") or 0)
     report = html.escape(str(snap["report"]))
     contour = html.escape(str(snap["contour"]))
@@ -366,6 +382,16 @@ def _page(snap: dict[str, Any]) -> str:
     <section class="card">
       <h2>Жюри дня</h2>
       <ul>{jury_html}</ul>
+    </section>
+    <section class="card">
+      <h2>Краны</h2>
+      <ul>
+        <li>dead_man_s: {int(taps.get("dead_man_s") or 0)}</li>
+        <li>reconcile_s: {int(taps.get("reconcile_s") or 0)}</li>
+        <li>first_minute_s: {int(taps.get("first_minute_s") or 0)}</li>
+        <li>max_lev: {int(taps.get("max_lev") or 0)}</li>
+        <li>target_risk: {html.escape(str(taps.get("target_risk") if taps.get("target_risk") is not None else "—"))}</li>
+      </ul>
     </section>
     <section class="card wide">
       <h2>Вселенная · {int(snap.get("n_symbols") or 0)}</h2>

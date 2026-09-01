@@ -1,8 +1,9 @@
 """Percent-Time Frontier. ρ = E[R] × risk% / hours the class occupied.
 
-INVENTION-JURY / PHASE-BUILD: this is the only % race we may run.
-It is not a world PnL rank. n<20 → ρ unknown. n<139 → cannot pick a class.
-Does not raise account risk to inflate ρ.
+Plan §6.12: PTF is ρ only. pickable only when n≥20 *and* the operator is
+in Real (in_real=True). n<20 → ρ unknown. PHASE-BUILD used n=139 as a pick
+gate; that is archive, not the product law. Does not raise account risk
+to inflate ρ.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from decimal import Decimal
 F1_RISK = Decimal("0.01")
 POST_GATE_RISK = Decimal("0.012")
 N_MIN_RHO = 20
+# PHASE-BUILD archive: pick gate was 139. Product plan pick gate is N_MIN_RHO + Real.
 N_MIN_PICK = 139
 WINDOW_H = Decimal("3")
 
@@ -49,6 +51,7 @@ class PtfTable:
         *,
         risk_frac: Decimal = F1_RISK,
         gate_passed: bool = False,
+        in_real: bool = False,
     ) -> PtfRow:
         if stat.n < 0:
             raise ValueError("n must be >= 0")
@@ -67,7 +70,7 @@ class PtfTable:
             hours=stat.hours,
             risk_frac=risk_frac,
             rho=got,
-            pickable=stat.n >= N_MIN_PICK and got is not None and got > 0,
+            pickable=bool(in_real) and stat.n >= N_MIN_RHO and got is not None and got > 0,
         )
 
     def pick(self, rows: list[PtfRow]) -> str | None:

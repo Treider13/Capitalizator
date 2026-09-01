@@ -335,12 +335,25 @@ def test_console_html_has_plan_screen(tmp_path: Path) -> None:
     assert "День учёбы" in page
     assert "Дыры ленты" in page
     assert "тень" in page and "демо" in page and "лайв" in page
+    assert "Краны" in page
+    assert "dead_man_s: 30" in page
+    assert "reconcile_s: 60" in page
+    assert "first_minute_s: 60" in page
+    assert "max_lev: 3" in page
+    assert "target_risk: 0.01" in page
     snap = desk_snapshot(vault)
     assert snap["n_symbols"] == 24
     assert "tape_holes" in snap
     assert "cav_zlg" in snap
     assert "jury_today" in snap
     assert "shadow_vs_demo_vs_live" in snap
+    assert snap["taps"] == {
+        "dead_man_s": 30,
+        "reconcile_s": 60,
+        "first_minute_s": 60,
+        "max_lev": 3,
+        "target_risk": 0.01,
+    }
 
 
 def test_desk_and_signer_are_separate_processes(tmp_path: Path) -> None:
@@ -649,3 +662,30 @@ def test_desk_writes_imbalance_journal_not_entry(tmp_path: Path) -> None:
     assert row is not None
     assert "imbalance" in row
     assert desk.knowledge.pending_intents() == []
+
+
+def test_ptf_pickable_only_n20_and_real() -> None:
+    from capitalizator.champion.ptf import ClassStat, PtfTable
+
+    stat20 = ClassStat(
+        class_id="bounce × REJECT × DEFEND × BTC_box",
+        n=20,
+        avg_r=Decimal("0.5"),
+        hours=Decimal("3"),
+    )
+    assert PtfTable().evaluate(stat20).pickable is False
+    assert PtfTable().evaluate(stat20, in_real=True).pickable is True
+    stat19 = ClassStat(
+        class_id=stat20.class_id,
+        n=19,
+        avg_r=Decimal("0.5"),
+        hours=Decimal("3"),
+    )
+    assert PtfTable().evaluate(stat19, in_real=True).pickable is False
+    stat139 = ClassStat(
+        class_id=stat20.class_id,
+        n=139,
+        avg_r=Decimal("0.5"),
+        hours=Decimal("3"),
+    )
+    assert PtfTable().evaluate(stat139).pickable is False

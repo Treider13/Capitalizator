@@ -1,4 +1,4 @@
-"""PTF: ρ = E[R] × risk% / hours. Empty table is empty. No world rank."""
+"""PTF: ρ = E[R] × risk% / hours. pickable only n≥20 and Real. No world rank."""
 
 from __future__ import annotations
 
@@ -25,6 +25,13 @@ def test_n_below_20_rho_unknown() -> None:
     assert PtfTable().pick([row]) is None
 
 
+def test_n_19_in_real_still_not_pickable() -> None:
+    row = PtfTable().evaluate(_stat(n=19), in_real=True)
+    assert row.rho is None
+    assert row.pickable is False
+    assert PtfTable().pick([row]) is None
+
+
 def test_n_20_formula() -> None:
     row = PtfTable().evaluate(_stat(n=20, avg_r="0.5", hours="3"))
     assert row.rho == rho(Decimal("0.5"), Decimal("0.01"), Decimal("3"))
@@ -32,17 +39,27 @@ def test_n_20_formula() -> None:
     assert row.pickable is False
 
 
-def test_n_138_not_pickable() -> None:
+def test_n_20_in_real_is_pickable() -> None:
+    row = PtfTable().evaluate(_stat(n=20), in_real=True)
+    assert row.rho is not None
+    assert row.rho > 0
+    assert row.pickable is True
+    assert PtfTable().pick([row]) == row.class_id
+
+
+def test_n_138_not_pickable_without_real() -> None:
     row = PtfTable().evaluate(_stat(n=138))
     assert row.rho is not None
     assert row.pickable is False
     assert PtfTable().pick([row]) is None
 
 
-def test_n_139_pickable() -> None:
+def test_n_139_without_real_is_not_pickable() -> None:
+    """PHASE-BUILD n=139 pick gate is archive. Plan: Real + n≥20."""
     row = PtfTable().evaluate(_stat(n=139))
-    assert row.pickable is True
-    assert PtfTable().pick([row]) == row.class_id
+    assert row.rho is not None
+    assert row.pickable is False
+    assert PtfTable().pick([row]) is None
 
 
 def test_world_return_rank_is_none() -> None:
@@ -61,11 +78,13 @@ def test_post_gate_risk_without_flag_raises() -> None:
 
 def test_post_gate_risk_allowed_only_after_gate() -> None:
     row = PtfTable().evaluate(
-        _stat(n=139),
+        _stat(n=20),
         risk_frac=Decimal("0.012"),
         gate_passed=True,
+        in_real=True,
     )
     assert row.rho == Decimal("0.5") * Decimal("0.012") / Decimal("3")
+    assert row.pickable is True
 
 
 def test_hours_beyond_session_window_raises() -> None:
@@ -83,7 +102,7 @@ def test_hours_zero_raises() -> None:
 
 
 def test_negative_rho_is_not_pickable() -> None:
-    row = PtfTable().evaluate(_stat(n=139, avg_r="-0.2"))
+    row = PtfTable().evaluate(_stat(n=20, avg_r="-0.2"), in_real=True)
     assert row.rho is not None
     assert row.rho < 0
     assert row.pickable is False
