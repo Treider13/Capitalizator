@@ -291,7 +291,9 @@
       const px = (st.last_price && (st.last_price[symbol] || Object.values(st.last_price)[0])) || "—";
       document.getElementById("price").textContent = symbol + " " + px;
       const w = st.session_window || {};
-      document.getElementById("window").textContent = "окно " + (w.start || "16:30") + "–" + (w.end || "19:30") + " " + (w.tz || "MSK");
+      document.getElementById("window").textContent = (w.start && w.end)
+        ? ("окно " + w.start + "–" + w.end + " " + (w.tz || ""))
+        : "окно —";
       const h = hello || {};
       const helloEl = document.getElementById("hello");
       helloEl.textContent = h.hello_ok ? "флаг hello, не биржа" : "hello нет (флаг, не биржа)";

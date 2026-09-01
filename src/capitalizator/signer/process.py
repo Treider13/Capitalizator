@@ -39,7 +39,10 @@ def unsigned_from_intent(
     qty = payload.get("qty")
     if qty is None:
         qty = "0.001"
-    mult = Decimal(str(payload.get("size_mult") or "1"))
+    raw_mult = payload["size_mult"] if "size_mult" in payload else "1"
+    if raw_mult is None:
+        raw_mult = "1"
+    mult = Decimal(str(raw_mult))
     if mult <= 0:
         raise ValueError("size_mult must be > 0")
     qty = Decimal(str(qty)) * mult
