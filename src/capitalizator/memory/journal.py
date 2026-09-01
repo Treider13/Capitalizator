@@ -16,7 +16,7 @@ JOURNAL_KEYS = (
     "poc",
     "vah",
     "val",
-    "fib_trend",
+    "fib_trend",  # schema only — no algorithm in this release
     "fib_in_05_1",
     "fib_in_ote_gold",
     "rsi_tf",

@@ -168,6 +168,7 @@ class BounceStrategy:
         check_tape: bool = True,
         check_wall: bool = True,
         require_jury: bool = False,
+        macro: MacroRules | None = None,
     ) -> None:
         self.risk = risk
         self.halts = halts
@@ -183,7 +184,7 @@ class BounceStrategy:
         self.check_tape = check_tape
         self.check_wall = check_wall
         self.require_jury = require_jury
-        self.macro = MacroRules(enabled=True)
+        self.macro = macro if macro is not None else MacroRules(enabled=True)
         self.btc_veto = BtcVeto()
         self.first_minute = FirstMinute()
 
@@ -356,6 +357,7 @@ class BounceStrategy:
             tp=tp,
             tag=tag,
             qty=qty,
+            size_mult=macro.size_mult,
         )
         self.budget.on_intent()
         return intent

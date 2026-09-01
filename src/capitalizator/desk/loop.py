@@ -13,10 +13,12 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from capitalizator.book.reconstruct import Book, BookDirty
+from capitalizator.book.wall_watch import WallWatch
 from capitalizator.btc.break_def import Break
 from capitalizator.btc.regime import BtcRegime
 from capitalizator.btc.veto import BtcVeto
 from capitalizator.card.build import from_news as card_from_news
+from capitalizator.card.draft import pending_card
 from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.card.live import CardLive, card_is_fresh, touch_line
 from capitalizator.card.volume import snapshot as volume_snapshot
@@ -37,15 +39,20 @@ from capitalizator.jury.desk import (
 from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
 from capitalizator.news_macro.ingest import NewsRow
+from capitalizator.news_macro.rules import MacroRules
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
+from capitalizator.patterns.bar_quality import classify_bar_quality
 from capitalizator.patterns.cav import label as cav_label
+from capitalizator.patterns.width import WidthSample, width_now_from_history, width_rank
+from capitalizator.prs.score import PRS
 from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import RiskEngine
 from capitalizator.risk.session import SessionWindow, in_desk_window
 from capitalizator.tape.classify import TapeClassifier
+from capitalizator.tape.ofi import OFI
 from capitalizator.types import MarketEvent, require_utc
 from capitalizator.zlg.gesture import ZLG, BookAdd
 from capitalizator.zones.config import load_registry
@@ -66,6 +73,7 @@ class SymbolState:
     trades: list[MarketEvent] = field(default_factory=list)
     bars: list[Bar] = field(default_factory=list)
     last_touch: Touch | None = None
+    book_history: list[tuple[datetime, Book]] = field(default_factory=list)
 
 
 @dataclass
@@ -100,6 +108,7 @@ class DeskLoop:
         self.session = SessionWindow()
         self.risk = RiskEngine()
         self.halts = Halts(start_equity=Decimal("100000"))
+        self.macro = MacroRules(enabled=True)
         self.strategy = BounceStrategy(
             risk=self.risk,
             halts=self.halts,
@@ -110,6 +119,7 @@ class DeskLoop:
             require_jury=True,
             check_tape=True,
             check_wall=True,
+            macro=self.macro,
         )
         self.zlg = ZLG(tick_size=tick_size, config=self.config)
         self.tape = TapeClassifier()
@@ -120,6 +130,11 @@ class DeskLoop:
         self.manager = TradeManager()
         self.spot = SpotAdapter(knowledge)
         self.shadow_writes: list[dict[str, Any]] = []
+        self.last_price: dict[str, Decimal] = {}
+        self.open_card_id: dict[str, str] = {}
+        self.walls: dict[str, WallWatch] = {}
+        self.prs: dict[str, PRS] = {}
+        self._width_history: list[WidthSample] = []
 
     def state_for(self, symbol: str) -> SymbolState:
         if symbol not in self.symbols:
@@ -130,6 +145,55 @@ class DeskLoop:
 
     def hello_ok(self) -> bool:
         return self.knowledge.meta(META_HELLO) == "1"
+
+    def contour_on(self) -> bool:
+        raw = self.knowledge.meta("contour")
+        return raw == "on"
+
+    def persist_zones(self, zones: Sequence[Zone]) -> None:
+        if not self.knowledge.available():
+            return
+        for zone in zones:
+            self.knowledge.put_zone(
+                zone.zone_id,
+                {
+                    "zone_id": zone.zone_id,
+                    "symbol": zone.symbol,
+                    "tf": zone.tf,
+                    "side": zone.side,
+                    "lo": str(zone.lo),
+                    "hi": str(zone.hi),
+                    "method": zone.method,
+                    "created_as_of": zone.created_as_of.isoformat(),
+                },
+            )
+
+    def _remember_book(self, st: SymbolState, when: datetime) -> None:
+        if not st.book.ready:
+            return
+        st.book_history.append((when, st.book.snapshot_copy()))
+        window = timedelta(seconds=self.config.zlg_window_s)
+        st.book_history = [row for row in st.book_history if when - row[0] <= window]
+        if self.knowledge.available():
+            bids = sorted(
+                ((str(px), str(sz)) for px, sz in st.book.levels("bid").items()),
+                reverse=True,
+            )[:20]
+            asks = sorted((str(px), str(sz)) for px, sz in st.book.levels("ask").items())[:20]
+            self.knowledge.put_book_levels(
+                st.symbol,
+                {"symbol": st.symbol, "bids": bids, "asks": asks, "ts": when.isoformat()},
+            )
+
+    def _wall_for(self, symbol: str) -> WallWatch:
+        if symbol not in self.walls:
+            self.walls[symbol] = WallWatch(symbol, min_size=Decimal("50"))
+        return self.walls[symbol]
+
+    def _prs_for(self, symbol: str) -> PRS:
+        if symbol not in self.prs:
+            self.prs[symbol] = PRS(tick_size=self.tick_size, config=self.config)
+        return self.prs[symbol]
 
     def on_book(self, symbol: str, book: Book) -> None:
         self.state_for(symbol).book = book
@@ -151,6 +215,8 @@ class DeskLoop:
                     asks=asks,
                 )
             )
+            self._remember_book(st, event.exchange_ts)
+            self._wall_for(st.symbol).on_book_and_trade(st.book, ts=event.exchange_ts)
             return
         if event.stream == "book_diff":
             if seq is None:
@@ -163,6 +229,8 @@ class DeskLoop:
                 st.book = Book(tick_size=str(self.tick_size))
                 return
             _record_adds(st, event.exchange_ts, before)
+            self._remember_book(st, event.exchange_ts)
+            self._wall_for(st.symbol).on_book_and_trade(st.book, ts=event.exchange_ts)
             return
 
     def on_add(self, symbol: str, add: BookAdd) -> None:
@@ -286,6 +354,20 @@ class DeskLoop:
         require_utc(trade.exchange_ts)
         st = self.state_for(trade.symbol)
         st.trades.append(trade)
+        try:
+            px = Decimal(str(trade.payload["px"]))
+            if px > 0:
+                self.last_price[trade.symbol] = px
+                if self.knowledge.available():
+                    self.knowledge.put_last_price(trade.symbol, str(px))
+        except (KeyError, ArithmeticError):
+            pass
+        if zones:
+            self.persist_zones(zones)
+        if st.book.ready:
+            self._wall_for(st.symbol).on_book_and_trade(
+                st.book, trade, ts=trade.exchange_ts
+            )
         opened = self.registry.on_trade(trade, zones)
         if not opened:
             return []
@@ -656,6 +738,8 @@ class DeskLoop:
         )
         row = stamped[0] if stamped else live
         first = resolve_first_fact(row.gesture, n_zlg)
+        self._stamp_journal_atoms(st, bar, zone, row, closed_at)
+        row = next(t for t in self.registry.touches if t.touch_id == row.touch_id)
         voice_fn = {
             "bounce": voices_for_bounce,
             "breakout": voices_for_breakout,
@@ -678,6 +762,9 @@ class DeskLoop:
         jury = decide(voices)
         picture = picture_for(idea)
         card_id = None if card is None else card.card_id
+        if card_id:
+            self.open_card_id[st.symbol] = card_id
+            self._persist_card(card_id, idea, st.symbol, row.ts)
         shadow_would = jury == "ACCORD"
         shadow_side = None
         shadow_tag = None
@@ -755,6 +842,21 @@ class DeskLoop:
         if book.ready:
             imb = book.imbalance(5)
         line = touch_line(symbol=st.symbol, card=card, jury=jury)
+        eaten_qty = None
+        if book.ready:
+            try:
+                eaten_qty = str(
+                    self.tape.eaten_qty(
+                        book=book,
+                        trades=st.trades,
+                        zone=zone,
+                        t0=row.ts,
+                        tick_size=self.tick_size,
+                        config=self.config,
+                    )
+                )
+            except ValueError:
+                eaten_qty = None
         extra = {
             "touch_id": row.touch_id,
             "symbol": st.symbol,
@@ -765,6 +867,7 @@ class DeskLoop:
             "macro_multiplier": None if card is None else str(card.macro_multiplier),
             "ob_status": None if card is None else card.ob_status,
             "bos_status": None if card is None else card.bos_status,
+            "tape_eaten_qty": eaten_qty,
         }
         self.knowledge.put_journal_touch(row.touch_id, {**journal, **extra})
         payload = {"touch_id": row.touch_id, "jury": jury, "shadow_would": shadow_would}
@@ -834,6 +937,82 @@ class DeskLoop:
             }
         ]
 
+    def _stamp_journal_atoms(
+        self,
+        st: SymbolState,
+        bar: Bar,
+        zone: Zone,
+        row: Touch,
+        closed_at: datetime,
+    ) -> None:
+        """Fill journal-only voices. Does not change jury inputs already stamped."""
+        quality = classify_bar_quality(st.bars, bar, t=closed_at)
+        self.registry.fill_bar_quality(quality=quality, touch_id=row.touch_id)
+        w_now = width_now_from_history(bar, st.bars, t=closed_at)
+        w_rank = None
+        if w_now is not None:
+            w_rank = width_rank(
+                zone_id=zone.zone_id,
+                now=row.ts,
+                w_now=w_now,
+                history=self._width_history,
+            )
+            self._width_history.append(
+                WidthSample(zone_id=zone.zone_id, ts=row.ts, w_now=w_now)
+            )
+        self.registry.fill_width(w_now=w_now, w_rank=w_rank, touch_id=row.touch_id)
+        ofi_val = None
+        books = [copy for _, copy in st.book_history if copy.ready]
+        if len(books) >= 2:
+            try:
+                ofi_val = str(OFI().window(st.trades, books))
+            except ValueError:
+                ofi_val = None
+        wall_state = None
+        events = self.walls.get(st.symbol).events if st.symbol in self.walls else []
+        if events:
+            wall_state = events[-1].kind
+        prs_tau = None
+        src = None
+        for trade in reversed(st.trades):
+            if trade.exchange_ts == row.ts:
+                src = trade
+                break
+        if src is not None and st.book_pre is not None and st.book_pre.ready:
+            try:
+                result = self._prs_for(st.symbol).compute(src, st.book_pre, st.book_history)
+                self.registry.fill_prs(prs_y=result.Y, touch_id=row.touch_id)
+                prs_tau = str(result.tau)
+            except ValueError:
+                pass
+        self.registry._patch(
+            touch_id=row.touch_id,
+            overwrite=True,
+            ofi=ofi_val,
+            wall_state=wall_state,
+            prs_tau=prs_tau,
+        )
+
+    def _persist_card(self, card_id: str, idea: str, symbol: str, when: datetime) -> None:
+        if not self.knowledge.available():
+            return
+        card = pending_card(
+            thesis=f"{idea} {symbol}",
+            as_of=when,
+            card_id=card_id,
+            n_claims=5,
+        )
+        self.knowledge.put_claim(
+            card_id,
+            {
+                "card_id": card_id,
+                "symbol": symbol,
+                "idea": idea,
+                "thesis": card.thesis,
+                "claims": [c.model_dump(mode="json") for c in card.claims],
+            },
+        )
+
     def play(
         self,
         events: Sequence[MarketEvent | dict[str, Any]],
@@ -870,7 +1049,9 @@ class DeskLoop:
                 continue
             advance(event.exchange_ts)
             if event.stream == "trades":
-                out.extend(self.on_event(event, zones_for_trade(self, event, extras)))
+                built = zones_for_trade(self, event, extras)
+                self.persist_zones(built)
+                out.extend(self.on_event(event, built))
             else:
                 out.extend(self.on_event(event))
         if now is not None:

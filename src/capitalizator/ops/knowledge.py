@@ -706,6 +706,79 @@ class Knowledge:
             "r_live": None if row["r_live"] is None else str(row["r_live"]),
         }
 
+    def _put_keyed_payload(
+        self, table: str, key_col: str, key: str, payload: Mapping[str, Any]
+    ) -> None:
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        body = json.dumps(dict(payload), sort_keys=True, ensure_ascii=False, default=str)
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            self._cx.execute(
+                f"INSERT OR REPLACE INTO {table}({key_col}, payload) VALUES (?, ?)",
+                (str(key), body),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+
+    def _list_payloads(self, table: str) -> list[dict[str, Any]]:
+        if self._cx is None:
+            return []
+        rows = self._cx.execute(f"SELECT payload FROM {table}").fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            raw = json.loads(str(row["payload"]))
+            if isinstance(raw, dict):
+                out.append(raw)
+        return out
+
+    def put_zone(self, zone_id: str, payload: Mapping[str, Any]) -> None:
+        self._put_keyed_payload("zone", "zone_id", zone_id, payload)
+
+    def list_zones(self, *, symbol: str | None = None) -> list[dict[str, Any]]:
+        rows = self._list_payloads("zone")
+        if symbol is None:
+            return rows
+        return [row for row in rows if str(row.get("symbol") or "") == symbol]
+
+    def put_claim(self, claim_id: str, payload: Mapping[str, Any]) -> None:
+        self._put_keyed_payload("claim", "id", claim_id, payload)
+
+    def list_claims(self, *, card_id: str | None = None) -> list[dict[str, Any]]:
+        rows = self._list_payloads("claim")
+        if card_id is None:
+            return rows
+        return [row for row in rows if str(row.get("card_id") or "") == card_id]
+
+    def meta_prefix(self, prefix: str) -> dict[str, str]:
+        if self._cx is None or not prefix:
+            return {}
+        rows = self._cx.execute(
+            "SELECT k, v FROM meta WHERE k LIKE ?",
+            (f"{prefix}%",),
+        ).fetchall()
+        return {str(row["k"]): str(row["v"]) for row in rows}
+
+    def last_prices(self) -> dict[str, str]:
+        raw = self.meta_prefix("last_price:")
+        return {key.split(":", 1)[1]: value for key, value in raw.items() if ":" in key}
+
+    def put_last_price(self, symbol: str, price: str) -> None:
+        self.set_meta(f"last_price:{symbol}", str(price))
+
+    def put_book_levels(self, symbol: str, payload: Mapping[str, Any]) -> None:
+        body = json.dumps(dict(payload), sort_keys=True, ensure_ascii=False, default=str)
+        self.set_meta(f"book:{symbol}", body)
+
+    def book_levels(self, symbol: str) -> dict[str, Any] | None:
+        raw = self.meta(f"book:{symbol}")
+        if raw is None:
+            return None
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+
 
 def open_knowledge(vault: Vault, *, create: bool = True) -> Knowledge:
     return Knowledge(vault.db_path, create=create)

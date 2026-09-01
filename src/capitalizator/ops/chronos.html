@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>ХРОНОС — стол</title>
+  <style>
+    :root {
+      --bg: #0b0e11;
+      --card: #12161c;
+      --line: #2b3139;
+      --text: #eaecef;
+      --muted: #848e9c;
+      --ok: #0ecb81;
+      --warn: #f0b90b;
+      --bad: #f6465d;
+      --bid: #0ecb81;
+      --ask: #f6465d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #11161c;
+    }
+    .brand { font-weight: 700; letter-spacing: .12em; font-size: 16px; }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      color: var(--muted);
+    }
+    .pill.ok { color: var(--ok); border-color: #0ecb8155; }
+    .pill.bad { color: var(--bad); border-color: #f6465d55; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1.4fr .9fr;
+      gap: 8px;
+      padding: 8px;
+    }
+    @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+    .col { display: flex; flex-direction: column; gap: 8px; }
+    section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    h2 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
+    .empty { color: var(--muted); }
+    canvas { width: 100%; height: 220px; background: #0e1419; border-radius: 4px; }
+    table { width: 100%; border-collapse: collapse; }
+    td, th { padding: 2px 4px; text-align: right; }
+    th { color: var(--muted); font-weight: 500; }
+    .bid { color: var(--bid); }
+    .ask { color: var(--ask); }
+    .why {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+    }
+    .why article {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px;
+      min-height: 56px;
+    }
+    .why b { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 8px 8px; }
+    .triple { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 0 8px 8px; }
+    .gates { display: flex; gap: 8px; flex-wrap: wrap; }
+    .gate { min-width: 72px; text-align: center; padding: 6px; border-radius: 6px; border: 1px solid var(--line); }
+    .gate.red { color: var(--bad); }
+    .gate.green { color: var(--ok); }
+    button, .dead {
+      background: #1e2329;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 4px 8px;
+    }
+    button:disabled, .dead { opacity: .5; cursor: not-allowed; }
+    button:not(:disabled) { color: var(--text); cursor: pointer; }
+    #service { display: none; }
+    footer { padding: 8px 14px 16px; color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">ХРОНОС</div>
+    <span class="pill">Деривативы · фьючерс</span>
+    <span class="pill">спот не торгуем</span>
+    <span id="mode" class="pill">режим —</span>
+    <span id="price" class="pill">цена —</span>
+    <span id="window" class="pill">окно —</span>
+    <span id="hello" class="pill">hello —</span>
+    <form id="mode-form">
+      <input type="hidden" name="ack" value="1"/>
+      <button type="submit" name="mode" value="off">off</button>
+      <button type="submit" name="mode" value="learn">learn</button>
+      <button type="submit" name="mode" value="demo">demo</button>
+      <button type="submit" name="mode" value="live">live</button>
+    </form>
+    <span class="dead">заявка закрыта</span>
+    <span class="dead">вход закрыт</span>
+  </header>
+  <section id="contour-box" style="margin:8px;">
+    <h2>Контур</h2>
+    <div id="contour-status" class="empty">контур —</div>
+    <div id="contour-action"></div>
+  </section>
+  <div class="grid">
+    <div class="col">
+      <section>
+        <h2>График 15м</h2>
+        <canvas id="chart" width="720" height="220"></canvas>
+        <div id="chart-empty" class="empty">лента пуста — свечей нет</div>
+      </section>
+      <section>
+        <h2>Стакан</h2>
+        <table>
+          <thead><tr><th>bid</th><th>ask</th></tr></thead>
+          <tbody id="book"><tr><td colspan="2" class="empty">стакан пуст</td></tr></tbody>
+        </table>
+      </section>
+      <section>
+        <h2>Лента сделок</h2>
+        <table>
+          <thead><tr><th>время</th><th>цена</th><th>кол-во</th><th>сторона</th></tr></thead>
+          <tbody id="trades"><tr><td colspan="4" class="empty">лента пуста</td></tr></tbody>
+        </table>
+      </section>
+    </div>
+    <div class="col">
+      <section>
+        <h2>Почему сейчас</h2>
+        <div class="why" id="why"></div>
+        <div id="unset-atoms" class="empty">fib / rsi / fvg / sweep / gex — нет данных</div>
+      </section>
+    </div>
+  </div>
+  <div class="row2">
+    <section>
+      <h2>Почему не зашли</h2>
+      <div id="skip" class="empty">Касаний нет</div>
+    </section>
+    <section>
+      <h2>Почему зашли бы</h2>
+      <div id="shadow" class="empty">тени нет</div>
+    </section>
+  </div>
+  <div class="triple">
+    <section>
+      <h2>Новости мира</h2>
+      <div id="news" class="empty">макро-календарь пуст</div>
+    </section>
+    <section>
+      <h2>Люди</h2>
+      <div id="authors" class="empty">постов нет</div>
+    </section>
+    <section>
+      <h2>ИИ</h2>
+      <div id="llm" class="empty">нет данных</div>
+    </section>
+  </div>
+  <section style="margin:0 8px 8px;">
+    <h2>Пороги Ф0–Ф5</h2>
+    <div class="gates" id="gates"></div>
+  </section>
+  {{SERVICE}}
+  <footer>
+    Стол. Торги с консоли нельзя. Сделок нет, пока нет ленты. Ключи сюда не попадают.
+  </footer>
+  <script>
+    const BOOT = {{BOOT}};
+    let symbol = (BOOT.symbols && BOOT.symbols[0]) || "BTCUSDT";
+
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+    }
+    function jget(path) {
+      return fetch(path, {cache: "no-store"}).then(r => r.ok ? r.json() : null).catch(() => null);
+    }
+    function paintChart(bars, zones, touch) {
+      const canvas = document.getElementById("chart");
+      const empty = document.getElementById("chart-empty");
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!bars || !bars.length) {
+        empty.style.display = "block";
+        return;
+      }
+      empty.style.display = "none";
+      const highs = bars.map(b => Number(b.high));
+      const lows = bars.map(b => Number(b.low));
+      let min = Math.min.apply(null, lows);
+      let max = Math.max.apply(null, highs);
+      if (zones && zones[0]) {
+        min = Math.min(min, Number(zones[0].lo));
+        max = Math.max(max, Number(zones[0].hi));
+      }
+      const pad = (max - min) || 1;
+      min -= pad * 0.05; max += pad * 0.05;
+      const w = canvas.width / bars.length;
+      bars.forEach((b, i) => {
+        const o = Number(b.open), h = Number(b.high), l = Number(b.low), c = Number(b.close);
+        const y = v => canvas.height - ((v - min) / (max - min)) * canvas.height;
+        ctx.strokeStyle = c >= o ? "#0ecb81" : "#f6465d";
+        ctx.beginPath();
+        ctx.moveTo(i * w + w / 2, y(h));
+        ctx.lineTo(i * w + w / 2, y(l));
+        ctx.stroke();
+        ctx.fillStyle = ctx.strokeStyle;
+        const top = y(Math.max(o, c)), bot = y(Math.min(o, c));
+        ctx.fillRect(i * w + 1, top, Math.max(w - 2, 1), Math.max(bot - top, 1));
+      });
+      if (zones && zones[0]) {
+        const z = zones[0];
+        const y1 = canvas.height - ((Number(z.hi) - min) / (max - min)) * canvas.height;
+        const y2 = canvas.height - ((Number(z.lo) - min) / (max - min)) * canvas.height;
+        ctx.fillStyle = "rgba(240,185,11,0.15)";
+        ctx.fillRect(0, Math.min(y1, y2), canvas.width, Math.abs(y2 - y1) || 2);
+      }
+      if (touch && touch.trade_px) {
+        const y = canvas.height - ((Number(touch.trade_px) - min) / (max - min)) * canvas.height;
+        ctx.strokeStyle = "#f0b90b";
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+    function whyBox(touch) {
+      const t = touch || {};
+      const claims = (t.claims && t.claims[0] && t.claims[0].claims) || [];
+      const items = [
+        ["жюри", t.jury || "нет касаний"],
+        ["график CAV", t.cav_label || "—"],
+        ["жест ZLG", t.zlg_label || "—"],
+        ["лента", t.tape_eaten_qty != null ? ("съедено " + t.tape_eaten_qty) : (t.tape_eaten == null ? "—" : String(t.tape_eaten))],
+        ["BTC", (t.btc_state || "—") + (t.btc_break_against ? " · слом против" : "")],
+        ["карточка", t.card_id || "—"],
+        ["факты", claims.length ? claims.map(c => c.value).join(", ") : "фактов нет"],
+        ["риск", ""],
+        ["отказы дня", ""]
+      ];
+      document.getElementById("why").innerHTML = items.map(([k, v]) =>
+        `<article><b>${esc(k)}</b><div>${esc(v) || "—"}</div></article>`
+      ).join("");
+      const unset = [
+        ["fib", t.fib_trend],
+        ["rsi", t.rsi_value],
+        ["fvg", t.fvg_present],
+        ["sweep", t.sweep_wick],
+        ["gex", t.gex_bg]
+      ];
+      document.getElementById("unset-atoms").textContent = unset
+        .map(([k, v]) => k + " " + (v == null || v === "" ? "нет данных" : String(v)))
+        .join(" · ");
+    }
+    async function refresh() {
+      const [status, bars, zones, book, trades, touch, dash, news, authors, llm, gates, hello] = await Promise.all([
+        jget("/api/status"),
+        jget("/api/bars?symbol=" + encodeURIComponent(symbol) + "&tf=15m&limit=200"),
+        jget("/api/zones?symbol=" + encodeURIComponent(symbol)),
+        jget("/api/book?symbol=" + encodeURIComponent(symbol)),
+        jget("/api/trades?symbol=" + encodeURIComponent(symbol) + "&limit=50"),
+        jget("/api/touch/latest?symbol=" + encodeURIComponent(symbol)),
+        jget("/api/dashboard"),
+        jget("/api/news"),
+        jget("/api/authors"),
+        jget("/api/llm_summary"),
+        jget("/api/gates"),
+        jget("/api/hello/status")
+      ]);
+      const st = status || BOOT;
+      symbol = (st.symbols && st.symbols[0]) || symbol;
+      document.getElementById("mode").textContent = "режим " + (st.user_mode || "off");
+      const px = (st.last_price && (st.last_price[symbol] || Object.values(st.last_price)[0])) || "—";
+      document.getElementById("price").textContent = symbol + " " + px;
+      const w = st.session_window || {};
+      document.getElementById("window").textContent = (w.start && w.end)
+        ? ("окно " + w.start + "–" + w.end + " " + (w.tz || ""))
+        : "окно —";
+      const h = hello || {};
+      const helloEl = document.getElementById("hello");
+      helloEl.textContent = h.hello_ok ? "флаг hello, не биржа" : "hello нет (флаг, не биржа)";
+      helloEl.className = "pill " + (h.hello_ok ? "ok" : "bad");
+      const contour = st.contour || "off";
+      const hours24 = !!st.hours24;
+      const canEnable = !!st.can_enable;
+      const span = st.hours24_span_s;
+      let contourTxt = "контур " + contour;
+      contourTxt += hours24 ? " · сутки ленты есть" : " · суток ленты нет";
+      if (span != null) contourTxt += " · " + span + " с";
+      document.getElementById("contour-status").textContent = contourTxt;
+      document.getElementById("contour-status").className = contour === "on" ? "pill ok" : "empty";
+      const action = document.getElementById("contour-action");
+      if (contour === "on") {
+        action.innerHTML = "";
+      } else {
+        action.innerHTML = '<button type="button" id="contour-on"' + (canEnable ? "" : " disabled") + ">Включить контур</button>";
+        const btn = document.getElementById("contour-on");
+        if (btn && canEnable) {
+          btn.onclick = async () => {
+            await fetch("/api/contour", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({action: "on"})
+            });
+            refresh();
+          };
+        }
+      }
+      const barRows = (bars && bars.bars) || [];
+      const zoneRows = (zones && zones.zones) || [];
+      paintChart(barRows, zoneRows, touch && touch.touch);
+      const bookBody = document.getElementById("book");
+      const bids = (book && book.bids) || [];
+      const asks = (book && book.asks) || [];
+      const n = Math.max(bids.length, asks.length, 1);
+      if (!bids.length && !asks.length) {
+        bookBody.innerHTML = '<tr><td colspan="2" class="empty">стакан пуст</td></tr>';
+      } else {
+        let html = "";
+        for (let i = 0; i < Math.min(n, 12); i++) {
+          const b = bids[i] || ["", ""];
+          const a = asks[i] || ["", ""];
+          html += `<tr><td class="bid">${esc(b[0])} ${esc(b[1])}</td><td class="ask">${esc(a[0])} ${esc(a[1])}</td></tr>`;
+        }
+        bookBody.innerHTML = html;
+      }
+      const tr = (trades && trades.trades) || [];
+      document.getElementById("trades").innerHTML = tr.length
+        ? tr.slice().reverse().map(x => `<tr><td>${esc(x.ts)}</td><td>${esc(x.px)}</td><td>${esc(x.qty)}</td><td>${esc(x.side)}</td></tr>`).join("")
+        : '<tr><td colspan="4" class="empty">лента пуста</td></tr>';
+      const latest = (touch && touch.touch) || null;
+      whyBox(latest);
+      if (dash && dash.risk) {
+        const risk = document.querySelectorAll("#why article")[7];
+        if (risk) risk.innerHTML = `<b>риск</b><div>плечо ${esc(dash.risk.max_lev)} · доля ${esc(dash.risk.target_risk)}</div>`;
+        const refusals = document.querySelectorAll("#why article")[8];
+        if (refusals && dash.today) {
+          refusals.innerHTML = `<b>отказы дня</b><div>касаний ${dash.today.n_touches} · теней ${dash.today.n_shadow} · пропусков ${dash.today.n_skip}</div>`;
+        }
+      }
+      document.getElementById("skip").textContent = latest
+        ? (latest.shadow_would ? "зашли бы в тень" : (latest.skip_reason || "пропуск без причины"))
+        : "Касаний нет";
+      document.getElementById("shadow").textContent = latest && latest.shadow_would
+        ? (latest.shadow_side || "тень") + " · " + (latest.shadow_tag || "")
+        : "тени нет";
+      const newsRows = (news && news.events) || [];
+      document.getElementById("news").innerHTML = newsRows.length
+        ? newsRows.map(n => `<div>${esc(n.class)} ${esc(n.event_time)} ${esc(n.notes || "")}</div>`).join("")
+        : "макро-календарь пуст";
+      const people = (authors && authors.posts) || [];
+      document.getElementById("authors").textContent = people.length ? people.map(p => p.text).join(" · ") : "постов нет";
+      document.getElementById("llm").textContent = (llm && llm.summary) || "нет данных";
+      const g = (gates && gates.phases) || {};
+      document.getElementById("gates").innerHTML = ["f0","f1","f2","f3","f4","f5"].map(k => {
+        const row = g[k] || {};
+        return `<div class="gate ${row.ok ? "green" : "red"}">${k.toUpperCase()} ${row.ok ? "да" : "нет"}</div>`;
+      }).join("");
+    }
+    document.getElementById("mode-form").addEventListener("submit", async ev => {
+      ev.preventDefault();
+      const mode = ev.submitter && ev.submitter.value;
+      await fetch("/api/mode", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({mode, ack: true, learn_n_days: mode === "learn" ? 14 : null})
+      });
+      refresh();
+    });
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

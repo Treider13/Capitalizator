@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from capitalizator.ops import chronos_data
 from capitalizator.ops.contour import ContourNotReady
 from capitalizator.ops.contour import enable as enable_contour
 from capitalizator.ops.contour import status as contour_status
@@ -182,6 +183,9 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         },
         "taps": _desk_taps(),
         "touch": touch_snap,
+        "last_price": chronos_data.last_prices(vault),
+        "session_window": chronos_data.session_window(),
+        "last_jury": chronos_data.last_jury(vault),
     }
     text = json.dumps(snap, ensure_ascii=False)
     if contains_advice(text):
@@ -190,35 +194,30 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
 
 
 def _page(snap: dict[str, Any]) -> str:
-    episodes = snap["episodes"]
-    if episodes:
-        rows_html = "".join(
-            (
-                "<tr>"
-                f"<td>{html.escape(e['trade_id'])}</td>"
-                f"<td>{html.escape(e['mode'])}</td>"
-                f"<td>{html.escape(e['zone_id'][:12])}</td>"
-                f"<td>{html.escape(e['gesture'])}</td>"
-                f"<td>{html.escape(e['r'])}</td>"
-                "</tr>"
-            )
-            for e in episodes
+    template = (Path(__file__).with_name("chronos.html")).read_text(encoding="utf-8")
+    taps = snap.get("taps") or {}
+    hours24 = bool(snap.get("hours24"))
+    can_enable = bool(snap.get("can_enable"))
+    if snap.get("contour") == "on":
+        contour_note = "Контур включён. Метки пишутся. Ордеров нет."
+        contour_form = ""
+    elif hours24:
+        disabled = "" if can_enable else " disabled"
+        contour_note = "Сутки ленты есть. Кнопка включает запись меток, не торги."
+        contour_form = (
+            '<form method="post" action="/contour">'
+            '<input type="hidden" name="action" value="on"/>'
+            f'<button type="submit"{disabled}>Включить контур</button>'
+            "</form>"
         )
     else:
-        rows_html = (
-            '<tr><td colspan="5" class="empty">Сделок нет. Журнал пустой — так и должно быть '
-            "пока нет демо.</td></tr>"
+        contour_note = "Контур выключен. Суток ленты нет."
+        contour_form = (
+            '<form method="post" action="/contour">'
+            '<input type="hidden" name="action" value="on"/>'
+            '<button type="submit" disabled>Включить контур</button>'
+            "</form>"
         )
-    chain = "целая" if snap["hash_chain_ok"] else "сломана"
-    mode = html.escape(str(snap["trading_mode"]))
-    user_mode = html.escape(str(snap.get("user_mode") or "off"))
-    hello_banner = html.escape(str(snap.get("hello_banner") or ""))
-    hello_ok = bool(snap.get("hello_ok"))
-    learn_n = snap.get("learn_n_days")
-    learn_txt = "—" if learn_n is None else str(learn_n)
-    n_touches = int(snap.get("n_touches") or 0)
-    symbols = snap.get("symbols") or []
-    symbols_html = " ".join(f"<span class=\"pill\">{html.escape(str(s))}</span>" for s in symbols)
     cav_rows = snap.get("cav_zlg") or []
     if cav_rows:
         cav_html = "".join(
@@ -242,211 +241,85 @@ def _page(snap: dict[str, Any]) -> str:
     else:
         jury_html = '<li class="empty">жюри дня пусто</li>'
     vs = snap.get("shadow_vs_demo_vs_live") or {}
-    taps = snap.get("taps") or {}
-    tape_holes = int(snap.get("tape_holes") or 0)
-    report = html.escape(str(snap["report"]))
-    contour = html.escape(str(snap["contour"]))
-    hours24 = bool(snap["hours24"])
-    can_enable = bool(snap["can_enable"])
-    touch = snap.get("touch")
-    if touch is None:
-        touch_block = '<p class="empty">касаний нет</p>'
-    else:
-        touch_block = (
-            f"<pre>{html.escape(str(touch.get('text') or touch.get('line') or ''))}</pre>"
-        )
-    hello_txt = hello_banner or "testnet hello есть"
-    vs_line = (
-        f"тень {int(vs.get('shadow') or 0)} · "
-        f"демо {int(vs.get('demo') or 0)} · "
-        f"лайв {int(vs.get('live') or 0)}"
-    )
-    risk_txt = taps.get("target_risk")
-    risk_line = html.escape(str(risk_txt if risk_txt is not None else "—"))
-    if snap["contour"] == "on":
-        contour_note = "Контур включён. Метки пишутся. Ордеров нет."
-        contour_form = ""
-        contour_pill = "ok"
-    elif hours24:
-        contour_note = "Сутки ленты есть. Кнопка включает запись меток, не торги."
-        disabled = "" if can_enable else " disabled"
-        contour_form = (
-            '<form method="post" action="/contour">'
-            '<input type="hidden" name="action" value="on"/>'
-            f'<button type="submit"{disabled}>Включить контур</button>'
-            "</form>"
-        )
-        contour_pill = "ok"
-    else:
-        contour_note = "Контур выключен. Суток ленты нет."
-        contour_form = (
-            '<form method="post" action="/contour">'
-            '<input type="hidden" name="action" value="on"/>'
-            '<button type="submit" disabled>Включить контур</button>'
-            "</form>"
-        )
-        contour_pill = ""
-    return f"""<!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Стол — отчёты</title>
-  <style>
-    :root {{
-      --bg: #0f1419;
-      --card: #1a222c;
-      --line: #2a3542;
-      --text: #e8eef4;
-      --muted: #8b9aab;
-      --ok: #3dba7a;
-      --warn: #e0b44d;
-      --bad: #d45b5b;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0; font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-      background: var(--bg); color: var(--text); line-height: 1.45;
-    }}
-    header {{
-      padding: 28px 32px 12px; border-bottom: 1px solid var(--line);
-    }}
-    header h1 {{ margin: 0; font-size: 22px; font-weight: 600; }}
-    header p {{ margin: 8px 0 0; color: var(--muted); font-size: 14px; }}
-    main {{
-      display: grid; gap: 16px; padding: 24px 32px 48px;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    }}
-    .wide {{ grid-column: 1 / -1; }}
-    .card {{
-      background: var(--card); border: 1px solid var(--line);
-      border-radius: 12px; padding: 18px 20px;
-    }}
-    .card h2 {{ margin: 0 0 12px; font-size: 15px; color: var(--muted); font-weight: 500; }}
-    .num {{ font-size: 28px; font-weight: 650; letter-spacing: -0.03em; }}
-    .pill {{
-      display: inline-block; padding: 2px 8px; border-radius: 999px;
-      font-size: 12px; background: #243041; color: var(--warn);
-    }}
-    .pill.ok {{ color: var(--ok); }}
-    .pill.bad {{ color: var(--bad); }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
-    th, td {{ text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }}
-    th {{ color: var(--muted); font-weight: 500; }}
-    pre {{
-      white-space: pre-wrap; margin: 0; font-family: "IBM Plex Mono", ui-monospace, monospace;
-      font-size: 13px; color: var(--text);
-    }}
-    .empty {{ color: var(--muted); }}
-    button {{
-      margin-top: 10px; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
-      background: #2a3d52; color: var(--text); font-size: 14px; cursor: pointer;
-    }}
-    button:disabled {{ opacity: 0.45; cursor: not-allowed; }}
-    footer {{ padding: 0 32px 32px; color: var(--muted); font-size: 13px; }}
-  </style>
-</head>
-<body>
-  <header>
-    <h1>Стол</h1>
-    <p>Только просмотр. Ордеров отсюда нет. Пустой журнал — честно, не ошибка.</p>
-  </header>
-  <main>
-    <section class="card">
-      <h2>Режим yaml</h2>
-      <div class="num">{mode}</div>
-      <p><span class="pill">торги с консоли нельзя</span></p>
-    </section>
-    <section class="card">
-      <h2>Режим человека</h2>
-      <div class="num">{user_mode}</div>
-      <p><span class="pill {"ok" if hello_ok else "bad"}">{hello_txt}</span></p>
-      <form method="post" action="/api/mode">
-        <input type="hidden" name="ack" value="1"/>
-        <button type="submit" name="mode" value="off">off</button>
-        <button type="submit" name="mode" value="learn">learn</button>
-        <button type="submit" name="mode" value="demo">demo</button>
-        <button type="submit" name="mode" value="live">live</button>
-      </form>
-    </section>
-    <section class="card">
-      <h2>Контур</h2>
-      <div class="num">{contour}</div>
-      <p><span class="pill {contour_pill}">{html.escape(contour_note)}</span></p>
-      {contour_form}
-    </section>
-    <section class="card">
-      <h2>Сделки в журнале</h2>
-      <div class="num">{snap["n_episode"]}</div>
-      <p class="empty">{html.escape(str(snap["honest"]))}</p>
-    </section>
-    <section class="card">
-      <h2>Цепочка знаний</h2>
-      <div class="num">{snap["n_hash"]}</div>
-      <p><span class="pill {"ok" if snap["hash_chain_ok"] else "bad"}">{chain}</span></p>
-    </section>
-    <section class="card">
-      <h2>Лента parquet</h2>
-      <div class="num">{snap["parquet_files"]}</div>
-      <p class="empty">{snap["parquet_rows"]} строк. Дыры ленты: {tape_holes}.</p>
-    </section>
-    <section class="card">
-      <h2>День учёбы</h2>
-      <div class="num">{html.escape(learn_txt)}</div>
-      <p class="empty">n касаний: {n_touches}</p>
-    </section>
-    <section class="card">
-      <h2>Тень / демо / лайв</h2>
-      <p>{vs_line}</p>
-    </section>
-    <section class="card">
-      <h2>Жюри дня</h2>
-      <ul>{jury_html}</ul>
-    </section>
-    <section class="card">
-      <h2>Краны</h2>
-      <ul>
-        <li>dead_man_s: {int(taps.get("dead_man_s") or 0)}</li>
-        <li>reconcile_s: {int(taps.get("reconcile_s") or 0)}</li>
-        <li>first_minute_s: {int(taps.get("first_minute_s") or 0)}</li>
-        <li>max_lev: {int(taps.get("max_lev") or 0)}</li>
-        <li>target_risk: {risk_line}</li>
-      </ul>
-    </section>
-    <section class="card wide">
-      <h2>Вселенная · {int(snap.get("n_symbols") or 0)}</h2>
-      <p>{symbols_html}</p>
-    </section>
-    <section class="card wide">
-      <h2>Касание</h2>
-      {touch_block}
-    </section>
-    <section class="card wide">
+    learn_n = snap.get("learn_n_days")
+    learn_txt = "—" if learn_n is None else str(learn_n)
+    service = f"""<div id="service">
       <h2>CAV × ZLG × outcome</h2>
-      <table>
-        <thead><tr><th>CAV</th><th>ZLG</th><th>outcome</th><th>n</th></tr></thead>
-        <tbody>{cav_html}</tbody>
-      </table>
-    </section>
-    <section class="card wide">
-      <h2>Отчёт · {html.escape(str(snap["report_day"]))}</h2>
-      <pre>{report}</pre>
-    </section>
-    <section class="card wide">
-      <h2>Журнал сделок</h2>
-      <table>
-        <thead><tr><th>id</th><th>режим</th><th>зона</th><th>жест</th><th>R</th></tr></thead>
-        <tbody>{rows_html}</tbody>
-      </table>
-    </section>
-  </main>
-  <footer>
-    С ноута: ssh -L 8082:127.0.0.1:8082 user@vps затем открыть эту страницу.
-    Ключи и секреты сюда не попадают.
-  </footer>
-</body>
-</html>
-"""
+      <table><tbody>{cav_html}</tbody></table>
+      <h2>Жюри дня</h2><ul>{jury_html}</ul>
+      <p>n касаний {int(snap.get("n_touches") or 0)}</p>
+      <p>День учёбы {html.escape(learn_txt)}</p>
+      <p>Дыры ленты {int(snap.get("tape_holes") or 0)}</p>
+      <p>тень {int(vs.get("shadow") or 0)} демо {int(vs.get("demo") or 0)}
+      лайв {int(vs.get("live") or 0)}</p>
+      <p>Краны dead_man_s: {int(taps.get("dead_man_s") or 0)}
+      reconcile_s: {int(taps.get("reconcile_s") or 0)}
+      first_minute_s: {int(taps.get("first_minute_s") or 0)}
+      max_lev: {int(taps.get("max_lev") or 0)}
+      target_risk: {taps.get("target_risk")}</p>
+      <p>{html.escape(contour_note)}</p>
+      {contour_form}
+      <p>{" ".join(html.escape(str(s)) for s in (snap.get("symbols") or []))}</p>
+    </div>"""
+    boot = json.dumps(
+        {
+            "symbols": snap.get("symbols") or [],
+            "user_mode": snap.get("user_mode") or "off",
+            "last_price": snap.get("last_price") or {},
+            "session_window": snap.get("session_window") or {},
+        },
+        ensure_ascii=False,
+    )
+    page = template.replace("{{SERVICE}}", service).replace("{{BOOT}}", boot)
+    return page
+
+
+def _int_arg(qs: dict[str, list[str]], name: str, default: int) -> int:
+    raw = (qs.get(name) or [None])[0]
+    if raw in {None, ""}:
+        return default
+    return int(raw)
+
+
+def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any] | None:
+    symbol = (qs.get("symbol") or [None])[0]
+    if path == "/api/hello/status":
+        return chronos_data.hello_status(vault)
+    if path == "/api/bars":
+        tf = (qs.get("tf") or ["15m"])[0] or "15m"
+        limit = _int_arg(qs, "limit", 200)
+        bars = chronos_data.bars_for(vault, symbol=symbol or "", tf=tf, limit=limit)
+        return {"symbol": symbol or "", "tf": tf, "bars": bars}
+    if path == "/api/zones":
+        return {"symbol": symbol or "", "zones": chronos_data.zones_for(vault, symbol=symbol or "")}
+    if path == "/api/book":
+        return chronos_data.book_for(vault, symbol=symbol or "")
+    if path == "/api/trades":
+        limit = _int_arg(qs, "limit", 50)
+        trades = chronos_data.trades_for(vault, symbol=symbol or "", limit=limit)
+        return {"symbol": symbol or "", "trades": trades}
+    if path == "/api/touch/latest":
+        return {"touch": chronos_data.latest_touch(vault, symbol=symbol)}
+    if path == "/api/dashboard":
+        return chronos_data.dashboard(vault)
+    if path == "/api/news":
+        return {"events": chronos_data.news_rows()}
+    if path == "/api/authors":
+        return {
+            "posts": chronos_data.author_rows(vault),
+            "sources": chronos_data.author_sources(),
+        }
+    if path == "/api/llm_summary":
+        return chronos_data.llm_summary(vault)
+    if path == "/api/gates":
+        from capitalizator.ops.gates_from_sqlite import gates_from_sqlite
+
+        knowledge = open_knowledge(vault, create=False)
+        try:
+            return gates_from_sqlite(knowledge)
+        finally:
+            knowledge.close()
+    return None
 
 
 def render_html(vault: Vault, *, day: str | None = None) -> str:
@@ -651,6 +524,16 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     payload = desk_snapshot(app.vault)
                     body = json.dumps(payload, ensure_ascii=False).encode()
                     code, ctype = 200, "application/json; charset=utf-8"
+                elif path.startswith("/api/"):
+                    payload = _api_get(app.vault, path, parse_qs(parsed.query))
+                    if payload is None:
+                        body, code, ctype = b"not-found", 404, "text/plain; charset=utf-8"
+                    else:
+                        raw = json.dumps(payload, ensure_ascii=False)
+                        if contains_advice(raw):
+                            raise ValueError("console snapshot must not advise")
+                        body = raw.encode()
+                        code, ctype = 200, "application/json; charset=utf-8"
                 elif path in {"/", "/index.html"}:
                     qs = parse_qs(parsed.query)
                     day = qs.get("day", [None])[0]

@@ -83,7 +83,7 @@ class NewsIngest:
         return [r for r in self.rows if r.known_at <= when]
 
 
-def default_macro_path() -> Path | None:
+def default_macro_path() -> Path:
     """`CAPITALIZATOR_MACRO_CSV` or the repo `infra/calendars/macro.csv`."""
     env = (os.environ.get(MACRO_ENV) or "").strip()
     if env:
@@ -92,13 +92,16 @@ def default_macro_path() -> Path | None:
         candidate = parent / "infra" / "calendars" / "macro.csv"
         if candidate.is_file():
             return candidate
-    return None
+    raise FileNotFoundError("infra/calendars/macro.csv not found")
 
 
 def load_desk_calendar(path: Path | str | None = None) -> tuple[NewsRow, ...]:
     """Official macro rows for the desk. Missing file → empty (honest)."""
-    loc = Path(path) if path is not None else default_macro_path()
-    if loc is None or not loc.is_file():
+    try:
+        loc = Path(path) if path is not None else default_macro_path()
+    except FileNotFoundError:
+        return ()
+    if not loc.is_file():
         return ()
     return tuple(NewsIngest.from_csv(loc).rows)
 

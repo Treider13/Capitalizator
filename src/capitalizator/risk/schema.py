@@ -50,6 +50,7 @@ class Intent(BaseModel):
     tp: Decimal
     tag: str
     qty: Decimal | None = None
+    size_mult: Decimal = Field(default=Decimal("1"))
 
     @field_validator("symbol")
     @classmethod
