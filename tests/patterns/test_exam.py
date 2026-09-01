@@ -183,6 +183,34 @@ def test_vol_rank_ic_is_plus_one_and_minus_one() -> None:
     assert -1 <= down_ic < Decimal("-0.999")
 
 
+def test_pnl_share_needs_five_unique_days_not_five_cases() -> None:
+    """5 prints on 4 calendar days must not unlock the share."""
+    rows = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 4, d), pnl=Decimal("1"))
+        for d in (1, 1, 2, 3, 4)
+    ]
+    assert len(rows) == 5
+    assert len({c.day for c in rows}) == 4
+    assert hostile_exam(rows).pnl_share_best_5_days is None
+
+
+def test_pnl_share_sums_two_prints_on_the_same_day() -> None:
+    """Last write on a day would change 99/100 if the fat day was split 90+1."""
+    rows = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 1, d), pnl=pnl)
+        for d, pnl in (
+            (1, Decimal("90")),
+            (1, Decimal("1")),
+            (2, Decimal("1")),
+            (3, Decimal("1")),
+            (4, Decimal("1")),
+            (5, Decimal("1")),
+            (6, Decimal("5")),
+        )
+    ]
+    assert hostile_exam(rows).pnl_share_best_5_days == Decimal("99") / Decimal("100")
+
+
 def test_pnl_share_can_exceed_one_when_a_day_loses() -> None:
     days = [
         ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 3, d), pnl=pnl)
