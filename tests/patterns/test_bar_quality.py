@@ -425,6 +425,91 @@ def test_atr_sorts_before_the_last_window() -> None:
     assert atr(mixed) != list_order
 
 
+def test_atr_rejects_mixed_symbol_and_tf() -> None:
+    """A late ETH wide bar is last in time. Without a same-series guard ATR becomes 47/14."""
+    tight = [_bar(i, close="101", open_="101") for i in range(15)]
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("90"),
+        low=Decimal("80"),
+        close=Decimal("80"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 17, 0, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("90"),
+        low=Decimal("80"),
+        close=Decimal("80"),
+    )
+    last_tr = max(
+        eth.high - eth.low,
+        abs(eth.high - tight[-1].close),
+        abs(eth.low - tight[-1].close),
+    )
+    polluted = (Decimal("2") * Decimal("13") + last_tr) / Decimal("14")
+    assert atr(tight) == Decimal("2")
+    assert polluted == Decimal("47") / Decimal("14")
+    with pytest.raises(ValueError, match="one symbol"):
+        atr(tight + [eth])
+    with pytest.raises(ValueError, match="one"):
+        atr(tight + [hourly])
+
+
+def test_atr_equal_close_ts_orders_by_open() -> None:
+    """Same close_ts: only close_ts sort is stable and keeps list order. Open-order A then B is 75/14."""
+    start = datetime(2026, 8, 30, 8, 0, tzinfo=UTC)
+    tight = []
+    for i in range(13):
+        ts = start + timedelta(minutes=15 * i)
+        tight.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    close_at = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
+    early_open = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=close_at,
+        open=Decimal("80"),
+        high=Decimal("80"),
+        low=Decimal("80"),
+        close=Decimal("80"),
+    )
+    late_open = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 30, tzinfo=UTC),
+        close_ts=close_at,
+        open=Decimal("100"),
+        high=Decimal("110"),
+        low=Decimal("90"),
+        close=Decimal("100"),
+    )
+    expect = Decimal("75") / Decimal("14")
+    list_ba = Decimal("64") / Decimal("14")
+    assert early_open.open_ts < late_open.open_ts
+    assert early_open.close_ts == late_open.close_ts
+    assert atr(tight + [early_open, late_open]) == expect
+    assert atr(tight + [late_open, early_open]) == expect
+    assert expect != list_ba
+
+
 def test_atr_is_mean_true_range_not_median_or_high_low() -> None:
     """14% open is not a gap. TR=14 then 13×2: mean 40/14. Median TR=2. Mean high-low=27/14."""
     start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)

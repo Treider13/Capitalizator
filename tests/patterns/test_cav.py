@@ -82,6 +82,30 @@ def test_close_beyond_support_is_through() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box") == "THROUGH"
 
 
+def test_close_on_zone_lo_is_not_through() -> None:
+    """THROUGH is close beyond the zone. `close <= lo` would fire on the edge."""
+    bar = _bar(low="100.0", high="101.0", close="100")
+    assert bar.close == ZONE.lo
+    assert bar.low >= ZONE.lo
+    assert label(ZONE, bar, t=T, htf_bias="box") == "DRIFT"
+
+
+def test_resistance_close_on_hi_is_not_through() -> None:
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    bar = _bar(low="99.8", high="100.2", close="100.2")
+    assert bar.close == res.hi
+    assert bar.high <= res.hi
+    assert label(res, bar, t=T, htf_bias="box") == "DRIFT"
+
+
 def test_htf_against_is_noise() -> None:
     bar = _bar(low="99.9", high="100.5", close="100.1")
     assert label(ZONE, bar, t=T, htf_bias="short") == "NOISE"
@@ -763,6 +787,24 @@ def test_illiquid_would_be_reject_is_noise() -> None:
         volume=Decimal("0"),
     )
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
+
+
+def test_illiquid_with_us_htf_is_still_noise() -> None:
+    """HTF with-us is not an illiquid bypass. Zero-vol reject-shape + long is still NOISE."""
+    closed = [_hist(0, close="101", volume=Decimal("0"))]
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert label(ZONE, bar, t=T, htf_bias="long") == "REJECT"
+    assert label(ZONE, bar, t=T, htf_bias="long", closed_bars=closed) == "NOISE"
 
 
 def test_illiquid_would_be_through_is_noise() -> None:

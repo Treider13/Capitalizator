@@ -101,6 +101,10 @@ def atr(bars: Sequence[Bar], n: int = ATR_N) -> Decimal | None:
     if n <= 0:
         raise ValueError("atr n must be > 0")
     ordered = sorted(bars, key=lambda b: (b.close_ts, b.open_ts))
+    if not ordered:
+        return None
+    if len({b.symbol for b in ordered}) != 1 or len({b.tf for b in ordered}) != 1:
+        raise ValueError("atr expects one symbol and one tf")
     if len(ordered) < n + 1:
         return None
     window = ordered[-(n + 1) :]
