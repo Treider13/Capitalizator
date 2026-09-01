@@ -415,6 +415,28 @@ def test_same_close_ts_twin_does_not_complete_width() -> None:
     assert width_now_from_history(bar, fourteen + [twin], t=NOW) is None
 
 
+def test_bar_closing_during_current_completes_width() -> None:
+    """close_ts < current.close_ts is a prior even if it closes after current.open. `< open_ts` would drop it."""
+    fourteen = [_bar(i) for i in range(14)]
+    bar = _bar(17, high="100.2", low="100.1")
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    assert bar.open_ts < mid.close_ts < bar.close_ts
+    assert mid.close_ts < NOW
+    assert len(prior_same_tf(fourteen, bar, t=NOW)) == 14
+    assert len(prior_same_tf(fourteen + [mid], bar, t=NOW)) == 15
+    assert width_now_from_history(bar, fourteen, t=NOW) is None
+    assert width_now_from_history(bar, fourteen + [mid], t=NOW) == Decimal("0.1") / Decimal("2")
+
+
 def test_foreign_symbol_history_does_not_make_width() -> None:
     hist = []
     for i in range(15):

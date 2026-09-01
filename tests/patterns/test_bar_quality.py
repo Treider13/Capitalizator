@@ -271,6 +271,75 @@ def test_last_gap_segment_tiebreaks_equal_close_ts() -> None:
     assert last_gap_segment([late, early], current, t=T) == [late]
 
 
+def test_split_on_gaps_orders_by_close_not_open() -> None:
+    """Early-open late-close at 100, then a 116 that closes first. Open-order is a 16% gap."""
+    long = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 0, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 45, tzinfo=UTC),
+        open=Decimal("116"),
+        high=Decimal("117"),
+        low=Decimal("115"),
+        close=Decimal("116"),
+    )
+    assert long.open_ts < mid.open_ts
+    assert mid.close_ts < long.close_ts
+    assert abs(mid.open - long.close) / long.close > JUMP_RATIO_15M
+    assert abs(long.open - mid.close) / mid.close < JUMP_RATIO_15M
+    segs = split_on_gaps([long, mid])
+    assert [len(s) for s in segs] == [2]
+    assert segs[0] == [mid, long]
+
+
+def test_last_gap_segment_orders_by_close_not_open() -> None:
+    """Open-order last is 116 — current at 100 looks like a jump. Close-order last is 100."""
+    long = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 0, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 45, tzinfo=UTC),
+        open=Decimal("116"),
+        high=Decimal("117"),
+        low=Decimal("115"),
+        close=Decimal("116"),
+    )
+    current = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 13, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 15, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    assert current.close_ts < T
+    assert abs(current.open - long.close) / long.close < JUMP_RATIO_15M
+    assert abs(current.open - mid.close) / mid.close > JUMP_RATIO_15M
+    assert last_gap_segment([long, mid], current, t=T) == [mid, long]
+
+
 def test_atr_n_must_be_positive() -> None:
     with pytest.raises(ValueError, match="atr n"):
         atr([_bar(0)], n=0)
