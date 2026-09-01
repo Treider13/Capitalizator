@@ -195,6 +195,53 @@ def test_registry_fill_tape_is_deterministic() -> None:
     assert run() == run()
 
 
+def test_prints_in_window_is_the_eaten_clock() -> None:
+    clf = TapeClassifier()
+    late = _sell("20", ts=PRINT + timedelta(seconds=9))
+    gap = MarketEvent(
+        stream="gap",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=PRINT,
+        recv_ts=PRINT,
+        seq=None,
+        payload={},
+    )
+    eth = MarketEvent(
+        stream="trades",
+        exchange="bybit",
+        symbol="ETHUSDT",
+        exchange_ts=PRINT,
+        recv_ts=PRINT,
+        seq=None,
+        payload={"px": "100.1", "qty": "20", "side": "sell"},
+    )
+    assert clf.prints_in_window([_sell("1"), _sell("2")], symbol="BTCUSDT", t0=PRINT) == 2
+    assert clf.prints_in_window([late], symbol="BTCUSDT", t0=PRINT) == 0
+    assert clf.prints_in_window([_sell("1"), gap], symbol="BTCUSDT", t0=PRINT) == 1
+    assert clf.prints_in_window([eth], symbol="BTCUSDT", t0=PRINT) == 0
+
+
+def test_fill_tape_writes_print_count() -> None:
+    reg = Registry(tick_size=TICK)
+    opened = reg.on_trade(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=PRINT,
+            recv_ts=PRINT,
+            seq=None,
+            payload={"px": "100.1", "qty": "6", "side": "sell"},
+        ),
+        [ZONE],
+    )
+    assert opened[0].trades_in_window is None
+    reg.fill_tape(book=_book(bid_sz="10"), trades=[_sell("6"), _sell("1")])
+    assert reg.touches[0].tape_eaten is True
+    assert reg.touches[0].trades_in_window == 2
+
+
 def test_fill_tape_touch_id_leaves_other_unlabeled() -> None:
     later = Zone.create(
         symbol="BTCUSDT",

@@ -486,12 +486,8 @@ class DeskLoop:
                 if idea_side == "buy"
                 else self.btc.broke_resistance
             )
-        btc_same_side = (
-            (idea_side == "buy" and self.btc.regime in {"long", "box"})
-            or (idea_side == "sell" and self.btc.regime in {"short", "box"})
-        )
-        if st.symbol == "BTCUSDT":
-            btc_same_side = True
+        # BtcRegime writes trend|box|news. long/short never land on the bus.
+        btc_same_side = st.symbol == "BTCUSDT" or self.btc.regime == "box"
         cpi_window = any(
             row.event_class == "CPI" and row.event_time.date() == bar.close_ts.date()
             for row in self.calendar
@@ -589,7 +585,7 @@ class DeskLoop:
                 "trade_px": str(row.trade_px),
                 "trade_qty": str(row.trade_qty),
                 "session_name": session_name(row.ts),
-                "session_hour_utc": row.ts.hour,
+                "session_hour_utc": require_utc(row.ts).hour,
                 "prior_session_hi": row.prior_session_hi,
                 "prior_session_lo": row.prior_session_lo,
                 "poc": row.poc,
@@ -680,6 +676,14 @@ class DeskLoop:
             and in_desk_window(row.ts)
             and self.session.allows(row.ts, self.calendar)[0]
         ):
+            spread_frac = Decimal("0")
+            if book.ready:
+                spr = book.spread()
+                bid, ask = book.best()
+                if spr is not None and bid is not None and ask is not None:
+                    mid_px = (bid + ask) / 2
+                    if mid_px > 0:
+                        spread_frac = spr / mid_px
             snap = BounceSnapshot(
                 now=row.ts,
                 symbol=st.symbol,
@@ -694,6 +698,7 @@ class DeskLoop:
                     entry=row.trade_px,
                     symbol=st.symbol,
                 ),
+                spread_frac=spread_frac,
                 calendar=self.calendar,
                 idea=idea,
                 jury=jury,
@@ -709,6 +714,7 @@ class DeskLoop:
                 btc_zone_side="support" if idea_side == "buy" else "resistance",
                 btc_same_side=btc_same_side,
                 gesture_n=n_zlg,
+                trades_in_window=row.trades_in_window,
                 first_minute=(
                     self.first_minute.blocks(row.ts, bar.close_ts)
                     if idea == "breakout"

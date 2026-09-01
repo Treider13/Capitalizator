@@ -9,11 +9,11 @@ from pathlib import Path
 
 from capitalizator.book.reconstruct import Book
 from capitalizator.desk.loop import DeskLoop
+from capitalizator.memory.registry import Touch
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.product import mark_hello
 from capitalizator.ops.vault import init_vault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
-from capitalizator.memory.registry import Touch
 from capitalizator.types import MarketEvent
 from capitalizator.zones.model import Bar, Zone
 
@@ -235,3 +235,13 @@ def test_btc_htf_close_writes_regime_bus(tmp_path: Path) -> None:
             )
         )
     assert desk.btc.regime == "trend"
+
+
+def test_desk_btc_same_side_uses_bus_labels() -> None:
+    """BtcBus gets trend|box|news. long/short on the bus would be a lie."""
+    text = Path(__file__).resolve().parents[2].joinpath(
+        "src", "capitalizator", "desk", "loop.py"
+    ).read_text(encoding="utf-8")
+    assert 'self.btc.regime == "box"' in text
+    assert '{"long", "box"}' not in text
+    assert '{"short", "box"}' not in text

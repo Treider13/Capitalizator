@@ -241,7 +241,13 @@ class Registry:
                 tick_size=self.tick_size,
                 config=self.config,
             )
-            row = replace(touch, tape_eaten=flag)
+            prints = clf.prints_in_window(
+                trades,
+                symbol=zone.symbol,
+                t0=touch.ts,
+                config=self.config,
+            )
+            row = replace(touch, tape_eaten=flag, trades_in_window=prints)
             next_rows.append(row)
             changed.append(row)
         self.touches = next_rows

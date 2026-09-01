@@ -89,6 +89,7 @@ class BounceSnapshot:
     allow_break: bool = False
     card_bearing_verdict: str | None = None
     gesture_n: int = 0
+    trades_in_window: int | None = None
 
 
 def price_in_zone(price: Decimal, zone: Zone) -> bool:
@@ -340,6 +341,7 @@ class BounceStrategy:
                 wall_no_print=snap.wall_no_print is True,
                 btc_break_against=snap.btc_broke,
                 btc_same_side=snap.btc_same_side,
+                trades_in_window=snap.trades_in_window,
             )
             label = decide(voices)
             if snap.jury is not None and snap.jury != "ACCORD":
