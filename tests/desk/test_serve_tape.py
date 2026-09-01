@@ -208,6 +208,7 @@ def test_htf_bar_close_does_not_steal_working_tf_cav(tmp_path: Path) -> None:
     from decimal import Decimal
 
     from capitalizator.book.reconstruct import Book
+    from capitalizator.card.live import CardLive
     from capitalizator.desk.loop import DeskLoop
     from capitalizator.recorder.rest_snapshot import BookSnapshot
     from capitalizator.zones.model import Bar, Zone
@@ -261,6 +262,22 @@ def test_htf_bar_close_does_not_steal_working_tf_cav(tmp_path: Path) -> None:
     )
     assert stolen == []
     assert desk.state_for("BTCUSDT").last_touch is not None
+    close_15 = NOW + timedelta(minutes=15)
+    desk.knowledge.put_card_live(
+        "BTCUSDT",
+        CardLive(
+            symbol="BTCUSDT",
+            bearing_verdict="propose",
+            known_at=close_15,
+            fib_zone="OTE",
+            fib_level="0.718",
+            rsi_htf="58.40",
+            fvg_status="filled",
+            sweep_status="done",
+            pluses=("session_profile", "htf_ok", "rvol_above_2"),
+            minuses=("base_rate_unknown", "spread_cost"),
+        ).to_payload(),
+    )
     events = desk.on_bar_close(
         Bar(
             symbol="BTCUSDT",
