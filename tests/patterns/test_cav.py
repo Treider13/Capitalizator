@@ -820,6 +820,56 @@ def test_hourly_zero_volume_does_not_make_reject_noise() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=hourly) == "REJECT"
 
 
+def test_15m_zero_volume_does_not_noise_a_1h_reject() -> None:
+    """Hardcoded `tf==15m` would ILLIQUID a 1h reject. Filter is current.tf."""
+    hourly_zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1h",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[_hist(0, volume=Decimal("0"))]) == "REJECT"
+
+
+def test_btc_zero_volume_does_not_noise_an_eth_reject() -> None:
+    """Hardcoded `history is BTC` would ILLIQUID an ETH reject. Filter is current.symbol."""
+    eth_zone = Zone.create(
+        symbol="ETHUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[_hist(0, volume=Decimal("0"))]) == "REJECT"
+
+
 def test_stagnant_would_be_reject_is_noise() -> None:
     closed = [_hist(i, close="100.1") for i in range(4)]
     bar = _bar(low="99.9", high="100.5", close="100.1")

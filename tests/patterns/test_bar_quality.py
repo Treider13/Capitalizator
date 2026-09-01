@@ -863,11 +863,38 @@ def test_wrong_tf_zero_volume_is_not_illiquid() -> None:
     assert classify_bar_quality(hist, current, t=T) == LIVE
 
 
+def test_15m_zero_volume_does_not_illiquid_a_1h_bar() -> None:
+    """Hardcoded `tf==15m` would ILLIQUID a 1h print. Filter is current.tf."""
+    hist = [_bar(0, close="100", volume=Decimal("0"))]
+    current = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    assert current.close_ts < T
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+    assert classify_bar_quality(hist, _bar(1, close="101", volume=Decimal("0")), t=T) == ILLIQUID
+
+
 def test_other_symbol_zero_volume_is_not_illiquid() -> None:
     hist = [_bar(0, close="100", symbol="ETHUSDT", volume=Decimal("0"))]
     current = _bar(1, close="101", volume=Decimal("0"))
     assert prior_same_tf(hist, current, t=T) == []
     assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
+def test_btc_zero_volume_does_not_illiquid_an_eth_bar() -> None:
+    """Hardcoded `history is BTC` would ILLIQUID an ETH print. Filter is current.symbol."""
+    hist = [_bar(0, close="100", volume=Decimal("0"))]
+    current = _bar(1, close="101", symbol="ETHUSDT", volume=Decimal("0"))
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+    assert classify_bar_quality(hist, _bar(1, close="101", volume=Decimal("0")), t=T) == ILLIQUID
 
 
 def test_later_zero_volume_is_not_illiquid() -> None:
