@@ -89,14 +89,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.minutes and args.minutes > 0:
         if not args.data_root:
             raise SystemExit("--data-root is required with --minutes")
-        from capitalizator.recorder.live import run_live
+        from capitalizator.recorder.live import LIVE_STREAMS, run_live, subscribe_desk
+        from capitalizator.screener.universe import load_desk_universe
 
+        uni = load_desk_universe()
+        subscribe = subscribe_desk(uni.symbols)
         accepted = run_live(
             app,
             minutes=args.minutes,
             symbol=args.symbol,
             data_root=Path(args.data_root),
             stream=args.stream,
+            symbols=list(uni.symbols),
+            streams=list(LIVE_STREAMS),
         )
         print(
             json.dumps(
@@ -106,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
                     "readyz": app.readyz(),
                     "symbol": args.symbol,
                     "live": True,
+                    "n_symbols": len(uni.symbols),
+                    "subscribe": subscribe,
                 }
             )
         )

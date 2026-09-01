@@ -52,6 +52,22 @@ def test_ticker_frame_splits_funding_and_oi() -> None:
     assert streams == {"funding", "oi"}
 
 
+def test_ticker_frame_emits_mark() -> None:
+    events = ticker_events(
+        {
+            "topic": "tickers.BTCUSDT",
+            "data": {
+                "symbol": "BTCUSDT",
+                "markPrice": "65000.1",
+                "ts": 1725024600000,
+            },
+        },
+        recv_ts=NOW,
+    )
+    assert [e.stream for e in events] == ["mark"]
+    assert events[0].payload["mark"] == "65000.1"
+
+
 def test_subscribe_many_covers_desk_universe() -> None:
     uni = load_desk_universe()
     payload = subscribe_desk(uni.symbols)

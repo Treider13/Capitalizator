@@ -664,6 +664,60 @@ def test_desk_writes_imbalance_journal_not_entry(tmp_path: Path) -> None:
     assert desk.knowledge.pending_intents() == []
 
 
+def test_recorder_is_runnable_as_process() -> None:
+    """§2: python -m capitalizator.recorder (healthz, no key)."""
+    import json
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "capitalizator.recorder"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["healthz"] == 200
+
+
+def test_ticker_emits_mark_with_funding_and_oi() -> None:
+    """§6.1: funding / OI / mark from the same public ticker frame."""
+    from capitalizator.recorder.live import ticker_events
+
+    events = ticker_events(
+        {
+            "topic": "tickers.BTCUSDT",
+            "data": {
+                "symbol": "BTCUSDT",
+                "fundingRate": "0.0001",
+                "openInterest": "12",
+                "markPrice": "65000.1",
+                "ts": 1725024600000,
+            },
+        },
+        recv_ts=WINDOW,
+    )
+    streams = {e.stream for e in events}
+    assert streams == {"funding", "oi", "mark"}
+    mark = next(e for e in events if e.stream == "mark")
+    assert mark.payload["mark"] == "65000.1"
+
+
+def test_minutes_cli_announces_24_symbol_subscribe(tmp_path: Path, capsys) -> None:
+    """§2 / wave 2: --minutes without jsonl is live; subscribe covers 24 symbols."""
+    import json
+
+    from capitalizator.recorder.app import main
+
+    assert main(["--minutes", "1", "--data-root", str(tmp_path)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["live"] is True
+    assert payload["n_symbols"] == 24
+    assert payload["subscribe"]["op"] == "subscribe"
+    assert len(payload["subscribe"]["args"]) == 24 * 4
+
+
 def test_ptf_pickable_only_n20_and_real() -> None:
     from capitalizator.champion.ptf import ClassStat, PtfTable
 

@@ -71,6 +71,18 @@ def ticker_events(frame: dict[str, Any], *, recv_ts: datetime) -> list[MarketEve
                     payload={"oi": str(oi)},
                 )
             )
+        mark_px = item.get("markPrice") or item.get("mark_price")
+        if mark_px is not None:
+            out.append(
+                MarketEvent(
+                    stream="mark",
+                    exchange="bybit",
+                    symbol=symbol,
+                    exchange_ts=exchange_ts,
+                    recv_ts=when,
+                    payload={"mark": str(mark_px)},
+                )
+            )
     return out
 
 
