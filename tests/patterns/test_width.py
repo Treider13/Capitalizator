@@ -448,6 +448,29 @@ def test_nineteen_z1_and_one_z2_do_not_unlock_z1_rank() -> None:
     assert width_rank(zone_id="z2", now=NOW, w_now=Decimal("2"), history=hist) is None
 
 
+def test_rank_counts_two_samples_at_the_same_ts() -> None:
+    """n is observations, not unique clocks. 19 ts + a second print at ts[0] is 20 priors.
+
+    Deduping by ts (exam-style unique days) would leave 19 and keep rank None.
+    """
+    hist = [_sample(i, "1") for i in range(19)]
+    dup = WidthSample(zone_id="z1", ts=hist[0].ts, w_now=Decimal("1"))
+    assert dup.ts == hist[0].ts
+    assert dup is not hist[0]
+    assert len({row.ts for row in hist + [dup]}) == 19
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) is None
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist + [dup]) == Decimal("1")
+
+
+def test_rank_counts_twenty_samples_at_the_same_ts() -> None:
+    """Twenty same-ts prints still unlock. Unique-ts would be n=1 → None."""
+    ts = T0 + timedelta(minutes=1)
+    hist = [WidthSample(zone_id="z1", ts=ts, w_now=Decimal("1")) for _ in range(20)]
+    assert len({row.ts for row in hist}) == 1
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) == Decimal("1")
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("0.5"), history=hist) == Decimal("0")
+
+
 def test_future_sample_is_invisible() -> None:
     hist = [_sample(i, "1") for i in range(20)]
     cut = T0 + timedelta(minutes=19)

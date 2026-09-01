@@ -236,6 +236,17 @@ def test_htf_with_us_still_through() -> None:
     assert label(ZONE, bar, t=T, htf_bias="long") == "THROUGH"
 
 
+def test_htf_with_us_still_reject() -> None:
+    """with-us is not only THROUGH/COMPRESS. Support long must not NOISE a REJECT."""
+    bar = _bar(low="99.9", high="100.5", close="100.1")
+    assert label(ZONE, bar, t=T, htf_bias="long") == "REJECT"
+
+
+def test_htf_with_us_still_drift() -> None:
+    bar = _bar(low="100.0", high="101.0", close="100.1")
+    assert label(ZONE, bar, t=T, htf_bias="long") == "DRIFT"
+
+
 def test_resistance_htf_against_is_noise() -> None:
     """Resistance bounce is short. Hardcoding against==short would miss long."""
     res = Zone.create(
@@ -257,9 +268,15 @@ def test_resistance_htf_against_is_noise() -> None:
     assert label(res, tight, t=T, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
     assert label(res, tight, t=T, htf_bias="long", closed_bars=_atr15()) == "NOISE"
     assert label(res, tight, t=T, htf_bias="short", closed_bars=_atr15()) == "COMPRESS"
+    assert label(res, reject, t=T, htf_bias="short") == "REJECT"
+    assert label(res, through, t=T, htf_bias="short") == "THROUGH"
     assert label(res, reject, t=T, htf_bias="unknown") == "REJECT"
     assert label(res, through, t=T, htf_bias="unknown") == "THROUGH"
     assert label(res, tight, t=T, htf_bias="unknown", closed_bars=_atr15()) == "COMPRESS"
+    drift = _bar(low="100.0", high="100.2", close="100.1")
+    assert label(res, drift, t=T, htf_bias="box") == "DRIFT"
+    assert label(res, drift, t=T, htf_bias="unknown") == "DRIFT"
+    assert label(res, drift, t=T, htf_bias="short") == "DRIFT"
 
 
 def test_mid_range_miss_is_noise() -> None:
