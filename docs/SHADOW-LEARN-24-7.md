@@ -277,6 +277,8 @@
 **Код менять?**  
 Нет. Это закон учёбы. Проводка «shadow 24/7 толще, чем propose» — очередь после зелёного Ф0, не сейчас.
 
+Короткий чеклист «что доделать / досвязать»: [`SHADOW-WIRE-CHECKLIST.md`](SHADOW-WIRE-CHECKLIST.md).
+
 ---
 
 Связанное: [`GRAIL-AFTER-TRAINING.md`](GRAIL-AFTER-TRAINING.md) · [`INVENTION-JURY.md`](INVENTION-JURY.md) · [`INVENTION-FIRST-FACT.md`](INVENTION-FIRST-FACT.md) · [`PHASES-ALL.md`](PHASES-ALL.md) · [`intelligence-layer.md`](intelligence-layer.md) · `ops/STATUS.md`
