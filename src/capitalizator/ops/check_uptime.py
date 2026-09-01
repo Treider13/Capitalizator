@@ -24,6 +24,8 @@ def load_events(root: Path, *, symbol: str) -> list[MarketEvent]:
             continue
         table = pq.ParquetFile(path).read()
         for row in table.to_pylist():
+            if row["symbol"] != symbol:
+                continue
             events.append(
                 MarketEvent(
                     stream=row["stream"],
@@ -79,6 +81,7 @@ def check_uptime(
         raise SystemExit(f"span {span_s}s < required {need}s")
     gaps = [e for e in events if e.stream == "gap"]
     if symbol is not None:
+        # An ETH restart must not paint a BTC hole green.
         gaps = [e for e in gaps if e.symbol == symbol]
     prev = trades[0]
     for cur in trades[1:]:

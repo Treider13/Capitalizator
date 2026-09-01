@@ -229,6 +229,8 @@ def observe(
     zone = reg.zone(touch.zone_id)
     if inp.cav_bar.symbol != zone.symbol:
         raise ValueError(f"observe bar {inp.cav_bar.symbol} is not zone {zone.symbol}")
+    if mid == touch.trade_px:
+        raise ValueError("observe needs mid != trade_px")
     if touch.tape_eaten is None:
         reg.fill_tape(book=inp.book, trades=inp.trades, touch_id=tid)
     live = _row(reg, tid)

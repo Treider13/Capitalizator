@@ -7,8 +7,11 @@ from pathlib import Path
 
 import pytest
 
+import pyarrow as pa
+import pyarrow.parquet as pq
+
 from capitalizator.ops.check_uptime import check_uptime, load_events, main
-from capitalizator.recorder.sink_parquet import ParquetSink
+from capitalizator.recorder.sink_parquet import SCHEMA, ParquetSink
 from capitalizator.types import MarketEvent
 
 
@@ -81,6 +84,54 @@ def test_short_span_fails() -> None:
     events = [_trade(0), _trade(10)]
     with pytest.raises(SystemExit, match="span"):
         check_uptime(events, hours=1, max_unmarked_gap_s=10, symbol="BTCUSDT")
+
+
+def test_load_events_skips_other_symbol_rows(tmp_path: Path) -> None:
+    """A BTCUSDT path must not feed ETH rows into hours24."""
+    dest = tmp_path / "BTCUSDT" / "mixed.parquet"
+    dest.parent.mkdir(parents=True)
+    start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
+    end = start + timedelta(seconds=120)
+    table = pa.Table.from_pylist(
+        [
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": start,
+                "recv_ts": start,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": end,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+            {
+                "stream": "gap",
+                "exchange": "bybit",
+                "symbol": "ETHUSDT",
+                "exchange_ts": start,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": (
+                    f'{{"ts_from":"{start.isoformat()}","ts_to":"{end.isoformat()}"}}'
+                ),
+            },
+        ],
+        schema=SCHEMA,
+    )
+    pq.write_table(table, dest)
+    loaded = load_events(tmp_path, symbol="BTCUSDT")
+    assert [e.symbol for e in loaded] == ["BTCUSDT", "BTCUSDT"]
+    assert all(e.stream == "trades" for e in loaded)
+    with pytest.raises(SystemExit, match="unmarked gap"):
+        check_uptime(loaded, hours=120 / 3600, max_unmarked_gap_s=10, symbol="BTCUSDT")
 
 
 def test_cli_reads_parquet(tmp_path: Path) -> None:

@@ -427,6 +427,42 @@ def test_observe_n_is_per_symbol() -> None:
     assert all(row.jury == "ACCORD" for row in reg.touches[1:])
 
 
+def test_observe_mid_equals_print_writes_nothing() -> None:
+    """ZLG cannot split in/back when mid == print. Must not leave a half-card."""
+    reg = _reg()
+    book = Book(tick_size="0.1")
+    book.apply_snapshot(
+        BookSnapshot(
+            symbol="BTCUSDT",
+            exchange_ts=PRINT,
+            seq=1,
+            bids=(("100.0", "10"),),
+            asks=(("100.2", "1"),),
+        )
+    )
+    inp = ObserveIn(
+        book=book,
+        trades=[_trade(PRINT, qty="1", side="sell")],
+        adds=[
+            BookAdd(
+                ts=PRINT + timedelta(seconds=1),
+                side="bid",
+                px=Decimal("100"),
+                qty=Decimal("2"),
+            )
+        ],
+        cav_bar=_bar(),
+        htf_bias="box",
+    )
+    with pytest.raises(ValueError, match="mid"):
+        observe(reg, inp, contour_on=True)
+    row = reg.touches[0]
+    assert row.tape_eaten is None
+    assert row.gesture is None
+    assert row.cav_label is None
+    assert row.jury is None
+
+
 def test_observe_unknown_btc_does_not_freeze_jury() -> None:
     """No BTC label → no jury. A later box fact may still stamp."""
     reg = _reg()
