@@ -79,6 +79,30 @@ CREATE TABLE IF NOT EXISTS overlay (
   r_demo TEXT,
   r_live TEXT
 );
+CREATE TABLE IF NOT EXISTS market_event (
+  id INTEGER PRIMARY KEY,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS zone (
+  zone_id TEXT PRIMARY KEY,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS claim (
+  id TEXT PRIMARY KEY,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS author_call (
+  id TEXT PRIMARY KEY,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS news (
+  event_id TEXT PRIMARY KEY,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS saved_r (
+  setup_id TEXT PRIMARY KEY,
+  payload TEXT NOT NULL
+);
 """
 
 EPISODE_MODES = frozenset({"shadow", "demo", "micro", "live"})
@@ -190,6 +214,14 @@ class Knowledge:
 
     def available(self) -> bool:
         return self._cx is not None
+
+    def table_names(self) -> set[str]:
+        if self._cx is None:
+            return set()
+        rows = self._cx.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+        return {str(row["name"]) for row in rows}
 
     def meta(self, key: str) -> str | None:
         if self._cx is None:

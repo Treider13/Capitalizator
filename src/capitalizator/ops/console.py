@@ -25,6 +25,7 @@ from capitalizator.ops.product import (
     read_user_mode,
     set_user_mode,
 )
+from capitalizator.screener.universe import load_desk_universe
 from capitalizator.ops.vault import (
     Vault,
     init_vault,
@@ -64,6 +65,8 @@ def _parquet_counts(tape: Path) -> tuple[int, int]:
 
 
 def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
+    n_days = None
+    n_touches = 0
     knowledge = open_knowledge(vault, create=False)
     try:
         counts = knowledge.counts()
@@ -77,6 +80,17 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         if report_body is None and latest is not None:
             report_body = latest["body"]
             report_day = latest["day"]
+        raw_n = knowledge.meta("learn_n_days")
+        if raw_n is not None:
+            n_days = int(raw_n)
+        if knowledge.available() and knowledge._cx is not None:
+            try:
+                row = knowledge._cx.execute(
+                    "SELECT COUNT(*) AS n FROM journal_touches"
+                ).fetchone()
+                n_touches = int(row["n"]) if row is not None else 0
+            except Exception:
+                n_touches = 0
     finally:
         knowledge.close()
     files_n, rows_n = _parquet_counts(vault.tape)
@@ -88,11 +102,16 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     user = read_user_mode(vault)
     hello_ok = hello_recorded(vault)
     banner = "" if hello_ok else "нет testnet hello — send закрыт"
+    symbols = list(load_desk_universe().symbols)
     snap = {
         "trading_mode": mode,
         "user_mode": user,
         "hello_ok": hello_ok,
         "hello_banner": banner,
+        "symbols": symbols,
+        "n_symbols": len(symbols),
+        "learn_n_days": n_days,
+        "n_touches": n_touches,
         "contour": contour["contour"],
         "hours24": contour["hours24"],
         "hours24_span_s": contour["hours24_span_s"],
@@ -396,7 +415,7 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 self._send(409, body, "application/json; charset=utf-8")
 
         def _set_mode(self, payload: dict[str, Any], *, redirect: bool) -> None:
-            raw_ack = payload.get("ack")
+            raw_ack = payload.get("ack_token", payload.get("ack"))
             ack = raw_ack in {True, "true", "1", 1, "yes"}
             mode = str(payload.get("mode") or "")
             raw_n = payload.get("learn_n_days")
@@ -405,6 +424,9 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 learn_n = 14
             if not ack:
                 self._send(403, b"ack required", "text/plain; charset=utf-8")
+                return
+            if mode in {"demo", "live"} and not hello_recorded(app.vault):
+                self._send(403, b"hello required", "text/plain; charset=utf-8")
                 return
             try:
                 out = app.set_mode(mode, ack=True, learn_n_days=learn_n)

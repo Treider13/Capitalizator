@@ -51,8 +51,10 @@ class Touch:
     poc: str | None = None
     vah: str | None = None
     val: str | None = None
+    fib_trend: str | None = None
     fib_in_05_1: bool | None = None
     fib_in_ote_gold: bool | None = None
+    rsi_tf: str | None = None
     rsi_value: str | None = None
     fvg_present: bool | None = None
     sweep_wick: bool | None = None
@@ -62,9 +64,25 @@ class Touch:
     n_cav: int | None = None
     n_zlg: int | None = None
     shadow_would: bool | None = None
+    shadow_side: str | None = None
+    shadow_tag: str | None = None
     skip_reason: str | None = None
     card_id: str | None = None
     idea: str | None = None
+    prior_session_hi: str | None = None
+    prior_session_lo: str | None = None
+    cav_tf: str | None = None
+    a_same: str | None = None
+    a_back: str | None = None
+    a_in: str | None = None
+    a_opp: str | None = None
+    ofi: str | None = None
+    trades_in_window: int | None = None
+    wall_state: str | None = None
+    prs_tau: str | None = None
+    btc_state: str | None = None
+    btc_break_against: bool | None = None
+    bearing_verdict: str | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.ts)
@@ -186,7 +204,8 @@ class Registry:
     def fill_tape(
         self,
         *,
-        book: Book,
+        book: Book | None = None,
+        book_pre: Book | None = None,
         trades: Sequence[MarketEvent],
         touch_id: str | None = None,
     ) -> list[Touch]:
@@ -195,6 +214,9 @@ class Registry:
         touch_id pins one row. One book must not paint another touch.
         Several unlabeled rows without touch_id is an error.
         """
+        book = book_pre if book_pre is not None else book
+        if book is None:
+            raise ValueError("fill_tape needs book or book_pre")
         if touch_id is not None and not any(t.touch_id == touch_id for t in self.touches):
             raise KeyError(touch_id)
         unlabeled = [t for t in self.touches if t.tape_eaten is None]
@@ -308,6 +330,11 @@ class Registry:
         n_cav: int = 0,
         n_zlg: int = 0,
         touch_id: str | None = None,
+        wall_no_print: bool = False,
+        btc_break_against: bool = False,
+        card_bearing_verdict: str | None = None,
+        cpi_window: bool = False,
+        trades_in_window: int | None = None,
     ) -> list[Touch]:
         """Write jury + rho_class_id from already filled labels. Does not open size."""
         from capitalizator.jury.desk import (
@@ -342,6 +369,13 @@ class Registry:
                 n_zlg=n_zlg,
                 tape_eaten=touch.tape_eaten,
                 btc_regime=touch.btc_regime,
+                card_bearing_verdict=card_bearing_verdict or touch.bearing_verdict,
+                wall_no_print=wall_no_print,
+                btc_break_against=btc_break_against or bool(touch.btc_break_against),
+                cpi_window=cpi_window,
+                trades_in_window=trades_in_window
+                if trades_in_window is not None
+                else touch.trades_in_window,
             )
             label = decide(voices)
             class_id = None

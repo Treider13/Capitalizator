@@ -58,10 +58,11 @@ class ZLG:
         hit_side: BookSide,
         mid: Decimal,
         opp_best: Decimal,
+        book_ready: bool = True,
     ) -> GestureResult:
         if q <= 0:
             raise ValueError("q must be > 0")
-        if mid == touch.trade_px:
+        if (not book_ready) or mid == touch.trade_px:
             return GestureResult(
                 gesture="SILENCE",
                 a_same=Decimal("0"),

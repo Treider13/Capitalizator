@@ -55,6 +55,11 @@ def drain_once(
     return out
 
 
+def on_signer_exit(cancel_all: Callable[[], None]) -> None:
+    """Supervisor hook: process gone → cancel_all. No leftover live order."""
+    cancel_all()
+
+
 def make_watchdogs(
     *,
     cancel_all: Callable[[], None],

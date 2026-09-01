@@ -24,6 +24,8 @@ class UnsignedIntent(BaseModel):
     qty: Decimal
     limit_px: Decimal
     stop_px: Decimal
+    tp_px: Decimal | None = None
+    reduce_only_stop: bool = True
     trading_mode: Literal["testnet"]
 
 
@@ -35,6 +37,8 @@ class Order(BaseModel):
     qty: Decimal
     limit_px: Decimal
     stop_px: Decimal
+    tp_px: Decimal | None = None
+    reduce_only_stop: bool = True
     trading_mode: Literal["testnet"]
 
 
@@ -53,11 +57,15 @@ class Signer:
             raise ValueError("buy stop must be below limit")
         if unsigned.side == "sell" and unsigned.stop_px <= unsigned.limit_px:
             raise ValueError("sell stop must be above limit")
+        if not unsigned.reduce_only_stop:
+            raise ValueError("stop must be reduce-only")
         return Order(
             symbol=unsigned.symbol,
             side=unsigned.side,
             qty=unsigned.qty,
             limit_px=unsigned.limit_px,
             stop_px=unsigned.stop_px,
+            tp_px=unsigned.tp_px,
+            reduce_only_stop=True,
             trading_mode="testnet",
         )

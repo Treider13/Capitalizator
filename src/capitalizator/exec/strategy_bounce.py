@@ -278,7 +278,12 @@ class BounceStrategy:
             return None
         if not self.budget.allow_entry():
             return None
-        tag = SETUP_TAG if idea == "bounce" else idea
+        if idea == "bounce":
+            tag = SETUP_TAG
+        elif idea == "failed_break":
+            tag = "failed_break_bounce"
+        else:
+            tag = idea
         intent = Intent(
             symbol=snap.symbol,
             side=side,

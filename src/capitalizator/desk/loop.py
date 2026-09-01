@@ -22,7 +22,9 @@ from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.shadow import ShadowWriter
 from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy
 from capitalizator.jury.desk import decide, voices_for_bounce, voices_for_breakout, voices_for_failed_break
+from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
+from capitalizator.ops.product import META_HELLO
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.product import DEFAULT_MODE
@@ -107,11 +109,49 @@ class DeskLoop:
             self.symbols[symbol] = SymbolState(symbol=symbol, book=Book(tick_size=str(self.tick_size)))
         return self.symbols[symbol]
 
+    def hello_ok(self) -> bool:
+        return self.knowledge.meta(META_HELLO) == "1"
+
     def on_book(self, symbol: str, book: Book) -> None:
         self.state_for(symbol).book = book
 
     def on_add(self, symbol: str, add: BookAdd) -> None:
         self.state_for(symbol).adds.append(add)
+
+    def on_event(
+        self,
+        event: MarketEvent | dict[str, Any],
+        zones: list[Zone] | None = None,
+    ) -> list[dict[str, Any]]:
+        """One symbol at a time. No global 'all symbols then jury' pass."""
+        if isinstance(event, dict):
+            kind = str(event.get("kind") or event.get("stream") or "")
+            if kind == "mode_change":
+                self.user_mode = str(event.get("user_mode") or self.user_mode)
+                if self.user_mode in {"demo", "live"}:
+                    self.strategy.desk_mode = self.user_mode
+                else:
+                    self.strategy.desk_mode = "off"
+                return [{"event": "mode_change", "user_mode": self.user_mode}]
+            if kind == "flatten":
+                return [{"event": "flatten", "symbol": event.get("symbol")}]
+            if kind == "bar_close":
+                bar = event.get("bar")
+                if not isinstance(bar, Bar):
+                    raise ValueError("bar_close needs a Bar")
+                return self.on_bar_close(bar)
+            raise ValueError(f"unknown desk event: {kind!r}")
+        if event.stream == "trades":
+            return self.on_trade(event, zones or [])
+        st = self.state_for(event.symbol)
+        if event.stream in {"book_diff", "bbo", "snapshot"}:
+            return [{"event": event.stream, "symbol": event.symbol}]
+        if event.stream in {"funding", "oi", "mark"}:
+            return [{"event": event.stream, "symbol": event.symbol, "journal": True}]
+        if event.stream in {"gap", "resync"}:
+            st.book = Book(tick_size=str(self.tick_size))
+            return [{"event": event.stream, "symbol": event.symbol, "book_dirty": True}]
+        raise ValueError(f"unknown stream: {event.stream!r}")
 
     def on_bar_close(self, bar: Bar) -> list[dict[str, Any]]:
         st = self.state_for(bar.symbol)
@@ -168,10 +208,21 @@ class DeskLoop:
             hit_side=hit_side,
             mid=mid,
             opp_best=opp_best,
+            book_ready=book.ready,
         )
         self.registry.fill_gesture(gesture=result.gesture, touch_id=touch.touch_id)
+        self.registry._patch(
+            touch_id=touch.touch_id,
+            overwrite=True,
+            a_same=str(result.a_same),
+            a_back=str(result.a_back),
+            a_in=str(result.a_in),
+            a_opp=str(result.a_opp),
+        )
         if book.ready:
-            self.registry.fill_tape(book=book, trades=st.trades, touch_id=touch.touch_id)
+            self.registry.fill_tape(
+                book_pre=book, trades=st.trades, touch_id=touch.touch_id
+            )
         st.state = "LABEL_ZLG"
         return [{"event": "zlg", "touch_id": touch.touch_id, "gesture": result.gesture}]
 
@@ -201,13 +252,32 @@ class DeskLoop:
                 regime="box" if h4 == "box" else "trend",
                 touch_id=touch.touch_id,
             )
-        n_cav = sum(1 for row in self.registry.touches if row.cav_label == cav)
-        n_zlg = sum(1 for row in self.registry.touches if row.gesture == live.gesture)
+        n_cav = sum(
+            1
+            for row in self.registry.touches
+            if row.cav_label == cav and self.registry.zone(row.zone_id).symbol == st.symbol
+        )
+        n_zlg = sum(
+            1
+            for row in self.registry.touches
+            if row.gesture == live.gesture
+            and self.registry.zone(row.zone_id).symbol == st.symbol
+        )
+        break_against = (
+            self.btc.broke_resistance if idea == "breakout" else self.btc.broke_support
+        )
+        if st.symbol == "BTCUSDT":
+            break_against = False
         stamped = self.registry.stamp_jury(
             idea=idea,
             n_cav=n_cav,
             n_zlg=n_zlg,
             touch_id=touch.touch_id,
+            wall_no_print=False,
+            btc_break_against=break_against,
+            card_bearing_verdict=live.bearing_verdict,
+            cpi_window=False,
+            trades_in_window=live.trades_in_window,
         )
         row = stamped[0] if stamped else live
         first = resolve_first_fact(row.gesture, n_zlg)
@@ -223,44 +293,97 @@ class DeskLoop:
             n_zlg=n_zlg,
             tape_eaten=row.tape_eaten,
             btc_regime=row.btc_regime,
-            btc_break_against=self.btc.broke_support if idea != "breakout" else self.btc.broke_resistance,
+            card_bearing_verdict=row.bearing_verdict,
+            wall_no_print=False,
+            btc_break_against=break_against,
+            trades_in_window=row.trades_in_window,
         )
         jury = decide(voices)
         picture = picture_for(idea)
         card_id = str(uuid4()) if needs_new_card(idea) else None
         shadow_would = jury == "ACCORD"
-        journal = {
+        shadow_side = None
+        shadow_tag = None
+        if shadow_would:
+            shadow_side = "buy" if zone.side == "support" else "sell"
+            if idea == "failed_break":
+                shadow_side = "sell" if zone.side == "support" else "buy"
+            shadow_tag = "bounce" if idea == "bounce" else (
+                "failed_break_bounce" if idea == "failed_break" else "breakout"
+            )
+        journal = empty_journal()
+        journal.update(
+            {
+                "zone_id": row.zone_id,
+                "touch_ts": row.ts.isoformat(),
+                "trade_px": str(row.trade_px),
+                "trade_qty": str(row.trade_qty),
+                "session_name": session_name(row.ts),
+                "session_hour_utc": row.ts.hour,
+                "prior_session_hi": row.prior_session_hi,
+                "prior_session_lo": row.prior_session_lo,
+                "poc": row.poc,
+                "vah": row.vah,
+                "val": row.val,
+                "fib_trend": row.fib_trend,
+                "fib_in_05_1": row.fib_in_05_1,
+                "fib_in_ote_gold": row.fib_in_ote_gold,
+                "rsi_tf": row.rsi_tf,
+                "rsi_value": row.rsi_value,
+                "fvg_present": row.fvg_present,
+                "sweep_wick": row.sweep_wick,
+                "htf_h4": h4,
+                "htf_d1": d1,
+                "cav_label": row.cav_label,
+                "cav_tf": zone.tf,
+                "bar_quality": row.bar_quality,
+                "w_now": None if row.w_now is None else str(row.w_now),
+                "w_rank": None if row.w_rank is None else str(row.w_rank),
+                "zlg_label": row.gesture,
+                "A_same": row.a_same,
+                "A_back": row.a_back,
+                "A_in": row.a_in,
+                "A_opp": row.a_opp,
+                "tape_eaten": row.tape_eaten,
+                "ofi": row.ofi,
+                "trades_in_window": row.trades_in_window,
+                "wall_state": row.wall_state,
+                "refill_proxy": row.refill_proxy,
+                "prs_tau": row.prs_tau,
+                "prs_y": None if row.prs_y is None else str(row.prs_y),
+                "gex_bg": row.gex_bg,
+                "btc_state": row.btc_regime,
+                "btc_break_against": break_against,
+                "card_id": card_id,
+                "bearing_verdict": row.bearing_verdict,
+                "first_fact": first.first_fact,
+                "n_cav": n_cav,
+                "n_zlg": n_zlg,
+                "jury": jury,
+                "shadow_would": shadow_would,
+                "shadow_side": shadow_side,
+                "shadow_tag": shadow_tag,
+                "skip_reason": None if shadow_would else (first.tag if first.tag == "shadow_gesture" else jury),
+                "outcome": row.outcome,
+                "rho_class_id": row.rho_class_id,
+            }
+        )
+        missing = [key for key in JOURNAL_KEYS if key not in journal]
+        if missing:
+            raise RuntimeError(f"journal missing {missing}")
+        extra = {
             "touch_id": row.touch_id,
-            "zone_id": row.zone_id,
-            "touch_ts": row.ts.isoformat(),
-            "session_name": session_name(row.ts),
-            "session_hour_utc": row.ts.hour,
-            "htf_h4": h4,
-            "htf_d1": d1,
-            "cav_label": row.cav_label,
-            "zlg_label": row.gesture,
-            "tape_eaten": row.tape_eaten,
-            "jury": jury,
             "idea": idea,
             "picture": picture,
-            "card_id": card_id,
-            "shadow_would": shadow_would,
-            "first_fact": first.first_fact,
-            "n_cav": n_cav,
-            "n_zlg": n_zlg,
-            "fib_in_05_1": None,
-            "rsi_value": None,
-            "fvg_present": None,
-            "sweep_wick": None,
-            "gex_bg": None,
         }
-        self.knowledge.put_journal_touch(row.touch_id, journal)
+        self.knowledge.put_journal_touch(row.touch_id, {**journal, **extra})
         payload = {"touch_id": row.touch_id, "jury": jury, "shadow_would": shadow_would}
         self.shadow.write(payload)
         sent = False
         if (
             shadow_would
             and self.user_mode in {"demo", "live"}
+            and self.hello_ok()
             and in_desk_window(row.ts)
             and self.session.allows(row.ts, self.calendar)[0]
         ):
