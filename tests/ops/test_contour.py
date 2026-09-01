@@ -369,6 +369,47 @@ def test_observe_refuses_other_symbol_bar() -> None:
     assert reg.touches[0].cav_label is None
 
 
+def test_observe_n_is_per_symbol() -> None:
+    """20 ETH REJECT must not unlock CAV on the first BTC print."""
+    reg = _reg()
+    for i in range(20):
+        zone = Zone.create(
+            symbol="ETHUSDT",
+            tf="1d",
+            side="support",
+            lo=Decimal(str(100 + i)),
+            hi=Decimal(str(100 + i)) + Decimal("0.2"),
+            method="prior_day_hl",
+            created_as_of=CREATED,
+        )
+        ts = PRINT + timedelta(seconds=i)
+        opened = reg.on_trade(
+            MarketEvent(
+                stream="trades",
+                exchange="bybit",
+                symbol="ETHUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                seq=None,
+                payload={"px": str(100 + i + Decimal("0.1")), "qty": "4", "side": "buy"},
+            ),
+            [zone],
+        )
+        assert len(opened) == 1
+        tid = opened[0].touch_id
+        reg.fill_cav(cav_label="REJECT", touch_id=tid)
+        reg.fill_gesture(gesture="DEFEND", touch_id=tid)
+        reg.fill_btc(regime="box", touch_id=tid)
+        reg.stamp_jury(n_cav=20, n_zlg=20, touch_id=tid)
+        assert reg.touches[-1].jury == "ACCORD"
+    changed = observe(reg, _observe_in(), contour_on=True)
+    assert changed[0].cav_label == "REJECT"
+    assert changed[0].gesture == "DEFEND"
+    assert changed[0].jury == "SILENCE"
+    assert changed[0].touch_id == reg.touches[0].touch_id
+    assert all(row.jury == "ACCORD" for row in reg.touches[1:])
+
+
 def test_observe_unknown_btc_does_not_freeze_jury() -> None:
     """No BTC label → no jury. A later box fact may still stamp."""
     reg = _reg()

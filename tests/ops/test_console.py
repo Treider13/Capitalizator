@@ -326,3 +326,38 @@ def test_http_form_without_hours24_is_409_html(tmp_path: Path) -> None:
         server.shutdown()
         server.server_close()
     assert trading_mode() == "off"
+
+
+def test_http_unknown_contour_meta_is_plain_500(tmp_path: Path) -> None:
+    """POST must not leak a traceback. Unknown meta is 500, not a write."""
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    kn.set_meta("contour", "maybe")
+    kn.close()
+    _hours24_tape(vault.tape)
+    app = ConsoleApp(vault)
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/contour",
+            body='{"action":"on"}',
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        assert resp.status == 500
+        assert resp.read() == b"error"
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+    kn = open_knowledge(vault, create=False)
+    try:
+        assert kn.meta("contour") == "maybe"
+    finally:
+        kn.close()
+    assert trading_mode() == "off"

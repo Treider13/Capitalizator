@@ -210,6 +210,7 @@ def observe(
     One ObserveIn is one book / one bar. Several unlabeled touches without
     touch_id is an error — we do not paint a later print with an earlier book.
     A bar of another symbol is an error. Missing BTC does not stamp jury.
+    n_cav / n_zlg count only the same symbol — ETH history does not unlock BTC.
     """
     if not contour_on:
         return []
@@ -264,8 +265,16 @@ def observe(
     live = _row(reg, tid)
     if live.btc_regime is None:
         return [live]
-    n_cav = sum(1 for row in reg.touches if row.cav_label == live.cav_label)
-    n_zlg = sum(1 for row in reg.touches if row.gesture == live.gesture)
+    n_cav = sum(
+        1
+        for row in reg.touches
+        if row.cav_label == live.cav_label and reg.zone(row.zone_id).symbol == zone.symbol
+    )
+    n_zlg = sum(
+        1
+        for row in reg.touches
+        if row.gesture == live.gesture and reg.zone(row.zone_id).symbol == zone.symbol
+    )
     return reg.stamp_jury(n_cav=n_cav, n_zlg=n_zlg, touch_id=tid)
 
 

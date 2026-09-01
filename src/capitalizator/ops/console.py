@@ -347,32 +347,43 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 self._send(409, body, "application/json; charset=utf-8")
 
         def do_POST(self) -> None:  # noqa: N802
-            path = urlparse(self.path).path
-            if path not in {"/contour", "/api/contour"}:
-                self._reject_write()
-                return
+            sent = False
             try:
-                action = _read_action(self)
-            except (ValueError, json.JSONDecodeError):
-                self._send(400, b"bad-action", "text/plain; charset=utf-8")
-                return
-            if action != "on":
-                self._send(400, b"bad-action", "text/plain; charset=utf-8")
-                return
-            if path == "/api/contour":
-                self._turn_on_json()
-                return
-            try:
-                app.turn_on()
-                self._send(
-                    303,
-                    b"",
-                    "text/plain; charset=utf-8",
-                    extra={"Location": "/"},
-                )
-            except ContourNotReady:
-                body = render_html(app.vault).encode()
-                self._send(409, body, "text/html; charset=utf-8")
+                path = urlparse(self.path).path
+                if path not in {"/contour", "/api/contour"}:
+                    self._reject_write()
+                    return
+                try:
+                    action = _read_action(self)
+                except (ValueError, json.JSONDecodeError):
+                    self._send(400, b"bad-action", "text/plain; charset=utf-8")
+                    return
+                if action != "on":
+                    self._send(400, b"bad-action", "text/plain; charset=utf-8")
+                    return
+                if path == "/api/contour":
+                    self._turn_on_json()
+                    return
+                try:
+                    app.turn_on()
+                    sent = True
+                    self._send(
+                        303,
+                        b"",
+                        "text/plain; charset=utf-8",
+                        extra={"Location": "/"},
+                    )
+                except ContourNotReady:
+                    body = render_html(app.vault).encode()
+                    sent = True
+                    self._send(409, body, "text/html; charset=utf-8")
+            except Exception:
+                if sent:
+                    return
+                try:
+                    self._send(500, b"error", "text/plain; charset=utf-8")
+                except Exception:
+                    return
 
         def do_PUT(self) -> None:  # noqa: N802
             self._reject_write()

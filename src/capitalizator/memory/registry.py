@@ -198,6 +198,10 @@ class Registry:
         self.touches = next_rows
         return changed
 
+    def _require_touch_id_if_many(self, touch_id: str | None, *, what: str) -> None:
+        if touch_id is None and len(self.touches) > 1:
+            raise ValueError(f"{what} needs touch_id when registry has several touches")
+
     def fill_btc(self, *, regime: str, touch_id: str | None = None) -> list[Touch]:
         if regime not in {"trend", "box", "news"}:
             raise ValueError(f"unknown btc regime: {regime!r}")
@@ -234,10 +238,14 @@ class Registry:
 
         if idea != "bounce":
             raise ValueError("only bounce idea is mapped in F1")
+        self._require_touch_id_if_many(touch_id, what="stamp_jury")
         changed: list[Touch] = []
         next_rows: list[Touch] = []
         for touch in self.touches:
             if touch_id is not None and touch.touch_id != touch_id:
+                next_rows.append(touch)
+                continue
+            if touch.jury is not None:
                 next_rows.append(touch)
                 continue
             voices = voices_for_bounce(
@@ -260,12 +268,13 @@ class Registry:
             row = replace(touch, jury=label, rho_class_id=class_id)
             next_rows.append(row)
             changed.append(row)
-        if touch_id is not None and not changed:
+        if touch_id is not None and not any(t.touch_id == touch_id for t in self.touches):
             raise KeyError(touch_id)
         self.touches = next_rows
         return changed
 
     def _patch(self, *, touch_id: str | None = None, **fields: object) -> list[Touch]:
+        self._require_touch_id_if_many(touch_id, what="fill")
         changed: list[Touch] = []
         next_rows: list[Touch] = []
         for touch in self.touches:
