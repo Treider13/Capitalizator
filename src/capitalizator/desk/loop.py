@@ -14,8 +14,6 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from capitalizator.book.reconstruct import Book, BookDirty
-from capitalizator.recorder.gap import SeqFault
-from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.btc.break_def import Break
 from capitalizator.btc.regime import BtcRegime
 from capitalizator.btc.veto import BtcVeto
@@ -27,14 +25,20 @@ from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.manage import TradeManager
 from capitalizator.exec.shadow import ShadowWriter
 from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy, in_mid_range
-from capitalizator.jury.desk import decide, voices_for_bounce, voices_for_breakout, voices_for_failed_break
+from capitalizator.jury.desk import (
+    decide,
+    voices_for_bounce,
+    voices_for_breakout,
+    voices_for_failed_break,
+)
 from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
-from capitalizator.ops.product import META_HELLO
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.ops.knowledge import Knowledge
-from capitalizator.ops.product import DEFAULT_MODE
+from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
 from capitalizator.patterns.cav import label as cav_label
+from capitalizator.recorder.gap import SeqFault
+from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import RiskEngine
 from capitalizator.risk.session import SessionWindow, in_desk_window
@@ -115,7 +119,9 @@ class DeskLoop:
 
     def state_for(self, symbol: str) -> SymbolState:
         if symbol not in self.symbols:
-            self.symbols[symbol] = SymbolState(symbol=symbol, book=Book(tick_size=str(self.tick_size)))
+            self.symbols[symbol] = SymbolState(
+                symbol=symbol, book=Book(tick_size=str(self.tick_size))
+            )
         return self.symbols[symbol]
 
     def hello_ok(self) -> bool:
@@ -492,7 +498,9 @@ class DeskLoop:
                 "shadow_would": shadow_would,
                 "shadow_side": shadow_side,
                 "shadow_tag": shadow_tag,
-                "skip_reason": None if shadow_would else (first.tag if first.tag == "shadow_gesture" else jury),
+                "skip_reason": None
+                if shadow_would
+                else (first.tag if first.tag == "shadow_gesture" else jury),
                 "outcome": row.outcome,
                 "rho_class_id": row.rho_class_id,
             }
@@ -541,8 +549,13 @@ class DeskLoop:
                 btc_broke=self.btc.broke_support if st.symbol != "BTCUSDT" else False,
                 btc_same_side=btc_same_side,
                 gesture_n=n_zlg,
-                first_minute=self.first_minute.blocks(row.ts, bar.close_ts) if idea == "breakout" else False,
+                first_minute=(
+                    self.first_minute.blocks(row.ts, bar.close_ts)
+                    if idea == "breakout"
+                    else False
+                ),
                 close_beyond=cav == "THROUGH",
+                card_bearing_verdict=row.bearing_verdict,
             )
             intent = self.strategy.propose(snap)
             if intent is not None:

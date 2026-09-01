@@ -106,7 +106,9 @@ def close_due_bars(desk: DeskLoop, symbol: str, now: datetime) -> list[dict[str,
     out: list[dict[str, Any]] = []
     for tf in tfs:
         already = {b.open_ts for b in st.bars if b.tf == tf}
-        for bar in closed_bars_from_trades(st.trades, symbol=symbol, tf=tf, now=now, already=already):
+        for bar in closed_bars_from_trades(
+            st.trades, symbol=symbol, tf=tf, now=now, already=already
+        ):
             out.extend(desk.on_bar_close(bar))
     return out
 
