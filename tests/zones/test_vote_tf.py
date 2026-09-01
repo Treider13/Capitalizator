@@ -9,7 +9,6 @@ from capitalizator.patterns.cav import label
 from capitalizator.zones.engine import ZoneEngine
 from capitalizator.zones.model import Bar
 
-
 TICK = Decimal("0.1")
 T_BUILD = datetime(2026, 8, 31, 16, 30, tzinfo=UTC)
 MAP_METHODS = frozenset({"prior_day_hl", "prior_session_hl", "vp_hyp"})
