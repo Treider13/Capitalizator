@@ -73,6 +73,15 @@ def test_residual_is_median_error_over_atr() -> None:
     assert hostile_exam(rows).residual_after_atr == Decimal("0.75")
 
 
+def test_residual_median_uses_the_whole_sample() -> None:
+    """Last-5 of 1,2,3,4,5,100 is 4. First-5 is 3. All six even-n median is 3.5."""
+    rows = [
+        ExamCase(pred=Decimal(str(10 + err)), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("1"))
+        for err in (1, 2, 3, 4, 5, 100)
+    ]
+    assert hostile_exam(rows).residual_after_atr == Decimal("3.5")
+
+
 def test_residual_median_is_not_the_mean() -> None:
     """Two residuals share a mean and a median. Mean of 1, 2, 10 is 13/3, not 2."""
     rows = [
@@ -101,6 +110,29 @@ def test_five_zero_pnl_days_have_no_share() -> None:
         for d in range(1, 6)
     ]
     assert hostile_exam(rows).pnl_share_best_5_days is None
+
+
+def test_mixed_net_zero_five_days_have_no_share() -> None:
+    """All-zero days already fail. +10×4 −40 is also total=0 — `total < 0` only would divide by zero."""
+    pnls = (Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), Decimal("-40"))
+    rows = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 7, d), pnl=pnl)
+        for d, pnl in zip(range(1, 6), pnls)
+    ]
+    assert sum(pnls, Decimal("0")) == Decimal("0")
+    assert hostile_exam(rows).pnl_share_best_5_days is None
+
+
+def test_five_days_with_a_loss_can_exceed_one() -> None:
+    """Exceed-1 fixtures use 6 days with 5 winners. A `wins < 5` floor would still pass those."""
+    pnls = (Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), Decimal("-5"))
+    rows = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 9, d), pnl=pnl)
+        for d, pnl in zip(range(1, 6), pnls)
+    ]
+    share = hostile_exam(rows).pnl_share_best_5_days
+    assert share == Decimal("40") / Decimal("35")
+    assert share > 1
 
 
 def test_pnl_share_unlocks_on_exactly_five_days() -> None:
