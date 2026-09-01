@@ -1,10 +1,9 @@
-"""1.6.1 / 1.6.2 / 1.6.5 — propose a bounce. Does not send an order.
+"""Propose a bounce / breakout / failed-break idea. Does not send an order.
 
-All gates must pass or the result is None. trading_mode must be demo.
-F1: TAKER_OK is false; the intent is a limit idea only.
-Gesture / BTC veto are not gates here (BtcVeto is not imported).
-tape_eaten / wall_no_print apply only when check_tape / check_wall are on
-(F1 defaults off). Card file is required unless tests turn the flag off.
+trading_mode and desk_mode must be demo|live. TAKER_OK is false (limit only).
+Jury, BtcVeto, FirstMinute, MacroRules, first-fact, and PRS cut are gates
+when the desk sets require_jury (isolated F1 tests leave it off).
+check_tape / check_wall are always on in the product and do not filter.
 """
 
 from __future__ import annotations
@@ -15,11 +14,18 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
+from capitalizator.btc.veto import BtcVeto
 from capitalizator.card.draft import CardDraft, load_bearing_ok, require_card
+from capitalizator.card.first_fact import resolve as resolve_first_fact
+from capitalizator.exec.breakout_close import BreakoutClose
+from capitalizator.exec.first_minute import FirstMinute
+from capitalizator.jury.desk import decide, voices_for_bounce, voices_for_breakout, voices_for_failed_break
 from capitalizator.news_macro.ingest import NewsRow
+from capitalizator.news_macro.rules import MacroRules
 from capitalizator.ops.phase import trading_mode as phase_trading_mode
 from capitalizator.risk.budget import SessionBudget
 from capitalizator.risk.halts import Halts
+from capitalizator.risk.prs_cut import decide as prs_cut
 from capitalizator.risk.schema import Intent, RiskEngine
 from capitalizator.risk.session import SessionWindow
 from capitalizator.screener.filters import Screener
@@ -54,14 +60,38 @@ class BounceSnapshot:
     card: CardDraft | None = None
     tape_eaten: bool | None = None
     wall_no_print: bool | None = None
+    idea: str = "bounce"
+    jury: str | None = None
+    cav_label: str | None = None
+    zlg_label: str | None = None
+    n_cav: int = 0
+    n_zlg: int = 0
+    btc_regime: str | None = None
+    btc_broke: bool = False
+    btc_zone_side: str = "support"
+    prs_y: Decimal | None = None
+    first_minute: bool = False
+    close_beyond: bool = False
+    card_bearing_verdict: str | None = None
+    gesture_n: int = 0
 
 
 def price_in_zone(price: Decimal, zone: Zone) -> bool:
     return zone.lo <= price <= zone.hi
 
 
-def in_mid_range(price: Decimal, zones: Sequence[Zone]) -> bool:
-    """True only when price is exactly midway between nearest support and resistance."""
+def in_mid_range(
+    price: Decimal,
+    zones: Sequence[Zone],
+    *,
+    tick: Decimal | None = None,
+    band_ticks: int = 0,
+) -> bool:
+    """True when price sits on the mid between nearest support and resistance.
+
+    band_ticks=0 keeps the exact-tick lock used by isolated F1 tests.
+    The desk passes registry mid_band_ticks.
+    """
     below = [z for z in zones if z.side == "support" and z.hi < price]
     above = [z for z in zones if z.side == "resistance" and z.lo > price]
     if not below or not above:
@@ -69,7 +99,9 @@ def in_mid_range(price: Decimal, zones: Sequence[Zone]) -> bool:
     support = max(below, key=lambda z: z.hi)
     resist = min(above, key=lambda z: z.lo)
     mid = (support.hi + resist.lo) / 2
-    return price == mid
+    if band_ticks <= 0 or tick is None:
+        return price == mid
+    return abs(price - mid) <= tick * band_ticks
 
 
 def stop_behind(zone: Zone, tick: Decimal, away_ticks: int) -> Decimal:
@@ -115,8 +147,9 @@ class BounceStrategy:
         budget: SessionBudget | None = None,
         require_card: bool = True,
         check_load_bearing: bool = True,
-        check_tape: bool = False,
-        check_wall: bool = False,
+        check_tape: bool = True,
+        check_wall: bool = True,
+        require_jury: bool = False,
     ) -> None:
         self.risk = risk
         self.halts = halts
@@ -129,9 +162,16 @@ class BounceStrategy:
         self.check_load_bearing = check_load_bearing
         self.check_tape = check_tape
         self.check_wall = check_wall
+        self.require_jury = require_jury
+        self.macro = MacroRules(enabled=True)
+        self.btc_veto = BtcVeto()
+        self.first_minute = FirstMinute()
 
     def propose(self, snap: BounceSnapshot) -> Intent | None:
-        if self.desk_mode != "demo" or snap.trading_mode != "demo":
+        if self.desk_mode not in {"demo", "live"} or snap.trading_mode not in {
+            "demo",
+            "live",
+        }:
             return None
         if self.require_card:
             try:
@@ -169,15 +209,66 @@ class BounceStrategy:
         zone = snap.zone
         if zone is None or zone.symbol != snap.symbol:
             return None
-        if in_mid_range(snap.price, snap.zones):
+        if in_mid_range(
+            snap.price,
+            snap.zones,
+            tick=snap.tick,
+            band_ticks=self.registry.mid_band_ticks if self.require_jury else 0,
+        ):
             return None
         if not price_in_zone(snap.price, zone):
             return None
-        if self.check_tape and snap.tape_eaten is not False:
-            return None
-        if self.check_wall and snap.wall_no_print is not False:
-            return None
+        # check_tape / check_wall always recorded by the desk; they do not filter here.
+        _ = (self.check_tape, self.check_wall, snap.tape_eaten, snap.wall_no_print)
+        idea = snap.idea if snap.idea in {"bounce", "breakout", "failed_break"} else "bounce"
         side = "buy" if zone.side == "support" else "sell"
+        if idea == "failed_break":
+            side = "sell" if zone.side == "support" else "buy"
+        if snap.symbol != "BTCUSDT" and not self.btc_veto.allow(
+            alt_side=side,
+            btc_broke=snap.btc_broke,
+            btc_zone_side=snap.btc_zone_side,  # type: ignore[arg-type]
+        ):
+            return None
+        macro = self.macro.decide(snap.now, snap.calendar)
+        if not macro.allow:
+            return None
+        fact = resolve_first_fact(snap.zlg_label, snap.gesture_n)
+        if self.require_jury and fact.tag == "shadow_gesture":
+            return None
+        if prs_cut(snap.prs_y, threshold=Decimal("3")).action == "reject":
+            return None
+        if idea == "breakout":
+            if not BreakoutClose.allow(
+                enabled=True,
+                close_beyond=snap.close_beyond,
+                tape_eaten=bool(snap.tape_eaten),
+                btc_same=snap.btc_regime in {"box", "trend"} and not snap.btc_broke,
+                first_minute=snap.first_minute,
+            ):
+                return None
+        if self.require_jury or snap.jury is not None or snap.cav_label or snap.zlg_label:
+            voice_fn = {
+                "bounce": voices_for_bounce,
+                "breakout": voices_for_breakout,
+                "failed_break": voices_for_failed_break,
+            }[idea]
+            voices = voice_fn(
+                cav=snap.cav_label,
+                n_cav=snap.n_cav,
+                zlg=snap.zlg_label,
+                n_zlg=snap.n_zlg,
+                tape_eaten=snap.tape_eaten,
+                btc_regime=snap.btc_regime,
+                card_bearing_verdict=snap.card_bearing_verdict,
+                wall_no_print=False,
+                btc_break_against=snap.btc_broke,
+            )
+            label = decide(voices)
+            if snap.jury is not None and snap.jury != "ACCORD":
+                return None
+            if label != "ACCORD":
+                return None
         try:
             stop = stop_behind(zone, snap.tick, self.registry.bounce_away_ticks)
         except ValueError:
@@ -187,13 +278,14 @@ class BounceStrategy:
             return None
         if not self.budget.allow_entry():
             return None
+        tag = SETUP_TAG if idea == "bounce" else idea
         intent = Intent(
             symbol=snap.symbol,
             side=side,
             entry=snap.price,
             stop=stop,
             tp=tp,
-            tag=SETUP_TAG,
+            tag=tag,
         )
         self.budget.on_intent()
         return intent

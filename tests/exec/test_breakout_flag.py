@@ -36,8 +36,9 @@ def test_no_breakout_strategy_class() -> None:
     assert hits == []
 
 
-def test_bounce_does_not_import_breakout() -> None:
+def test_bounce_does_not_import_breakout_strategy() -> None:
     text = (SRC / "exec" / "strategy_bounce.py").read_text(encoding="utf-8")
-    assert "Breakout" not in text
+    assert "class BreakoutStrategy" not in text
     assert "breakout_enabled" not in text
-    assert "FirstMinute" not in text
+    assert "BreakoutClose" in text
+    assert "FirstMinute" in text

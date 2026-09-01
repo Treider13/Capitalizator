@@ -176,14 +176,9 @@ def gate_f2(*, root: Path | None = None) -> tuple[int, dict[str, object]]:
         "G2.6_redteam_ci": False,
         "G2_breakout_off": not breakout_enabled(),
         "G2_parsed_50": parsed_n >= 50,
-        "G2_veto_not_in_propose": (
-            "from capitalizator.btc" not in bounce
-            and "import BtcVeto" not in bounce
-            and "BtcVeto()" not in bounce
-        ),
+        "G2_veto_in_propose": "BtcVeto" in bounce and "btc_veto.allow" in bounce,
     }
-    # G2_veto_not_in_propose documents the hole: veto is paper, not live.
-    # It is True today and must not make the gate pass.
+    # Veto is wired. The gate still fails on n_cards / lived veto journal.
     passed = all(
         checks[k]
         for k in (
