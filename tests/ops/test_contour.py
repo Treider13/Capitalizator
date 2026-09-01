@@ -225,6 +225,115 @@ def test_enable_mixed_parquet_eth_gap_stays_off(tmp_path: Path) -> None:
     assert trading_mode() == "off"
 
 
+def test_enable_junk_parquet_row_does_not_block_green_day(tmp_path: Path) -> None:
+    """One unreadable row must not crash the button or hide a real marked day."""
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    dest = vault.tape / "BTCUSDT" / "mixed.parquet"
+    dest.parent.mkdir(parents=True)
+    end = T0 + timedelta(hours=24)
+    table = pa.Table.from_pylist(
+        [
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": T0,
+                "recv_ts": T0,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+            {
+                "stream": "nope",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": T0 + timedelta(hours=1),
+                "recv_ts": T0 + timedelta(hours=1),
+                "seq": None,
+                "payload_json": "{",
+            },
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": end,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+            {
+                "stream": "gap",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": T0,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": (
+                    f'{{"ts_from":"{T0.isoformat()}","ts_to":"{end.isoformat()}"}}'
+                ),
+            },
+        ],
+        schema=SCHEMA,
+    )
+    pq.write_table(table, dest)
+    loaded = load_tape_events(vault, symbol="BTCUSDT")
+    assert [(e.stream, e.symbol) for e in loaded] == [
+        ("trades", "BTCUSDT"),
+        ("trades", "BTCUSDT"),
+        ("gap", "BTCUSDT"),
+    ]
+    out = enable(vault)
+    assert out["ok"] is True
+    assert out["contour"] == "on"
+    assert trading_mode() == "off"
+
+
+def test_enable_junk_gap_json_is_not_a_cover(tmp_path: Path) -> None:
+    """Broken gap JSON is silence, not a marked day."""
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    dest = vault.tape / "BTCUSDT" / "junk-gap.parquet"
+    dest.parent.mkdir(parents=True)
+    end = T0 + timedelta(hours=24)
+    table = pa.Table.from_pylist(
+        [
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": T0,
+                "recv_ts": T0,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+            {
+                "stream": "gap",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": T0,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": "{",
+            },
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": end,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+        ],
+        schema=SCHEMA,
+    )
+    pq.write_table(table, dest)
+    with pytest.raises(ContourNotReady, match="hours24"):
+        enable(vault)
+    assert contour_state(vault) == "off"
+    assert trading_mode() == "off"
+
+
 def test_enable_refuses_without_hours24(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     open_knowledge(vault).close()

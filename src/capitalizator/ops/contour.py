@@ -19,7 +19,7 @@ import pyarrow.parquet as pq
 from capitalizator.book.reconstruct import Book
 from capitalizator.btc.regime import BtcRegime
 from capitalizator.memory.registry import Registry, Touch
-from capitalizator.ops.check_uptime import check_uptime
+from capitalizator.ops.check_uptime import check_uptime, parse_event_row
 from capitalizator.ops.daily_map_report import contains_advice
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.phase import trading_mode
@@ -73,17 +73,9 @@ def load_tape_events(vault: Vault, *, symbol: str) -> list[MarketEvent]:
         for row in table.to_pylist():
             if row["symbol"] != symbol:
                 continue
-            events.append(
-                MarketEvent(
-                    stream=row["stream"],
-                    exchange=row["exchange"],
-                    symbol=row["symbol"],
-                    exchange_ts=row["exchange_ts"],
-                    recv_ts=row["recv_ts"],
-                    seq=row["seq"],
-                    payload=json.loads(row["payload_json"]),
-                )
-            )
+            event = parse_event_row(row)
+            if event is not None:
+                events.append(event)
     return events
 
 

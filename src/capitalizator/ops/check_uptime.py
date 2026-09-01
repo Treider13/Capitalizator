@@ -11,10 +11,30 @@ import argparse
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pyarrow.parquet as pq
 
 from capitalizator.types import MarketEvent, require_utc
+
+
+def parse_event_row(row: dict[str, Any]) -> MarketEvent | None:
+    """One parquet row. Junk JSON / stream / naive clock is not a fact — skip."""
+    try:
+        payload = json.loads(row["payload_json"])
+        if not isinstance(payload, dict):
+            return None
+        return MarketEvent(
+            stream=row["stream"],
+            exchange=row["exchange"],
+            symbol=row["symbol"],
+            exchange_ts=row["exchange_ts"],
+            recv_ts=row["recv_ts"],
+            seq=row["seq"],
+            payload=payload,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError, KeyError):
+        return None
 
 
 def load_events(root: Path, *, symbol: str) -> list[MarketEvent]:
@@ -26,17 +46,9 @@ def load_events(root: Path, *, symbol: str) -> list[MarketEvent]:
         for row in table.to_pylist():
             if row["symbol"] != symbol:
                 continue
-            events.append(
-                MarketEvent(
-                    stream=row["stream"],
-                    exchange=row["exchange"],
-                    symbol=row["symbol"],
-                    exchange_ts=row["exchange_ts"],
-                    recv_ts=row["recv_ts"],
-                    seq=row["seq"],
-                    payload=json.loads(row["payload_json"]),
-                )
-            )
+            event = parse_event_row(row)
+            if event is not None:
+                events.append(event)
     return events
 
 
