@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -140,6 +140,20 @@ def test_unclosed_bar_is_live_not_stagnant() -> None:
     )
     assert current.close_ts >= T
     assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
+def test_offset_t_keeps_a_later_utc_close_unclosed() -> None:
+    """+3 16:45 is 13:45Z. A 16:30Z close is not a fact yet — LIVE, empty ATR segment."""
+    plus3 = timezone(timedelta(hours=3))
+    t = datetime(2026, 8, 30, 16, 45, tzinfo=plus3)
+    hist = [_bar(i, close="100") for i in range(4)]
+    current = _bar(17, close="100")
+    assert current.close_ts.hour == 16
+    assert current.close_ts.minute == 30
+    assert t.hour == 16
+    assert current.close_ts >= t.astimezone(UTC)
+    assert classify_bar_quality(hist, current, t=t) == LIVE
+    assert last_gap_segment(hist, current, t=t) == []
 
 
 def test_unclosed_zero_volume_is_live_not_illiquid() -> None:

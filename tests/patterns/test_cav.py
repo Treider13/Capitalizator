@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 from capitalizator.patterns.bar_quality import prior_same_tf
@@ -153,6 +153,34 @@ def test_small_range_inside_zone_is_compress() -> None:
         )
     bar = _bar(low="100.05", high="100.15", close="100.10")
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"
+
+
+def test_offset_t_does_not_close_a_later_utc_bar() -> None:
+    """+3 16:45 is 13:45Z. Clock 16:30<16:45 would COMPRESS a bar that is still open."""
+    plus3 = timezone(timedelta(hours=3))
+    t = datetime(2026, 8, 30, 16, 45, tzinfo=plus3)
+    closed = []
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert bar.close_ts.hour == 16
+    assert t.hour == 16
+    assert bar.close_ts >= t.astimezone(UTC)
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"
+    assert label(ZONE, bar, t=t, htf_bias="box", closed_bars=closed) == "NOISE"
 
 
 def test_exact_15pct_into_current_still_compresses() -> None:

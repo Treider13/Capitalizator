@@ -70,6 +70,18 @@ def test_width_from_history_uses_post_gap_segment() -> None:
     assert width_now_from_history(bar, long_post, t=NOW) == Decimal("0.1") / Decimal("2")
 
 
+def test_offset_t_has_no_width_on_later_utc_bar() -> None:
+    """+3 16:45 is 13:45Z. Clock 16:30<16:45 would journal width on an open bar."""
+    plus3 = timezone(timedelta(hours=3))
+    t = datetime(2026, 8, 30, 16, 45, tzinfo=plus3)
+    hist = [_bar(i) for i in range(15)]
+    bar = _bar(17, high="100.2", low="100.1")
+    assert bar.close_ts == datetime(2026, 8, 30, 16, 30, tzinfo=UTC)
+    assert width_now_from_history(bar, hist, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert width_now_from_history(bar, hist, t=t) is None
+    assert last_gap_segment(hist, bar, t=t) == []
+
+
 def test_unclosed_bar_has_no_width() -> None:
     """Range is not a fact until close_ts < t. Do not journal a forming bar."""
     hist = [_bar(i) for i in range(15)]
@@ -290,3 +302,25 @@ def test_offset_timezone_sample_at_now_is_not_a_prior() -> None:
     )
     assert off.ts == now
     assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist + [off]) is None
+
+
+def test_offset_now_does_not_see_later_utc_sample() -> None:
+    """+3 16:30 is 13:30Z. Clock 14:00<16:30 would count a 14:00Z sample that is still future."""
+    plus3 = timezone(timedelta(hours=3))
+    now = datetime(2026, 8, 30, 16, 30, tzinfo=plus3)
+    hist = [_sample(i, "1") for i in range(19)]
+    late = WidthSample(
+        zone_id="z1",
+        ts=datetime(2026, 8, 30, 14, 0, tzinfo=UTC),
+        w_now=Decimal("1"),
+    )
+    assert late.ts.hour == 14
+    assert now.hour == 16
+    assert late.ts >= now
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist) is None
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist + [late]) is None
+
+
+def test_naive_width_sample_rejected() -> None:
+    with pytest.raises(TypeError, match="naive"):
+        WidthSample(zone_id="z1", ts=datetime(2026, 8, 30, 12, 0), w_now=Decimal("1"))

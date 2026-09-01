@@ -183,6 +183,60 @@ def test_pnl_without_day_does_not_unlock_share() -> None:
     assert hostile_exam(rows).pnl_share_best_5_days is None
 
 
+def test_flat_pred_is_excluded_from_direction_denominator() -> None:
+    """One hit + one pred==last is 1/1, not 1/2."""
+    rows = [
+        ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("12")),
+        ExamCase(pred=Decimal("10"), last=Decimal("10"), actual=Decimal("12")),
+    ]
+    assert hostile_exam(rows).direction_hit == Decimal("1")
+
+
+def test_incomplete_vol_pair_is_not_a_second_point() -> None:
+    rows = [
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("12"),
+            pred_vol_rank=Decimal("1"),
+            actual_vol=Decimal("2"),
+        ),
+        ExamCase(
+            pred=Decimal("9"),
+            last=Decimal("10"),
+            actual=Decimal("8"),
+            pred_vol_rank=Decimal("0.2"),
+            actual_vol=None,
+        ),
+    ]
+    assert hostile_exam(rows).n == 2
+    assert hostile_exam(rows).vol_rank_ic is None
+
+
+def test_day_with_pnl_none_is_not_a_fifth_day() -> None:
+    rows = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 6, d), pnl=Decimal("1"))
+        for d in range(1, 5)
+    ]
+    rows.append(ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 6, 5), pnl=None))
+    assert len({c.day for c in rows}) == 5
+    assert hostile_exam(rows).pnl_share_best_5_days is None
+
+
+def test_flat_vol_ranks_have_no_ic() -> None:
+    rows = [
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("12"),
+            pred_vol_rank=Decimal("1"),
+            actual_vol=Decimal("5"),
+        )
+        for _ in range(3)
+    ]
+    assert hostile_exam(rows).vol_rank_ic is None
+
+
 def test_no_predicted_direction_is_none() -> None:
     rows = [ExamCase(pred=Decimal("10"), last=Decimal("10"), actual=Decimal("11"))]
     assert hostile_exam(rows).direction_hit is None
