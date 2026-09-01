@@ -8,8 +8,9 @@ Dead-man (30s) and reconcile (60s) are the existing atoms.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
+from time import sleep as _sleep
 from typing import Any
 
 from capitalizator.ops.knowledge import Knowledge
@@ -116,6 +117,37 @@ def make_watchdogs(
     if reconcile_s is not None:
         _ = reconcile_s
     return dead, recon
+
+
+def serve_loop(
+    *,
+    knowledge: Knowledge,
+    vault: Any,
+    send: SendFn,
+    cancel_all: Callable[[], None],
+    should_stop: Callable[[], bool],
+    idle_s: float = 1.0,
+    now: datetime | None = None,
+    sleep: Callable[[float], None] = _sleep,
+) -> None:
+    """Stay up: drain intent_queue, beat dead-man 30s, reconcile 60s. Key in `send`."""
+    from capitalizator.ops.product import read_user_mode
+
+    dead, recon = make_watchdogs(cancel_all=cancel_all)
+    last_recon: datetime | None = None
+    while not should_stop():
+        when = now if now is not None else datetime.now(tz=UTC)
+        require_utc(when)
+        mode = read_user_mode(vault)
+        dead.beat(when)
+        if mode in {"demo", "live"}:
+            drain_validated(knowledge, send, user_mode=mode, now=when)
+        dead.tick(when)
+        if last_recon is None or (when - last_recon).total_seconds() >= RECONCILE_S:
+            recon.tick({})
+            last_recon = when
+        if idle_s:
+            sleep(idle_s)
 
 
 def drain_validated(

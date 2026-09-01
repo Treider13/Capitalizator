@@ -368,6 +368,77 @@ def test_desk_and_signer_are_separate_processes(tmp_path: Path) -> None:
     assert signer_main.main(["--userdir", vault_dir, "--once"]) == 0
 
 
+def test_desk_serve_loop_refreshes_mode_from_sqlite(tmp_path: Path) -> None:
+    """§2: desk --serve stays up and re-reads user_mode (console writes SQLite)."""
+    from capitalizator.desk.__main__ import serve_loop
+    from capitalizator.ops.product import set_user_mode
+
+    vault = init_vault(tmp_path / "desk")
+    knowledge = open_knowledge(vault)
+    seen: list[str] = []
+    n = {"i": 0}
+
+    def should_stop() -> bool:
+        n["i"] += 1
+        if n["i"] == 2:
+            set_user_mode(vault, "learn", ack=True, learn_n_days=1)
+        return n["i"] >= 3
+
+    desk = serve_loop(
+        vault=vault,
+        knowledge=knowledge,
+        should_stop=should_stop,
+        idle_s=0,
+        on_tick=lambda d: seen.append(d.user_mode),
+    )
+    knowledge.close()
+    assert n["i"] >= 3
+    assert "learn" in seen
+    assert desk.user_mode == "learn"
+
+
+def test_signer_serve_loop_drains_queue(tmp_path: Path) -> None:
+    """§2: signer --serve drains intent_queue and beats dead-man."""
+    from capitalizator.ops.product import mark_hello, set_user_mode
+    from capitalizator.signer.process import serve_loop
+
+    vault = init_vault(tmp_path / "desk")
+    mark_hello(vault, ok=True)
+    set_user_mode(vault, "demo", ack=True)
+    knowledge = open_knowledge(vault)
+    knowledge.enqueue_intent(
+        {
+            "symbol": "BTCUSDT",
+            "side": "buy",
+            "qty": "0.001",
+            "limit_px": "100",
+            "stop_px": "99",
+            "tp_px": "102",
+            "reduce_only_stop": True,
+        },
+        created_ts=WINDOW.isoformat(),
+    )
+    sent: list[dict] = []
+    n = {"i": 0}
+
+    def should_stop() -> bool:
+        n["i"] += 1
+        return n["i"] >= 2
+
+    serve_loop(
+        knowledge=knowledge,
+        vault=vault,
+        send=lambda row: sent.append(row) or {"status": "sent"},
+        cancel_all=lambda: None,
+        should_stop=should_stop,
+        idle_s=0,
+        now=WINDOW,
+    )
+    knowledge.close()
+    assert sent
+    assert sent[0]["symbol"] == "BTCUSDT"
+
+
 def test_desk_screener_accepts_sol(tmp_path: Path) -> None:
     from capitalizator.exec.strategy_bounce import BounceStrategy
     from capitalizator.risk.halts import Halts

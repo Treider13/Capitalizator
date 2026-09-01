@@ -4,13 +4,37 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 from capitalizator.desk.loop import DeskLoop
-from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.product import read_user_mode
-from capitalizator.ops.vault import init_vault, load_vault
+from capitalizator.ops.vault import Vault, init_vault, load_vault
 from capitalizator.screener.universe import load_desk_universe
+
+
+def serve_loop(
+    *,
+    vault: Vault,
+    knowledge: Knowledge,
+    should_stop: Callable[[], bool],
+    idle_s: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+    on_tick: Callable[[DeskLoop], None] | None = None,
+) -> DeskLoop:
+    """Stay up. Re-read user_mode from SQLite each tick. No keys. No tape invent."""
+    desk = DeskLoop(knowledge=knowledge, user_mode=read_user_mode(vault))
+    while not should_stop():
+        desk.user_mode = read_user_mode(vault)
+        if desk.user_mode in {"demo", "live"}:
+            desk.strategy.desk_mode = desk.user_mode
+        if on_tick is not None:
+            on_tick(desk)
+        if idle_s:
+            sleep(idle_s)
+    return desk
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,7 +59,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.once or not args.serve:
             print(json.dumps(payload, ensure_ascii=False))
             return 0
-        print(json.dumps({**payload, "serve": True}, ensure_ascii=False))
+        print(json.dumps({**payload, "serve": True}, ensure_ascii=False), flush=True)
+        serve_loop(vault=vault, knowledge=knowledge, should_stop=lambda: False)
         return 0
     finally:
         knowledge.close()

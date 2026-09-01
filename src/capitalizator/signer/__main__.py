@@ -16,6 +16,7 @@ from capitalizator.signer.process import (
     drain_validated,
     make_watchdogs,
     on_signer_exit,
+    serve_loop,
 )
 
 
@@ -53,7 +54,14 @@ def main(argv: list[str] | None = None) -> int:
                 )
             print(json.dumps(payload, ensure_ascii=False))
             return 0
-        print(json.dumps({**payload, "serve": True}, ensure_ascii=False))
+        print(json.dumps({**payload, "serve": True}, ensure_ascii=False), flush=True)
+        serve_loop(
+            knowledge=knowledge,
+            vault=vault,
+            send=lambda row: {"status": "not_sent"},
+            cancel_all=lambda: cancels.append(1),
+            should_stop=lambda: False,
+        )
         return 0
     finally:
         on_signer_exit(lambda: cancels.append(1))
