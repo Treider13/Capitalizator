@@ -15,6 +15,7 @@ import pytest
 
 from capitalizator.book.reconstruct import Book
 from capitalizator.btc.veto import BtcVeto
+from capitalizator.card.live import CardLive
 from capitalizator.desk.loop import BtcBus, DeskLoop
 from capitalizator.desk.pictures import picture_for
 from capitalizator.exec.demo_adapter import DemoAdapter
@@ -190,6 +191,22 @@ def _snap(**overrides: object) -> BounceSnapshot:
     }
     raw.update(overrides)
     return BounceSnapshot(**raw)  # type: ignore[arg-type]
+
+
+def _green(*, known_at: datetime, symbol: str = "BTCUSDT") -> CardLive:
+    """Green B card so A roles can run. Journal card_id is this id."""
+    return CardLive(
+        symbol=symbol,
+        bearing_verdict="propose",
+        known_at=known_at,
+        fib_zone="OTE",
+        fib_level="0.718",
+        rsi_htf="58.40",
+        fvg_status="filled",
+        sweep_status="done",
+        pluses=("session_profile", "htf_ok", "rvol_above_2"),
+        minuses=("base_rate_unknown", "spread_cost"),
+    )
 
 
 def _cpi(when: datetime) -> NewsRow:
@@ -506,17 +523,21 @@ def test_23_first_minute_blocks_breakout() -> None:
 
 def test_24_failed_break_gets_new_card_id(tmp_path: Path) -> None:
     desk = _desk(tmp_path, user_mode="off")
+    card = _green(known_at=WINDOW)
+    desk.knowledge.put_card_live("BTCUSDT", card.to_payload())
     desk.on_book("BTCUSDT", _book())
     desk.on_trade(_trade(WINDOW), [ZONE])
     desk.tick(WINDOW + timedelta(seconds=8))
-    events = desk.on_bar_close(
-        _bar(WINDOW + timedelta(minutes=15), low="99.5", close="100.4")
+    close = WINDOW + timedelta(minutes=15)
+    desk.knowledge.put_card_live(
+        "BTCUSDT", replace(card, known_at=close).to_payload()
     )
+    events = desk.on_bar_close(_bar(close, low="99.5", close="100.4"))
     row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
     assert row is not None
     assert row["idea"] == "failed_break"
     assert row["picture"] == "Г"
-    assert row["card_id"]
+    assert row["card_id"] == card.card_id
     assert picture_for("failed_break") == "Г"
     assert picture_for("bounce") == "A"
     assert picture_for("breakout") == "B"
@@ -531,12 +552,14 @@ def test_26_us_cpi_noon_journals_but_does_not_send(tmp_path: Path) -> None:
     desk = _desk(tmp_path, user_mode="demo", calendar=[_cpi(noon)])
     desk.on_book("BTCUSDT", _book())
     desk.on_trade(_trade(noon), [ZONE])
-    desk.tick(noon + timedelta(seconds=8))
-    events = desk.on_bar_close(_bar(noon + timedelta(minutes=15)))
-    assert events[0]["sent"] is False
+    events = desk.tick(noon + timedelta(seconds=8))
+    assert events
+    assert events[0].get("sent") is not True
+    assert events[0]["jury"] in {"SPLIT", "VETO", "SILENCE"}
     row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
     assert row is not None
     assert desk.knowledge.pending_intents() == []
+    assert desk.on_bar_close(_bar(noon + timedelta(minutes=15))) == []
 
 
 def test_demo_adapter_default_is_not_sent() -> None:

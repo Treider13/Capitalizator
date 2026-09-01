@@ -12,19 +12,12 @@ from pathlib import Path
 
 from capitalizator.desk.loop import DeskLoop
 from capitalizator.desk.tape import consume_tape
-from capitalizator.news_macro.ingest import NewsIngest, NewsRow, default_macro_path
+from capitalizator.news_macro.ingest import load_desk_calendar
 from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.product import read_user_mode
 from capitalizator.ops.vault import Vault, init_vault, load_vault
 from capitalizator.screener.universe import load_desk_universe
 from capitalizator.zones.model import Zone
-
-
-def load_desk_calendar() -> tuple[NewsRow, ...]:
-    try:
-        return tuple(NewsIngest.from_csv(default_macro_path()).rows)
-    except FileNotFoundError:
-        return ()
 
 
 def stop_on_signals() -> Callable[[], bool]:

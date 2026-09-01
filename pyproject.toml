@@ -20,6 +20,11 @@ dev = [
     "pytest>=8.3,<9",
     "ruff>=0.6,<1",
 ]
+# Wilder RSI etalon. Needs the TA-Lib C library. B falls back to in-repo Wilder.
+talib = [
+    "numpy>=1.26,<3",
+    "TA-Lib>=0.4.32,<1",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

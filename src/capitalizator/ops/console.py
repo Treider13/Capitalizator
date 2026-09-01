@@ -26,6 +26,8 @@ from capitalizator.ops.product import (
     read_user_mode,
     set_user_mode,
 )
+from capitalizator.ops.touch_screen import latest as latest_touch
+from capitalizator.ops.touch_screen import render_html as render_touch_html
 from capitalizator.ops.vault import (
     Vault,
     init_vault,
@@ -107,6 +109,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     n_touches = 0
     journal: list[dict[str, Any]] = []
     overlays: list[dict[str, str | None]] = []
+    touch_snap: dict[str, Any] | None = None
     knowledge = open_knowledge(vault, create=False)
     try:
         counts = knowledge.counts()
@@ -127,6 +130,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
             journal = knowledge.journal_rows()
             overlays = knowledge.overlay_rows()
             n_touches = len(journal)
+        touch_snap = latest_touch(knowledge) if knowledge.available() else None
     finally:
         knowledge.close()
     files_n, rows_n = _parquet_counts(vault.tape)
@@ -178,6 +182,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
             "overlay": overlays,
         },
         "taps": _desk_taps(),
+        "touch": touch_snap,
         "last_price": chronos_data.last_prices(vault),
         "session_window": chronos_data.session_window(),
         "last_jury": chronos_data.last_jury(vault),
@@ -534,6 +539,14 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     day = qs.get("day", [None])[0]
                     body = render_html(app.vault, day=day).encode()
                     code, ctype = 200, "text/html; charset=utf-8"
+                elif path == "/touch":
+                    snap = desk_snapshot(app.vault)
+                    body = render_touch_html(snap.get("touch")).encode()
+                    code, ctype = 200, "text/html; charset=utf-8"
+                elif path == "/api/touch":
+                    snap = desk_snapshot(app.vault)
+                    body = json.dumps(snap.get("touch"), ensure_ascii=False).encode()
+                    code, ctype = 200, "application/json; charset=utf-8"
                 else:
                     body, code, ctype = b"not-found", 404, "text/plain; charset=utf-8"
                 self.send_response(code)
