@@ -267,6 +267,27 @@ def test_exact_15pct_into_current_keeps_segment() -> None:
     assert len(last_gap_segment(priors, current, t=T)) == 15
 
 
+def test_down_jump_is_a_gap() -> None:
+    """Gap is |open − prev.close|. Dropping abs() keeps a 16% down move in the old ATR window."""
+    a = _bar(0, close="100", open_="100")
+    b = _bar(1, close="84", open_="84")
+    assert (b.open - a.close) / a.close < 0
+    assert abs(b.open - a.close) / a.close > JUMP_RATIO_15M
+    assert [len(s) for s in split_on_gaps([a, b])] == [1, 1]
+    priors = [_bar(i, close="100", open_="100") for i in range(15)]
+    current = _bar(17, close="84", open_="84")
+    assert last_gap_segment(priors, current, t=T) == []
+
+
+def test_exact_15pct_down_is_not_a_gap() -> None:
+    priors = [_bar(i, close="100", open_="100") for i in range(15)]
+    current = _bar(17, close="85", open_="85")
+    assert (current.open - priors[-1].close) / priors[-1].close == Decimal("-0.15")
+    assert abs(current.open - priors[-1].close) / priors[-1].close == JUMP_RATIO_15M
+    assert [len(s) for s in split_on_gaps([priors[-1], current])] == [2]
+    assert len(last_gap_segment(priors, current, t=T)) == 15
+
+
 def test_mixed_symbol_or_tf_is_not_a_gap_series() -> None:
     btc = _bar(0, close="100")
     eth = _bar(1, close="116", open_="116", symbol="ETHUSDT")

@@ -301,6 +301,29 @@ def test_day_with_pnl_none_is_not_a_fifth_day() -> None:
     assert hostile_exam(rows).pnl_share_best_5_days is None
 
 
+def test_tied_pred_ranks_have_no_ic() -> None:
+    """Average ranks of a tie have zero variance. Ordinal 1,2 would invent a ±1 IC here."""
+    rows = [
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("12"),
+            pred_vol_rank=Decimal("1"),
+            actual_vol=Decimal("1"),
+        ),
+        ExamCase(
+            pred=Decimal("9"),
+            last=Decimal("10"),
+            actual=Decimal("8"),
+            pred_vol_rank=Decimal("1"),
+            actual_vol=Decimal("9"),
+        ),
+    ]
+    assert rows[0].pred_vol_rank == rows[1].pred_vol_rank
+    assert rows[0].actual_vol != rows[1].actual_vol
+    assert hostile_exam(rows).vol_rank_ic is None
+
+
 def test_flat_vol_ranks_have_no_ic() -> None:
     rows = [
         ExamCase(

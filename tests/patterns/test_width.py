@@ -176,6 +176,26 @@ def test_hourly_history_does_not_make_width() -> None:
     assert width_now_from_history(bar, hourly, t=NOW) is None
 
 
+def test_down_open_gap_close_back_has_no_width() -> None:
+    """Gap is the open, not the close. A 16% down open that closes back would keep ATR if close-to-close."""
+    hist = [_bar(i, open_="100", close="100") for i in range(15)]
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 20),
+        close_ts=T0 + timedelta(minutes=15 * 20 + 15),
+        open=Decimal("84"),
+        high=Decimal("100.2"),
+        low=Decimal("84"),
+        close=Decimal("100.15"),
+    )
+    assert (bar.open - hist[-1].close) / hist[-1].close < 0
+    assert abs(bar.open - hist[-1].close) / hist[-1].close > Decimal("0.15")
+    assert abs(bar.close - hist[-1].close) / hist[-1].close < Decimal("0.15")
+    assert atr(hist) == Decimal("2")
+    assert width_now_from_history(bar, hist, t=NOW) is None
+
+
 def test_gap_into_current_width_is_none() -> None:
     hist = [
         Bar(
