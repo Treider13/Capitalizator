@@ -68,3 +68,47 @@ def run_night(
         "card": card,
         "verdict": "pending",
     }
+
+
+def main(argv: list[str] | None = None) -> int:
+    """VPS cron: night replay + daily report + overlay. No LLM verdict. No send."""
+    import argparse
+    import json
+    from datetime import UTC
+    from pathlib import Path
+
+    from capitalizator.ops.knowledge import open_knowledge
+    from capitalizator.ops.vault import init_vault, load_vault
+
+    parser = argparse.ArgumentParser(description="Night contour. No orders. No LLM verdict.")
+    parser.add_argument("--userdir", required=True)
+    parser.add_argument("--day", required=True)
+    parser.add_argument("--init", action="store_true")
+    args = parser.parse_args(argv)
+    vault = init_vault(Path(args.userdir)) if args.init else load_vault(Path(args.userdir))
+    knowledge = open_knowledge(vault)
+    try:
+        out = run_night(
+            knowledge,
+            day=args.day,
+            now=datetime.now(tz=UTC),
+        )
+        print(
+            json.dumps(
+                {
+                    "day": out["day"],
+                    "replayed": out["replayed"],
+                    "fragility": out["fragility"],
+                    "verdict": out["verdict"],
+                    "n_claims": len(out["card"].claims),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    finally:
+        knowledge.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

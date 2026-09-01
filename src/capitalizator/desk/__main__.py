@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from capitalizator.desk.loop import DeskLoop
+from capitalizator.desk.tape import consume_tape
 from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.product import read_user_mode
 from capitalizator.ops.vault import Vault, init_vault, load_vault
@@ -24,12 +25,14 @@ def serve_loop(
     sleep: Callable[[float], None] = time.sleep,
     on_tick: Callable[[DeskLoop], None] | None = None,
 ) -> DeskLoop:
-    """Stay up. Re-read user_mode from SQLite each tick. No keys. No tape invent."""
+    """Stay up. Read parquet tape, re-read user_mode. No keys. No invented rows."""
     desk = DeskLoop(knowledge=knowledge, user_mode=read_user_mode(vault))
+    seen: set[tuple[str, str, str, int | None]] = set()
     while not should_stop():
         desk.user_mode = read_user_mode(vault)
         if desk.user_mode in {"demo", "live"}:
             desk.strategy.desk_mode = desk.user_mode
+        consume_tape(desk, vault.tape, seen=seen)
         if on_tick is not None:
             on_tick(desk)
         if idle_s:
