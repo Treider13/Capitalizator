@@ -208,7 +208,9 @@ def observe(
     A bar of another symbol is an error before any fill. A tape print of
     another symbol is the same error while tape is still empty. Naive
     news_known_at is an error before any fill while BTC is still empty —
-    require_utc after tape/ZLG/CAV leaves a half-card. mid == print is
+    require_utc after tape/ZLG/CAV leaves a half-card. Naive add.ts is
+    an error before any fill while ZLG is still empty — ZLG require_utc
+    after fill_tape leaves tape written and gesture empty. mid == print is
     an error only when tape or ZLG is still empty — a BTC-only retry must
     not freeze the card if the book has since centered on the print.
     Missing BTC does not stamp jury. htf_bias=unknown lets btc_bars speak;
@@ -230,6 +232,9 @@ def observe(
                 raise ValueError(f"observe trade {trade.symbol} is not zone {zone.symbol}")
     if touch.btc_regime is None and inp.news_known_at is not None:
         require_utc(inp.news_known_at)
+    if touch.gesture is None:
+        for add in inp.adds:
+            require_utc(add.ts)
     if touch.tape_eaten is None or touch.gesture is None:
         if not inp.book.ready:
             raise ValueError("observe needs a ready book")

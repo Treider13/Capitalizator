@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -847,6 +848,33 @@ def test_observe_foreign_trades_write_nothing() -> None:
         htf_bias="box",
     )
     with pytest.raises(ValueError, match="not zone"):
+        observe(reg, inp, contour_on=True)
+    row = reg.touches[0]
+    assert row.tape_eaten is None
+    assert row.gesture is None
+    assert row.cav_label is None
+    assert row.jury is None
+
+
+def test_observe_naive_add_writes_nothing() -> None:
+    """ZLG require_utc(add.ts) runs after fill_tape. A naive add — even outside
+    the 8s window — must not leave tape written and gesture empty."""
+    reg = _reg()
+    inp = ObserveIn(
+        book=_book(),
+        trades=[_trade(PRINT, qty="1", side="sell")],
+        adds=[
+            SimpleNamespace(  # type: ignore[list-item]
+                ts=datetime(2026, 8, 30, 10, 0),
+                side="bid",
+                px=Decimal("100"),
+                qty=Decimal("2"),
+            )
+        ],
+        cav_bar=_bar(),
+        htf_bias="box",
+    )
+    with pytest.raises(TypeError, match="naive"):
         observe(reg, inp, contour_on=True)
     row = reg.touches[0]
     assert row.tape_eaten is None
