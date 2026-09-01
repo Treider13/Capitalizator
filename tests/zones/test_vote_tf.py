@@ -273,6 +273,67 @@ def test_chronos_keeps_working_tf_swing_when_map_row_is_1d(tmp_path: Path) -> No
     assert old.zone_id not in ids
 
 
+def test_chronos_merges_tape_prior_day_with_stored_swing(tmp_path: Path) -> None:
+    """Stale 1d must not hide yesterday's level: rebuild map, keep the 15m swing."""
+    vault = init_vault(tmp_path / "desk")
+    knowledge = open_knowledge(vault)
+    old = Zone.create(
+        symbol="BTCUSDT",
+        tf="1d",
+        side="support",
+        lo=Decimal("90"),
+        hi=Decimal("90.2"),
+        method="prior_day_hl",
+        created_as_of=datetime(2026, 8, 31, tzinfo=UTC),
+    )
+    swing = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("19.8"),
+        hi=Decimal("20.0"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 13, 30, tzinfo=UTC),
+    )
+    for zone in (old, swing):
+        knowledge.put_zone(
+            zone.zone_id,
+            {
+                "zone_id": zone.zone_id,
+                "symbol": zone.symbol,
+                "tf": zone.tf,
+                "side": zone.side,
+                "lo": str(zone.lo),
+                "hi": str(zone.hi),
+                "method": zone.method,
+                "created_as_of": zone.created_as_of.isoformat(),
+            },
+        )
+    knowledge.close()
+    sink = ParquetSink(vault.tape)
+    for ts, px in (
+        (datetime(2026, 8, 30, 14, 0, tzinfo=UTC), "90"),
+        (datetime(2026, 8, 30, 14, 10, tzinfo=UTC), "100"),
+    ):
+        sink.write(
+            MarketEvent(
+                stream="trades",
+                exchange="bybit",
+                symbol="BTCUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                payload={"px": px, "qty": "1", "side": "buy"},
+            )
+        )
+    shown = zones_for(vault, symbol="BTCUSDT", now=T_BUILD)
+    ids = {str(row.get("zone_id")) for row in shown}
+    assert swing.zone_id in ids
+    assert old.zone_id not in ids
+    prior = [row for row in shown if row.get("method") == "prior_day_hl"]
+    assert prior
+    assert {str(row.get("tf")) for row in prior} == {"15m"}
+
+
 def test_persist_does_not_drop_other_symbol_stale_map(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     desk = DeskLoop(knowledge=open_knowledge(vault), tick_size=TICK)

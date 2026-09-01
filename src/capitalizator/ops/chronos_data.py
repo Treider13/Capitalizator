@@ -170,23 +170,24 @@ def zones_for(vault: Vault, *, symbol: str, now: datetime | None = None) -> list
     finally:
         knowledge.close()
     vote = load_registry().working_tf
-    kept = [
-        row
-        for row in stored
-        if not (
+
+    def _stale_map(row: dict[str, Any]) -> bool:
+        return (
             str(row.get("method") or "") in MAP_VOTE_METHODS
             and str(row.get("tf") or "") != vote
         )
-    ]
-    if kept:
-        return kept
+
+    kept = [row for row in stored if not _stale_map(row)]
+    had_stale = len(kept) < len(stored)
+    if stored and not had_stale:
+        return stored
     when = now or datetime.now(tz=UTC)
     events = [e for e in load_tape(vault.tape) if e.symbol == symbol and e.stream == "trades"]
     raw_bars = closed_bars_from_trades(
         events, symbol=symbol, tf=vote, now=when, already=set()
     )
     built = ZoneEngine(tick_size=Decimal("0.1")).build(symbol, when, raw_bars)
-    return [
+    rebuilt = [
         {
             "zone_id": z.zone_id,
             "symbol": z.symbol,
@@ -199,6 +200,14 @@ def zones_for(vault: Vault, *, symbol: str, now: datetime | None = None) -> list
         }
         for z in built
     ]
+    if not had_stale:
+        return rebuilt
+    merged = {str(row["zone_id"]): row for row in rebuilt}
+    for row in kept:
+        zid = str(row.get("zone_id") or "")
+        if zid:
+            merged[zid] = row
+    return list(merged.values())
 
 
 def book_for(vault: Vault, *, symbol: str) -> dict[str, Any]:

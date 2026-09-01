@@ -157,6 +157,7 @@ class DeskLoop:
             return
         vote = self.config.working_tf
         symbols = {z.symbol for z in zones}
+        drop_ids: list[str] = []
         for row in self.knowledge.list_zones():
             if str(row.get("symbol") or "") not in symbols:
                 continue
@@ -167,9 +168,9 @@ class DeskLoop:
                 continue
             zid = row.get("zone_id")
             if zid:
-                self.knowledge.drop_zone(str(zid))
-        for zone in zones:
-            self.knowledge.put_zone(
+                drop_ids.append(str(zid))
+        puts = [
+            (
                 zone.zone_id,
                 {
                     "zone_id": zone.zone_id,
@@ -182,6 +183,9 @@ class DeskLoop:
                     "created_as_of": zone.created_as_of.isoformat(),
                 },
             )
+            for zone in zones
+        ]
+        self.knowledge.apply_zone_writes(drop_ids=drop_ids, puts=puts)
 
     def _remember_book(self, st: SymbolState, when: datetime) -> None:
         if not st.book.ready:

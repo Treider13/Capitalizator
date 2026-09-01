@@ -14,7 +14,7 @@ import json
 import os
 import sqlite3
 import stat
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -739,11 +739,35 @@ class Knowledge:
 
     def drop_zone(self, zone_id: str) -> None:
         """Remove one zone row. PK is zone_id; a tf change is a new row, not REPLACE."""
+        self.apply_zone_writes(drop_ids=(zone_id,))
+
+    def apply_zone_writes(
+        self,
+        *,
+        drop_ids: Sequence[str] = (),
+        puts: Sequence[tuple[str, Mapping[str, Any]]] = (),
+    ) -> None:
+        """One BEGIN IMMEDIATE for drop+put. Same rule as episode+hash in this file.
+
+        Console and desk open separate connections to one sqlite file. Split
+        drop-then-put commits left a reader with neither the old 1d nor the new 15m.
+        """
         if self._cx is None:
             raise FileNotFoundError("no knowledge db")
+        if not drop_ids and not puts:
+            return
         self._cx.execute("BEGIN IMMEDIATE")
         try:
-            self._cx.execute("DELETE FROM zone WHERE zone_id = ?", (str(zone_id),))
+            for zid in drop_ids:
+                self._cx.execute("DELETE FROM zone WHERE zone_id = ?", (str(zid),))
+            for zid, payload in puts:
+                body = json.dumps(
+                    dict(payload), sort_keys=True, ensure_ascii=False, default=str
+                )
+                self._cx.execute(
+                    "INSERT OR REPLACE INTO zone(zone_id, payload) VALUES (?, ?)",
+                    (str(zid), body),
+                )
             self._cx.commit()
         except Exception:
             self._cx.rollback()
