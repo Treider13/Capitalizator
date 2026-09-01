@@ -208,6 +208,69 @@ def test_split_on_gaps_sorts_before_the_cut() -> None:
     assert segs[1] == [late]
 
 
+def test_split_on_gaps_tiebreaks_equal_close_ts_by_open() -> None:
+    """Same close_ts: sort-by-close only is stable and keeps list [116, 100] — down 16/116 < 15%."""
+    close = datetime(2026, 8, 30, 12, 15, tzinfo=UTC)
+    early = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    late = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 10, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("116"),
+        high=Decimal("117"),
+        low=Decimal("115"),
+        close=Decimal("116"),
+    )
+    assert early.close_ts == late.close_ts
+    assert abs(late.open - early.close) / early.close > JUMP_RATIO_15M
+    assert abs(early.open - late.close) / late.close < JUMP_RATIO_15M
+    segs = split_on_gaps([late, early])
+    assert [len(s) for s in segs] == [1, 1]
+    assert segs[0] == [early]
+    assert segs[1] == [late]
+
+
+def test_last_gap_segment_tiebreaks_equal_close_ts() -> None:
+    """List [116, 100] same close_ts: priors[-1] without open_ts sort is 100 — false jump into current."""
+    close = datetime(2026, 8, 30, 12, 15, tzinfo=UTC)
+    early = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    late = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 10, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("116"),
+        high=Decimal("117"),
+        low=Decimal("115"),
+        close=Decimal("116"),
+    )
+    current = _bar(17, close="116", open_="116")
+    assert early.close_ts == late.close_ts
+    assert current.close_ts < T
+    assert abs(current.open - late.close) / late.close < JUMP_RATIO_15M
+    assert abs(current.open - early.close) / early.close > JUMP_RATIO_15M
+    assert last_gap_segment([late, early], current, t=T) == [late]
+
+
 def test_atr_n_must_be_positive() -> None:
     with pytest.raises(ValueError, match="atr n"):
         atr([_bar(0)], n=0)

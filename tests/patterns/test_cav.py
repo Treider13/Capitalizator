@@ -100,6 +100,13 @@ def test_htf_against_compress_is_noise() -> None:
     assert label(ZONE, bar, t=T, htf_bias="short", closed_bars=_atr15()) == "NOISE"
 
 
+def test_htf_against_drift_is_noise() -> None:
+    """HTF is not only REJECT/THROUGH/COMPRESS. A drift-bar against the bounce side is still NOISE."""
+    bar = _bar(low="100.0", high="101.0", close="100.1")
+    assert label(ZONE, bar, t=T, htf_bias="box") == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="short") == "NOISE"
+
+
 def test_htf_with_us_still_compresses() -> None:
     """Support bounce is long. `htf != box` would NOISE a same-side HTF."""
     bar = _bar(low="100.05", high="100.15", close="100.10")
