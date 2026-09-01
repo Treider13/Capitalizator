@@ -235,8 +235,8 @@ def _btc_bounce(regime: str | None, break_against: bool, same_side: bool = False
 def _card_voice(verdict: str | None, cpi_window: bool) -> Voice:
     if cpi_window:
         return "VETO"
-    if verdict in {"REFUTED", "UNVERIFIABLE"}:
+    if verdict in {"REFUTED", "UNVERIFIABLE", "veto"}:
         return "VETO"
-    if verdict == "VERIFIED":
+    if verdict in {"VERIFIED", "propose", "cut_size"}:
         return 1
     return 0

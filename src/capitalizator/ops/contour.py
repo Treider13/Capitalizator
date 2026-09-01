@@ -18,6 +18,7 @@ import pyarrow.parquet as pq
 
 from capitalizator.book.reconstruct import Book
 from capitalizator.btc.regime import BtcRegime
+from capitalizator.card.live import CardLive
 from capitalizator.memory.registry import Registry, Touch
 from capitalizator.ops.check_uptime import check_uptime, parse_event_row
 from capitalizator.ops.daily_map_report import contains_advice
@@ -50,6 +51,7 @@ class ObserveIn:
     closed_bars: Sequence[Bar] = field(default_factory=tuple)
     btc_bars: Sequence[Bar] = field(default_factory=tuple)
     news_known_at: datetime | None = None
+    card: CardLive | None = None
 
 
 def load_tape_events(vault: Vault, *, symbol: str) -> list[MarketEvent]:
@@ -226,6 +228,11 @@ def observe(
         return []
     tid = touch.touch_id
     zone = reg.zone(touch.zone_id)
+    card = inp.card
+    if card is not None:
+        stopped = _apply_b_card(reg, touch, card)
+        if stopped:
+            return stopped
     if touch.cav_label is None and (
         inp.cav_bar.symbol != zone.symbol or inp.cav_bar.tf != zone.tf
     ):
@@ -299,7 +306,55 @@ def observe(
         for row in reg.touches
         if row.gesture == live.gesture and reg.zone(row.zone_id).symbol == zone.symbol
     )
-    return reg.stamp_jury(n_cav=n_cav, n_zlg=n_zlg, touch_id=tid)
+    stamped = reg.stamp_jury(n_cav=n_cav, n_zlg=n_zlg, touch_id=tid)
+    if card is not None and stamped:
+        return _paint_b_fields(reg, stamped[0], card)
+    return stamped
+
+
+def _apply_b_card(reg: Registry, touch: Touch, card: CardLive) -> list[Touch] | None:
+    """veto / hold / red marks stop roles 1–3. B never opens size."""
+    if card.symbol and card.symbol != reg.zone(touch.zone_id).symbol:
+        raise ValueError(f"card {card.symbol} is not zone {reg.zone(touch.zone_id).symbol}")
+    if card.bearing_verdict == "veto":
+        return _paint_b_fields(reg, touch, card, jury="VETO", skip="b_veto")
+    if card.bearing_verdict == "hold":
+        return _paint_b_fields(reg, touch, card, jury="SILENCE", skip="b_hold")
+    if card.bearing_verdict in {"propose", "cut_size"} and not card.context_ok():
+        return _paint_b_fields(reg, touch, card, jury="SPLIT", skip="b_marks")
+    return None
+
+
+def _paint_b_fields(
+    reg: Registry,
+    touch: Touch,
+    card: CardLive,
+    *,
+    jury: str | None = None,
+    skip: str | None = None,
+) -> list[Touch]:
+    vol = card.volume
+    fields: dict[str, object] = {
+        "bearing_verdict": card.card_voice(),
+        "card_id": card.card_id,
+        "fib_trend": card.fib_zone,
+        "fib_in_05_1": card.fib_zone in {"OTE", "in_05_1"},
+        "fib_in_ote_gold": card.fib_zone == "OTE",
+        "rsi_tf": "htf",
+        "rsi_value": card.rsi_htf,
+        "fvg_present": card.fvg_status == "filled",
+        "sweep_wick": card.sweep_status == "done",
+        "gex_bg": card.gex_bg,
+        "poc": vol.poc,
+        "vah": vol.vah,
+        "val": vol.val,
+        "wall_state": vol.walls,
+    }
+    if jury is not None:
+        fields["jury"] = jury
+    if skip is not None:
+        fields["skip_reason"] = skip
+    return reg._patch(touch_id=touch.touch_id, overwrite=True, **fields)
 
 
 def observe_if_on(

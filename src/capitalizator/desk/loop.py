@@ -17,7 +17,10 @@ from capitalizator.book.reconstruct import Book, BookDirty
 from capitalizator.btc.break_def import Break
 from capitalizator.btc.regime import BtcRegime
 from capitalizator.btc.veto import BtcVeto
+from capitalizator.card.build import from_news as card_from_news
 from capitalizator.card.first_fact import resolve as resolve_first_fact
+from capitalizator.card.live import CardLive, touch_line
+from capitalizator.card.volume import snapshot as volume_snapshot
 from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.desk.session_name import session_name
 from capitalizator.exec.failed_break import FailedBreak
@@ -327,11 +330,146 @@ class DeskLoop:
         st.state = "LABEL_ZLG"
         return [{"event": "zlg", "touch_id": touch.touch_id, "gesture": result.gesture}]
 
+    def _card_for(self, symbol: str, now: datetime) -> CardLive | None:
+        raw = self.knowledge.get_card_live(symbol)
+        if raw is not None:
+            return CardLive.from_payload(raw)
+        if not self.calendar:
+            return None
+        vol = volume_snapshot(self.state_for(symbol).bars)
+        return card_from_news(symbol=symbol, now=now, calendar=self.calendar, volume=vol)
+
+    def _b_veto_touch(
+        self,
+        st: SymbolState,
+        touch: Touch,
+        zone: Zone,
+        bar: Bar,
+        card: CardLive,
+    ) -> list[dict[str, Any]]:
+        self.registry._patch(
+            touch_id=touch.touch_id,
+            overwrite=True,
+            bearing_verdict="veto",
+            jury="VETO",
+            skip_reason="b_veto",
+            card_id=card.card_id,
+            fib_trend=card.fib_zone,
+            fvg_present=card.fvg_status == "filled",
+            sweep_wick=card.sweep_status == "done",
+            gex_bg=card.gex_bg,
+            poc=card.volume.poc,
+            vah=card.volume.vah,
+            val=card.volume.val,
+        )
+        action = self.manager.on_refute(load_bearing=True, verdict="veto")
+        line = touch_line(symbol=st.symbol, card=card, jury="VETO")
+        self._write_b_journal(touch, zone, card, jury="VETO", skip="b_veto", line=line)
+        st.state = "IDLE"
+        st.last_touch = None
+        return [
+            {
+                "event": "jury",
+                "touch_id": touch.touch_id,
+                "jury": "VETO",
+                "sent": False,
+                "touch_line": line,
+                "action": None if action is None else action.action,
+            }
+        ]
+
+    def _b_split_touch(
+        self,
+        st: SymbolState,
+        touch: Touch,
+        zone: Zone,
+        bar: Bar,
+        card: CardLive,
+    ) -> list[dict[str, Any]]:
+        self.registry._patch(
+            touch_id=touch.touch_id,
+            overwrite=True,
+            bearing_verdict=card.card_voice(),
+            jury="SPLIT",
+            skip_reason="b_marks",
+            card_id=card.card_id,
+            fib_trend=card.fib_zone,
+            fvg_present=card.fvg_status == "filled",
+            sweep_wick=card.sweep_status == "done",
+            gex_bg=card.gex_bg,
+        )
+        line = touch_line(symbol=st.symbol, card=card, jury="SPLIT")
+        self._write_b_journal(touch, zone, card, jury="SPLIT", skip="b_marks", line=line)
+        st.state = "IDLE"
+        st.last_touch = None
+        return [
+            {
+                "event": "jury",
+                "touch_id": touch.touch_id,
+                "jury": "SPLIT",
+                "sent": False,
+                "touch_line": line,
+            }
+        ]
+
+    def _write_b_journal(
+        self,
+        touch: Touch,
+        zone: Zone,
+        card: CardLive,
+        *,
+        jury: str,
+        skip: str,
+        line: str,
+    ) -> None:
+        journal = empty_journal()
+        journal.update(
+            {
+                "zone_id": touch.zone_id,
+                "touch_ts": touch.ts.isoformat(),
+                "trade_px": str(touch.trade_px),
+                "trade_qty": str(touch.trade_qty),
+                "session_name": session_name(touch.ts),
+                "session_hour_utc": touch.ts.hour,
+                "poc": card.volume.poc,
+                "vah": card.volume.vah,
+                "val": card.volume.val,
+                "fib_trend": card.fib_zone,
+                "fib_in_05_1": card.fib_zone in {"OTE", "in_05_1"},
+                "fib_in_ote_gold": card.fib_zone == "OTE",
+                "rsi_tf": "htf",
+                "rsi_value": card.rsi_htf,
+                "fvg_present": card.fvg_status == "filled",
+                "sweep_wick": card.sweep_status == "done",
+                "gex_bg": card.gex_bg,
+                "cav_label": touch.cav_label,
+                "zlg_label": touch.gesture,
+                "jury": jury,
+                "bearing_verdict": card.card_voice(),
+                "card_id": card.card_id,
+                "skip_reason": skip,
+                "shadow_would": False,
+            }
+        )
+        self.knowledge.put_journal_touch(
+            touch.touch_id,
+            {**journal, "touch_id": touch.touch_id, "touch_line": line},
+        )
+
     def _eval_cav_and_jury(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
         touch = st.last_touch
         if touch is None:
             return []
         zone = self.registry.zone(touch.zone_id)
+        card = self._card_for(st.symbol, bar.close_ts)
+        if card is not None and card.bearing_verdict == "veto":
+            return self._b_veto_touch(st, touch, zone, bar, card)
+        if (
+            card is not None
+            and card.bearing_verdict in {"propose", "cut_size"}
+            and not card.context_ok()
+        ):
+            return self._b_split_touch(st, touch, zone, bar, card)
         if bar.close_ts < touch.ts:
             return []
         # Atom requires close_ts < t. Plan: CAV only on a closed bar (close_ts ≤ now).
@@ -400,12 +538,32 @@ class DeskLoop:
             row.event_class == "CPI" and row.event_time.date() == bar.close_ts.date()
             for row in self.calendar
         )
+        if card is not None and live.bearing_verdict is None:
+            self.registry._patch(
+                touch_id=touch.touch_id,
+                overwrite=True,
+                bearing_verdict=card.card_voice(),
+                card_id=card.card_id,
+                fib_trend=card.fib_zone,
+                fib_in_05_1=card.fib_zone in {"OTE", "in_05_1"},
+                fib_in_ote_gold=card.fib_zone == "OTE",
+                rsi_value=card.rsi_htf,
+                fvg_present=card.fvg_status == "filled",
+                sweep_wick=card.sweep_status == "done",
+                gex_bg=card.gex_bg,
+                poc=card.volume.poc,
+                vah=card.volume.vah,
+                val=card.volume.val,
+                wall_state=card.volume.walls,
+            )
+            live = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
+        wall_no_print = (card.volume.walls == "pulled") if card is not None else False
         stamped = self.registry.stamp_jury(
             idea=idea,
             n_cav=n_cav,
             n_zlg=n_zlg,
             touch_id=touch.touch_id,
-            wall_no_print=False,
+            wall_no_print=wall_no_print,
             btc_break_against=break_against,
             card_bearing_verdict=live.bearing_verdict,
             cpi_window=cpi_window,
@@ -427,13 +585,15 @@ class DeskLoop:
             tape_eaten=row.tape_eaten,
             btc_regime=row.btc_regime,
             card_bearing_verdict=row.bearing_verdict,
-            wall_no_print=False,
+            wall_no_print=wall_no_print,
             btc_break_against=break_against,
             trades_in_window=row.trades_in_window,
             btc_same_side=btc_same_side,
             cpi_window=cpi_window,
         )
         jury = decide(voices)
+        if card is not None and card.bearing_verdict == "hold":
+            jury = "SILENCE"
         picture = picture_for(idea)
         card_id = str(uuid4()) if needs_new_card(idea) else None
         shadow_would = jury == "ACCORD"
@@ -512,11 +672,14 @@ class DeskLoop:
         book = st.book_pre or st.book
         if book.ready:
             imb = book.imbalance(5)
+        line = touch_line(symbol=st.symbol, card=card, jury=jury)
         extra = {
             "touch_id": row.touch_id,
             "idea": idea,
             "picture": picture,
             "imbalance": None if imb is None else str(imb),
+            "touch_line": line,
+            "macro_multiplier": None if card is None else str(card.macro_multiplier),
         }
         self.knowledge.put_journal_touch(row.touch_id, {**journal, **extra})
         payload = {"touch_id": row.touch_id, "jury": jury, "shadow_would": shadow_would}
@@ -556,6 +719,14 @@ class DeskLoop:
                 ),
                 close_beyond=cav == "THROUGH",
                 card_bearing_verdict=row.bearing_verdict,
+                b_verdict=None if card is None else card.bearing_verdict,
+                macro_multiplier=Decimal("1") if card is None else card.macro_multiplier,
+                b_marks_ok=True if card is None else card.context_ok(),
+                rvol=None
+                if card is None or not card.volume.rvol
+                else Decimal(card.volume.rvol),
+                wall_state=None if card is None else card.volume.walls,
+                wall_no_print=wall_no_print,
             )
             intent = self.strategy.propose(snap)
             if intent is not None:
@@ -566,7 +737,15 @@ class DeskLoop:
                 sent = True
         st.state = "IDLE"
         st.last_touch = None
-        return [{"event": "jury", "touch_id": row.touch_id, "jury": jury, "sent": sent}]
+        return [
+            {
+                "event": "jury",
+                "touch_id": row.touch_id,
+                "jury": jury,
+                "sent": sent,
+                "touch_line": line,
+            }
+        ]
 
     def play(
         self,
