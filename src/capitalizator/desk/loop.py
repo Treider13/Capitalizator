@@ -21,7 +21,7 @@ from capitalizator.exec.failed_break import FailedBreak
 from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.manage import TradeManager
 from capitalizator.exec.shadow import ShadowWriter
-from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy
+from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy, in_mid_range
 from capitalizator.jury.desk import decide, voices_for_bounce, voices_for_breakout, voices_for_failed_break
 from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
@@ -251,9 +251,25 @@ class DeskLoop:
         zone = self.registry.zone(touch.zone_id)
         if bar.close_ts < touch.ts:
             return []
-        h4 = self.zones_map.htf_bias(st.symbol, bar.close_ts, st.bars)
-        d1 = self.zones_map.htf_d1_bias(st.symbol, bar.close_ts, st.bars)
-        cav = cav_label(zone, bar, t=bar.close_ts, htf_bias=h4, closed_bars=st.bars)
+        # Atom requires close_ts < t. Plan: CAV only on a closed bar (close_ts ≤ now).
+        closed_at = bar.close_ts + timedelta(microseconds=1)
+        h4 = self.zones_map.htf_bias(st.symbol, closed_at, st.bars)
+        d1 = self.zones_map.htf_d1_bias(st.symbol, closed_at, st.bars)
+        bounce_side = "long" if zone.side == "support" else "short"
+        htf = h4
+        if d1 not in {"unknown", "box"} and d1 != bounce_side:
+            htf = d1
+        elif h4 not in {"unknown", "box"} and h4 != bounce_side:
+            htf = h4
+        cav = cav_label(zone, bar, t=closed_at, htf_bias=htf, closed_bars=st.bars)
+        known_zones = tuple(self.registry._zones.values()) if self.registry._zones else (zone,)
+        if in_mid_range(
+            bar.close,
+            known_zones,
+            tick=self.tick_size,
+            band_ticks=self.config.mid_band_ticks,
+        ):
+            cav = "NOISE"
         self.registry.fill_cav(cav_label=cav, touch_id=touch.touch_id)
         live = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
         idea = "bounce"
@@ -407,10 +423,15 @@ class DeskLoop:
         missing = [key for key in JOURNAL_KEYS if key not in journal]
         if missing:
             raise RuntimeError(f"journal missing {missing}")
+        imb = None
+        book = st.book_pre or st.book
+        if book.ready:
+            imb = book.imbalance(5)
         extra = {
             "touch_id": row.touch_id,
             "idea": idea,
             "picture": picture,
+            "imbalance": None if imb is None else str(imb),
         }
         self.knowledge.put_journal_touch(row.touch_id, {**journal, **extra})
         payload = {"touch_id": row.touch_id, "jury": jury, "shadow_would": shadow_would}

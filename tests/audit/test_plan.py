@@ -74,16 +74,22 @@ def _book() -> Book:
     return book
 
 
-def _bar(ts: datetime) -> Bar:
+def _bar(
+    ts: datetime,
+    *,
+    low: str = "100.2",
+    high: str = "101",
+    close: str = "100.6",
+) -> Bar:
     return Bar(
         symbol="BTCUSDT",
         tf="15m",
         open_ts=ts - timedelta(minutes=15),
         close_ts=ts,
         open=Decimal("100.5"),
-        high=Decimal("101"),
-        low=Decimal("100.2"),
-        close=Decimal("100.6"),
+        high=Decimal(high),
+        low=Decimal(low),
+        close=Decimal(close),
     )
 
 
@@ -566,3 +572,80 @@ def test_f5_1_2_needs_ack() -> None:
     assert f5_target(equity_source="main", gate_f4=True, ack=False) is None
     assert f5_target(equity_source="main", gate_f4=True, ack=True) == F5_TARGET
     assert active_target(equity_source="main", gate_f4=True, ack=False) == F1_TARGET
+
+
+def test_desk_cav_on_closed_reject_bar_is_not_noise(tmp_path: Path) -> None:
+    """§3/§6.5: t=close_ts made every live CAV NOISE. Closed reject bar must label REJECT."""
+    desk = _desk(tmp_path)
+    desk.on_book("BTCUSDT", _book())
+    desk.on_event(_trade(), [ZONE])
+    desk.tick(WINDOW + timedelta(seconds=8))
+    events = desk.on_bar_close(
+        _bar(WINDOW + timedelta(minutes=15), low="99.9", close="100.4")
+    )
+    row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    assert row is not None
+    assert row["cav_label"] == "REJECT"
+
+
+def test_desk_d1_against_is_cav_noise(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    day0 = datetime(2026, 8, 28, 0, 0, tzinfo=UTC)
+    for i, close in enumerate(("110", "111", "70")):
+        desk.state_for("BTCUSDT").bars.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1d",
+                open_ts=day0 + timedelta(days=i),
+                close_ts=day0 + timedelta(days=i, hours=23),
+                open=Decimal("100"),
+                high=Decimal("120"),
+                low=Decimal("100") if i < 2 else Decimal("60"),
+                close=Decimal(close),
+            )
+        )
+    desk.on_book("BTCUSDT", _book())
+    desk.on_event(_trade(), [ZONE])
+    desk.tick(WINDOW + timedelta(seconds=8))
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15), low="99.9", close="100.4"))
+    row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    assert row is not None
+    assert row["cav_label"] == "NOISE"
+    assert row["htf_d1"] == "short"
+
+
+def test_desk_mid_band_is_not_cav(tmp_path: Path) -> None:
+    resist = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("102"),
+        hi=Decimal("103"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
+    desk = _desk(tmp_path)
+    desk.registry._zones[ZONE.zone_id] = ZONE
+    desk.registry._zones[resist.zone_id] = resist
+    desk.on_book("BTCUSDT", _book())
+    desk.on_event(_trade(px="100.4"), [ZONE])
+    desk.tick(WINDOW + timedelta(seconds=8))
+    mid_bar = _bar(WINDOW + timedelta(minutes=15), low="100.2", high="102", close="101.5")
+    events = desk.on_bar_close(mid_bar)
+    if not events:
+        return
+    row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    assert row is not None
+    assert row["cav_label"] == "NOISE"
+
+
+def test_desk_writes_imbalance_journal_not_entry(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    desk.on_book("BTCUSDT", _book())
+    desk.on_event(_trade(), [ZONE])
+    desk.tick(WINDOW + timedelta(seconds=8))
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    assert row is not None
+    assert "imbalance" in row
+    assert desk.knowledge.pending_intents() == []
