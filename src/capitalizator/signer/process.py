@@ -14,7 +14,8 @@ from time import sleep as _sleep
 from typing import Any
 
 from capitalizator.ops.knowledge import Knowledge
-from capitalizator.ops.product import USER_MODES
+from capitalizator.ops.product import META_HELLO, USER_MODES
+from capitalizator.risk.session import in_desk_window
 from capitalizator.screener.universe import Universe, load_desk_universe
 from capitalizator.signer.deadman import DeadMan
 from capitalizator.signer.reconcile import Reconciler
@@ -83,11 +84,15 @@ def drain_once(
     user_mode: str,
     now: datetime,
 ) -> list[dict[str, Any]]:
-    """Execute pending intents only when the human mode is demo|live."""
+    """Execute pending intents only when demo|live, hello, and desk window."""
     if user_mode not in USER_MODES:
         raise ValueError(f"unknown user_mode: {user_mode!r}")
     require_utc(now)
     if user_mode not in {"demo", "live"}:
+        return []
+    if knowledge.meta(META_HELLO) != "1":
+        return []
+    if not in_desk_window(now):
         return []
     out: list[dict[str, Any]] = []
     for row in knowledge.pending_intents():

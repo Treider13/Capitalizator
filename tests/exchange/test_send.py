@@ -7,6 +7,7 @@ from pathlib import Path
 
 from capitalizator.exchange.client import MAINNET_REST, TESTNET_REST, ExchangeClient
 from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.product import mark_hello
 from capitalizator.ops.vault import init_vault, write_regular_text
 from capitalizator.signer.process import drain_validated
 
@@ -53,6 +54,7 @@ def _payload() -> dict:
 
 def test_demo_queue_posts_testnet(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
+    mark_hello(vault, ok=True)
     knowledge = open_knowledge(vault)
     knowledge.enqueue_intent(_payload(), created_ts=NOW.isoformat())
     http = FakeHttp([{"retCode": 0, "result": {"orderId": "d1"}}])
@@ -71,6 +73,7 @@ def test_demo_queue_posts_testnet(tmp_path: Path) -> None:
 
 def test_live_queue_posts_mainnet(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
+    mark_hello(vault, ok=True)
     knowledge = open_knowledge(vault)
     knowledge.enqueue_intent(_payload(), created_ts=NOW.isoformat())
     http = FakeHttp([{"retCode": 0, "result": {"orderId": "l1"}}])
@@ -88,6 +91,7 @@ def test_live_queue_posts_mainnet(tmp_path: Path) -> None:
 
 def test_size_mult_halves_qty_on_the_wire(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
+    mark_hello(vault, ok=True)
     knowledge = open_knowledge(vault)
     payload = _payload()
     payload["size_mult"] = "0.5"

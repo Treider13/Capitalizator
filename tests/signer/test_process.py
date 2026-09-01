@@ -6,10 +6,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.product import mark_hello
 from capitalizator.ops.vault import init_vault
 from capitalizator.signer.process import META_HEARTBEAT, drain_once, serve_loop
 
 NOW = datetime(2026, 8, 31, 14, 10, tzinfo=UTC)
+OUTSIDE = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
 
 
 def test_off_does_not_drain(tmp_path: Path) -> None:
@@ -23,7 +25,9 @@ def test_off_does_not_drain(tmp_path: Path) -> None:
 
 
 def test_demo_sends_and_marks(tmp_path: Path) -> None:
-    knowledge = open_knowledge(init_vault(tmp_path / "desk"))
+    vault = init_vault(tmp_path / "desk")
+    mark_hello(vault, ok=True)
+    knowledge = open_knowledge(vault)
     knowledge.enqueue_intent({"symbol": "BTCUSDT", "side": "buy"}, created_ts=NOW.isoformat())
 
     def send(payload: dict) -> dict:
@@ -32,6 +36,40 @@ def test_demo_sends_and_marks(tmp_path: Path) -> None:
     out = drain_once(knowledge, send, user_mode="demo", now=NOW)
     assert out[0]["status"] == "sent"
     assert knowledge.pending_intents() == []
+
+
+def test_demo_outside_window_does_not_drain(tmp_path: Path) -> None:
+    """PRODUCT.md law 2/3: order 24/7 is forbidden. Window 16:30–19:30 MSK."""
+    vault = init_vault(tmp_path / "desk")
+    mark_hello(vault, ok=True)
+    knowledge = open_knowledge(vault)
+    knowledge.enqueue_intent({"symbol": "BTCUSDT", "side": "buy"}, created_ts=NOW.isoformat())
+    hits: list[dict] = []
+
+    def send(payload: dict) -> dict:
+        hits.append(payload)
+        return {"status": "sent", "symbol": payload["symbol"]}
+
+    out = drain_once(knowledge, send, user_mode="demo", now=OUTSIDE)
+    assert out == []
+    assert hits == []
+    assert knowledge.pending_intents()
+
+
+def test_demo_without_hello_does_not_drain(tmp_path: Path) -> None:
+    """docs/VPS.md: without hello, send is closed. Signer is the last gate."""
+    knowledge = open_knowledge(init_vault(tmp_path / "desk"))
+    knowledge.enqueue_intent({"symbol": "BTCUSDT", "side": "buy"}, created_ts=NOW.isoformat())
+    hits: list[dict] = []
+
+    def send(payload: dict) -> dict:
+        hits.append(payload)
+        return {"status": "sent", "symbol": payload["symbol"]}
+
+    out = drain_once(knowledge, send, user_mode="demo", now=NOW)
+    assert out == []
+    assert hits == []
+    assert knowledge.pending_intents()
 
 
 def test_serve_loop_writes_heartbeat(tmp_path: Path) -> None:
