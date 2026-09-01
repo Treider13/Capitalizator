@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 from capitalizator.desk.loop import DeskLoop
 from capitalizator.ops.vault import VaultError, iter_regular_files
 from capitalizator.types import MarketEvent
+from capitalizator.zones.model import Zone
 
 Seen = set[tuple[str, str, str, int | None]]
 
@@ -60,14 +61,21 @@ def load_tape(tape: Path) -> list[MarketEvent]:
     return events
 
 
-def consume_tape(desk: DeskLoop, tape: Path, *, seen: Seen) -> int:
+def consume_tape(
+    desk: DeskLoop,
+    tape: Path,
+    *,
+    seen: Seen,
+    extra_zones: tuple[Zone, ...] = (),
+) -> int:
     """Feed unseen parquet events into the loop. Second pass does not replay."""
     n = 0
+    zones = list(extra_zones)
     for event in load_tape(tape):
         key = (event.stream, event.symbol, event.exchange_ts.isoformat(), event.seq)
         if key in seen:
             continue
         seen.add(key)
-        desk.on_event(event)
+        desk.on_event(event, zones if event.stream == "trades" else None)
         n += 1
     return n

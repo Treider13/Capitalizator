@@ -44,6 +44,65 @@ def test_serve_loop_consumes_parquet_trade(tmp_path: Path) -> None:
     assert desk.state_for("BTCUSDT").trades[0].payload["px"] == "100.4"
 
 
+def test_serve_loop_ticks_zlg_after_window(tmp_path: Path) -> None:
+    from datetime import timedelta
+    from decimal import Decimal
+
+    from capitalizator.zones.model import Zone
+
+    vault = init_vault(tmp_path / "desk")
+    sink = ParquetSink(vault.tape)
+    sink.write(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            seq=1,
+            payload={"bids": [["100.4", "20"]], "asks": [["100.6", "20"]]},
+        )
+    )
+    sink.write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            payload={"px": "100.4", "qty": "1", "side": "sell"},
+        )
+    )
+    zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("101"),
+        method="prior_day_hl",
+        created_as_of=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+    )
+    knowledge = open_knowledge(vault)
+    n = {"i": 0}
+
+    def should_stop() -> bool:
+        n["i"] += 1
+        return n["i"] >= 2
+
+    desk = serve_loop(
+        vault=vault,
+        knowledge=knowledge,
+        should_stop=should_stop,
+        idle_s=0,
+        now=NOW + timedelta(seconds=8),
+        extra_zones=(zone,),
+    )
+    knowledge.close()
+    st = desk.state_for("BTCUSDT")
+    assert st.state in {"LABEL_ZLG", "IDLE", "JURY"}
+    assert st.state != "ARM_ZLG"
+
+
 def test_empty_tape_does_not_invent(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     knowledge = open_knowledge(vault)

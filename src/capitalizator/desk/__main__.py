@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from capitalizator.desk.loop import DeskLoop
@@ -14,6 +15,7 @@ from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.product import read_user_mode
 from capitalizator.ops.vault import Vault, init_vault, load_vault
 from capitalizator.screener.universe import load_desk_universe
+from capitalizator.zones.model import Zone
 
 
 def serve_loop(
@@ -24,15 +26,20 @@ def serve_loop(
     idle_s: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
     on_tick: Callable[[DeskLoop], None] | None = None,
+    now: datetime | None = None,
+    extra_zones: Sequence[Zone] = (),
 ) -> DeskLoop:
-    """Stay up. Read parquet tape, re-read user_mode. No keys. No invented rows."""
+    """Stay up. Read parquet tape, tick ZLG, re-read user_mode. No invented rows."""
     desk = DeskLoop(knowledge=knowledge, user_mode=read_user_mode(vault))
     seen: set[tuple[str, str, str, int | None]] = set()
+    zones = tuple(extra_zones)
     while not should_stop():
         desk.user_mode = read_user_mode(vault)
         if desk.user_mode in {"demo", "live"}:
             desk.strategy.desk_mode = desk.user_mode
-        consume_tape(desk, vault.tape, seen=seen)
+        consume_tape(desk, vault.tape, seen=seen, extra_zones=zones)
+        when = now if now is not None else datetime.now(tz=UTC)
+        desk.tick(when)
         if on_tick is not None:
             on_tick(desk)
         if idle_s:

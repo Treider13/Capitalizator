@@ -150,3 +150,22 @@ def test_demo_window_enqueues_after_accord(tmp_path: Path) -> None:
         assert desk.knowledge.pending_intents()
     else:
         assert events[0]["sent"] is False
+
+
+def test_snapshot_event_applies_to_book(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW,
+            recv_ts=WINDOW,
+            seq=1,
+            payload={"bids": [["100.4", "20"]], "asks": [["100.6", "20"]]},
+        )
+    )
+    book = desk.state_for("BTCUSDT").book
+    assert book.ready is True
+    assert book.best() == (Decimal("100.4"), Decimal("100.6"))

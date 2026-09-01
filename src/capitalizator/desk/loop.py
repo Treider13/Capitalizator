@@ -12,7 +12,9 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import uuid4
 
-from capitalizator.book.reconstruct import Book
+from capitalizator.book.reconstruct import Book, BookDirty
+from capitalizator.recorder.gap import SeqFault
+from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.btc.veto import BtcVeto
 from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.desk.pictures import needs_new_card, picture_for
@@ -117,6 +119,34 @@ class DeskLoop:
     def on_book(self, symbol: str, book: Book) -> None:
         self.state_for(symbol).book = book
 
+    def _apply_book_event(self, st: SymbolState, event: MarketEvent) -> None:
+        """Apply snapshot/diff from tape. Gap → dirty book, do not invent levels."""
+        bids = _levels(event.payload.get("bids") or event.payload.get("b") or [])
+        asks = _levels(event.payload.get("asks") or event.payload.get("a") or [])
+        seq = event.seq if event.seq is not None else event.payload.get("u")
+        if event.stream == "snapshot":
+            if seq is None:
+                return
+            st.book.apply_snapshot(
+                BookSnapshot(
+                    symbol=event.symbol,
+                    exchange_ts=event.exchange_ts,
+                    seq=int(seq),
+                    bids=bids,
+                    asks=asks,
+                )
+            )
+            return
+        if event.stream == "book_diff":
+            if seq is None:
+                st.book = Book(tick_size=str(self.tick_size))
+                return
+            try:
+                st.book.apply_diff(bids, asks, seq=int(seq))
+            except (BookDirty, SeqFault):
+                st.book = Book(tick_size=str(self.tick_size))
+            return
+
     def on_add(self, symbol: str, add: BookAdd) -> None:
         self.state_for(symbol).adds.append(add)
 
@@ -163,6 +193,7 @@ class DeskLoop:
             return self.on_trade(event, zones or [])
         st = self.state_for(event.symbol)
         if event.stream in {"book_diff", "bbo", "snapshot"}:
+            self._apply_book_event(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"funding", "oi", "mark"}:
             return [{"event": event.stream, "symbol": event.symbol, "journal": True}]
@@ -477,3 +508,14 @@ class DeskLoop:
         st.state = "IDLE"
         st.last_touch = None
         return [{"event": "jury", "touch_id": row.touch_id, "jury": jury, "sent": sent}]
+
+
+def _levels(rows: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(rows, list | tuple):
+        return ()
+    out: list[tuple[str, str]] = []
+    for row in rows:
+        if not isinstance(row, list | tuple) or len(row) < 2:
+            continue
+        out.append((str(row[0]), str(row[1])))
+    return tuple(out)
