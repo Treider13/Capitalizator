@@ -11,7 +11,14 @@ from capitalizator.types import require_utc
 from capitalizator.zones.ids import make_zone_id
 
 ZoneSide = Literal["support", "resistance"]
-ZoneMethod = Literal["prior_day_hl", "swing"]
+ZoneMethod = Literal[
+    "prior_day_hl",
+    "swing",
+    "cluster_edge",
+    "round",
+    "prior_session_hl",
+    "vp_hyp",
+]
 
 
 @dataclass(frozen=True)

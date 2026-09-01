@@ -45,6 +45,26 @@ class Touch:
     w_rank: Decimal | None = None
     bar_quality: str | None = None
     session_hour: int | None = None
+    session_name: str | None = None
+    htf_h4: str | None = None
+    htf_d1: str | None = None
+    poc: str | None = None
+    vah: str | None = None
+    val: str | None = None
+    fib_in_05_1: bool | None = None
+    fib_in_ote_gold: bool | None = None
+    rsi_value: str | None = None
+    fvg_present: bool | None = None
+    sweep_wick: bool | None = None
+    refill_proxy: bool | None = None
+    gex_bg: str | None = None
+    first_fact: str | None = None
+    n_cav: int | None = None
+    n_zlg: int | None = None
+    shadow_would: bool | None = None
+    skip_reason: str | None = None
+    card_id: str | None = None
+    idea: str | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.ts)
@@ -290,10 +310,16 @@ class Registry:
         touch_id: str | None = None,
     ) -> list[Touch]:
         """Write jury + rho_class_id from already filled labels. Does not open size."""
-        from capitalizator.jury.desk import decide, rho_class_id, voices_for_bounce
+        from capitalizator.jury.desk import (
+            decide,
+            rho_class_id,
+            voices_for_bounce,
+            voices_for_breakout,
+            voices_for_failed_break,
+        )
 
-        if idea != "bounce":
-            raise ValueError("only bounce idea is mapped in F1")
+        if idea not in {"bounce", "breakout", "failed_break"}:
+            raise ValueError("idea must be bounce|breakout|failed_break")
         self._require_touch_id_if_many(touch_id, what="stamp_jury")
         changed: list[Touch] = []
         next_rows: list[Touch] = []
@@ -304,7 +330,12 @@ class Registry:
             if touch.jury is not None:
                 next_rows.append(touch)
                 continue
-            voices = voices_for_bounce(
+            voice_fn = {
+                "bounce": voices_for_bounce,
+                "breakout": voices_for_breakout,
+                "failed_break": voices_for_failed_break,
+            }[idea]
+            voices = voice_fn(
                 cav=touch.cav_label,
                 n_cav=n_cav,
                 zlg=touch.gesture,

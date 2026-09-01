@@ -18,11 +18,17 @@ class ZoneMap:
         self.config = config or load_registry()
 
     def htf_bias(self, symbol: str, t: datetime, bars: Sequence[Bar]) -> HtfBias:
+        return self._bias(symbol, t, bars, tf=self.config.htf)
+
+    def htf_d1_bias(self, symbol: str, t: datetime, bars: Sequence[Bar]) -> HtfBias:
+        return self._bias(symbol, t, bars, tf=self.config.htf_d1)
+
+    def _bias(self, symbol: str, t: datetime, bars: Sequence[Bar], *, tf: str) -> HtfBias:
         when = require_utc(t)
         visible = [
             b
             for b in bars
-            if b.symbol == symbol and b.tf == self.config.htf and b.close_ts < when
+            if b.symbol == symbol and b.tf == tf and b.close_ts < when
         ]
         visible.sort(key=lambda b: b.close_ts)
         if len(visible) < 3:
