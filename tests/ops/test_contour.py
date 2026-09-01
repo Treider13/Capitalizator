@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import yaml
 
@@ -17,6 +19,7 @@ from capitalizator.ops.contour import (
     contour_state,
     enable,
     hours24,
+    load_tape_events,
     observe,
     observe_if_on,
     status,
@@ -25,7 +28,7 @@ from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.phase import phase_path, trading_mode
 from capitalizator.ops.vault import init_vault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
-from capitalizator.recorder.sink_parquet import ParquetSink
+from capitalizator.recorder.sink_parquet import SCHEMA, ParquetSink
 from capitalizator.types import MarketEvent
 from capitalizator.zlg.gesture import BookAdd
 from capitalizator.zones.model import Bar, Zone
@@ -170,6 +173,56 @@ def test_hours24_eth_gap_does_not_green_btc() -> None:
     ok, span = hours24([_trade(T0), _trade(end), eth_gap])
     assert ok is False
     assert span == 86400
+
+
+def test_enable_mixed_parquet_eth_gap_stays_off(tmp_path: Path) -> None:
+    """ETH gap sitting in a BTCUSDT file must not unlock the button."""
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    dest = vault.tape / "BTCUSDT" / "mixed.parquet"
+    dest.parent.mkdir(parents=True)
+    end = T0 + timedelta(hours=24)
+    table = pa.Table.from_pylist(
+        [
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": T0,
+                "recv_ts": T0,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": end,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+            {
+                "stream": "gap",
+                "exchange": "bybit",
+                "symbol": "ETHUSDT",
+                "exchange_ts": T0,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": (
+                    f'{{"ts_from":"{T0.isoformat()}","ts_to":"{end.isoformat()}"}}'
+                ),
+            },
+        ],
+        schema=SCHEMA,
+    )
+    pq.write_table(table, dest)
+    loaded = load_tape_events(vault, symbol="BTCUSDT")
+    assert [e.symbol for e in loaded] == ["BTCUSDT", "BTCUSDT"]
+    with pytest.raises(ContourNotReady, match="hours24"):
+        enable(vault)
+    assert contour_state(vault) == "off"
+    assert trading_mode() == "off"
 
 
 def test_enable_refuses_without_hours24(tmp_path: Path) -> None:
@@ -529,4 +582,36 @@ def test_observe_btc_retry_ignores_centered_book() -> None:
     assert stamped[0].btc_regime == "box"
     assert stamped[0].jury == "SILENCE"
     assert stamped[0].tape_eaten is False
+    assert stamped[0].gesture == "DEFEND"
+
+
+def test_observe_btc_retry_allows_unready_book() -> None:
+    """BTC-only retry must not demand a live book. Tape/ZLG are already facts."""
+    reg = _reg()
+    pending = ObserveIn(
+        book=_book(),
+        trades=[_trade(PRINT, qty="1", side="sell")],
+        adds=[
+            BookAdd(
+                ts=PRINT + timedelta(seconds=1),
+                side="bid",
+                px=Decimal("100"),
+                qty=Decimal("2"),
+            )
+        ],
+        cav_bar=_bar(),
+        htf_bias="unknown",
+    )
+    assert observe(reg, pending, contour_on=True)[0].jury is None
+    later = ObserveIn(
+        book=Book(),
+        trades=[],
+        adds=[],
+        cav_bar=_bar(),
+        htf_bias="box",
+    )
+    assert later.book.ready is False
+    stamped = observe(reg, later, contour_on=True)
+    assert stamped[0].btc_regime == "box"
+    assert stamped[0].jury == "SILENCE"
     assert stamped[0].gesture == "DEFEND"
