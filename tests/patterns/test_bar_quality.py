@@ -181,6 +181,25 @@ def test_three_btc_and_one_eth_do_not_stagnate() -> None:
     assert classify_bar_quality([_bar(i, close="100") for i in range(4)], current, t=T) == STAGNANT
 
 
+def test_three_15m_and_one_1h_do_not_stagnate() -> None:
+    """3 same 15m + 1h + current is 5 prints. Counting every tf would STAGNANT."""
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 11, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    hist = [_bar(i, close="100") for i in range(3)] + [hourly]
+    current = _bar(4, close="100")
+    assert hourly.close_ts < current.close_ts
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+    assert classify_bar_quality([_bar(i, close="100") for i in range(4)], current, t=T) == STAGNANT
+
+
 def test_btc_history_does_not_stagnate_an_eth_bar() -> None:
     """Hardcoded `history is BTC` would STAGNANT an ETH print. Filter is current.symbol."""
     hist = [_bar(i, close="100") for i in range(4)]

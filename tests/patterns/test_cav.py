@@ -296,6 +296,25 @@ def test_fourteen_btc_and_one_eth_do_not_compress() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed + [eth]) == "DRIFT"
 
 
+def test_fourteen_15m_and_one_1h_do_not_compress() -> None:
+    """14 15m + 1h is 15 bars. Counting every tf would COMPRESS (or split_on_gaps raise)."""
+    closed = _atr15()[:14]
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 14, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert hourly.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed + [hourly]) == "DRIFT"
+
+
 def test_bar_closing_during_current_completes_compress() -> None:
     """A bar that closes after current.open and before current.close is a 15th ATR prior."""
     closed = []

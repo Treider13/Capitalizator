@@ -544,6 +544,25 @@ def test_bar_closing_during_current_completes_width() -> None:
     assert width_now_from_history(bar, fourteen + [mid], t=NOW) == Decimal("0.1") / Decimal("2")
 
 
+def test_fourteen_15m_and_one_1h_do_not_make_width() -> None:
+    """14 15m + 1h is 15 bars. Counting every tf would journal width (or atr() raise)."""
+    fourteen = [_bar(i) for i in range(14)]
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 59, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    bar = _bar(20, high="100.2", low="100.1")
+    assert hourly.close_ts < bar.close_ts
+    assert width_now_from_history(bar, fourteen, t=NOW) is None
+    assert width_now_from_history(bar, fourteen + [hourly], t=NOW) is None
+
+
 def test_foreign_symbol_history_does_not_make_width() -> None:
     hist = []
     for i in range(15):
