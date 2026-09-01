@@ -19,6 +19,7 @@ from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.desk.session_name import session_name
 from capitalizator.exec.failed_break import FailedBreak
 from capitalizator.exec.first_minute import FirstMinute
+from capitalizator.exec.manage import TradeManager
 from capitalizator.exec.shadow import ShadowWriter
 from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy
 from capitalizator.jury.desk import decide, voices_for_bounce, voices_for_breakout, voices_for_failed_break
@@ -103,6 +104,7 @@ class DeskLoop:
         self.zones_map = ZoneMap(self.config)
         self.first_minute = FirstMinute()
         self.btc_veto = BtcVeto()
+        self.manager = TradeManager()
 
     def state_for(self, symbol: str) -> SymbolState:
         if symbol not in self.symbols:
@@ -134,7 +136,23 @@ class DeskLoop:
                     self.strategy.desk_mode = "off"
                 return [{"event": "mode_change", "user_mode": self.user_mode}]
             if kind == "flatten":
-                return [{"event": "flatten", "symbol": event.get("symbol")}]
+                symbol = str(event.get("symbol") or "")
+                if symbol:
+                    st = self.state_for(symbol)
+                    st.state = "IDLE"
+                    st.last_touch = None
+                    st.adds.clear()
+                    st.trades.clear()
+                    st.book_pre = None
+                action = self.manager.on_refute(load_bearing=True, verdict="REFUTED")
+                return [
+                    {
+                        "event": "flatten",
+                        "symbol": symbol,
+                        "state": "IDLE",
+                        "action": None if action is None else action.action,
+                    }
+                ]
             if kind == "bar_close":
                 bar = event.get("bar")
                 if not isinstance(bar, Bar):
@@ -268,6 +286,21 @@ class DeskLoop:
         )
         if st.symbol == "BTCUSDT":
             break_against = False
+        idea_side = "buy" if zone.side == "support" else "sell"
+        if idea == "failed_break":
+            idea_side = "sell" if zone.side == "support" else "buy"
+        if idea == "breakout":
+            idea_side = "sell" if zone.side == "support" else "buy"
+        btc_same_side = (
+            (idea_side == "buy" and self.btc.regime in {"long", "box"})
+            or (idea_side == "sell" and self.btc.regime in {"short", "box"})
+        )
+        if st.symbol == "BTCUSDT":
+            btc_same_side = True
+        cpi_window = any(
+            row.event_class == "CPI" and row.event_time.date() == bar.close_ts.date()
+            for row in self.calendar
+        )
         stamped = self.registry.stamp_jury(
             idea=idea,
             n_cav=n_cav,
@@ -276,8 +309,9 @@ class DeskLoop:
             wall_no_print=False,
             btc_break_against=break_against,
             card_bearing_verdict=live.bearing_verdict,
-            cpi_window=False,
+            cpi_window=cpi_window,
             trades_in_window=live.trades_in_window,
+            btc_same_side=btc_same_side,
         )
         row = stamped[0] if stamped else live
         first = resolve_first_fact(row.gesture, n_zlg)
@@ -297,6 +331,8 @@ class DeskLoop:
             wall_no_print=False,
             btc_break_against=break_against,
             trades_in_window=row.trades_in_window,
+            btc_same_side=btc_same_side,
+            cpi_window=cpi_window,
         )
         jury = decide(voices)
         picture = picture_for(idea)
@@ -405,6 +441,7 @@ class DeskLoop:
                 tape_eaten=row.tape_eaten,
                 btc_regime=row.btc_regime,
                 btc_broke=self.btc.broke_support if st.symbol != "BTCUSDT" else False,
+                btc_same_side=btc_same_side,
                 gesture_n=n_zlg,
                 first_minute=self.first_minute.blocks(row.ts, bar.close_ts) if idea == "breakout" else False,
                 close_beyond=cav == "THROUGH",

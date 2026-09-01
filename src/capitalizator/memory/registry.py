@@ -335,6 +335,7 @@ class Registry:
         card_bearing_verdict: str | None = None,
         cpi_window: bool = False,
         trades_in_window: int | None = None,
+        btc_same_side: bool = False,
     ) -> list[Touch]:
         """Write jury + rho_class_id from already filled labels. Does not open size."""
         from capitalizator.jury.desk import (
@@ -376,6 +377,7 @@ class Registry:
                 trades_in_window=trades_in_window
                 if trades_in_window is not None
                 else touch.trades_in_window,
+                btc_same_side=btc_same_side,
             )
             label = decide(voices)
             class_id = None

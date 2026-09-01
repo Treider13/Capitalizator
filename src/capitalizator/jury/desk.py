@@ -59,6 +59,7 @@ def voices_for_breakout(
     wall_no_print: bool = False,
     btc_break_against: bool = False,
     cpi_window: bool = False,
+    btc_same_side: bool = False,
 ) -> Voices:
     """Breakout idea: THROUGH + eaten + RETREAT with us. First-minute is desk-side."""
     if n_cav < 0 or n_zlg < 0:
@@ -71,7 +72,7 @@ def voices_for_breakout(
         cav=_cav_breakout(cav, n_cav),
         zlg=_zlg_breakout(zlg, n_zlg),
         tape=_tape_breakout(tape_eaten, trades_in_window, wall_no_print),
-        btc=_btc_bounce(btc_regime, btc_break_against),
+        btc=_btc_bounce(btc_regime, btc_break_against, btc_same_side),
         card=_card_voice(card_bearing_verdict, cpi_window),
     )
 
@@ -89,6 +90,7 @@ def voices_for_failed_break(
     wall_no_print: bool = False,
     btc_break_against: bool = False,
     cpi_window: bool = False,
+    btc_same_side: bool = False,
 ) -> Voices:
     """Failed break → opposite bounce. New card_id is a desk concern."""
     return voices_for_bounce(
@@ -103,6 +105,7 @@ def voices_for_failed_break(
         wall_no_print=wall_no_print,
         btc_break_against=btc_break_against,
         cpi_window=cpi_window,
+        btc_same_side=btc_same_side,
     )
 
 
@@ -119,6 +122,7 @@ def voices_for_bounce(
     wall_no_print: bool = False,
     btc_break_against: bool = False,
     cpi_window: bool = False,
+    btc_same_side: bool = False,
 ) -> Voices:
     """Map journal labels onto bounce-idea voices. Breakout mapping is not here."""
     if n_cav < 0 or n_zlg < 0:
@@ -131,7 +135,7 @@ def voices_for_bounce(
         cav=_cav_bounce(cav, n_cav),
         zlg=_zlg_bounce(zlg, n_zlg),
         tape=_tape_bounce(tape_eaten, trades_in_window, wall_no_print),
-        btc=_btc_bounce(btc_regime, btc_break_against),
+        btc=_btc_bounce(btc_regime, btc_break_against, btc_same_side),
         card=_card_voice(card_bearing_verdict, cpi_window),
     )
 
@@ -219,10 +223,11 @@ def _tape_breakout(
     return 1 if tape_eaten else -1
 
 
-def _btc_bounce(regime: str | None, break_against: bool) -> Voice:
+def _btc_bounce(regime: str | None, break_against: bool, same_side: bool = False) -> Voice:
+    """+1 = box or same side as the alt idea. Wick/break-against is VETO."""
     if break_against:
         return "VETO"
-    if regime == "box":
+    if regime == "box" or same_side:
         return 1
     return 0
 

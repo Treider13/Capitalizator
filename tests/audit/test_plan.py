@@ -19,6 +19,13 @@ from capitalizator.memory.registry import Registry, Touch
 from capitalizator.ops.console import ConsoleApp, _handler, desk_snapshot
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.product import mark_hello
+from capitalizator.screener.universe import load_desk_universe
+from capitalizator.signer.process import (
+    HEARTBEAT_S,
+    RECONCILE_S,
+    unsigned_from_intent,
+    validate_queue_payload,
+)
 from capitalizator.ops.vault import init_vault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.recorder.sink_parquet import ParquetSink
@@ -292,3 +299,174 @@ def test_two_parquet_writers_do_not_corrupt(tmp_path: Path) -> None:
     t2.join()
     assert errors == []
     assert sink_a.accepted_count + sink_b.accepted_count == 10
+
+
+def test_btc_same_side_is_plus_one_not_zero() -> None:
+    voices = voices_for_bounce(
+        cav="REJECT",
+        n_cav=20,
+        zlg="DEFEND",
+        n_zlg=20,
+        tape_eaten=False,
+        btc_regime="long",
+        btc_same_side=True,
+    )
+    assert voices.btc == 1
+
+
+def test_console_html_has_plan_screen(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    from capitalizator.ops.console import render_html
+
+    page = render_html(vault)
+    assert "BTCUSDT" in page
+    assert "SOLUSDT" in page
+    assert "CAV × ZLG × outcome" in page
+    assert "Жюри дня" in page
+    assert "n касаний" in page
+    assert "День учёбы" in page
+    assert "Дыры ленты" in page
+    assert "тень" in page and "демо" in page and "лайв" in page
+    snap = desk_snapshot(vault)
+    assert snap["n_symbols"] == 24
+    assert "tape_holes" in snap
+    assert "cav_zlg" in snap
+    assert "jury_today" in snap
+    assert "shadow_vs_demo_vs_live" in snap
+
+
+def test_desk_and_signer_are_separate_processes(tmp_path: Path) -> None:
+    import capitalizator.desk.__main__ as desk_main
+    import capitalizator.signer.__main__ as signer_main
+
+    assert "signer" not in desk_main.__dict__
+    assert HEARTBEAT_S == 30
+    assert RECONCILE_S == 60
+    vault_dir = str(tmp_path / "desk")
+    assert desk_main.main(["--userdir", vault_dir, "--init", "--once"]) == 0
+    assert signer_main.main(["--userdir", vault_dir, "--once"]) == 0
+
+
+def test_desk_screener_accepts_sol(tmp_path: Path) -> None:
+    from capitalizator.exec.strategy_bounce import BounceStrategy
+    from capitalizator.risk.halts import Halts
+    from capitalizator.risk.schema import RiskEngine
+
+    strat = BounceStrategy(
+        risk=RiskEngine(),
+        halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
+        require_card=False,
+        require_jury=True,
+    )
+    assert "SOLUSDT" in strat.screener.universe.symbols
+    assert len(load_desk_universe().symbols) == 24
+    desk_strat = DeskLoop(
+        knowledge=open_knowledge(init_vault(tmp_path / "desk")),
+        user_mode="demo",
+    ).strategy
+    assert "SOLUSDT" in desk_strat.screener.universe.symbols
+
+
+def test_signer_desk_universe_accepts_sol() -> None:
+    raw = unsigned_from_intent(
+        {
+            "symbol": "SOLUSDT",
+            "side": "buy",
+            "qty": "1",
+            "entry": "100",
+            "stop": "99",
+            "tp": "102",
+        }
+    )
+    assert raw.symbol == "SOLUSDT"
+    order = validate_queue_payload(
+        {
+            "symbol": "SOLUSDT",
+            "side": "buy",
+            "qty": "1",
+            "entry": "100",
+            "stop": "99",
+            "tp": "102",
+        }
+    )
+    assert order["reduce_only_stop"] is True
+    assert Decimal(str(order["stop_px"])) == Decimal("99")
+
+
+def test_signer_payload_without_stop_is_error() -> None:
+    with pytest.raises(ValueError, match="stop"):
+        unsigned_from_intent({"symbol": "BTCUSDT", "side": "buy", "entry": "100"})
+
+
+def test_flatten_resets_symbol_state(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    desk.on_book("BTCUSDT", _book())
+    desk.on_event(_trade(), [ZONE])
+    assert desk.state_for("BTCUSDT").state == "ARM_ZLG"
+    out = desk.on_event({"kind": "flatten", "symbol": "BTCUSDT"})
+    assert out[0]["event"] == "flatten"
+    assert out[0]["state"] == "IDLE"
+    assert desk.state_for("BTCUSDT").state == "IDLE"
+    assert desk.state_for("BTCUSDT").last_touch is None
+    assert out[0]["action"] == "flatten"
+
+
+def test_organism_replay_twice_same_labels(tmp_path: Path) -> None:
+    def run(root: Path) -> dict:
+        desk = _desk(root)
+        desk.on_book("BTCUSDT", _book())
+        desk.on_event(_trade(), [ZONE])
+        desk.tick(WINDOW + timedelta(seconds=8))
+        events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+        row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+        assert row is not None
+        return {
+            "zone_id": row["zone_id"],
+            "zlg": row["zlg_label"],
+            "cav": row["cav_label"],
+            "jury": row["jury"],
+            "shadow_would": row["shadow_would"],
+        }
+
+    assert run(tmp_path / "a") == run(tmp_path / "b")
+
+
+def test_demo_hello_sends_stop_in_payload(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    mark_hello(vault, ok=True)
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="demo", tick_size=TICK)
+    desk.registry._zones[ZONE.zone_id] = ZONE
+    from dataclasses import replace
+    from capitalizator.memory.registry import Touch
+
+    for i in range(20):
+        desk.registry.touches.append(
+            replace(
+                Touch.create(
+                    zone_id=ZONE.zone_id,
+                    ts=CREATED + timedelta(seconds=i + 1),
+                    trade_px=Decimal("100.5"),
+                    trade_qty=Decimal("1"),
+                ),
+                outcome="bounce",
+                cav_label="REJECT",
+                gesture="DEFEND",
+                tape_eaten=False,
+                btc_regime="box",
+            )
+        )
+    desk.on_book("BTCUSDT", _book())
+    desk.on_event(_trade(), [ZONE])
+    desk.tick(WINDOW + timedelta(seconds=8))
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    assert row is not None
+    if row["jury"] == "ACCORD":
+        assert events[0]["sent"] is True
+        pending = desk.knowledge.pending_intents()
+        assert pending
+        assert pending[0]["payload"].get("stop") is not None
+    else:
+        assert events[0]["sent"] is False

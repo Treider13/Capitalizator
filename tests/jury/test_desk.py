@@ -109,6 +109,19 @@ def test_btc_trend_is_not_a_break_veto() -> None:
     assert voices.btc == 0
 
 
+def test_btc_same_side_is_plus_one() -> None:
+    voices = voices_for_bounce(
+        cav="REJECT",
+        n_cav=20,
+        zlg="DEFEND",
+        n_zlg=20,
+        tape_eaten=False,
+        btc_regime="long",
+        btc_same_side=True,
+    )
+    assert voices.btc == 1
+
+
 def test_btc_break_against_is_veto() -> None:
     voices = voices_for_bounce(
         cav="REJECT",

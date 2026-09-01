@@ -64,9 +64,34 @@ def _parquet_counts(tape: Path) -> tuple[int, int]:
     return readable, rows
 
 
+def _crosstab(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[tuple[str, str, str], int] = {}
+    for row in rows:
+        key = (
+            str(row.get("cav_label") or "—"),
+            str(row.get("zlg_label") or "—"),
+            str(row.get("outcome") or "—"),
+        )
+        buckets[key] = buckets.get(key, 0) + 1
+    return [
+        {"cav": cav, "zlg": zlg, "outcome": outcome, "n": n}
+        for (cav, zlg, outcome), n in sorted(buckets.items())
+    ]
+
+
+def _jury_today(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, int] = {}
+    for row in rows:
+        label = str(row.get("jury") or "—")
+        buckets[label] = buckets.get(label, 0) + 1
+    return [{"jury": label, "n": n} for label, n in sorted(buckets.items())]
+
+
 def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     n_days = None
     n_touches = 0
+    journal: list[dict[str, Any]] = []
+    overlays: list[dict[str, str | None]] = []
     knowledge = open_knowledge(vault, create=False)
     try:
         counts = knowledge.counts()
@@ -83,14 +108,10 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         raw_n = knowledge.meta("learn_n_days")
         if raw_n is not None:
             n_days = int(raw_n)
-        if knowledge.available() and knowledge._cx is not None:
-            try:
-                row = knowledge._cx.execute(
-                    "SELECT COUNT(*) AS n FROM journal_touches"
-                ).fetchone()
-                n_touches = int(row["n"]) if row is not None else 0
-            except Exception:
-                n_touches = 0
+        if knowledge.available():
+            journal = knowledge.journal_rows()
+            overlays = knowledge.overlay_rows()
+            n_touches = len(journal)
     finally:
         knowledge.close()
     files_n, rows_n = _parquet_counts(vault.tape)
@@ -126,6 +147,15 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         "report_day": report_day,
         "report": report_body,
         "honest": "пусто — не выдумка" if counts["episodes"] == 0 else "есть строки журнала",
+        "tape_holes": 0 if contour["hours24"] else 1,
+        "cav_zlg": _crosstab(journal),
+        "jury_today": _jury_today(journal),
+        "shadow_vs_demo_vs_live": {
+            "shadow": sum(1 for row in journal if row.get("shadow_would")),
+            "demo": sum(1 for row in episodes if row.get("mode") == "demo"),
+            "live": sum(1 for row in episodes if row.get("mode") == "live"),
+            "overlay": overlays,
+        },
     }
     text = json.dumps(snap, ensure_ascii=False)
     if contains_advice(text):
@@ -158,6 +188,35 @@ def _page(snap: dict[str, Any]) -> str:
     user_mode = html.escape(str(snap.get("user_mode") or "off"))
     hello_banner = html.escape(str(snap.get("hello_banner") or ""))
     hello_ok = bool(snap.get("hello_ok"))
+    learn_n = snap.get("learn_n_days")
+    learn_txt = "—" if learn_n is None else str(learn_n)
+    n_touches = int(snap.get("n_touches") or 0)
+    symbols = snap.get("symbols") or []
+    symbols_html = " ".join(f"<span class=\"pill\">{html.escape(str(s))}</span>" for s in symbols)
+    cav_rows = snap.get("cav_zlg") or []
+    if cav_rows:
+        cav_html = "".join(
+            (
+                "<tr>"
+                f"<td>{html.escape(str(r['cav']))}</td>"
+                f"<td>{html.escape(str(r['zlg']))}</td>"
+                f"<td>{html.escape(str(r['outcome']))}</td>"
+                f"<td>{int(r['n'])}</td>"
+                "</tr>"
+            )
+            for r in cav_rows
+        )
+    else:
+        cav_html = '<tr><td colspan="4" class="empty">CAV×ZLG×outcome пусто</td></tr>'
+    jury_rows = snap.get("jury_today") or []
+    if jury_rows:
+        jury_html = "".join(
+            f"<li>{html.escape(str(r['jury']))}: {int(r['n'])}</li>" for r in jury_rows
+        )
+    else:
+        jury_html = '<li class="empty">жюри дня пусто</li>'
+    vs = snap.get("shadow_vs_demo_vs_live") or {}
+    tape_holes = int(snap.get("tape_holes") or 0)
     report = html.escape(str(snap["report"]))
     contour = html.escape(str(snap["contour"]))
     hours24 = bool(snap["hours24"])
@@ -287,7 +346,31 @@ def _page(snap: dict[str, Any]) -> str:
     <section class="card">
       <h2>Лента parquet</h2>
       <div class="num">{snap["parquet_files"]}</div>
-      <p class="empty">{snap["parquet_rows"]} строк. Нет файла — нет суток VPS.</p>
+      <p class="empty">{snap["parquet_rows"]} строк. Дыры ленты: {tape_holes}.</p>
+    </section>
+    <section class="card">
+      <h2>День учёбы</h2>
+      <div class="num">{html.escape(learn_txt)}</div>
+      <p class="empty">n касаний: {n_touches}</p>
+    </section>
+    <section class="card">
+      <h2>Тень / демо / лайв</h2>
+      <p>тень {int(vs.get("shadow") or 0)} · демо {int(vs.get("demo") or 0)} · лайв {int(vs.get("live") or 0)}</p>
+    </section>
+    <section class="card">
+      <h2>Жюри дня</h2>
+      <ul>{jury_html}</ul>
+    </section>
+    <section class="card wide">
+      <h2>Вселенная · {int(snap.get("n_symbols") or 0)}</h2>
+      <p>{symbols_html}</p>
+    </section>
+    <section class="card wide">
+      <h2>CAV × ZLG × outcome</h2>
+      <table>
+        <thead><tr><th>CAV</th><th>ZLG</th><th>outcome</th><th>n</th></tr></thead>
+        <tbody>{cav_html}</tbody>
+      </table>
     </section>
     <section class="card wide">
       <h2>Отчёт · {html.escape(str(snap["report_day"]))}</h2>

@@ -484,6 +484,33 @@ class Knowledge:
             self._cx.rollback()
             raise
 
+    def journal_rows(self) -> list[dict[str, Any]]:
+        if self._cx is None:
+            return []
+        rows = self._cx.execute("SELECT payload FROM journal_touches").fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            raw = json.loads(str(row["payload"]))
+            if isinstance(raw, dict):
+                out.append(raw)
+        return out
+
+    def overlay_rows(self) -> list[dict[str, str | None]]:
+        if self._cx is None:
+            return []
+        rows = self._cx.execute(
+            "SELECT setup_id, r_shadow, r_demo, r_live FROM overlay"
+        ).fetchall()
+        return [
+            {
+                "setup_id": str(row["setup_id"]),
+                "r_shadow": None if row["r_shadow"] is None else str(row["r_shadow"]),
+                "r_demo": None if row["r_demo"] is None else str(row["r_demo"]),
+                "r_live": None if row["r_live"] is None else str(row["r_live"]),
+            }
+            for row in rows
+        ]
+
     def get_journal_touch(self, touch_id: str) -> dict[str, Any] | None:
         if self._cx is None:
             return None

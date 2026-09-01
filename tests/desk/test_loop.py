@@ -10,6 +10,7 @@ from pathlib import Path
 from capitalizator.book.reconstruct import Book
 from capitalizator.desk.loop import DeskLoop
 from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.product import mark_hello
 from capitalizator.ops.vault import init_vault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.memory.registry import Touch
@@ -114,6 +115,7 @@ def test_book_pre_is_frozen_at_touch(tmp_path: Path) -> None:
 
 def test_demo_window_enqueues_after_accord(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
+    mark_hello(vault, ok=True)
     desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="demo", tick_size=TICK)
     desk.registry._zones[ZONE.zone_id] = ZONE
     for i in range(20):

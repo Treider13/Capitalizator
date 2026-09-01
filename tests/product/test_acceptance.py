@@ -387,6 +387,14 @@ def test_16_twenty_four_ok_twenty_five_rejected() -> None:
     symbols = ["BTCUSDT", "ETHUSDT"] + [f"ALT{i}USDT" for i in range(23)]
     with pytest.raises(UniverseError, match="wide universe"):
         validate_universe({"exchange": "bybit", "category": "linear", "symbols": symbols})
+    with pytest.raises(UniverseError, match="HTX"):
+        validate_universe(
+            {
+                "exchange": "htx",
+                "category": "linear",
+                "symbols": ["BTCUSDT", "ETHUSDT"],
+            }
+        )
 
 
 def test_17_post_order_is_405(tmp_path: Path) -> None:

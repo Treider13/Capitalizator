@@ -23,12 +23,14 @@ from capitalizator.jury.desk import decide, voices_for_bounce, voices_for_breako
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
 from capitalizator.ops.phase import trading_mode as phase_trading_mode
+from capitalizator.risk.aplus import APlus
 from capitalizator.risk.budget import SessionBudget
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.prs_cut import decide as prs_cut
 from capitalizator.risk.schema import Intent, RiskEngine
 from capitalizator.risk.session import SessionWindow
 from capitalizator.screener.filters import Screener
+from capitalizator.screener.universe import load_desk_universe
 from capitalizator.zones.config import RegistryConfig, load_registry
 from capitalizator.zones.model import Zone
 
@@ -68,6 +70,7 @@ class BounceSnapshot:
     n_zlg: int = 0
     btc_regime: str | None = None
     btc_broke: bool = False
+    btc_same_side: bool = False
     btc_zone_side: str = "support"
     prs_y: Decimal | None = None
     first_minute: bool = False
@@ -154,7 +157,9 @@ class BounceStrategy:
         self.risk = risk
         self.halts = halts
         self.session = session or SessionWindow()
-        self.screener = screener or Screener()
+        self.screener = screener or Screener(
+            universe=load_desk_universe() if require_jury else None
+        )
         self.registry = registry or load_registry()
         self.desk_mode = desk_mode if desk_mode is not None else phase_trading_mode()
         self.budget = budget if budget is not None else SessionBudget()
@@ -263,12 +268,31 @@ class BounceStrategy:
                 card_bearing_verdict=snap.card_bearing_verdict,
                 wall_no_print=False,
                 btc_break_against=snap.btc_broke,
+                btc_same_side=snap.btc_same_side,
             )
             label = decide(voices)
             if snap.jury is not None and snap.jury != "ACCORD":
                 return None
             if label != "ACCORD":
                 return None
+            if APlus.ok(
+                roles=(
+                    voices.cav == 1,
+                    voices.zlg == 1,
+                    voices.tape == 1,
+                    voices.btc == 1,
+                    voices.card == 1,
+                ),
+                btc_same=voices.btc == 1,
+            ):
+                night_ok, _ = self.session.allows(
+                    snap.now,
+                    snap.calendar,
+                    lev=Decimal("5"),
+                    no_us_today=snap.no_us_today,
+                )
+                if not night_ok:
+                    return None
         try:
             stop = stop_behind(zone, snap.tick, self.registry.bounce_away_ticks)
         except ValueError:
