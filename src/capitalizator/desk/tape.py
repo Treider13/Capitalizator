@@ -8,9 +8,11 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
+from capitalizator.desk.bars import closed_bars_from_trades
 from capitalizator.desk.loop import DeskLoop
 from capitalizator.ops.vault import VaultError, iter_regular_files
 from capitalizator.types import MarketEvent
+from capitalizator.zones.engine import ZoneEngine
 from capitalizator.zones.model import Zone
 
 Seen = set[tuple[str, str, str, int | None]]
@@ -67,15 +69,34 @@ def consume_tape(
     *,
     seen: Seen,
     extra_zones: tuple[Zone, ...] = (),
+    now: datetime | None = None,
 ) -> int:
     """Feed unseen parquet events into the loop. Second pass does not replay."""
     n = 0
-    zones = list(extra_zones)
+    engine = ZoneEngine(tick_size=desk.tick_size, config=desk.config)
+    tf = desk.config.working_tf
     for event in load_tape(tape):
         key = (event.stream, event.symbol, event.exchange_ts.isoformat(), event.seq)
         if key in seen:
             continue
         seen.add(key)
-        desk.on_event(event, zones if event.stream == "trades" else None)
+        if event.stream == "trades":
+            _close_due_bars(desk, event.symbol, event.exchange_ts, tf)
+            st = desk.state_for(event.symbol)
+            built = engine.build(event.symbol, event.exchange_ts, st.bars)
+            zones = list(extra_zones) + built
+            desk.on_event(event, zones)
+        else:
+            desk.on_event(event)
         n += 1
+    if now is not None:
+        for symbol in list(desk.symbols):
+            _close_due_bars(desk, symbol, now, tf)
     return n
+
+
+def _close_due_bars(desk: DeskLoop, symbol: str, now: datetime, tf: str) -> None:
+    st = desk.state_for(symbol)
+    already = {b.open_ts for b in st.bars if b.tf == tf}
+    for bar in closed_bars_from_trades(st.trades, symbol=symbol, tf=tf, now=now, already=already):
+        desk.on_bar_close(bar)

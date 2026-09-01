@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from capitalizator.desk.__main__ import serve_loop
@@ -101,6 +101,72 @@ def test_serve_loop_ticks_zlg_after_window(tmp_path: Path) -> None:
     st = desk.state_for("BTCUSDT")
     assert st.state in {"LABEL_ZLG", "IDLE", "JURY"}
     assert st.state != "ARM_ZLG"
+
+
+def test_serve_loop_builds_zones_from_closed_bars(tmp_path: Path) -> None:
+    """Wave 4 / §3: VPS serve has no extra_zones — prior_day_hl comes from tape."""
+    vault = init_vault(tmp_path / "desk")
+    sink = ParquetSink(vault.tape)
+    day0 = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    sink.write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=day0,
+            recv_ts=day0,
+            payload={"px": "99.0", "qty": "1", "side": "sell"},
+        )
+    )
+    sink.write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=day0 + timedelta(minutes=10),
+            recv_ts=day0 + timedelta(minutes=10),
+            payload={"px": "105.0", "qty": "1", "side": "buy"},
+        )
+    )
+    sink.write(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            seq=1,
+            payload={"bids": [["99.0", "20"]], "asks": [["99.2", "20"]]},
+        )
+    )
+    sink.write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            payload={"px": "99.1", "qty": "1", "side": "sell"},
+        )
+    )
+    knowledge = open_knowledge(vault)
+    n = {"i": 0}
+
+    def should_stop() -> bool:
+        n["i"] += 1
+        return n["i"] >= 2
+
+    desk = serve_loop(
+        vault=vault,
+        knowledge=knowledge,
+        should_stop=should_stop,
+        idle_s=0,
+        now=NOW + timedelta(seconds=8),
+    )
+    knowledge.close()
+    st = desk.state_for("BTCUSDT")
+    assert st.last_touch is not None or st.state in {"LABEL_ZLG", "IDLE", "JURY"}
+    assert any(z.method == "prior_day_hl" for z in desk.registry._zones.values())
 
 
 def test_empty_tape_does_not_invent(tmp_path: Path) -> None:

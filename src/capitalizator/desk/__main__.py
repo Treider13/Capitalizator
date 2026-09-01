@@ -37,8 +37,8 @@ def serve_loop(
         desk.user_mode = read_user_mode(vault)
         if desk.user_mode in {"demo", "live"}:
             desk.strategy.desk_mode = desk.user_mode
-        consume_tape(desk, vault.tape, seen=seen, extra_zones=zones)
         when = now if now is not None else datetime.now(tz=UTC)
+        consume_tape(desk, vault.tape, seen=seen, extra_zones=zones, now=when)
         desk.tick(when)
         if on_tick is not None:
             on_tick(desk)
