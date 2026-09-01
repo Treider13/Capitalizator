@@ -25,6 +25,7 @@
 Рядом: [`docs/SR-LEVELS-SCIENCE.md`](docs/SR-LEVELS-SCIENCE.md) (факты по уровням), [`docs/CENSUS-PRACTICE-REPOS.md`](docs/CENSUS-PRACTICE-REPOS.md) (~110 репо), [`docs/ARCHITECTURE-AZ.md`](docs/ARCHITECTURE-AZ.md) (ИИ, безопасность, контуры).
 
 Лучшие и самые прибыльные **алгоритмы** (семейства, не боты): [`docs/ALGORITHMS-PROFIT.md`](docs/ALGORITHMS-PROFIT.md).  
+Кто **прямо сейчас** печатает (волты HL, Смартлаб) и каким алгоритмом: [`docs/ALGORITHMS-LIVE.md`](docs/ALGORITHMS-LIVE.md).  
 Кто реально прибыльный на **криптофьючерсах** (не звёзды): [`docs/FUTURES-BOTS-RESULTS.md`](docs/FUTURES-BOTS-RESULTS.md).  
 Перепись **150** топовых ботов/движков против стола (вечер 30.08): [`docs/CENSUS-150.md`](docs/CENSUS-150.md).  
 Мировой поиск (CN/IN/JP/KR, языки, Gitee/GitLab): [`docs/WORLD-SEARCH.md`](docs/WORLD-SEARCH.md) — пустой продукт пуст не только на EN GitHub.  

@@ -4,6 +4,8 @@
 
 Дополняет: [`FUTURES-BOTS-RESULTS.md`](FUTURES-BOTS-RESULTS.md) (кто на фьючах с цифрой), [`intelligence-layer.md`](intelligence-layer.md) (паттерны), [`SR-LEVELS-SCIENCE.md`](SR-LEVELS-SCIENCE.md) (зона/отскок), [`VERDICT-x6-LOWRISK.md`](VERDICT-x6-LOWRISK.md) (потолок ×6), [`CENSUS-150.md`](CENSUS-150.md) (репозитории).
 
+Живые счета 01.09 (ончейн + Смартлаб), не семейства: [`ALGORITHMS-LIVE.md`](ALGORITHMS-LIVE.md).
+
 **Вопрос сессии:** какие алгоритмы *лучшие* и *самые прибыльные* — не «какой GitHub-бот скачать».
 
 ---
@@ -180,4 +182,4 @@ CAGR человечества     Medallion ~39% net                   — за�
 - funding-rate-alpha, Keel HL, Bitsgap H1 2026, midas-funding-bot — как в `FUTURES-BOTS-RESULTS.md` и `VERDICT-x6-LOWRISK.md`
 - Alpha Arena / FIDES — `intelligence-layer.md`, `market-analysis.md`
 
-Если появится **чужая** сверка live≈тень на перпах с средним R>0 после комиссий у *направленного* (не керри) алгоритма — дописать сюда с тегом `[V]`. На 01.09.2026 такого репо нет. Это тот же пробел, что 30.08.
+Ближе всех к направленному live с чужой сверкой — **Growi HF** (ончейн fills, WR 38%, PF ~10, CAGR ~36%, депозит закрыт, исходников нет). Разбор: [`ALGORITHMS-LIVE.md`](ALGORITHMS-LIVE.md). GitHub-репо с той же книгой по-прежнему нет.
