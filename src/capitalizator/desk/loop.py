@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
+from uuid import uuid4
 
 from capitalizator.book.reconstruct import Book, BookDirty
 from capitalizator.book.wall_watch import WallWatch
@@ -22,7 +23,7 @@ from capitalizator.card.draft import pending_card
 from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.card.live import CardLive, card_is_fresh, touch_line
 from capitalizator.card.volume import snapshot as volume_snapshot
-from capitalizator.desk.pictures import picture_for
+from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.desk.session_name import session_name
 from capitalizator.exec.failed_break import FailedBreak
 from capitalizator.exec.first_minute import FirstMinute
@@ -762,9 +763,15 @@ class DeskLoop:
         jury = decide(voices)
         picture = picture_for(idea)
         card_id = None if card is None else card.card_id
-        if card_id:
+        if card_id is None:
+            if needs_new_card(idea) or st.symbol not in self.open_card_id:
+                card_id = str(uuid4())
+                self.open_card_id[st.symbol] = card_id
+            else:
+                card_id = self.open_card_id[st.symbol]
+        else:
             self.open_card_id[st.symbol] = card_id
-            self._persist_card(card_id, idea, st.symbol, row.ts)
+        self._persist_card(card_id, idea, st.symbol, row.ts)
         shadow_would = jury == "ACCORD"
         shadow_side = None
         shadow_tag = None

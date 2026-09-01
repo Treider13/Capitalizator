@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from capitalizator.card.live import CardLive, VolumeSnapshot
-from capitalizator.ops.console import desk_snapshot, render_html
+from capitalizator.ops.console import desk_snapshot
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.touch_screen import render_html as render_touch
 from capitalizator.ops.touch_screen import touch_screen
@@ -87,9 +87,11 @@ def test_p7_console_snapshot_includes_touch(tmp_path: Path) -> None:
     snap = desk_snapshot(vault)
     assert snap["touch"] is not None
     assert snap["touch"]["a"]["jury"] == "ACCORD"
-    html = render_html(vault)
+    html = render_touch(snap["touch"])
     assert "[TOUCH] BTCUSDT" in html
-    assert "--- B ---" in html
+    assert "<h3>B</h3>" in html
+    assert "<h3>A</h3>" in html
+    assert "--- B ---" in snap["touch"]["text"]
 
 
 def test_p7_module_has_no_signer() -> None:
