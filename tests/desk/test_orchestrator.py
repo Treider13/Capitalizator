@@ -188,6 +188,8 @@ def test_play_100_trades_runs_full_chain(tmp_path: Path) -> None:
         assert payload["tag"] == "failed_break_bounce"
         assert payload["stop"] == "65010.8"
         assert payload["tp"] == "64950"
+        assert journal["shadow_side"] == "sell"
+        assert journal["shadow_tag"] == "failed_break_bounce"
     else:
         assert journal["skip_reason"]
         assert jury_ev["sent"] is False

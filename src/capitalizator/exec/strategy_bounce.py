@@ -316,7 +316,10 @@ class BounceStrategy:
                 enabled=snap.allow_break,
                 close_beyond=snap.close_beyond,
                 tape_eaten=snap.tape_eaten is True,
-                btc_same=snap.btc_regime in {"box", "trend"} and not snap.btc_broke,
+                btc_same=(
+                    (snap.btc_regime == "box" or snap.btc_same_side)
+                    and not snap.btc_broke
+                ),
                 first_minute=snap.first_minute,
             ):
                 return None

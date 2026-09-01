@@ -577,9 +577,7 @@ class DeskLoop:
         shadow_side = None
         shadow_tag = None
         if shadow_would:
-            shadow_side = "buy" if zone.side == "support" else "sell"
-            if idea == "failed_break":
-                shadow_side = "sell" if zone.side == "support" else "buy"
+            shadow_side = idea_side
             shadow_tag = "bounce" if idea == "bounce" else (
                 "failed_break_bounce" if idea == "failed_break" else "breakout"
             )
@@ -705,6 +703,7 @@ class DeskLoop:
                 n_zlg=n_zlg,
                 tape_eaten=row.tape_eaten,
                 wall_no_print=silent_wall,
+                prs_y=row.prs_y,
                 btc_regime=row.btc_regime,
                 btc_broke=break_against,
                 btc_zone_side="support" if idea_side == "buy" else "resistance",

@@ -243,3 +243,37 @@ def test_failed_break_short_does_not_inherit_bounce_long_stop() -> None:
     assert got.tag == "failed_break_bounce"
     assert got.stop == Decimal("101.8")
     assert got.tp == Decimal("96.6")
+
+
+def test_thin_prs_y_is_reject() -> None:
+    """2.10.3: measured Y above the cut is skip. Unmeasured stays an intent."""
+    assert _strategy().propose(_snap(prs_y=Decimal("4"))) is None
+    assert _strategy().propose(_snap()) is not None
+
+
+def test_trend_without_same_side_is_not_a_breakout_btc_yes() -> None:
+    """BtcRegime writes trend|box|news. trend is not long/short — do not fake it."""
+    zone = _zone()
+    nxt = _zone(side="support", lo="96", hi="96.6")
+    assert (
+        _strategy().propose(
+            _snap(
+                idea="breakout",
+                allow_break=True,
+                close_beyond=True,
+                tape_eaten=True,
+                first_minute=False,
+                cav_label="THROUGH",
+                zlg_label="RETREAT",
+                n_cav=20,
+                n_zlg=20,
+                gesture_n=20,
+                btc_regime="trend",
+                btc_same_side=False,
+                jury="ACCORD",
+                next_target=nxt,
+                zones=(zone, nxt),
+            )
+        )
+        is None
+    )
