@@ -1,7 +1,7 @@
-"""Read-only laptop console. Bind 127.0.0.1. No orders. No keys.
+"""Laptop console. Bind 127.0.0.1. No orders. No keys.
 
-FreqUI idea: look at the desk from the notebook via SSH tunnel.
-Unlike freqUI we have no force-entry — GET only.
+GET is the desk. POST /contour and POST /api/contour may turn the
+recording contour on after hours24. POST /order and every other write stay 405.
 """
 
 from __future__ import annotations
@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from capitalizator.ops.contour import ContourNotReady
+from capitalizator.ops.contour import enable as enable_contour
+from capitalizator.ops.contour import status as contour_status
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.phase import trading_mode
@@ -34,6 +37,7 @@ def _parquet_counts(tape: Path) -> tuple[int, int]:
     if not tape.is_dir():
         return 0, 0
     files = [path for path in iter_regular_files(tape) if path.suffix == ".parquet"]
+    readable = 0
     rows = 0
     if files:
         import os
@@ -43,11 +47,15 @@ def _parquet_counts(tape: Path) -> tuple[int, int]:
         for path in files:
             fd = open_regular(path)
             with os.fdopen(fd, "rb") as fh:
-                meta = pq.ParquetFile(fh).metadata
+                try:
+                    meta = pq.ParquetFile(fh).metadata
+                except (OSError, ValueError):
+                    continue
             if meta is None:
-                raise ValueError(f"parquet metadata missing: {path}")
+                continue
+            readable += 1
             rows += int(meta.num_rows)
-    return len(files), rows
+    return readable, rows
 
 
 def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
@@ -71,8 +79,13 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         report_body = daily_map_report(day=report_day or "нет даты", rows=[])
         report_day = report_day or "нет даты"
     mode = trading_mode()
+    contour = contour_status(vault)
     snap = {
         "trading_mode": mode,
+        "contour": contour["contour"],
+        "hours24": contour["hours24"],
+        "hours24_span_s": contour["hours24_span_s"],
+        "can_enable": contour["can_enable"],
         "n_hash": counts["hash_links"],
         "n_episode": counts["episodes"],
         "n_report": counts["reports"],
@@ -113,6 +126,32 @@ def _page(snap: dict[str, Any]) -> str:
     chain = "целая" if snap["hash_chain_ok"] else "сломана"
     mode = html.escape(str(snap["trading_mode"]))
     report = html.escape(str(snap["report"]))
+    contour = html.escape(str(snap["contour"]))
+    hours24 = bool(snap["hours24"])
+    can_enable = bool(snap["can_enable"])
+    if snap["contour"] == "on":
+        contour_note = "Контур включён. Метки пишутся. Ордеров нет."
+        contour_form = ""
+        contour_pill = "ok"
+    elif hours24:
+        contour_note = "Сутки ленты есть. Кнопка включает запись меток, не торги."
+        disabled = "" if can_enable else " disabled"
+        contour_form = (
+            '<form method="post" action="/contour">'
+            '<input type="hidden" name="action" value="on"/>'
+            f'<button type="submit"{disabled}>Включить контур</button>'
+            "</form>"
+        )
+        contour_pill = "ok"
+    else:
+        contour_note = "Контур выключен. Суток ленты нет."
+        contour_form = (
+            '<form method="post" action="/contour">'
+            '<input type="hidden" name="action" value="on"/>'
+            '<button type="submit" disabled>Включить контур</button>'
+            "</form>"
+        )
+        contour_pill = ""
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -165,6 +204,11 @@ def _page(snap: dict[str, Any]) -> str:
       font-size: 13px; color: var(--text);
     }}
     .empty {{ color: var(--muted); }}
+    button {{
+      margin-top: 10px; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
+      background: #2a3d52; color: var(--text); font-size: 14px; cursor: pointer;
+    }}
+    button:disabled {{ opacity: 0.45; cursor: not-allowed; }}
     footer {{ padding: 0 32px 32px; color: var(--muted); font-size: 13px; }}
   </style>
 </head>
@@ -178,6 +222,12 @@ def _page(snap: dict[str, Any]) -> str:
       <h2>Режим</h2>
       <div class="num">{mode}</div>
       <p><span class="pill">торги с консоли нельзя</span></p>
+    </section>
+    <section class="card">
+      <h2>Контур</h2>
+      <div class="num">{contour}</div>
+      <p><span class="pill {contour_pill}">{html.escape(contour_note)}</span></p>
+      {contour_form}
     </section>
     <section class="card">
       <h2>Сделки в журнале</h2>
@@ -231,6 +281,29 @@ class ConsoleApp:
     def healthz(self) -> int:
         return 200
 
+    def turn_on(self) -> dict[str, Any]:
+        return enable_contour(self.vault)
+
+
+def _read_action(handler: BaseHTTPRequestHandler) -> str:
+    raw_len = handler.headers.get("Content-Length", "0")
+    try:
+        length = int(raw_len)
+    except ValueError as exc:
+        raise ValueError("bad content length") from exc
+    if length < 0 or length > 4096:
+        raise ValueError("bad content length")
+    body = handler.rfile.read(length) if length else b""
+    ctype = (handler.headers.get("Content-Type") or "").split(";")[0].strip()
+    if ctype == "application/json":
+        payload = json.loads(body.decode() or "{}")
+        if not isinstance(payload, dict):
+            raise ValueError("json must be an object")
+        return str(payload.get("action") or "")
+    parsed = parse_qs(body.decode(), keep_blank_values=True)
+    values = parsed.get("action", [""])
+    return str(values[0])
+
 
 def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
@@ -239,13 +312,83 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
 
         def _reject_write(self) -> None:
             self.send_response(405)
-            self.send_header("Allow", "GET")
+            self.send_header("Allow", "GET, POST")
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
             self.wfile.write(b"read-only")
 
+        def _send(
+            self,
+            code: int,
+            body: bytes,
+            ctype: str,
+            *,
+            extra: dict[str, str] | None = None,
+        ) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            if extra:
+                for key, value in extra.items():
+                    self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _turn_on_json(self) -> None:
+            try:
+                payload = app.turn_on()
+                body = json.dumps(payload, ensure_ascii=False).encode()
+                self._send(200, body, "application/json; charset=utf-8")
+            except ContourNotReady:
+                snap = desk_snapshot(app.vault)
+                payload = {
+                    "ok": False,
+                    "contour": snap["contour"],
+                    "hours24": snap["hours24"],
+                    "hours24_span_s": snap["hours24_span_s"],
+                    "trading_mode": snap["trading_mode"],
+                    "can_enable": snap["can_enable"],
+                }
+                body = json.dumps(payload, ensure_ascii=False).encode()
+                self._send(409, body, "application/json; charset=utf-8")
+
         def do_POST(self) -> None:  # noqa: N802
-            self._reject_write()
+            sent = False
+            try:
+                path = urlparse(self.path).path
+                if path not in {"/contour", "/api/contour"}:
+                    self._reject_write()
+                    return
+                try:
+                    action = _read_action(self)
+                except (ValueError, json.JSONDecodeError):
+                    self._send(400, b"bad-action", "text/plain; charset=utf-8")
+                    return
+                if action != "on":
+                    self._send(400, b"bad-action", "text/plain; charset=utf-8")
+                    return
+                if path == "/api/contour":
+                    self._turn_on_json()
+                    return
+                try:
+                    app.turn_on()
+                    sent = True
+                    self._send(
+                        303,
+                        b"",
+                        "text/plain; charset=utf-8",
+                        extra={"Location": "/"},
+                    )
+                except ContourNotReady:
+                    body = render_html(app.vault).encode()
+                    sent = True
+                    self._send(409, body, "text/html; charset=utf-8")
+            except Exception:
+                if sent:
+                    return
+                try:
+                    self._send(500, b"error", "text/plain; charset=utf-8")
+                except Exception:
+                    return
 
         def do_PUT(self) -> None:  # noqa: N802
             self._reject_write()
@@ -294,7 +437,7 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Read-only desk console")
+    parser = argparse.ArgumentParser(description="Desk console. No orders.")
     parser.add_argument("--userdir", required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8082)

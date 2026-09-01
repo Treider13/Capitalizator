@@ -11,11 +11,30 @@ import argparse
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pyarrow.parquet as pq
 
-from capitalizator.screener.universe import load_universe
 from capitalizator.types import MarketEvent, require_utc
+
+
+def parse_event_row(row: dict[str, Any]) -> MarketEvent | None:
+    """One parquet row. Junk JSON / stream / naive clock is not a fact — skip."""
+    try:
+        payload = json.loads(row["payload_json"])
+        if not isinstance(payload, dict):
+            return None
+        return MarketEvent(
+            stream=row["stream"],
+            exchange=row["exchange"],
+            symbol=row["symbol"],
+            exchange_ts=row["exchange_ts"],
+            recv_ts=row["recv_ts"],
+            seq=row["seq"],
+            payload=payload,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError, KeyError):
+        return None
 
 
 def load_events(root: Path, *, symbol: str) -> list[MarketEvent]:
@@ -23,19 +42,16 @@ def load_events(root: Path, *, symbol: str) -> list[MarketEvent]:
     for path in root.rglob("*.parquet"):
         if symbol not in path.parts:
             continue
-        table = pq.ParquetFile(path).read()
+        try:
+            table = pq.ParquetFile(path).read()
+        except (OSError, ValueError):
+            continue
         for row in table.to_pylist():
-            events.append(
-                MarketEvent(
-                    stream=row["stream"],
-                    exchange=row["exchange"],
-                    symbol=row["symbol"],
-                    exchange_ts=row["exchange_ts"],
-                    recv_ts=row["recv_ts"],
-                    seq=row["seq"],
-                    payload=json.loads(row["payload_json"]),
-                )
-            )
+            if row.get("symbol") != symbol:
+                continue
+            event = parse_event_row(row)
+            if event is not None:
+                events.append(event)
     return events
 
 
@@ -48,8 +64,12 @@ def gap_covers(gaps: list[MarketEvent], start: datetime, end: datetime) -> bool:
         raw_to = gap.payload.get("ts_to")
         if raw_from is None or raw_to is None:
             continue
-        lo = require_utc(datetime.fromisoformat(str(raw_from)))
-        hi = require_utc(datetime.fromisoformat(str(raw_to)))
+        try:
+            lo = require_utc(datetime.fromisoformat(str(raw_from)))
+            hi = require_utc(datetime.fromisoformat(str(raw_to)))
+        except (TypeError, ValueError):
+            # Naive or unparsable clocks are not a cover. Same as a seq-gap.
+            continue
         if lo > hi:
             lo, hi = hi, lo
         if lo <= start_u and hi >= end_u:
@@ -79,6 +99,9 @@ def check_uptime(
     if span_s + 1e-9 < need:
         raise SystemExit(f"span {span_s}s < required {need}s")
     gaps = [e for e in events if e.stream == "gap"]
+    if symbol is not None:
+        # An ETH restart must not paint a BTC hole green.
+        gaps = [e for e in gaps if e.symbol == symbol]
     prev = trades[0]
     for cur in trades[1:]:
         hole = (cur.exchange_ts - prev.exchange_ts).total_seconds()
@@ -100,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-unmarked-gap-s", type=float, required=True)
     args = parser.parse_args(argv)
     if args.universe:
+        from capitalizator.screener.universe import load_universe
+
         universe = load_universe(Path(args.universe))
         spans: list[float] = []
         for symbol in universe.symbols:

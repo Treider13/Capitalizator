@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from capitalizator.exec.fees import FeeTable
 from capitalizator.screener.universe import Universe, default_week0_path, load_universe
 
 
 class Screener:
     def __init__(self, universe: Universe | None = None) -> None:
+        from capitalizator.exec.fees import FeeTable
+
         self.universe = universe or load_universe(default_week0_path())
         self.fees = FeeTable()
 

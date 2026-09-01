@@ -31,6 +31,8 @@ CavLabel = Literal["REJECT", "THROUGH", "COMPRESS", "DRIFT", "NOISE"]
 
 
 def _touches(bar: Bar, zone: Zone) -> bool:
+    if bar.symbol != zone.symbol:
+        return False
     return bar.low <= zone.hi and bar.high >= zone.lo
 
 

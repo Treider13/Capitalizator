@@ -5,10 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from capitalizator.ops.check_uptime import check_uptime, load_events, main
-from capitalizator.recorder.sink_parquet import ParquetSink
+from capitalizator.recorder.sink_parquet import SCHEMA, ParquetSink
 from capitalizator.types import MarketEvent
 
 
@@ -25,7 +27,9 @@ def _trade(second: int, *, symbol: str = "BTCUSDT") -> MarketEvent:
     )
 
 
-def _gap(start_s: int, end_s: int, *, in_payload: bool = True) -> MarketEvent:
+def _gap(
+    start_s: int, end_s: int, *, in_payload: bool = True, symbol: str = "BTCUSDT"
+) -> MarketEvent:
     start = datetime(2026, 8, 30, 13, 0, 0, tzinfo=UTC) + timedelta(seconds=start_s)
     end = datetime(2026, 8, 30, 13, 0, 0, tzinfo=UTC) + timedelta(seconds=end_s)
     payload: dict = {"missing_stream": "trades", "seq_from": 0, "seq_to": 0}
@@ -35,7 +39,7 @@ def _gap(start_s: int, end_s: int, *, in_payload: bool = True) -> MarketEvent:
     return MarketEvent(
         stream="gap",
         exchange="bybit",
-        symbol="BTCUSDT",
+        symbol=symbol,
         exchange_ts=start,
         recv_ts=end,
         seq=None,
@@ -68,10 +72,179 @@ def test_seq_gap_without_time_range_does_not_cover_silence() -> None:
         check_uptime(events, hours=120 / 3600, max_unmarked_gap_s=10, symbol="BTCUSDT")
 
 
+def test_naive_gap_clock_does_not_cover() -> None:
+    """Naive ts_from is not a cover. Same as a seq-gap without a time range."""
+    start = datetime(2026, 8, 30, 13, 0, 0, tzinfo=UTC)
+    end = start + timedelta(seconds=120)
+    gap = MarketEvent(
+        stream="gap",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=start,
+        recv_ts=end,
+        seq=None,
+        payload={
+            "ts_from": start.replace(tzinfo=None).isoformat(),
+            "ts_to": end.replace(tzinfo=None).isoformat(),
+        },
+    )
+    with pytest.raises(SystemExit, match="unmarked gap"):
+        check_uptime(
+            [_trade(0), _trade(120), gap],
+            hours=120 / 3600,
+            max_unmarked_gap_s=10,
+            symbol="BTCUSDT",
+        )
+
+
+def test_other_symbol_gap_does_not_cover() -> None:
+    """An ETH gap must not mark a BTC hole. hours24 inherits this law."""
+    events = [_trade(0), _trade(120), _gap(0, 120, symbol="ETHUSDT")]
+    with pytest.raises(SystemExit, match="unmarked gap"):
+        check_uptime(events, hours=120 / 3600, max_unmarked_gap_s=10, symbol="BTCUSDT")
+
+
 def test_short_span_fails() -> None:
     events = [_trade(0), _trade(10)]
     with pytest.raises(SystemExit, match="span"):
         check_uptime(events, hours=1, max_unmarked_gap_s=10, symbol="BTCUSDT")
+
+
+def test_load_events_skips_other_symbol_rows(tmp_path: Path) -> None:
+    """A BTCUSDT path must not feed ETH rows into hours24."""
+    dest = tmp_path / "BTCUSDT" / "mixed.parquet"
+    dest.parent.mkdir(parents=True)
+    start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
+    end = start + timedelta(seconds=120)
+    table = pa.Table.from_pylist(
+        [
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": start,
+                "recv_ts": start,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": end,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+            {
+                "stream": "gap",
+                "exchange": "bybit",
+                "symbol": "ETHUSDT",
+                "exchange_ts": start,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": (
+                    f'{{"ts_from":"{start.isoformat()}","ts_to":"{end.isoformat()}"}}'
+                ),
+            },
+        ],
+        schema=SCHEMA,
+    )
+    pq.write_table(table, dest)
+    loaded = load_events(tmp_path, symbol="BTCUSDT")
+    assert [e.symbol for e in loaded] == ["BTCUSDT", "BTCUSDT"]
+    assert all(e.stream == "trades" for e in loaded)
+    with pytest.raises(SystemExit, match="unmarked gap"):
+        check_uptime(loaded, hours=120 / 3600, max_unmarked_gap_s=10, symbol="BTCUSDT")
+
+
+def test_load_events_skips_unreadable_rows(tmp_path: Path) -> None:
+    """A broken stream/JSON row must not abort the tape read."""
+    dest = tmp_path / "BTCUSDT" / "junk.parquet"
+    dest.parent.mkdir(parents=True)
+    start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
+    end = start + timedelta(seconds=120)
+    table = pa.Table.from_pylist(
+        [
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": start,
+                "recv_ts": start,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+            {
+                "stream": "nope",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": start,
+                "recv_ts": start,
+                "seq": None,
+                "payload_json": "{",
+            },
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": end,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+        ],
+        schema=SCHEMA,
+    )
+    pq.write_table(table, dest)
+    loaded = load_events(tmp_path, symbol="BTCUSDT")
+    assert [e.stream for e in loaded] == ["trades", "trades"]
+
+
+def test_load_events_skips_corrupt_file(tmp_path: Path) -> None:
+    dest = tmp_path / "BTCUSDT" / "ok.parquet"
+    dest.parent.mkdir(parents=True)
+    start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
+    end = start + timedelta(seconds=60)
+    table = pa.Table.from_pylist(
+        [
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": start,
+                "recv_ts": start,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": end,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+        ],
+        schema=SCHEMA,
+    )
+    pq.write_table(table, dest)
+    (tmp_path / "BTCUSDT" / "broken.parquet").write_bytes(b"not parquet")
+    loaded = load_events(tmp_path, symbol="BTCUSDT")
+    assert [e.stream for e in loaded] == ["trades", "trades"]
+    assert main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--symbol",
+            "BTCUSDT",
+            "--hours",
+            str(60 / 3600),
+            "--max-unmarked-gap-s",
+            "60",
+        ]
+    ) == 0
 
 
 def test_cli_reads_parquet(tmp_path: Path) -> None:

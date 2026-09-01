@@ -14,7 +14,9 @@
 
 `vault` / `knowledge` / `backup`: каталог как у Freqtrade `user_data` — знания (SQLite) отдельно от ленты (parquet). Секреты в бэкап не входят. Пустой журнал = 0 строк, не выдумка. `pack` отказывается при ключе в файле, сломанной хеш-цепочке, лишнем файле в `secrets/`. `restore` сверяет sha256 и число строк.
 
-`console`: только GET, `127.0.0.1`. Без `LAYOUT` не поднимается (нужен `--init`). POST/PUT/DELETE/PATCH — 405. Советов «купи / лонг» нет. Поля «vps» нет — железо не выдумываем.
+`contour`: `hours24` = тот же закон, что `check_uptime --hours 24 --max-unmarked-gap-s 0`. Кнопка / `enable` пишет `meta.contour=on` в `desk.sqlite`. `infra/phase.yaml` не трогает. `observe` склеивает ленту+CAV+ZLG+BTC+жюри на касании. Размер не открывает. Ордера нет.
+
+`console`: GET плюс POST `/contour` и `/api/contour` (только `action=on`). `127.0.0.1`. Без `LAYOUT` не поднимается (нужен `--init`). POST `/order`, PUT/DELETE/PATCH — 405. Советов «купи / лонг» нет. Поля «vps» нет — железо не выдумываем. Кнопка «Включить контур» серая, пока суток ленты нет.
 
 ```
 python -m capitalizator.ops.console --userdir ./user_data --init

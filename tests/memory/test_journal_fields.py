@@ -61,6 +61,38 @@ def test_fill_width_and_quality_and_hour() -> None:
     assert reg.chain.verify() is True
 
 
+def test_voices_are_first_fact_journal_overwrites() -> None:
+    """Merge contract: CAV stays; width/quality may restamp. One _patch, two laws."""
+    reg = _reg()
+    reg.fill_cav(cav_label="REJECT")
+    assert reg.fill_cav(cav_label="THROUGH") == []
+    first = reg.fill_width(w_now=Decimal("2"), w_rank=Decimal("0.9"))[0]
+    assert first.w_now == Decimal("2")
+    assert first.cav_label == "REJECT"
+    later = reg.fill_width(w_now=Decimal("3"), w_rank=Decimal("0.1"))[0]
+    assert later.w_now == Decimal("3")
+    assert later.w_rank == Decimal("0.1")
+    assert later.cav_label == "REJECT"
+    assert reg.fill_bar_quality(quality="live")[0].bar_quality == "live"
+    q = reg.fill_bar_quality(quality="illiquid")[0]
+    assert q.bar_quality == "illiquid"
+    assert q.cav_label == "REJECT"
+
+
+def test_journal_width_without_touch_id_writes_every_row() -> None:
+    """Journal may paint every touch. Voices still need touch_id when several."""
+    reg, first, second = _two_zone_reg()
+    changed = reg.fill_width(w_now=Decimal("2"), w_rank=Decimal("0.5"))
+    assert len(changed) == 2
+    assert {t.touch_id for t in changed} == {first.touch_id, second.touch_id}
+    assert all(t.w_now == Decimal("2") for t in reg.touches)
+    later = reg.fill_width(w_now=Decimal("3"), w_rank=Decimal("0.1"))
+    assert all(t.w_now == Decimal("3") for t in later)
+    with pytest.raises(ValueError, match="touch_id"):
+        reg.fill_cav(cav_label="REJECT")
+    assert all(t.cav_label is None for t in reg.touches)
+
+
 def test_journal_does_not_change_class_id() -> None:
     reg = _reg()
     reg.fill_cav(cav_label="REJECT")
@@ -233,9 +265,10 @@ def test_resolve_keeps_journal_fields() -> None:
 def test_stamp_jury_on_one_touch_keeps_the_other_and_journal() -> None:
     reg, first, second = _two_zone_reg()
     reg.fill_width(w_now=Decimal("2"), w_rank=Decimal("0.5"))
-    reg.fill_cav(cav_label="REJECT")
-    reg.fill_gesture(gesture="DEFEND")
-    reg.fill_btc(regime="box")
+    for tid in (first.touch_id, second.touch_id):
+        reg.fill_cav(cav_label="REJECT", touch_id=tid)
+        reg.fill_gesture(gesture="DEFEND", touch_id=tid)
+        reg.fill_btc(regime="box", touch_id=tid)
     reg.stamp_jury(n_cav=20, n_zlg=20, touch_id=first.touch_id)
     by_id = {t.touch_id: t for t in reg.touches}
     assert by_id[first.touch_id].jury == "ACCORD"

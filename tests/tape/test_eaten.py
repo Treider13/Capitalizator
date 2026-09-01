@@ -83,6 +83,35 @@ def test_small_print_is_not_eaten() -> None:
     ) is False
 
 
+def test_gap_in_window_is_not_a_taker() -> None:
+    """A seq-gap noticed in the 8s window is not a print. Do not abort eaten."""
+    clf = TapeClassifier()
+    book = _book(bid_sz="10")
+    gap = MarketEvent(
+        stream="gap",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=PRINT,
+        recv_ts=PRINT + timedelta(seconds=1),
+        seq=None,
+        payload={"ts_from": PRINT.isoformat(), "ts_to": (PRINT + timedelta(seconds=1)).isoformat()},
+    )
+    assert clf.eaten(
+        book=book,
+        trades=[_sell("1"), gap],
+        zone=ZONE,
+        t0=PRINT,
+        tick_size=TICK,
+    ) is False
+    assert clf.eaten(
+        book=book,
+        trades=[_sell("6"), gap],
+        zone=ZONE,
+        t0=PRINT,
+        tick_size=TICK,
+    ) is True
+
+
 def test_wall_without_prints_is_not_eaten() -> None:
     clf = TapeClassifier()
     book = _book(bid_sz="50")
@@ -164,3 +193,56 @@ def test_registry_fill_tape_is_deterministic() -> None:
 
     assert run() is True
     assert run() == run()
+
+
+def test_fill_tape_touch_id_leaves_other_unlabeled() -> None:
+    later = Zone.create(
+        symbol="BTCUSDT",
+        tf="1d",
+        side="support",
+        lo=Decimal("101"),
+        hi=Decimal("101.2"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
+    reg = Registry(tick_size=TICK)
+    first = reg.on_trade(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=PRINT,
+            recv_ts=PRINT,
+            seq=None,
+            payload={"px": "100.1", "qty": "6", "side": "sell"},
+        ),
+        [ZONE],
+    )
+    second = reg.on_trade(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=PRINT + timedelta(seconds=30),
+            recv_ts=PRINT + timedelta(seconds=30),
+            seq=None,
+            payload={"px": "101.1", "qty": "6", "side": "sell"},
+        ),
+        [ZONE, later],
+    )
+    assert len(first) == 1
+    assert len(second) == 1
+    with pytest.raises(ValueError, match="touch_id"):
+        reg.fill_tape(book=_book(bid_sz="10"), trades=[_sell("6")])
+    assert reg.touches[0].tape_eaten is None
+    assert reg.touches[1].tape_eaten is None
+    with pytest.raises(KeyError):
+        reg.fill_tape(book=_book(bid_sz="10"), trades=[_sell("6")], touch_id="missing")
+    changed = reg.fill_tape(
+        book=_book(bid_sz="10"),
+        trades=[_sell("6")],
+        touch_id=first[0].touch_id,
+    )
+    assert changed[0].tape_eaten is True
+    assert reg.touches[0].tape_eaten is True
+    assert reg.touches[1].tape_eaten is None

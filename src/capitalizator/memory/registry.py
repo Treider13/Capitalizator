@@ -81,6 +81,9 @@ class Registry:
         self._zones: dict[str, Zone] = {}
         self.chain = HashChain()
 
+    def zone(self, zone_id: str) -> Zone:
+        return self._zones[zone_id]
+
     def on_trade(self, trade: MarketEvent, zones: Sequence[Zone]) -> list[Touch]:
         if trade.stream != "trades":
             raise ValueError("on_trade expects stream=trades")
@@ -160,12 +163,30 @@ class Registry:
             return replace(touch, outcome="die")
         return touch
 
-    def fill_tape(self, *, book: Book, trades: Sequence[MarketEvent]) -> list[Touch]:
-        """Set tape_eaten from book_pre + prints in the touch window. Does not open size."""
+    def fill_tape(
+        self,
+        *,
+        book: Book,
+        trades: Sequence[MarketEvent],
+        touch_id: str | None = None,
+    ) -> list[Touch]:
+        """Set tape_eaten from book_pre + prints in the touch window. Does not open size.
+
+        touch_id pins one row. One book must not paint another touch.
+        Several unlabeled rows without touch_id is an error.
+        """
+        if touch_id is not None and not any(t.touch_id == touch_id for t in self.touches):
+            raise KeyError(touch_id)
+        unlabeled = [t for t in self.touches if t.tape_eaten is None]
+        if touch_id is None and len(unlabeled) > 1:
+            raise ValueError("fill_tape needs touch_id when several touches lack tape")
         clf = TapeClassifier()
         changed: list[Touch] = []
         next_rows: list[Touch] = []
         for touch in self.touches:
+            if touch_id is not None and touch.touch_id != touch_id:
+                next_rows.append(touch)
+                continue
             if touch.tape_eaten is not None:
                 next_rows.append(touch)
                 continue
@@ -183,6 +204,10 @@ class Registry:
             changed.append(row)
         self.touches = next_rows
         return changed
+
+    def _require_touch_id_if_many(self, touch_id: str | None, *, what: str) -> None:
+        if touch_id is None and len(self.touches) > 1:
+            raise ValueError(f"{what} needs touch_id when registry has several touches")
 
     def fill_btc(self, *, regime: str, touch_id: str | None = None) -> list[Touch]:
         if regime not in {"trend", "box", "news"}:
@@ -221,13 +246,24 @@ class Registry:
             raise ValueError("w_rank must be in [0, 1]")
         if w_rank is not None and w_now is None:
             raise ValueError("w_rank requires w_now")
-        return self._patch(w_now=w_now, w_rank=w_rank, touch_id=touch_id)
+        return self._patch(
+            w_now=w_now,
+            w_rank=w_rank,
+            touch_id=touch_id,
+            overwrite=True,
+            require_touch_id=False,
+        )
 
     def fill_bar_quality(self, *, quality: str, touch_id: str | None = None) -> list[Touch]:
         """Journal only. live | stagnant | illiquid. Does not append the hash chain."""
         if quality not in {"live", "stagnant", "illiquid"}:
             raise ValueError(f"unknown bar_quality: {quality!r}")
-        return self._patch(bar_quality=quality, touch_id=touch_id)
+        return self._patch(
+            bar_quality=quality,
+            touch_id=touch_id,
+            overwrite=True,
+            require_touch_id=False,
+        )
 
     def fill_session_hour(self, *, touch_id: str | None = None) -> list[Touch]:
         """UTC hour of touch.ts. Journal only — never part of rho_class_id."""
@@ -258,10 +294,14 @@ class Registry:
 
         if idea != "bounce":
             raise ValueError("only bounce idea is mapped in F1")
+        self._require_touch_id_if_many(touch_id, what="stamp_jury")
         changed: list[Touch] = []
         next_rows: list[Touch] = []
         for touch in self.touches:
             if touch_id is not None and touch.touch_id != touch_id:
+                next_rows.append(touch)
+                continue
+            if touch.jury is not None:
                 next_rows.append(touch)
                 continue
             voices = voices_for_bounce(
@@ -284,22 +324,39 @@ class Registry:
             row = replace(touch, jury=label, rho_class_id=class_id)
             next_rows.append(row)
             changed.append(row)
-        if touch_id is not None and not changed:
+        if touch_id is not None and not any(t.touch_id == touch_id for t in self.touches):
             raise KeyError(touch_id)
         self.touches = next_rows
         return changed
 
-    def _patch(self, *, touch_id: str | None = None, **fields: object) -> list[Touch]:
+    def _patch(
+        self,
+        *,
+        touch_id: str | None = None,
+        overwrite: bool = False,
+        require_touch_id: bool = True,
+        **fields: object,
+    ) -> list[Touch]:
+        """Voices: write empty keys only. Journal: overwrite=True may restamp every row."""
+        if require_touch_id:
+            self._require_touch_id_if_many(touch_id, what="fill")
+        if touch_id is not None and not any(t.touch_id == touch_id for t in self.touches):
+            raise KeyError(touch_id)
         changed: list[Touch] = []
         next_rows: list[Touch] = []
         for touch in self.touches:
             if touch_id is not None and touch.touch_id != touch_id:
                 next_rows.append(touch)
                 continue
-            row = replace(touch, **fields)
+            if overwrite:
+                row = replace(touch, **fields)
+            else:
+                write = {key: value for key, value in fields.items() if getattr(touch, key) is None}
+                if not write:
+                    next_rows.append(touch)
+                    continue
+                row = replace(touch, **write)
             next_rows.append(row)
             changed.append(row)
-        if touch_id is not None and not changed:
-            raise KeyError(touch_id)
         self.touches = next_rows
         return changed

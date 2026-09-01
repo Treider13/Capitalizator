@@ -66,6 +66,10 @@ def test_registry_touch_writes_chain() -> None:
     assert len(reg.chain.links) == 2
     assert reg.chain.links[1].prev_hash == first
     assert reg.chain.verify() is True
+    assert reg.fill_gesture(gesture="RETREAT") == []
+    assert reg.touches[0].gesture == "DEFEND"
+    assert len(reg.chain.links) == 2
+    assert reg.chain.verify() is True
 
 
 def test_episode_table_is_empty() -> None:
