@@ -49,6 +49,16 @@ def test_one_hit_one_miss_is_half() -> None:
     assert hostile_exam(rows).direction_hit == Decimal("1") / Decimal("2")
 
 
+def test_direction_hit_uses_the_whole_sample() -> None:
+    """Last-2 of hit,miss,hit is 1/2. The sample is 2/3."""
+    rows = [
+        ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("12")),
+        ExamCase(pred=Decimal("9"), last=Decimal("10"), actual=Decimal("11")),
+        ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("12")),
+    ]
+    assert hostile_exam(rows).direction_hit == Decimal("2") / Decimal("3")
+
+
 def test_zero_atr_is_excluded_from_residual() -> None:
     """atr=0 is not a divisor. Including it is ZeroDivision or a fake residual."""
     rows = [ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("0"))]
@@ -123,16 +133,15 @@ def test_mixed_net_zero_five_days_have_no_share() -> None:
     assert hostile_exam(rows).pnl_share_best_5_days is None
 
 
-def test_five_days_with_a_loss_can_exceed_one() -> None:
-    """Exceed-1 fixtures use 6 days with 5 winners. A `wins < 5` floor would still pass those."""
+def test_five_days_including_a_loss_still_unlock() -> None:
+    """Floor is 5 calendar days, not 5 winning days. Top-5 of 5 is the whole book → share 1."""
     pnls = (Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), Decimal("-5"))
     rows = [
         ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 9, d), pnl=pnl)
         for d, pnl in zip(range(1, 6), pnls)
     ]
     share = hostile_exam(rows).pnl_share_best_5_days
-    assert share == Decimal("40") / Decimal("35")
-    assert share > 1
+    assert share == Decimal("1")
 
 
 def test_pnl_share_unlocks_on_exactly_five_days() -> None:
