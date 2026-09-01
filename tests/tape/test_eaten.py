@@ -83,6 +83,35 @@ def test_small_print_is_not_eaten() -> None:
     ) is False
 
 
+def test_gap_in_window_is_not_a_taker() -> None:
+    """A seq-gap noticed in the 8s window is not a print. Do not abort eaten."""
+    clf = TapeClassifier()
+    book = _book(bid_sz="10")
+    gap = MarketEvent(
+        stream="gap",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=PRINT,
+        recv_ts=PRINT + timedelta(seconds=1),
+        seq=None,
+        payload={"ts_from": PRINT.isoformat(), "ts_to": (PRINT + timedelta(seconds=1)).isoformat()},
+    )
+    assert clf.eaten(
+        book=book,
+        trades=[_sell("1"), gap],
+        zone=ZONE,
+        t0=PRINT,
+        tick_size=TICK,
+    ) is False
+    assert clf.eaten(
+        book=book,
+        trades=[_sell("6"), gap],
+        zone=ZONE,
+        t0=PRINT,
+        tick_size=TICK,
+    ) is True
+
+
 def test_wall_without_prints_is_not_eaten() -> None:
     clf = TapeClassifier()
     book = _book(bid_sz="50")

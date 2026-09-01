@@ -41,6 +41,7 @@ class TapeClassifier:
         """True if takers in the touch window lifted ≥50% of zone-side depth.
 
         Window is [t0, t0 + zlg_window_s] — the same 8s as the touch, not a 5-minute CVD.
+        gap / book_diff / other streams in that window are not prints — skip them.
         No book / not ready → error (do not invent False).
         depth_near ticks = prs_delta_ticks from the freeze.
         """
@@ -61,6 +62,8 @@ class TapeClassifier:
         taken = Decimal("0")
         lo, hi = zone.lo - pad, zone.hi + pad
         for trade in trades:
+            if trade.stream != "trades":
+                continue
             if trade.symbol != zone.symbol:
                 continue
             ts = require_utc(trade.exchange_ts)

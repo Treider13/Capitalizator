@@ -393,6 +393,37 @@ def test_observe_off_writes_nothing() -> None:
     assert reg.touches[0].cav_label is None
 
 
+def test_observe_gap_in_window_still_stamps() -> None:
+    """A gap noticed at the print must not freeze the card. Gap is not a taker."""
+    reg = _reg()
+    gap = MarketEvent(
+        stream="gap",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=PRINT,
+        recv_ts=PRINT + timedelta(seconds=1),
+        seq=None,
+        payload={
+            "ts_from": PRINT.isoformat(),
+            "ts_to": (PRINT + timedelta(seconds=1)).isoformat(),
+        },
+    )
+    base = _observe_in()
+    inp = ObserveIn(
+        book=base.book,
+        trades=[*base.trades, gap],
+        adds=base.adds,
+        cav_bar=base.cav_bar,
+        htf_bias=base.htf_bias,
+    )
+    row = observe(reg, inp, contour_on=True)[0]
+    assert row.tape_eaten is False
+    assert row.gesture == "DEFEND"
+    assert row.cav_label == "REJECT"
+    assert row.btc_regime == "box"
+    assert row.jury == "SILENCE"
+
+
 def test_observe_on_fills_all_labels_and_stamps() -> None:
     reg = _reg()
     changed = observe(reg, _observe_in(), contour_on=True)
