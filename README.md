@@ -20,7 +20,8 @@
 Пассивное восстановление стакана (не Sharpe > 3): [`docs/PASSIVE-RESILIENCE.md`](docs/PASSIVE-RESILIENCE.md).  
 Изобретение: жест книги и первый факт: [`docs/INVENTION-FIRST-FACT.md`](docs/INVENTION-FIRST-FACT.md).  
 Жюри графика и книги, % за час сессии: [`docs/INVENTION-JURY.md`](docs/INVENTION-JURY.md).  
-×6–×9 за 6 месяцев «стабильно и с низким риском»: [`docs/VERDICT-x6-LOWRISK.md`](docs/VERDICT-x6-LOWRISK.md) — **нет**.
+×6–×9 за 6 месяцев «стабильно и с низким риском»: [`docs/VERDICT-x6-LOWRISK.md`](docs/VERDICT-x6-LOWRISK.md) — **нет**.  
+Простыми словами, лучше/хуже и «свой паттерн 2026»: [`docs/VERDICT-PROSTO.md`](docs/VERDICT-PROSTO.md) — **не паттерн, тетрадка**.
 
 Рядом: [`docs/SR-LEVELS-SCIENCE.md`](docs/SR-LEVELS-SCIENCE.md) (факты по уровням), [`docs/CENSUS-PRACTICE-REPOS.md`](docs/CENSUS-PRACTICE-REPOS.md) (~110 репо), [`docs/ARCHITECTURE-AZ.md`](docs/ARCHITECTURE-AZ.md) (ИИ, безопасность, контуры).
 
