@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
 from capitalizator.book.reconstruct import Book
-from capitalizator.book.wall_watch import WallWatch
+from capitalizator.book.wall_watch import WallEvent, WallWatch, pulled_without_print
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.types import MarketEvent
 
@@ -119,3 +119,30 @@ def test_small_level_is_not_a_wall() -> None:
     watch = WallWatch("BTCUSDT", min_size=Decimal("50"))
     book = _book("1")
     assert watch.on_book_and_trade(book, ts=TS) == []
+
+
+def _wall(kind: str, ts: datetime) -> WallEvent:
+    return WallEvent(
+        symbol="BTCUSDT",
+        px="60000",
+        side="bid",
+        size=Decimal("50"),
+        kind=kind,  # type: ignore[arg-type]
+        ts=ts,
+    )
+
+
+def test_stale_pull_is_not_this_touch() -> None:
+    old = _wall("pulled", TS - timedelta(hours=1))
+    assert pulled_without_print((old,), since=TS) is False
+
+
+def test_pull_then_appear_in_window_still_counts() -> None:
+    """Last-event-only would hide the pull. Law 5 is the pull, not the later size."""
+    pulled = _wall("pulled", TS)
+    appeared = _wall("appeared", TS + timedelta(seconds=1))
+    assert pulled_without_print((pulled, appeared), since=TS) is True
+
+
+def test_empty_wall_history_is_false() -> None:
+    assert pulled_without_print((), since=TS) is False

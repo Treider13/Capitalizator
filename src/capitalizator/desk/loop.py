@@ -14,7 +14,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from capitalizator.book.reconstruct import Book, BookDirty
-from capitalizator.book.wall_watch import WallWatch
+from capitalizator.book.wall_watch import WallWatch, pulled_without_print
 from capitalizator.btc.break_def import Break
 from capitalizator.btc.regime import BtcRegime
 from capitalizator.btc.veto import BtcVeto
@@ -31,6 +31,7 @@ from capitalizator.exec.strategy_bounce import (
     BounceSnapshot,
     BounceStrategy,
     in_mid_range,
+    opposing_target,
     price_in_zone,
 )
 from capitalizator.exec.tvh import NO_TVH, tvh_ok
@@ -435,7 +436,9 @@ class DeskLoop:
         elif h4 not in {"unknown", "box"} and h4 != bounce_side:
             htf = h4
         cav = cav_label(zone, bar, t=closed_at, htf_bias=htf, closed_bars=st.bars)
-        known_zones = tuple(self.registry._zones.values()) if self.registry._zones else (zone,)
+        known_zones = tuple(
+            z for z in self.registry._zones.values() if z.symbol == st.symbol
+        ) or (zone,)
         if in_mid_range(
             bar.close,
             known_zones,
@@ -470,16 +473,19 @@ class DeskLoop:
             if row.gesture == live.gesture
             and self.registry.zone(row.zone_id).symbol == st.symbol
         )
-        break_against = (
-            self.btc.broke_resistance if idea == "breakout" else self.btc.broke_support
-        )
-        if st.symbol == "BTCUSDT":
-            break_against = False
         idea_side = "buy" if zone.side == "support" else "sell"
         if idea == "failed_break":
             idea_side = "sell" if zone.side == "support" else "buy"
         if idea == "breakout":
             idea_side = "sell" if zone.side == "support" else "buy"
+        # 2.9.3: long vs BTC support break; short vs BTC resistance break.
+        break_against = False
+        if st.symbol != "BTCUSDT":
+            break_against = (
+                self.btc.broke_support
+                if idea_side == "buy"
+                else self.btc.broke_resistance
+            )
         btc_same_side = (
             (idea_side == "buy" and self.btc.regime in {"long", "box"})
             or (idea_side == "sell" and self.btc.regime in {"short", "box"})
@@ -490,12 +496,15 @@ class DeskLoop:
             row.event_class == "CPI" and row.event_time.date() == bar.close_ts.date()
             for row in self.calendar
         )
+        wall_since = touch.ts - timedelta(seconds=self.config.zlg_window_s)
+        wall_events = self.walls[st.symbol].events if st.symbol in self.walls else ()
+        silent_wall = pulled_without_print(wall_events, since=wall_since)
         stamped = self.registry.stamp_jury(
             idea=idea,
             n_cav=n_cav,
             n_zlg=n_zlg,
             touch_id=touch.touch_id,
-            wall_no_print=False,
+            wall_no_print=silent_wall,
             btc_break_against=break_against,
             card_bearing_verdict=live.bearing_verdict,
             cpi_window=cpi_window,
@@ -519,7 +528,7 @@ class DeskLoop:
             tape_eaten=row.tape_eaten,
             btc_regime=row.btc_regime,
             card_bearing_verdict=row.bearing_verdict,
-            wall_no_print=False,
+            wall_no_print=silent_wall,
             btc_break_against=break_against,
             trades_in_window=row.trades_in_window,
             btc_same_side=btc_same_side,
@@ -680,7 +689,13 @@ class DeskLoop:
                 tick=self.tick_size,
                 trading_mode=self.user_mode,
                 zone=zone,
-                zones=(zone,),
+                zones=known_zones,
+                next_target=opposing_target(
+                    known_zones,
+                    side=idea_side,
+                    entry=row.trade_px,
+                    symbol=st.symbol,
+                ),
                 calendar=self.calendar,
                 idea=idea,
                 jury=jury,
@@ -689,8 +704,10 @@ class DeskLoop:
                 n_cav=n_cav,
                 n_zlg=n_zlg,
                 tape_eaten=row.tape_eaten,
+                wall_no_print=silent_wall,
                 btc_regime=row.btc_regime,
-                btc_broke=self.btc.broke_support if st.symbol != "BTCUSDT" else False,
+                btc_broke=break_against,
+                btc_zone_side="support" if idea_side == "buy" else "resistance",
                 btc_same_side=btc_same_side,
                 gesture_n=n_zlg,
                 first_minute=(
@@ -699,6 +716,7 @@ class DeskLoop:
                     else False
                 ),
                 close_beyond=cav == "THROUGH",
+                allow_break=breakout_enabled(),
                 card_bearing_verdict=row.bearing_verdict,
             )
             intent = self.strategy.propose(snap)

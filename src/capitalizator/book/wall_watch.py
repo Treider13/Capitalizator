@@ -10,6 +10,7 @@ Not a support. Not a spoof classifier (needs our 24h data).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -36,6 +37,17 @@ class WallEvent:
 class _Tracked:
     size: Decimal
     printed: Decimal = Decimal("0")
+
+
+def pulled_without_print(events: Sequence[WallEvent], *, since: datetime) -> bool:
+    """A wall left without tape covering its size at/after `since`.
+
+    Last-event-only is wrong: events are never trimmed, so a pull hours ago
+    would veto every later bounce, and an appear after a pull would hide it.
+    Sitting size ≥ min_size is normal book, not this flag (0.2.5 = pulled).
+    """
+    start = require_utc(since)
+    return any(event.kind == "pulled" and event.ts >= start for event in events)
 
 
 class WallWatch:

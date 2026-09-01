@@ -86,6 +86,7 @@ class BounceSnapshot:
     prs_y: Decimal | None = None
     first_minute: bool = False
     close_beyond: bool = False
+    allow_break: bool = False
     card_bearing_verdict: str | None = None
     gesture_n: int = 0
 
@@ -118,11 +119,16 @@ def in_mid_range(
     return abs(price - mid) <= tick * band_ticks
 
 
-def stop_behind(zone: Zone, tick: Decimal, away_ticks: int) -> Decimal:
+def stop_behind(zone: Zone, tick: Decimal, away_ticks: int, *, side: str) -> Decimal:
+    """Stop is behind the zone *for this side*. A short after a failed support
+    sweep cannot inherit the bounce-long stop (that would sit below entry).
+    """
     if tick <= 0 or away_ticks <= 0:
         raise ValueError("tick/away_ticks must be > 0")
+    if side not in {"buy", "sell"}:
+        raise ValueError("side must be buy|sell")
     buf = tick * away_ticks
-    stop = zone.lo - buf if zone.side == "support" else zone.hi + buf
+    stop = zone.lo - buf if side == "buy" else zone.hi + buf
     if stop <= 0:
         raise ValueError("stop would be <= 0")
     return stop
@@ -133,7 +139,26 @@ def reward_multiple(idea: str) -> Decimal:
 
 
 def default_multiple(idea: str) -> Decimal:
-    return BREAK_MIN_R if idea in _BREAK_IDEAS else DEFAULT_R
+    """Bounce may use the product 2R default. Break ideas do not invent a target."""
+    if idea in _BREAK_IDEAS:
+        raise ValueError("break ideas have no default multiple")
+    return DEFAULT_R
+
+
+def opposing_target(
+    zones: Sequence[Zone],
+    *,
+    side: str,
+    entry: Decimal,
+    symbol: str | None = None,
+) -> Zone | None:
+    """Nearest opposite zone beyond entry. Same symbol only. Not a fib line."""
+    pool = [z for z in zones if symbol is None or z.symbol == symbol]
+    if side == "buy":
+        above = [z for z in pool if z.side == "resistance" and z.lo > entry]
+        return min(above, key=lambda z: z.lo) if above else None
+    below = [z for z in pool if z.side == "support" and z.hi < entry]
+    return max(below, key=lambda z: z.hi) if below else None
 
 
 def take_profit(
@@ -154,7 +179,9 @@ def take_profit(
         if reward < need * r:
             return None
         return tp
-    span = default_multiple(idea) * r
+    if idea in _BREAK_IDEAS:
+        return None
+    span = DEFAULT_R * r
     if side == "buy":
         return entry + span
     return entry - span
@@ -285,9 +312,9 @@ class BounceStrategy:
             return None
         if idea == "breakout":
             if not BreakoutClose.allow(
-                enabled=True,
+                enabled=snap.allow_break,
                 close_beyond=snap.close_beyond,
-                tape_eaten=bool(snap.tape_eaten),
+                tape_eaten=snap.tape_eaten is True,
                 btc_same=snap.btc_regime in {"box", "trend"} and not snap.btc_broke,
                 first_minute=snap.first_minute,
             ):
@@ -306,7 +333,7 @@ class BounceStrategy:
                 tape_eaten=snap.tape_eaten,
                 btc_regime=snap.btc_regime,
                 card_bearing_verdict=snap.card_bearing_verdict,
-                wall_no_print=False,
+                wall_no_print=snap.wall_no_print is True,
                 btc_break_against=snap.btc_broke,
                 btc_same_side=snap.btc_same_side,
             )
@@ -334,7 +361,7 @@ class BounceStrategy:
                 if not night_ok:
                     return None
         try:
-            stop = stop_behind(zone, snap.tick, self.registry.bounce_away_ticks)
+            stop = stop_behind(zone, snap.tick, self.registry.bounce_away_ticks, side=side)
         except ValueError:
             return None
         tp = take_profit(side, snap.price, stop, snap.next_target, idea=idea)

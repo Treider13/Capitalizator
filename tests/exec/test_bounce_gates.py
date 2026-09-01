@@ -163,3 +163,83 @@ def test_next_zone_closer_than_one_point_five_r_is_none() -> None:
         _strategy().propose(_snap(zone=zone, zones=(zone, nxt), next_target=nxt))
         is None
     )
+
+
+def test_allow_break_false_blocks_green_breakout() -> None:
+    zone = _zone()
+    nxt = _zone(side="support", lo="96", hi="96.6")
+    assert (
+        _strategy().propose(
+            _snap(
+                idea="breakout",
+                allow_break=False,
+                close_beyond=True,
+                tape_eaten=True,
+                first_minute=False,
+                cav_label="THROUGH",
+                zlg_label="RETREAT",
+                n_cav=20,
+                n_zlg=20,
+                gesture_n=20,
+                btc_regime="box",
+                jury="ACCORD",
+                next_target=nxt,
+                zones=(zone, nxt),
+            )
+        )
+        is None
+    )
+
+
+def test_allow_break_true_uses_zone_target_and_stop_above_for_short() -> None:
+    zone = _zone()
+    nxt = _zone(side="support", lo="96", hi="96.6")
+    got = _strategy().propose(
+        _snap(
+            idea="breakout",
+            allow_break=True,
+            close_beyond=True,
+            tape_eaten=True,
+            first_minute=False,
+            cav_label="THROUGH",
+            zlg_label="RETREAT",
+            n_cav=20,
+            n_zlg=20,
+            gesture_n=20,
+            btc_regime="box",
+            jury="ACCORD",
+            next_target=nxt,
+            zones=(zone, nxt),
+        )
+    )
+    assert got is not None
+    assert got.side == "sell"
+    assert got.tag == "breakout"
+    assert got.stop == Decimal("101.8")
+    assert got.tp == Decimal("96.6")
+    assert got.tp < got.entry < got.stop
+
+
+def test_failed_break_short_does_not_inherit_bounce_long_stop() -> None:
+    zone = _zone()
+    nxt = _zone(side="support", lo="96", hi="96.6")
+    got = _strategy().propose(
+        _snap(
+            idea="failed_break",
+            tape_eaten=False,
+            cav_label="REJECT",
+            zlg_label="DEFEND",
+            n_cav=20,
+            n_zlg=20,
+            gesture_n=20,
+            btc_regime="box",
+            jury="ACCORD",
+            next_target=nxt,
+            zones=(zone, nxt),
+        )
+    )
+    assert got is not None
+    assert got.side == "sell"
+    assert got.tag == "failed_break_bounce"
+    assert got.stop == Decimal("101.8")
+    assert got.tp == Decimal("96.6")

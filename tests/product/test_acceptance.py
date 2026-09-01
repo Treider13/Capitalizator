@@ -488,16 +488,31 @@ def test_22_symlink_vault_refused(tmp_path: Path) -> None:
 
 
 def test_23_first_minute_blocks_breakout() -> None:
+    below = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("96"),
+        hi=Decimal("96.6"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
     assert (
         _strat().propose(
             _snap(
                 idea="breakout",
+                allow_break=True,
                 cav_label="THROUGH",
                 zlg_label="RETREAT",
+                n_cav=20,
+                n_zlg=20,
+                gesture_n=20,
                 tape_eaten=True,
                 close_beyond=True,
                 first_minute=True,
                 jury="ACCORD",
+                next_target=below,
+                zones=(ZONE, below),
             )
         )
         is None

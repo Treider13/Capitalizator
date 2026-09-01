@@ -51,6 +51,16 @@ def test_short_history_is_none() -> None:
     assert fvg_present(bars, symbol="BTCUSDT", tf="15m", close_ts=bars[-1].close_ts) is None
 
 
+def test_hole_in_series_is_none() -> None:
+    """NinjaTrader textbook is consecutive candles. A missing bar is not an FVG."""
+    bars = (
+        _bar(i=0, high="100", low="99"),
+        _bar(i=1, high="103", low="100.5"),
+        _bar(i=3, high="104", low="101"),
+    )
+    assert fvg_present(bars, symbol="BTCUSDT", tf="15m", close_ts=bars[-1].close_ts) is None
+
+
 def test_zone_engine_still_has_no_fvg_method() -> None:
     text = (SRC / "zones" / "engine.py").read_text(encoding="utf-8")
     assert "no ICT/FVG" in text

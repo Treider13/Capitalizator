@@ -1,24 +1,27 @@
-"""Bounce keeps 1.5/2R. Breakout and failed_break need 3R."""
+"""Bounce keeps 1.5/2R. Breakout and failed_break need a real 3R zone, not a invented multiple."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from capitalizator.exec.strategy_bounce import (
     BREAK_MIN_R,
     DEFAULT_R,
     MIN_R,
     default_multiple,
+    opposing_target,
     reward_multiple,
     take_profit,
 )
 from capitalizator.zones.model import Zone
 
 
-def _zone(*, lo: str, hi: str, side: str = "resistance") -> Zone:
+def _zone(*, lo: str, hi: str, side: str = "resistance", symbol: str = "BTCUSDT") -> Zone:
     return Zone.create(
-        symbol="BTCUSDT",
+        symbol=symbol,
         tf="15m",
         side=side,  # type: ignore[arg-type]
         lo=Decimal(lo),
@@ -58,6 +61,37 @@ def test_next_zone_below_three_r_still_ok_for_bounce_if_one_point_five() -> None
     assert brk is None
 
 
-def test_no_next_zone_breakout_defaults_to_three_r() -> None:
-    tp = take_profit("buy", Decimal("100.5"), Decimal("99.2"), None, idea="breakout")
-    assert tp == Decimal("100.5") + Decimal("3") * Decimal("1.3")
+def test_no_next_zone_breakout_has_no_target() -> None:
+    assert take_profit("buy", Decimal("100.5"), Decimal("99.2"), None, idea="breakout") is None
+    assert (
+        take_profit("sell", Decimal("100.5"), Decimal("101.8"), None, idea="failed_break")
+        is None
+    )
+
+
+def test_break_ideas_have_no_default_multiple() -> None:
+    with pytest.raises(ValueError, match="no default"):
+        default_multiple("breakout")
+    with pytest.raises(ValueError, match="no default"):
+        default_multiple("failed_break")
+
+
+def test_opposing_target_is_nearest_same_symbol() -> None:
+    near = _zone(lo="104", hi="105")
+    far = _zone(lo="110", hi="111")
+    other = _zone(lo="103", hi="103.5", symbol="ETHUSDT")
+    got = opposing_target(
+        (near, far, other),
+        side="buy",
+        entry=Decimal("100.5"),
+        symbol="BTCUSDT",
+    )
+    assert got is near
+
+
+def test_opposing_target_missing_is_none() -> None:
+    only = _zone(lo="100", hi="101", side="support")
+    assert (
+        opposing_target((only,), side="buy", entry=Decimal("100.5"), symbol="BTCUSDT")
+        is None
+    )
