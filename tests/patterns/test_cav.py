@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from capitalizator.patterns.bar_quality import prior_same_tf
+from capitalizator.patterns.bar_quality import atr, last_gap_segment, prior_same_tf
 from capitalizator.patterns.cav import label
 from capitalizator.zones.model import Bar, Zone
 
@@ -209,6 +209,46 @@ def test_range_equal_to_atr_is_drift_not_compress() -> None:
     assert (bar.high - bar.low) == Decimal("2")
     assert abs(bar.close - bar.open) == Decimal("0")
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "DRIFT"
+
+
+def test_compress_uses_last_atr_window_not_the_first() -> None:
+    """Range 3 sits between last-window ATR=2 and first-window 60/14. First 15 would COMPRESS."""
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    closed = []
+    for i in range(5):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("100"),
+                high=Decimal("110"),
+                low=Decimal("100"),
+                close=Decimal("100"),
+            )
+        )
+    for i in range(5, 20):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("100"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("100"),
+            )
+        )
+    bar = _bar(low="100.0", high="103.0", close="100.10")
+    assert (bar.high - bar.low) == Decimal("3")
+    assert len(last_gap_segment(closed, bar, t=T)) == 20
+    assert atr(closed[:15]) == Decimal("60") / Decimal("14")
+    assert (bar.high - bar.low) < atr(closed[:15])
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
 
 
 def test_offset_t_does_not_close_a_later_utc_bar() -> None:

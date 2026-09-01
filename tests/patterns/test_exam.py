@@ -250,6 +250,40 @@ def test_two_vol_pairs_unlock_ic() -> None:
     assert Decimal("0.999") < ic <= 1
 
 
+def test_vol_rank_ic_is_spearman_not_raw_pearson() -> None:
+    """1,2,100 vs 1,2,3 is monotone: Spearman ≈ 1. Pearson on raw values is ~0.87."""
+    rows = [
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("12"),
+            pred_vol_rank=Decimal(p),
+            actual_vol=Decimal(a),
+        )
+        for p, a in ((1, 1), (2, 2), (100, 3))
+    ]
+    ic = hostile_exam(rows).vol_rank_ic
+    assert ic is not None
+    assert Decimal("0.999") < ic <= 1
+
+
+def test_vol_rank_ic_is_spearman_not_kendall() -> None:
+    """Ranks 1,2,3,4 vs 1,2,4,3: Spearman 0.8. Kendall tau is 2/3."""
+    rows = [
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("12"),
+            pred_vol_rank=Decimal(p),
+            actual_vol=Decimal(a),
+        )
+        for p, a in ((1, 1), (2, 2), (3, 4), (4, 3))
+    ]
+    ic = hostile_exam(rows).vol_rank_ic
+    assert ic is not None
+    assert Decimal("0.799") < ic < Decimal("0.801")
+
+
 def test_pnl_without_day_does_not_unlock_share() -> None:
     """A print with pnl and no day is not a fifth day."""
     rows = [
