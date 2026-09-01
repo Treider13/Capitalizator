@@ -3,6 +3,7 @@ from capitalizator.card.draft import (
     Claim,
     apply_bind,
     load_bearing_ok,
+    pending_card,
     require_card,
 )
 from capitalizator.card.first_fact import FirstFact, RankedClaim, pick_by_horizon, resolve
@@ -16,6 +17,7 @@ __all__ = [
     "RankedClaim",
     "apply_bind",
     "load_bearing_ok",
+    "pending_card",
     "pick_by_horizon",
     "require_card",
     "resolve",
