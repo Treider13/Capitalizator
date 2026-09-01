@@ -165,6 +165,32 @@ class Knowledge:
             self._cx.close()
             self._cx = None
 
+    def meta(self, key: str) -> str | None:
+        if self._cx is None:
+            return None
+        if not key or contains_advice(key):
+            raise ValueError("meta key refused")
+        row = self._cx.execute("SELECT v FROM meta WHERE k = ?", (key,)).fetchone()
+        if row is None:
+            return None
+        return str(row["v"])
+
+    def set_meta(self, key: str, value: str) -> None:
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        if not key or contains_advice(key) or contains_advice(value):
+            raise ValueError("meta must not advise")
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            self._cx.execute(
+                "INSERT OR REPLACE INTO meta(k, v) VALUES (?, ?)",
+                (key, value),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+
     def counts(self) -> dict[str, int]:
         if self._cx is None:
             return dict(EMPTY_COUNTS)
@@ -366,6 +392,8 @@ class Knowledge:
         if self._cx is not None:
             for row in self._cx.execute("SELECT day, kind, body FROM reports"):
                 parts.extend(str(row[k]) for k in row.keys())
+            for row in self._cx.execute("SELECT k, v FROM meta"):
+                parts.extend((str(row["k"]), str(row["v"])))
         for link in self.links():
             parts.append(link.payload)
         return "\n".join(parts)

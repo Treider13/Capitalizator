@@ -74,6 +74,9 @@ class Registry:
         self._zones: dict[str, Zone] = {}
         self.chain = HashChain()
 
+    def zone(self, zone_id: str) -> Zone:
+        return self._zones[zone_id]
+
     def on_trade(self, trade: MarketEvent, zones: Sequence[Zone]) -> list[Touch]:
         if trade.stream != "trades":
             raise ValueError("on_trade expects stream=trades")

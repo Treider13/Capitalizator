@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from capitalizator.screener.universe import load_universe
 from capitalizator.types import MarketEvent, require_utc
 
 
@@ -100,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-unmarked-gap-s", type=float, required=True)
     args = parser.parse_args(argv)
     if args.universe:
+        from capitalizator.screener.universe import load_universe
+
         universe = load_universe(Path(args.universe))
         spans: list[float] = []
         for symbol in universe.symbols:

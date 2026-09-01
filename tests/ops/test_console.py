@@ -1,9 +1,10 @@
-"""Laptop console: read-only, empty honest, no advice, no signer."""
+"""Laptop console: GET plus contour POST. No orders. No signer."""
 
 from __future__ import annotations
 
 import json
 import threading
+from datetime import UTC, datetime, timedelta
 from http.client import HTTPConnection
 from http.server import HTTPServer
 from pathlib import Path
@@ -13,7 +14,10 @@ import pytest
 import capitalizator.ops.console as console_pkg
 from capitalizator.ops.console import ConsoleApp, _handler, desk_snapshot, render_html
 from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.phase import trading_mode
 from capitalizator.ops.vault import init_vault
+from capitalizator.recorder.sink_parquet import ParquetSink
+from capitalizator.types import MarketEvent
 
 
 def test_empty_snapshot_is_honest(tmp_path: Path) -> None:
@@ -21,6 +25,10 @@ def test_empty_snapshot_is_honest(tmp_path: Path) -> None:
     open_knowledge(vault).close()
     snap = desk_snapshot(vault)
     assert snap["trading_mode"] == "off"
+    assert snap["contour"] == "off"
+    assert snap["hours24"] is False
+    assert snap["hours24_span_s"] is None
+    assert snap["can_enable"] is False
     assert snap["n_episode"] == 0
     assert snap["n_hash"] == 0
     assert snap["parquet_files"] == 0
@@ -40,6 +48,8 @@ def test_html_has_no_advice(tmp_path: Path) -> None:
     low = page.lower()
     assert "сделок нет" in low
     assert "торги с консоли нельзя" in low
+    assert '<button type="submit" disabled>Включить контур</button>' in page
+    assert "суток ленты нет" in low
     for word in ("лонг", "шорт", "купи", "продай", "завтра"):
         assert word not in low
 
@@ -80,6 +90,21 @@ def test_http_get_and_post_readonly(tmp_path: Path) -> None:
         conn = HTTPConnection(host, port, timeout=2)
         conn.request("POST", "/order", body="{}", headers={"Content-Type": "application/json"})
         assert conn.getresponse().status == 405
+        conn.close()
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/contour",
+            body='{"action":"on"}',
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        assert resp.status == 409
+        denied = json.loads(resp.read().decode())
+        assert denied["ok"] is False
+        assert denied["contour"] == "off"
+        assert denied["hours24"] is False
+        assert denied["trading_mode"] == "off"
         conn.close()
         conn = HTTPConnection(host, port, timeout=2)
         conn.request("PUT", "/api/status", body="{}", headers={"Content-Type": "application/json"})
@@ -156,3 +181,74 @@ def test_snapshot_refuses_tape_symlink(tmp_path: Path) -> None:
     (vault.tape / "leak.parquet").symlink_to(target)
     with pytest.raises(ValueError, match="symlink"):
         desk_snapshot(vault)
+
+
+def _hours24_tape(tape: Path) -> None:
+    start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
+    end = start + timedelta(hours=24)
+
+    def ev(stream: str, ts: datetime, payload: dict) -> MarketEvent:
+        return MarketEvent(
+            stream=stream,
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=ts,
+            recv_ts=ts,
+            seq=None,
+            payload=payload,
+        )
+
+    sink = ParquetSink(tape)
+    sink.write(ev("trades", start, {"px": "1", "qty": "0.001", "side": "buy"}))
+    sink.write(ev("trades", end, {"px": "1", "qty": "0.001", "side": "buy"}))
+    sink.write(
+        ev(
+            "gap",
+            start,
+            {"ts_from": start.isoformat(), "ts_to": end.isoformat()},
+        )
+    )
+
+
+def test_http_enable_after_hours24(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    _hours24_tape(vault.tape)
+    page = render_html(vault)
+    assert '<button type="submit">Включить контур</button>' in page
+    assert '<button type="submit" disabled>' not in page
+    app = ConsoleApp(vault)
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/contour",
+            body='{"action":"on"}',
+            headers={"Content-Type": "application/json"},
+        )
+        resp = conn.getresponse()
+        assert resp.status == 200
+        payload = json.loads(resp.read().decode())
+        assert payload["ok"] is True
+        assert payload["contour"] == "on"
+        assert payload["trading_mode"] == "off"
+        conn.close()
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("GET", "/api/status")
+        status = json.loads(conn.getresponse().read().decode())
+        assert status["contour"] == "on"
+        assert status["trading_mode"] == "off"
+        assert "vps" not in status
+        conn.close()
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("POST", "/order", body="{}", headers={"Content-Type": "application/json"})
+        assert conn.getresponse().status == 405
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert trading_mode() == "off"
