@@ -209,6 +209,8 @@ class DeskLoop:
             self.btc.bars.append(bar)
         if st.last_touch is None:
             return []
+        if bar.tf != self.config.working_tf:
+            return []
         return self._eval_cav_and_jury(st, bar)
 
     def on_trade(self, trade: MarketEvent, zones: list[Zone]) -> list[dict[str, Any]]:

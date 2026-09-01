@@ -81,9 +81,10 @@ def consume_tape(
             continue
         seen.add(key)
         if event.stream == "trades":
-            _close_due_bars(desk, event.symbol, event.exchange_ts, tf)
+            _close_due_bars(desk, event.symbol, event.exchange_ts)
             st = desk.state_for(event.symbol)
-            built = engine.build(event.symbol, event.exchange_ts, st.bars)
+            work = [b for b in st.bars if b.tf == tf]
+            built = engine.build(event.symbol, event.exchange_ts, work)
             zones = list(extra_zones) + built
             desk.on_event(event, zones)
         else:
@@ -91,12 +92,15 @@ def consume_tape(
         n += 1
     if now is not None:
         for symbol in list(desk.symbols):
-            _close_due_bars(desk, symbol, now, tf)
+            _close_due_bars(desk, symbol, now)
     return n
 
 
-def _close_due_bars(desk: DeskLoop, symbol: str, now: datetime, tf: str) -> None:
+def _close_due_bars(desk: DeskLoop, symbol: str, now: datetime) -> None:
+    """Close working TF first, then H4 and D1. CAV is the 15m vote (§6.3/§6.5)."""
+    tfs = (desk.config.working_tf, desk.config.htf, desk.config.htf_d1)
     st = desk.state_for(symbol)
-    already = {b.open_ts for b in st.bars if b.tf == tf}
-    for bar in closed_bars_from_trades(st.trades, symbol=symbol, tf=tf, now=now, already=already):
-        desk.on_bar_close(bar)
+    for tf in tfs:
+        already = {b.open_ts for b in st.bars if b.tf == tf}
+        for bar in closed_bars_from_trades(st.trades, symbol=symbol, tf=tf, now=now, already=already):
+            desk.on_bar_close(bar)
