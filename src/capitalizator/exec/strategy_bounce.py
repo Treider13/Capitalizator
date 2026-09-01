@@ -327,6 +327,7 @@ class BounceStrategy:
             stop=stop,
             tp=tp,
             tag=tag,
+            size_mult=macro.size_mult,
         )
         self.budget.on_intent()
         return intent

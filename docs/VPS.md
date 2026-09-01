@@ -12,8 +12,8 @@
 6. Рекордер: `--minutes` + `--data-root` (без JSONL — живая лента). Сокет инжектируется на VPS.
 7. Подписка: trades + book + funding + OI на 24 символа. Gap → resync, глубину не выдумывать.
 8. Консоль: `127.0.0.1:8082`, туннель `ssh -L 8082:127.0.0.1:8082`. `POST /order` = 405.
-9. Signer — отдельный процесс. Desk пишет `intent_queue`. Ключ только у signer.
-10. Dead-man 30 с, reconcile 60 с. Ночной replay + daily report + overlay. Карточка-черновик: 5–7 pending, вердикт не от LLM.
+9. Signer — отдельный процесс. Desk пишет `intent_queue`. Ключ только у signer (`secrets/bybit_api_key`, `bybit_api_secret`). Старт: withdraw off (иначе код 2) + testnet hello (лимит далеко от mid + cancel).
+10. Watcher: `python -m capitalizator.signer.watch --userdir … --serve`. Читает `signer_heartbeat` в SQLite; тишина >90 с → `cancel_all`. Dead-man 30 с внутри signer, reconcile 60 с. Ночной replay + daily report + overlay. Карточка-черновик: 5–7 pending, вердикт не от LLM.
 
 ## Не ставить в первый релиз
 

@@ -25,6 +25,13 @@ SendFn = Callable[[dict[str, Any]], dict[str, Any]]
 SENT = frozenset({"sent", "accepted", "ok"})
 HEARTBEAT_S = 30
 RECONCILE_S = 60
+META_HEARTBEAT = "signer_heartbeat"
+
+
+def write_heartbeat(knowledge: Knowledge, now: datetime) -> None:
+    """SQLite beat for the external watcher. Survives SIGKILL of this process."""
+    require_utc(now)
+    knowledge.set_meta(META_HEARTBEAT, now.isoformat())
 
 
 def unsigned_from_intent(
@@ -39,6 +46,9 @@ def unsigned_from_intent(
     qty = payload.get("qty")
     if qty is None:
         qty = "0.001"
+    qty = Decimal(str(qty)) * Decimal(str(payload.get("size_mult") or "1"))
+    if qty <= 0:
+        raise ValueError("qty/size_mult must be > 0")
     limit = payload.get("limit_px", payload.get("entry"))
     if limit is None:
         raise ValueError("limit/entry required")
@@ -46,7 +56,7 @@ def unsigned_from_intent(
     return UnsignedIntent(
         symbol=str(payload["symbol"]),
         side=payload["side"],
-        qty=Decimal(str(qty)),
+        qty=qty,
         limit_px=Decimal(str(limit)),
         stop_px=Decimal(str(stop)),
         tp_px=None if tp is None else Decimal(str(tp)),
@@ -140,6 +150,7 @@ def serve_loop(
         require_utc(when)
         mode = read_user_mode(vault)
         dead.beat(when)
+        write_heartbeat(knowledge, when)
         if mode in {"demo", "live"}:
             drain_validated(knowledge, send, user_mode=mode, now=when)
         dead.tick(when)
