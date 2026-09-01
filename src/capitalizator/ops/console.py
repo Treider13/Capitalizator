@@ -37,6 +37,7 @@ def _parquet_counts(tape: Path) -> tuple[int, int]:
     if not tape.is_dir():
         return 0, 0
     files = [path for path in iter_regular_files(tape) if path.suffix == ".parquet"]
+    readable = 0
     rows = 0
     if files:
         import os
@@ -46,11 +47,15 @@ def _parquet_counts(tape: Path) -> tuple[int, int]:
         for path in files:
             fd = open_regular(path)
             with os.fdopen(fd, "rb") as fh:
-                meta = pq.ParquetFile(fh).metadata
+                try:
+                    meta = pq.ParquetFile(fh).metadata
+                except (OSError, ValueError):
+                    continue
             if meta is None:
-                raise ValueError(f"parquet metadata missing: {path}")
+                continue
+            readable += 1
             rows += int(meta.num_rows)
-    return len(files), rows
+    return readable, rows
 
 
 def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:

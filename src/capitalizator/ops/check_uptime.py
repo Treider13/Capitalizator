@@ -42,9 +42,12 @@ def load_events(root: Path, *, symbol: str) -> list[MarketEvent]:
     for path in root.rglob("*.parquet"):
         if symbol not in path.parts:
             continue
-        table = pq.ParquetFile(path).read()
+        try:
+            table = pq.ParquetFile(path).read()
+        except (OSError, ValueError):
+            continue
         for row in table.to_pylist():
-            if row["symbol"] != symbol:
+            if row.get("symbol") != symbol:
                 continue
             event = parse_event_row(row)
             if event is not None:

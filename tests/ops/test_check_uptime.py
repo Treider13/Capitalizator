@@ -201,6 +201,52 @@ def test_load_events_skips_unreadable_rows(tmp_path: Path) -> None:
     assert [e.stream for e in loaded] == ["trades", "trades"]
 
 
+def test_load_events_skips_corrupt_file(tmp_path: Path) -> None:
+    dest = tmp_path / "BTCUSDT" / "ok.parquet"
+    dest.parent.mkdir(parents=True)
+    start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
+    end = start + timedelta(seconds=60)
+    table = pa.Table.from_pylist(
+        [
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": start,
+                "recv_ts": start,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+            {
+                "stream": "trades",
+                "exchange": "bybit",
+                "symbol": "BTCUSDT",
+                "exchange_ts": end,
+                "recv_ts": end,
+                "seq": None,
+                "payload_json": '{"px":"1","qty":"0.001","side":"buy"}',
+            },
+        ],
+        schema=SCHEMA,
+    )
+    pq.write_table(table, dest)
+    (tmp_path / "BTCUSDT" / "broken.parquet").write_bytes(b"not parquet")
+    loaded = load_events(tmp_path, symbol="BTCUSDT")
+    assert [e.stream for e in loaded] == ["trades", "trades"]
+    assert main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--symbol",
+            "BTCUSDT",
+            "--hours",
+            str(60 / 3600),
+            "--max-unmarked-gap-s",
+            "60",
+        ]
+    ) == 0
+
+
 def test_cli_reads_parquet(tmp_path: Path) -> None:
     sink = ParquetSink(tmp_path)
     for ev in [_trade(s) for s in range(0, 61)]:

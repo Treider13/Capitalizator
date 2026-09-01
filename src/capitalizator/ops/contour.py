@@ -68,10 +68,12 @@ def load_tape_events(vault: Vault, *, symbol: str) -> list[MarketEvent]:
         fh = os.fdopen(fd, "rb")
         try:
             table = pq.ParquetFile(fh).read()
+        except (OSError, ValueError):
+            continue
         finally:
             fh.close()
         for row in table.to_pylist():
-            if row["symbol"] != symbol:
+            if row.get("symbol") != symbol:
                 continue
             event = parse_event_row(row)
             if event is not None:

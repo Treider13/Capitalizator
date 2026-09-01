@@ -210,6 +210,23 @@ def _hours24_tape(tape: Path) -> None:
     )
 
 
+def test_desk_snapshot_skips_corrupt_parquet(tmp_path: Path) -> None:
+    """A half-written .parquet must not 500 the desk or hide a green day."""
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    _hours24_tape(vault.tape)
+    broken = vault.tape / "BTCUSDT" / "broken.parquet"
+    broken.parent.mkdir(parents=True, exist_ok=True)
+    broken.write_bytes(b"not parquet")
+    snap = desk_snapshot(vault)
+    assert snap["hours24"] is True
+    assert snap["can_enable"] is True
+    assert snap["parquet_files"] == 3
+    assert snap["parquet_rows"] == 3
+    page = render_html(vault)
+    assert '<button type="submit">Включить контур</button>' in page
+
+
 def test_http_enable_after_hours24(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     open_knowledge(vault).close()

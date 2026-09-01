@@ -288,6 +288,22 @@ def test_enable_junk_parquet_row_does_not_block_green_day(tmp_path: Path) -> Non
     assert trading_mode() == "off"
 
 
+def test_enable_corrupt_parquet_file_does_not_block_green_day(tmp_path: Path) -> None:
+    """A leftover half-written .parquet must not crash the button."""
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    _write_hours24(vault.tape)
+    broken = vault.tape / "BTCUSDT" / "broken.parquet"
+    broken.parent.mkdir(parents=True, exist_ok=True)
+    broken.write_bytes(b"not parquet")
+    loaded = load_tape_events(vault, symbol="BTCUSDT")
+    assert sorted(e.stream for e in loaded) == ["gap", "trades", "trades"]
+    out = enable(vault)
+    assert out["ok"] is True
+    assert out["contour"] == "on"
+    assert trading_mode() == "off"
+
+
 def test_enable_junk_gap_json_is_not_a_cover(tmp_path: Path) -> None:
     """Broken gap JSON is silence, not a marked day."""
     vault = init_vault(tmp_path / "desk")
