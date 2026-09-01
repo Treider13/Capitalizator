@@ -104,6 +104,51 @@ def test_foreign_symbol_or_tf_bar_is_noise() -> None:
     assert label(ZONE, hourly, t=T, htf_bias="box") == "NOISE"
 
 
+def test_matching_hourly_or_eth_zone_still_rejects() -> None:
+    """Filter is bar vs zone, not a hardcoded 15m-BTC-only CAV."""
+    hourly_zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1h",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    eth_zone = Zone.create(
+        symbol="ETHUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+    )
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+    )
+    assert label(hourly_zone, hourly, t=T, htf_bias="box") == "REJECT"
+    assert label(eth_zone, eth, t=T, htf_bias="box") == "REJECT"
+    assert label(hourly_zone, eth, t=T, htf_bias="box") == "NOISE"
+
+
 def test_close_beyond_support_is_through() -> None:
     bar = _bar(low="99.5", high="100.1", close="99.8")
     assert label(ZONE, bar, t=T, htf_bias="box") == "THROUGH"
