@@ -543,6 +543,53 @@ def test_plus9_close_ts_is_closed_at_utc_noon() -> None:
     assert last_gap_segment(hist, current, t=t) == hist
 
 
+def test_plus9_prior_completes_stagnant() -> None:
+    """+9 16:30 prior is 07:30Z. Clock 16:30 > 08:00 current would leave only four same closes."""
+    plus9 = timezone(timedelta(hours=9))
+    t = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    start = datetime(2026, 8, 30, 6, 30, tzinfo=UTC)
+    hist = []
+    for i in range(3):
+        ts = start + timedelta(minutes=15 * i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("100"),
+                high=Decimal("101"),
+                low=Decimal("99"),
+                close=Decimal("100"),
+            )
+        )
+    off = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=plus9),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=plus9),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    current = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 7, 45, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 8, 0, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    assert off.close_ts.hour == 16
+    assert current.close_ts.hour == 8
+    assert off.close_ts < current.close_ts
+    assert classify_bar_quality(hist, current, t=t) == LIVE
+    assert classify_bar_quality(hist + [off], current, t=t) == STAGNANT
+
+
 def test_unclosed_zero_volume_is_live_not_illiquid() -> None:
     hist = [_bar(0, close="100", volume=Decimal("0"))]
     current = Bar(

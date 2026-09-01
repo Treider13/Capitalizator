@@ -579,6 +579,49 @@ def test_offset_now_does_not_see_later_utc_sample() -> None:
     assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist + [late]) is None
 
 
+def test_plus530_now_does_not_count_a_1200z_sample() -> None:
+    """+5:30 16:30 is 11:00Z. Hardcoded -3 would treat now as 13:30Z and unlock rank on 12:00Z prints."""
+    plus530 = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 8, 30, 16, 30, tzinfo=plus530)
+    hist = [_sample(i, "1") for i in range(19)]
+    late = WidthSample(
+        zone_id="z1",
+        ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        w_now=Decimal("1"),
+    )
+    assert now.astimezone(UTC) == datetime(2026, 8, 30, 11, 0, tzinfo=UTC)
+    assert now.hour == 16
+    assert late.ts.hour == 12
+    assert late.ts >= now
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist) is None
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist + [late]) is None
+
+
+def test_plus530_sample_is_a_prior_at_utc_noon() -> None:
+    """+5:30 16:30 sample is 11:00Z. Hardcoded -3 would place it at 13:30Z and drop the 20th prior."""
+    plus530 = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    hist = [
+        WidthSample(
+            zone_id="z1",
+            ts=datetime(2026, 8, 30, 8, 0, tzinfo=UTC) + timedelta(minutes=i),
+            w_now=Decimal("1"),
+        )
+        for i in range(19)
+    ]
+    off = WidthSample(
+        zone_id="z1",
+        ts=datetime(2026, 8, 30, 16, 30, tzinfo=plus530),
+        w_now=Decimal("1"),
+    )
+    assert off.ts.hour == 16
+    assert now.hour == 12
+    assert off.ts.astimezone(UTC) == datetime(2026, 8, 30, 11, 0, tzinfo=UTC)
+    assert off.ts < now
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist) is None
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist + [off]) == Decimal("1")
+
+
 def test_naive_width_sample_rejected() -> None:
     with pytest.raises(TypeError, match="naive"):
         WidthSample(zone_id="z1", ts=datetime(2026, 8, 30, 12, 0), w_now=Decimal("1"))

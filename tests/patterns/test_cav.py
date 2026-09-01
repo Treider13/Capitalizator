@@ -490,6 +490,55 @@ def test_plus9_close_ts_compresses_at_utc_noon() -> None:
     assert label(ZONE, bar, t=t, htf_bias="box", closed_bars=closed) == "COMPRESS"
 
 
+def test_plus9_prior_completes_compress() -> None:
+    """+9 16:30 prior is 07:30Z. Clock 16:30 > 08:00 current would leave 14 bars and DRIFT."""
+    plus9 = timezone(timedelta(hours=9))
+    t = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    start = datetime(2026, 8, 30, 3, 45, tzinfo=UTC)
+    closed = []
+    for i in range(14):
+        ts = start + timedelta(minutes=15 * i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    off = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=plus9),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=plus9),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 7, 45, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 8, 0, tzinfo=UTC),
+        open=Decimal("100.10"),
+        high=Decimal("100.15"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+    )
+    assert off.close_ts.hour == 16
+    assert bar.close_ts.hour == 8
+    assert off.close_ts < bar.close_ts
+    assert len(prior_same_tf(closed, bar, t=t)) == 14
+    assert len(prior_same_tf(closed + [off], bar, t=t)) == 15
+    assert label(ZONE, bar, t=t, htf_bias="box", closed_bars=closed) == "DRIFT"
+    assert label(ZONE, bar, t=t, htf_bias="box", closed_bars=closed + [off]) == "COMPRESS"
+
+
 def test_offset_t_does_not_close_a_later_utc_bar() -> None:
     """+3 16:45 is 13:45Z. Clock 16:30<16:45 would COMPRESS a bar that is still open."""
     plus3 = timezone(timedelta(hours=3))
