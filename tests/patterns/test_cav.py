@@ -999,6 +999,42 @@ def test_gap_into_current_does_not_borrow_old_atr() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
 
 
+def test_gap_into_current_stays_drift_when_later_eth_hides_the_jump() -> None:
+    """15 BTC at 130 + later ETH at current open. Mixed last-prior has no jump → COMPRESS."""
+    closed = []
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("130"),
+                high=Decimal("131"),
+                low=Decimal("129"),
+                close=Decimal("130"),
+            )
+        )
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("100.10"),
+        high=Decimal("100.15"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+    )
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert closed[-1].close_ts < eth.close_ts < bar.close_ts
+    assert abs(bar.open - closed[-1].close) / closed[-1].close > Decimal("0.15")
+    assert abs(bar.open - eth.close) / eth.close < Decimal("0.15")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed + [eth]) == "DRIFT"
+
+
 def _hist(i: int, *, close: str = "101", volume: Decimal | None = None) -> Bar:
     ts = datetime(2026, 8, 30, 12, 0, tzinfo=UTC).replace(minute=i)
     return Bar(
@@ -1249,6 +1285,36 @@ def test_hourly_reject_does_not_go_noise_when_last_two_would_be_illiquid_only_vi
     assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "REJECT"
 
 
+def test_reject_stays_noise_when_foreign_volume_sits_between_two_zeros() -> None:
+    """BTC vol=0 + ETH vol=1 + reject vol=0. Mixed last-2 is LIVE. Same-series last-2 is ILLIQUID."""
+    neighbor = _hist(0, volume=Decimal("0"))
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
+
+
 def test_15m_zero_volume_does_not_noise_a_1h_reject() -> None:
     """Hardcoded `tf==15m` would ILLIQUID a 1h reject. Filter is current.tf."""
     hourly_zone = Zone.create(
@@ -1402,6 +1468,37 @@ def test_illiquid_would_be_through_is_noise() -> None:
     )
     assert label(ZONE, bar, t=T, htf_bias="box") == "THROUGH"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
+
+
+def test_through_does_not_go_noise_when_last_two_would_be_illiquid_only_via_eth_zero() -> None:
+    """15m BTC vol=1 + 15m ETH vol=0 + through vol=0. Mixed last-2 is ILLIQUID → NOISE."""
+    neighbor = _hist(0, volume=Decimal("1"))
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("99.8"),
+        high=Decimal("100.1"),
+        low=Decimal("99.5"),
+        close=Decimal("99.8"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box") == "THROUGH"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "THROUGH"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "THROUGH"
 
 
 def test_missing_volume_is_not_illiquid() -> None:

@@ -991,6 +991,111 @@ def test_last_gap_segment_empty_when_current_jumps() -> None:
     assert len(last_gap_segment(priors, cont, t=T)) == 15
 
 
+def test_foreign_symbol_last_in_time_does_not_hide_a_real_jump() -> None:
+    """15 BTC at 130 + later ETH at 100. Mixed last-prior has no jump. Same-series last does."""
+    priors = [_bar(i, close="130", open_="130") for i in range(15)]
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 50, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    current = _bar(17, close="100", open_="100")
+    assert priors[-1].close_ts < eth.close_ts < current.close_ts
+    assert abs(current.open - priors[-1].close) / priors[-1].close > JUMP_RATIO_15M
+    assert abs(current.open - eth.close) / eth.close < JUMP_RATIO_15M
+    assert last_gap_segment(priors, current, t=T) == []
+    assert last_gap_segment(priors + [eth], current, t=T) == []
+
+
+def test_foreign_tf_last_in_time_does_not_hide_a_real_jump() -> None:
+    """15 15m at 130 + later 1h at 100. Mixed last-prior has no jump. Same-tf last does."""
+    priors = [_bar(i, close="130", open_="130") for i in range(15)]
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 50, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 10, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    current = _bar(17, close="100", open_="100")
+    assert priors[-1].close_ts < hourly.close_ts < current.close_ts
+    assert abs(current.open - hourly.close) / hourly.close < JUMP_RATIO_15M
+    assert last_gap_segment(priors, current, t=T) == []
+    assert last_gap_segment(priors + [hourly], current, t=T) == []
+
+
+def test_eth_real_jump_is_not_hidden_by_later_btc() -> None:
+    """Hardcoded `history is BTC` keeps only BTC 100 — no jump into the ETH current."""
+    priors = [_bar(i, close="130", open_="130", symbol="ETHUSDT") for i in range(15)]
+    btc = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 50, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    current = _bar(17, close="100", open_="100", symbol="ETHUSDT")
+    assert priors[-1].close_ts < btc.close_ts < current.close_ts
+    assert last_gap_segment(priors, current, t=T) == []
+    assert last_gap_segment(priors + [btc], current, t=T) == []
+
+
+def test_hourly_real_jump_is_not_hidden_by_later_15m() -> None:
+    """Hardcoded `tf==15m` keeps only the late 15m 100 — no jump into the 1h current."""
+    priors = []
+    start = datetime(2026, 8, 29, 0, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start + timedelta(hours=i)
+        priors.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ts,
+                close_ts=ts + timedelta(hours=1),
+                open=Decimal("130"),
+                high=Decimal("131"),
+                low=Decimal("129"),
+                close=Decimal("130"),
+            )
+        )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 15, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    current = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    assert priors[-1].close_ts < foreign.close_ts < current.close_ts
+    assert current.close_ts < T
+    assert abs(current.open - priors[-1].close) / priors[-1].close > JUMP_RATIO_15M
+    assert last_gap_segment(priors, current, t=T) == []
+    assert last_gap_segment(priors + [foreign], current, t=T) == []
+
+
 def test_wrong_tf_zero_volume_is_not_illiquid() -> None:
     """One 1h zero-vol bar closed before current would be illiquid if tf filter dropped."""
     ts = datetime(2026, 8, 29, 0, 0, tzinfo=UTC)
@@ -1055,6 +1160,17 @@ def test_illiquid_last_two_does_not_use_foreign_symbol_zero_as_neighbor() -> Non
     ) == ILLIQUID
 
 
+def test_illiquid_last_two_ignores_foreign_symbol_volume_between_zeros() -> None:
+    """BTC vol=0 + ETH vol=1 + current BTC vol=0. Mixed last-2 is vol=1 + 0 → LIVE."""
+    hist = [
+        _bar(0, close="100", volume=Decimal("0")),
+        _bar(1, close="100", symbol="ETHUSDT", volume=Decimal("1")),
+    ]
+    current = _bar(2, close="101", volume=Decimal("0"))
+    assert classify_bar_quality([hist[0]], current, t=T) == ILLIQUID
+    assert classify_bar_quality(hist, current, t=T) == ILLIQUID
+
+
 def test_illiquid_last_two_does_not_fill_none_volume_with_foreign_zero() -> None:
     """Same-tf neighbor volume=None is not a zero. Mixed last-2 is ETH 0 + current 0."""
     hist = [
@@ -1065,6 +1181,78 @@ def test_illiquid_last_two_does_not_fill_none_volume_with_foreign_zero() -> None
     assert hist[0].volume is None
     assert classify_bar_quality([hist[0]], current, t=T) == LIVE
     assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
+def test_illiquid_last_two_ignores_foreign_tf_volume_between_zeros() -> None:
+    """15m vol=0 + 1h vol=1 closing after it + current 15m vol=0. Mixed last-2 is vol=1 + 0."""
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 12, 10, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 20, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+        volume=Decimal("1"),
+    )
+    hist = [_bar(0, close="100", volume=Decimal("0")), hourly]
+    current = _bar(2, close="101", volume=Decimal("0"))
+    assert _bar(0).close_ts < hourly.close_ts < current.close_ts
+    assert classify_bar_quality([hist[0]], current, t=T) == ILLIQUID
+    assert classify_bar_quality(hist, current, t=T) == ILLIQUID
+
+
+def test_eth_illiquid_last_two_ignores_btc_volume_between_zeros() -> None:
+    """Hardcoded `history is BTC` takes BTC vol=1 + ETH current vol=0 as last-2 → LIVE."""
+    hist = [
+        _bar(0, close="100", symbol="ETHUSDT", volume=Decimal("0")),
+        _bar(1, close="100", volume=Decimal("1")),
+    ]
+    current = _bar(2, close="101", symbol="ETHUSDT", volume=Decimal("0"))
+    assert classify_bar_quality([hist[0]], current, t=T) == ILLIQUID
+    assert classify_bar_quality(hist, current, t=T) == ILLIQUID
+
+
+def test_hourly_illiquid_last_two_ignores_15m_volume_between_zeros() -> None:
+    """Hardcoded `tf==15m` takes 15m vol=1 + 1h current vol=0 as last-2 → LIVE."""
+    neighbor = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 0, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+        volume=Decimal("0"),
+    )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 13, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 15, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+        volume=Decimal("1"),
+    )
+    current = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 13, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 14, 15, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < current.close_ts
+    assert current.close_ts < T
+    assert classify_bar_quality([neighbor], current, t=T) == ILLIQUID
+    assert classify_bar_quality([neighbor, foreign], current, t=T) == ILLIQUID
 
 
 def test_illiquid_last_two_does_not_use_foreign_tf_zero_as_neighbor() -> None:

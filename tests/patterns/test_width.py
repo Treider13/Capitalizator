@@ -650,6 +650,27 @@ def test_fourteen_hourly_and_one_15m_do_not_make_width() -> None:
     assert width_now_from_history(hourly, fourteen + [foreign], t=NOW) is None
 
 
+def test_fifteen_btc_lose_width_when_later_eth_hides_a_real_jump() -> None:
+    """15 BTC at 130 + later ETH at current open. Mixed last-prior has no jump and journals width."""
+    fifteen = [_bar(i, open_="130", close="130", high="131", low="129") for i in range(15)]
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    bar = _bar(20, high="100.2", low="100.1")
+    assert fifteen[-1].close_ts < eth.close_ts < bar.close_ts
+    assert abs(bar.open - fifteen[-1].close) / fifteen[-1].close > Decimal("0.15")
+    assert abs(bar.open - eth.close) / eth.close < Decimal("0.15")
+    assert width_now_from_history(bar, fifteen, t=NOW) is None
+    assert width_now_from_history(bar, fifteen + [eth], t=NOW) is None
+
+
 def test_fifteen_btc_keep_width_when_later_eth_looks_like_a_jump() -> None:
     """15 BTC + later ETH at 80. Mixed last-prior jumps into current and empties ATR."""
     fifteen = [_bar(i) for i in range(15)]
