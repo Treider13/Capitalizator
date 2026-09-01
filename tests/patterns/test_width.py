@@ -176,6 +176,44 @@ def test_hourly_history_does_not_make_width() -> None:
     assert width_now_from_history(bar, hourly, t=NOW) is None
 
 
+def test_width_uses_last_atr_window_not_the_first() -> None:
+    """5 wide + 15 tight: first-15 ATR is 60/14. Last 14 TRs are 2 — w_now must be 0.1/2."""
+    start = T0
+    hist = []
+    for i in range(5):
+        ts = start + timedelta(minutes=15 * i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("100"),
+                high=Decimal("110"),
+                low=Decimal("100"),
+                close=Decimal("100"),
+            )
+        )
+    for i in range(5, 20):
+        ts = start + timedelta(minutes=15 * i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("100"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("100"),
+            )
+        )
+    bar = _bar(21, high="100.2", low="100.1", open_="100.15", close="100.15")
+    assert len(last_gap_segment(hist, bar, t=NOW)) == 20
+    assert atr(hist[:15]) == Decimal("60") / Decimal("14")
+    assert width_now_from_history(bar, hist, t=NOW) == Decimal("0.1") / Decimal("2")
+
+
 def test_down_open_gap_close_back_has_no_width() -> None:
     """Gap is the open, not the close. A 16% down open that closes back would keep ATR if close-to-close."""
     hist = [_bar(i, open_="100", close="100") for i in range(15)]

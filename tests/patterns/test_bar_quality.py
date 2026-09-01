@@ -169,6 +169,45 @@ def test_atr_needs_fifteen_bars() -> None:
     assert atr(bars) == Decimal("2")
 
 
+def test_atr_uses_the_last_window() -> None:
+    """Identical-TR series does not lock last-vs-first. Five wide bars at the start must not enter ATR."""
+    wide = []
+    tight = []
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    for i in range(5):
+        ts = start + timedelta(minutes=15 * i)
+        wide.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("100"),
+                high=Decimal("110"),
+                low=Decimal("100"),
+                close=Decimal("100"),
+            )
+        )
+    for i in range(5, 20):
+        ts = start + timedelta(minutes=15 * i)
+        tight.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("100"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("100"),
+            )
+        )
+    series = wide + tight
+    assert len(series) == 20
+    assert atr(series[:15]) == Decimal("60") / Decimal("14")
+    assert atr(series) == Decimal("2")
+
+
 def test_negative_volume_rejected() -> None:
     with pytest.raises(ValueError, match="volume"):
         _bar(0, volume=Decimal("-1"))
