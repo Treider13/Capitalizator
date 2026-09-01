@@ -5,11 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from capitalizator.exchange.client import TESTNET_REST, ExchangeClient
+from capitalizator.exchange.client import MAINNET_REST, TESTNET_REST, ExchangeClient
 from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.product import set_user_mode
 from capitalizator.ops.vault import init_vault, write_regular_text
 from capitalizator.signer.process import HEARTBEAT_S, write_heartbeat
-from capitalizator.signer.watch import WATCH_STALE_S, watcher_tick
+from capitalizator.signer.watch import WATCH_STALE_S, exchange_cancel_all, watcher_tick
 
 NOW = datetime(2026, 8, 31, 14, 10, tzinfo=UTC)
 
@@ -81,3 +82,32 @@ def test_watcher_cancel_all_hits_exchange(tmp_path: Path) -> None:
     )
     assert any("/v5/order/cancel-all" in url for url in http.calls)
     assert http.calls[0].startswith(TESTNET_REST)
+
+
+def test_exchange_cancel_all_when_mode_off_still_hits_testnet(tmp_path: Path, monkeypatch) -> None:
+    """Watcher often boots at user_mode=off. SIGKILL leftover must still cancel testnet."""
+    vault = init_vault(tmp_path / "desk")
+    write_regular_text(vault.secrets / "bybit_api_key", "test-key\n")
+    write_regular_text(vault.secrets / "bybit_api_secret", "test-secret\n")
+    http = FakeHttp()
+    monkeypatch.setattr(
+        "capitalizator.exchange.client.ExchangeClient.from_vault",
+        classmethod(lambda cls, root, **kw: ExchangeClient(key="k", secret="s", http=http)),
+    )
+    assert exchange_cancel_all(vault) == "demo"
+    assert http.calls[0].startswith(TESTNET_REST)
+    assert "/v5/order/cancel-all" in http.calls[0]
+
+
+def test_exchange_cancel_all_live_hits_mainnet(tmp_path: Path, monkeypatch) -> None:
+    vault = init_vault(tmp_path / "desk")
+    write_regular_text(vault.secrets / "bybit_api_key", "test-key\n")
+    write_regular_text(vault.secrets / "bybit_api_secret", "test-secret\n")
+    set_user_mode(vault, "live", ack=True)
+    http = FakeHttp()
+    monkeypatch.setattr(
+        "capitalizator.exchange.client.ExchangeClient.from_vault",
+        classmethod(lambda cls, root, **kw: ExchangeClient(key="k", secret="s", http=http)),
+    )
+    assert exchange_cancel_all(vault) == "live"
+    assert http.calls[0].startswith(MAINNET_REST)

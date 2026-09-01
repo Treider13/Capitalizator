@@ -49,6 +49,19 @@ def watcher_tick(
     return False
 
 
+def exchange_cancel_all(vault) -> str:
+    """Re-read mode. off/learn still cancel testnet leftovers after SIGKILL."""
+    from capitalizator.exchange.client import ExchangeClient
+
+    mode = read_user_mode(vault)
+    client = ExchangeClient.from_vault(vault)
+    if mode == "live":
+        client.cancel_all(user_mode="live")
+        return "live"
+    client.cancel_all(user_mode="demo")
+    return "demo"
+
+
 def serve_watch(
     *,
     knowledge: Knowledge,
@@ -76,15 +89,15 @@ def main(argv: list[str] | None = None) -> int:
     vault = init_vault(root) if args.init else load_vault(root)
     knowledge = open_knowledge(vault)
     try:
-        mode = read_user_mode(vault)
         fired = {"n": 0}
+        host_mode = {"v": None}
 
         def cancel() -> None:
             fired["n"] += 1
-            if mode in {"demo", "live"}:
-                from capitalizator.exchange.client import ExchangeClient
-
-                ExchangeClient.from_vault(vault).cancel_all(user_mode=mode)
+            try:
+                host_mode["v"] = exchange_cancel_all(vault)
+            except Exception:
+                host_mode["v"] = None
 
         if args.once or not args.serve:
             stale = watcher_tick(knowledge, cancel, now=datetime.now(tz=UTC))
@@ -94,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
                         "process": "watcher",
                         "stale": stale,
                         "cancelled": fired["n"],
+                        "host_mode": host_mode["v"],
                         "stale_s": WATCH_STALE_S,
                     },
                     ensure_ascii=False,
