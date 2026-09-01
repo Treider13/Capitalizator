@@ -1499,3 +1499,147 @@ def test_bar_closing_during_current_can_hide_a_real_jump() -> None:
     assert abs(current.open - mid.close) / mid.close > JUMP_RATIO_15M
     assert len(last_gap_segment(priors, current, t=T)) == 15
     assert last_gap_segment(priors + [mid], current, t=T) == []
+
+
+def test_illiquid_last_two_tiebreaks_equal_close_ts_by_open() -> None:
+    """Same close_ts: close-only sort is stable and keeps [vol1, vol0] — last-2 two zeros."""
+    close = datetime(2026, 8, 30, 12, 15, tzinfo=UTC)
+    early_zero = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+        volume=Decimal("0"),
+    )
+    late_vol = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 10, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    current = _bar(2, close="102", volume=Decimal("0"))
+    assert early_zero.close_ts == late_vol.close_ts
+    assert early_zero.open_ts < late_vol.open_ts
+    assert classify_bar_quality([late_vol, early_zero], current, t=T) == LIVE
+    assert classify_bar_quality([early_zero, late_vol], current, t=T) == LIVE
+
+
+def test_illiquid_last_two_tiebreaks_equal_close_ts_keeps_later_zero() -> None:
+    """Later-open zero is the neighbor. Close-only sort of [zero, vol1] would take the early vol=1."""
+    close = datetime(2026, 8, 30, 12, 15, tzinfo=UTC)
+    early_vol = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+        volume=Decimal("1"),
+    )
+    late_zero = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 10, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    current = _bar(2, close="102", volume=Decimal("0"))
+    assert early_vol.close_ts == late_zero.close_ts
+    assert classify_bar_quality([late_zero, early_vol], current, t=T) == ILLIQUID
+    assert classify_bar_quality([early_vol, late_zero], current, t=T) == ILLIQUID
+
+
+def test_stagnant_last_five_tiebreaks_equal_close_ts_by_open() -> None:
+    """Early-open 101 + later-open 100 share close_ts. Close-only [100, 101] puts 101 in last-5."""
+    close = datetime(2026, 8, 30, 12, 15, tzinfo=UTC)
+    early_break = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    late_same = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 10, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    later = [_bar(i, close="100") for i in range(1, 4)]
+    current = _bar(4, close="100")
+    assert early_break.close_ts == late_same.close_ts
+    assert early_break.close_ts < later[0].close_ts
+    assert classify_bar_quality([late_same, early_break, *later], current, t=T) == STAGNANT
+    assert classify_bar_quality([early_break, late_same, *later], current, t=T) == STAGNANT
+
+
+def test_illiquid_last_two_orders_by_close_not_open() -> None:
+    """Long bar closes last with volume. Open-order last-2 would be the earlier-close zero."""
+    long_vol = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    short_zero = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 45, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    current = _bar(17, close="102", volume=Decimal("0"))
+    assert short_zero.open_ts > long_vol.open_ts
+    assert short_zero.close_ts < long_vol.close_ts < current.close_ts
+    assert classify_bar_quality([long_vol, short_zero], current, t=T) == LIVE
+    assert classify_bar_quality([short_zero, long_vol], current, t=T) == LIVE
+
+
+def test_bar_closing_during_current_breaks_stagnant_last_five() -> None:
+    """4 same + mid different close during current. `< open_ts` would stagnate on the four + current."""
+    hist = [_bar(i, close="100") for i in range(4)]
+    current = _bar(17, close="100")
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    assert current.open_ts < mid.close_ts < current.close_ts
+    assert classify_bar_quality(hist, current, t=T) == STAGNANT
+    assert classify_bar_quality(hist + [mid], current, t=T) == LIVE

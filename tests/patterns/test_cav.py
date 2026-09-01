@@ -3521,3 +3521,126 @@ def test_compress_stays_drift_when_mid_bar_hides_a_real_jump() -> None:
     assert abs(bar.open - mid.close) / mid.close > Decimal("0.15")
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15() + [mid]) == "DRIFT"
+
+
+def test_reject_does_not_go_noise_when_equal_close_ts_last_two_need_open_tiebreak() -> None:
+    """Same close_ts [vol1, vol0] + reject vol=0. Close-only last-2 is two zeros → NOISE."""
+    close = datetime(2026, 8, 30, 16, 0, tzinfo=UTC)
+    early_zero = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    late_vol = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 50, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert early_zero.close_ts == late_vol.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box") == "REJECT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[late_vol, early_zero]) == "REJECT"
+
+
+def test_reject_stays_noise_when_equal_close_ts_later_open_is_the_zero() -> None:
+    """Later-open zero is the neighbor. Close-only [zero, vol1] would take early vol=1 → REJECT."""
+    close = datetime(2026, 8, 30, 16, 0, tzinfo=UTC)
+    early_vol = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    late_zero = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 50, tzinfo=UTC),
+        close_ts=close,
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert early_vol.close_ts == late_zero.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[late_zero, early_vol]) == "NOISE"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[early_vol, late_zero]) == "NOISE"
+
+
+def test_reject_does_not_go_noise_when_later_close_has_volume() -> None:
+    """Later close is later even if it opened first. Open-order last-2 is short zero + reject zero."""
+    long_vol = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    short_zero = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 45, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert short_zero.open_ts > long_vol.open_ts
+    assert short_zero.close_ts < long_vol.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[long_vol, short_zero]) == "REJECT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[short_zero, long_vol]) == "REJECT"
