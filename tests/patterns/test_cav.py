@@ -1422,6 +1422,94 @@ def test_reject_stays_noise_when_foreign_volume_sits_between_two_zeros() -> None
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
 
 
+def test_eth_reject_stays_noise_when_btc_volume_sits_between_two_zeros() -> None:
+    """Hardcoded `history is BTC` takes BTC vol=1 + ETH reject vol=0 as last-2 → REJECT."""
+    eth_zone = Zone.create(
+        symbol="ETHUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 0, 30, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    foreign = _hist(10, volume=Decimal("1"))
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < eth.close_ts
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
+
+
+def test_hourly_reject_stays_noise_when_15m_volume_sits_between_two_zeros() -> None:
+    """Hardcoded `tf==15m` takes 15m vol=1 + 1h reject vol=0 as last-2 → REJECT."""
+    hourly_zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1h",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 14, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 15, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < hourly.close_ts
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
+
+
 def test_15m_zero_volume_does_not_noise_a_1h_reject() -> None:
     """Hardcoded `tf==15m` would ILLIQUID a 1h reject. Filter is current.tf."""
     hourly_zone = Zone.create(
@@ -1667,6 +1755,186 @@ def test_through_stays_noise_when_foreign_volume_sits_between_two_zeros() -> Non
     assert label(ZONE, bar, t=T, htf_bias="box") == "THROUGH"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
+
+
+def test_eth_through_does_not_go_noise_when_last_two_would_be_illiquid_only_via_btc_zero() -> None:
+    """Hardcoded `history is BTC` takes BTC vol=0 + ETH through vol=0 as last-2 → NOISE."""
+    eth_zone = Zone.create(
+        symbol="ETHUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 0, 30, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    foreign = _hist(10, volume=Decimal("0"))
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("99.8"),
+        high=Decimal("100.1"),
+        low=Decimal("99.5"),
+        close=Decimal("99.8"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < eth.close_ts
+    assert label(eth_zone, eth, t=T, htf_bias="box") == "THROUGH"
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[neighbor]) == "THROUGH"
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "THROUGH"
+
+
+def test_eth_through_stays_noise_when_btc_volume_sits_between_two_zeros() -> None:
+    """Hardcoded `history is BTC` takes BTC vol=1 + ETH through vol=0 as last-2 → THROUGH."""
+    eth_zone = Zone.create(
+        symbol="ETHUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 0, 30, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    foreign = _hist(10, volume=Decimal("1"))
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("99.8"),
+        high=Decimal("100.1"),
+        low=Decimal("99.5"),
+        close=Decimal("99.8"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < eth.close_ts
+    assert label(eth_zone, eth, t=T, htf_bias="box") == "THROUGH"
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
+
+
+def test_hourly_through_does_not_go_noise_when_last_two_would_be_illiquid_only_via_15m_zero() -> None:
+    """Hardcoded `tf==15m` takes 15m vol=0 + 1h through vol=0 as last-2 → NOISE."""
+    hourly_zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1h",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 14, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 15, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("99.8"),
+        high=Decimal("100.1"),
+        low=Decimal("99.5"),
+        close=Decimal("99.8"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < hourly.close_ts
+    assert label(hourly_zone, hourly, t=T, htf_bias="box") == "THROUGH"
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor]) == "THROUGH"
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "THROUGH"
+
+
+def test_hourly_through_stays_noise_when_15m_volume_sits_between_two_zeros() -> None:
+    """Hardcoded `tf==15m` takes 15m vol=1 + 1h through vol=0 as last-2 → THROUGH."""
+    hourly_zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1h",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 14, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 15, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("99.8"),
+        high=Decimal("100.1"),
+        low=Decimal("99.5"),
+        close=Decimal("99.8"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < hourly.close_ts
+    assert label(hourly_zone, hourly, t=T, htf_bias="box") == "THROUGH"
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
 
 
 def test_compress_does_not_go_noise_when_last_two_would_be_illiquid_only_via_eth_zero() -> None:
