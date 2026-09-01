@@ -41,12 +41,22 @@ def test_equal_error_is_not_a_last_price_beat() -> None:
     assert hostile_exam(rows).beat_last_price == Decimal("0")
 
 
+def test_one_hit_one_miss_is_half() -> None:
+    rows = [
+        ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("12")),
+        ExamCase(pred=Decimal("9"), last=Decimal("10"), actual=Decimal("11")),
+    ]
+    assert hostile_exam(rows).direction_hit == Decimal("1") / Decimal("2")
+
+
 def test_zero_atr_is_excluded_from_residual() -> None:
     """atr=0 is not a divisor. Including it is ZeroDivision or a fake residual."""
     rows = [ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("0"))]
     assert hostile_exam(rows).residual_after_atr is None
     only_none = [ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=None)]
     assert hostile_exam(only_none).residual_after_atr is None
+    neg = [ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("-1"))]
+    assert hostile_exam(neg).residual_after_atr is None
 
 
 def test_residual_of_one_value_is_that_value() -> None:

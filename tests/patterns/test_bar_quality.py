@@ -140,6 +140,28 @@ def test_split_on_gaps_keeps_14pct() -> None:
     assert len(segs[0]) == 2
 
 
+def test_split_on_gaps_sorts_before_the_cut() -> None:
+    """List [116, 100]: down 16/116 < 15%, one segment if unsorted. Time order is a 16% up gap."""
+    early = _bar(0, close="100")
+    late = _bar(1, close="116", open_="116")
+    assert abs(late.open - early.close) / early.close > JUMP_RATIO_15M
+    assert abs(early.open - late.close) / late.close < JUMP_RATIO_15M
+    segs = split_on_gaps([late, early])
+    assert [len(s) for s in segs] == [1, 1]
+    assert segs[0] == [early]
+    assert segs[1] == [late]
+
+
+def test_atr_n_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="atr n"):
+        atr([_bar(0)], n=0)
+
+
+def test_jump_ratio_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="jump_ratio"):
+        split_on_gaps([_bar(0), _bar(1)], jump_ratio=Decimal("0"))
+
+
 def test_atr_needs_fifteen_bars() -> None:
     bars = [_bar(i) for i in range(14)]
     assert atr(bars) is None

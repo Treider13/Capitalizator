@@ -47,6 +47,7 @@ def test_width_now_is_range_over_atr() -> None:
     assert width_now(bar, Decimal("2")) == Decimal("1")
     assert width_now(bar, None) is None
     assert width_now(bar, Decimal("0")) is None
+    assert width_now(bar, Decimal("-1")) is None
 
 
 def test_width_from_history_uses_post_gap_segment() -> None:
