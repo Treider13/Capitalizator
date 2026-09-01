@@ -25,7 +25,9 @@ def _trade(second: int, *, symbol: str = "BTCUSDT") -> MarketEvent:
     )
 
 
-def _gap(start_s: int, end_s: int, *, in_payload: bool = True) -> MarketEvent:
+def _gap(
+    start_s: int, end_s: int, *, in_payload: bool = True, symbol: str = "BTCUSDT"
+) -> MarketEvent:
     start = datetime(2026, 8, 30, 13, 0, 0, tzinfo=UTC) + timedelta(seconds=start_s)
     end = datetime(2026, 8, 30, 13, 0, 0, tzinfo=UTC) + timedelta(seconds=end_s)
     payload: dict = {"missing_stream": "trades", "seq_from": 0, "seq_to": 0}
@@ -35,7 +37,7 @@ def _gap(start_s: int, end_s: int, *, in_payload: bool = True) -> MarketEvent:
     return MarketEvent(
         stream="gap",
         exchange="bybit",
-        symbol="BTCUSDT",
+        symbol=symbol,
         exchange_ts=start,
         recv_ts=end,
         seq=None,
@@ -64,6 +66,13 @@ def test_marked_hole_passes() -> None:
 def test_seq_gap_without_time_range_does_not_cover_silence() -> None:
     """GapDetector timestamps are 'noticed at', often 1s apart — not the hole."""
     events = [_trade(0), _trade(120), _gap(0, 120, in_payload=False)]
+    with pytest.raises(SystemExit, match="unmarked gap"):
+        check_uptime(events, hours=120 / 3600, max_unmarked_gap_s=10, symbol="BTCUSDT")
+
+
+def test_other_symbol_gap_does_not_cover() -> None:
+    """An ETH gap must not mark a BTC hole. hours24 inherits this law."""
+    events = [_trade(0), _trade(120), _gap(0, 120, symbol="ETHUSDT")]
     with pytest.raises(SystemExit, match="unmarked gap"):
         check_uptime(events, hours=120 / 3600, max_unmarked_gap_s=10, symbol="BTCUSDT")
 

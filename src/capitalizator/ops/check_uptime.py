@@ -78,6 +78,8 @@ def check_uptime(
     if span_s + 1e-9 < need:
         raise SystemExit(f"span {span_s}s < required {need}s")
     gaps = [e for e in events if e.stream == "gap"]
+    if symbol is not None:
+        gaps = [e for e in gaps if e.symbol == symbol]
     prev = trades[0]
     for cur in trades[1:]:
         hole = (cur.exchange_ts - prev.exchange_ts).total_seconds()

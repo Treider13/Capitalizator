@@ -155,6 +155,23 @@ def test_hours24_marked_day_is_green() -> None:
     assert span == 86400
 
 
+def test_hours24_eth_gap_does_not_green_btc() -> None:
+    """ETH silence is not a BTC day. The button must stay grey."""
+    end = T0 + timedelta(hours=24)
+    eth_gap = MarketEvent(
+        stream="gap",
+        exchange="bybit",
+        symbol="ETHUSDT",
+        exchange_ts=T0,
+        recv_ts=end,
+        seq=None,
+        payload={"ts_from": T0.isoformat(), "ts_to": end.isoformat()},
+    )
+    ok, span = hours24([_trade(T0), _trade(end), eth_gap])
+    assert ok is False
+    assert span == 86400
+
+
 def test_enable_refuses_without_hours24(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     open_knowledge(vault).close()

@@ -71,6 +71,8 @@ def load_tape_events(vault: Vault, *, symbol: str) -> list[MarketEvent]:
         finally:
             fh.close()
         for row in table.to_pylist():
+            if row["symbol"] != symbol:
+                continue
             events.append(
                 MarketEvent(
                     stream=row["stream"],
