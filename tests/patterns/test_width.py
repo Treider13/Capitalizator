@@ -582,6 +582,74 @@ def test_fourteen_btc_and_one_eth_do_not_make_width() -> None:
     assert width_now_from_history(bar, fourteen + [eth], t=NOW) is None
 
 
+def test_fourteen_eth_and_one_btc_do_not_make_width() -> None:
+    """14 ETH + 1 BTC is 15 bars. Counting every symbol would journal width on an ETH print."""
+    fourteen = []
+    for i in range(14):
+        ts = T0 + timedelta(minutes=15 * i)
+        fourteen.append(
+            Bar(
+                symbol="ETHUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    btc = _bar(16)
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 20),
+        close_ts=T0 + timedelta(minutes=15 * 21),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert fourteen[-1].close_ts < btc.close_ts < eth.close_ts
+    assert width_now_from_history(eth, fourteen, t=NOW) is None
+    assert width_now_from_history(eth, fourteen + [btc], t=NOW) is None
+
+
+def test_fourteen_hourly_and_one_15m_do_not_make_width() -> None:
+    """14 1h + 1 15m is 15 bars. Counting every tf would journal width on a 1h print."""
+    fourteen = []
+    start = datetime(2026, 8, 29, 0, 0, tzinfo=UTC)
+    for i in range(14):
+        ts = start + timedelta(hours=i)
+        fourteen.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ts,
+                close_ts=ts + timedelta(hours=1),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    foreign = _bar(16)
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 17, 30, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert fourteen[-1].close_ts < foreign.close_ts < hourly.close_ts
+    assert hourly.close_ts < NOW
+    assert width_now_from_history(hourly, fourteen, t=NOW) is None
+    assert width_now_from_history(hourly, fourteen + [foreign], t=NOW) is None
+
+
 def test_fifteen_btc_keep_width_when_later_eth_looks_like_a_jump() -> None:
     """15 BTC + later ETH at 80. Mixed last-prior jumps into current and empties ATR."""
     fifteen = [_bar(i) for i in range(15)]

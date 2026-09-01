@@ -1055,6 +1055,18 @@ def test_illiquid_last_two_does_not_use_foreign_symbol_zero_as_neighbor() -> Non
     ) == ILLIQUID
 
 
+def test_illiquid_last_two_does_not_fill_none_volume_with_foreign_zero() -> None:
+    """Same-tf neighbor volume=None is not a zero. Mixed last-2 is ETH 0 + current 0."""
+    hist = [
+        _bar(0, close="100", volume=None),
+        _bar(1, close="100", symbol="ETHUSDT", volume=Decimal("0")),
+    ]
+    current = _bar(2, close="101", volume=Decimal("0"))
+    assert hist[0].volume is None
+    assert classify_bar_quality([hist[0]], current, t=T) == LIVE
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
 def test_illiquid_last_two_does_not_use_foreign_tf_zero_as_neighbor() -> None:
     """15m vol=1 + 1h vol=0 closing after it + current 15m vol=0. Mixed last-2 is two zeros."""
     hourly = Bar(
