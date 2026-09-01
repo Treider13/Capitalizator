@@ -288,7 +288,8 @@ class BounceStrategy:
         ):
             return None
         side = "buy" if zone.side == "support" else "sell"
-        if idea == "failed_break":
+        if idea in _BREAK_IDEAS:
+            # Desk idea_side: break of support is a short, break of resistance a long.
             side = "sell" if zone.side == "support" else "buy"
         if snap.symbol != "BTCUSDT" and not self.btc_veto.allow(
             alt_side=side,
