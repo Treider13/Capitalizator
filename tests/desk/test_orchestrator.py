@@ -1,0 +1,250 @@
+"""One-pass orchestrator: fixture tape → touch → ZLG → CAV → jury → shadow → queue."""
+
+from __future__ import annotations
+
+import json
+import signal
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+
+from capitalizator.desk.__main__ import main, run_once, stop_on_signals
+from capitalizator.desk.loop import DeskLoop
+from capitalizator.memory.registry import Touch
+from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.product import mark_hello, read_user_mode, set_user_mode
+from capitalizator.ops.vault import init_vault
+from capitalizator.recorder.normalize import TradesNormalizer
+from capitalizator.recorder.sink_parquet import ParquetSink
+from capitalizator.types import MarketEvent
+from capitalizator.zones.model import Zone
+
+TICK = Decimal("0.1")
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "ws" / "btc_trades_100.jsonl"
+CREATED = datetime(2024, 8, 29, 12, 0, tzinfo=UTC)
+ZONE = Zone.create(
+    symbol="BTCUSDT",
+    tf="15m",
+    side="support",
+    lo=Decimal("64999"),
+    hi=Decimal("65010"),
+    method="prior_day_hl",
+    created_as_of=CREATED,
+)
+
+
+class _VerifiedDesk(DeskLoop):
+    """Product send needs a VERIFIED card. Tests stamp it at the live touch."""
+
+    def on_trade(self, trade: MarketEvent, zones: list[Zone]) -> list[dict]:
+        out = super().on_trade(trade, zones)
+        live = self.state_for(trade.symbol).last_touch
+        if live is not None:
+            self.registry._patch(
+                touch_id=live.touch_id, overwrite=True, bearing_verdict="VERIFIED"
+            )
+        return out
+
+
+def _load_trades() -> list[MarketEvent]:
+    recv = datetime(2024, 8, 30, 14, 50, tzinfo=UTC)
+    lines = FIXTURE.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 100
+    return [TradesNormalizer().normalize(json.loads(line), recv_ts=recv) for line in lines]
+
+
+def _book_events(first: MarketEvent) -> list[MarketEvent]:
+    """Matching L2 around the 65000 prints. The WS book fixture is 60000 — unusable here."""
+    ts = first.exchange_ts
+    snap = MarketEvent(
+        stream="snapshot",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=ts,
+        recv_ts=ts,
+        seq=1,
+        payload={"bids": [["65000.0", "20"]], "asks": [["65000.2", "20"]]},
+    )
+    add = MarketEvent(
+        stream="book_diff",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=ts + timedelta(milliseconds=100),
+        recv_ts=ts + timedelta(milliseconds=100),
+        seq=2,
+        payload={"bids": [["65000.0", "25"]], "asks": []},
+    )
+    return [snap, add]
+
+
+def _wick_and_recover(first: MarketEvent) -> list[MarketEvent]:
+    """Wick below the zone, then a print back inside so CAV is REJECT not THROUGH."""
+    wick_ts = first.exchange_ts + timedelta(seconds=20)
+    recover_ts = first.exchange_ts + timedelta(seconds=21)
+    return [
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=wick_ts,
+            recv_ts=wick_ts,
+            payload={"px": "64998", "qty": "0.001", "side": "sell"},
+        ),
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=recover_ts,
+            recv_ts=recover_ts,
+            payload={"px": "65002", "qty": "0.001", "side": "buy"},
+        ),
+    ]
+
+
+def _seed_history(desk: DeskLoop) -> None:
+    desk.registry._zones[ZONE.zone_id] = ZONE
+    for i in range(20):
+        desk.registry.touches.append(
+            replace(
+                Touch.create(
+                    zone_id=ZONE.zone_id,
+                    ts=CREATED + timedelta(seconds=i + 1),
+                    trade_px=Decimal("65000"),
+                    trade_qty=Decimal("1"),
+                ),
+                outcome="bounce",
+                cav_label="REJECT",
+                gesture="DEFEND",
+                tape_eaten=False,
+                btc_regime="box",
+            )
+        )
+
+
+def _desk(tmp_path: Path, *, user_mode: str = "demo") -> _VerifiedDesk:
+    vault = init_vault(tmp_path / "desk")
+    mark_hello(vault, ok=True)
+    if user_mode != "off":
+        set_user_mode(vault, user_mode, ack=True)
+    knowledge = open_knowledge(vault)
+    desk = _VerifiedDesk(
+        knowledge=knowledge,
+        user_mode=read_user_mode(vault),
+        tick_size=TICK,
+    )
+    _seed_history(desk)
+    return desk
+
+
+def test_play_100_trades_runs_full_chain(tmp_path: Path) -> None:
+    trades = _load_trades()
+    events = [*_book_events(trades[0]), *trades, *_wick_and_recover(trades[0])]
+    now = datetime(2024, 8, 30, 15, 0, tzinfo=UTC)
+    desk = _desk(tmp_path, user_mode="demo")
+    out = desk.play(events, extra_zones=(ZONE,), now=now)
+
+    live = [t for t in desk.registry.touches if t.ts >= trades[0].exchange_ts]
+    assert live, "orchestrator must open a touch from the 100-print fixture"
+    row = live[-1]
+    assert row.gesture is not None
+    assert row.cav_label is not None
+    assert row.jury is not None
+
+    kinds = {e.get("event") for e in out}
+    assert "armed" in kinds
+    assert "zlg" in kinds
+    assert "jury" in kinds
+
+    journal = desk.knowledge.get_journal_touch(row.touch_id)
+    assert journal is not None
+    assert journal["zlg_label"] == row.gesture
+    assert journal["cav_label"] == row.cav_label
+    assert journal["jury"] == row.jury
+    assert desk.shadow_writes
+    assert desk.shadow_writes[-1]["mode"] == "shadow"
+    assert desk.shadow_writes[-1]["sent"] is False
+    assert desk.shadow_writes[-1]["payload"]["touch_id"] == row.touch_id
+
+    jury_ev = next(e for e in out if e.get("event") == "jury")
+    if journal["jury"] == "ACCORD":
+        assert journal["shadow_would"] is True
+        assert jury_ev["sent"] is True
+        pending = desk.knowledge.pending_intents()
+        assert pending
+        payload = pending[0]["payload"]
+        assert payload["symbol"] == "BTCUSDT"
+        assert payload.get("stop") is not None
+    else:
+        assert journal["skip_reason"]
+        assert jury_ev["sent"] is False
+        assert desk.knowledge.pending_intents() == []
+
+
+def test_play_off_mode_writes_shadow_not_intent(tmp_path: Path) -> None:
+    trades = _load_trades()
+    events = [*_book_events(trades[0]), *trades, *_wick_and_recover(trades[0])]
+    now = datetime(2024, 8, 30, 15, 0, tzinfo=UTC)
+    desk = _desk(tmp_path, user_mode="off")
+    out = desk.play(events, extra_zones=(ZONE,), now=now)
+    assert desk.shadow_writes
+    jury = next(e for e in out if e.get("event") == "jury")
+    assert jury["sent"] is False
+    assert desk.knowledge.pending_intents() == []
+
+
+def test_run_once_reads_parquet_tape(tmp_path: Path) -> None:
+    trades = _load_trades()
+    vault = init_vault(tmp_path / "once")
+    sink = ParquetSink(vault.tape)
+    for event in [*_book_events(trades[0]), trades[0]]:
+        sink.write(event)
+    knowledge = open_knowledge(vault)
+    desk = run_once(
+        vault=vault,
+        knowledge=knowledge,
+        now=trades[0].exchange_ts + timedelta(seconds=8),
+        extra_zones=(ZONE,),
+    )
+    st = desk.state_for("BTCUSDT")
+    assert st.trades
+    assert st.state in {"LABEL_ZLG", "IDLE", "JURY"}
+    assert st.state != "ARM_ZLG"
+    knowledge.close()
+
+
+def test_play_late_now_labels_zlg_before_jury(tmp_path: Path) -> None:
+    """`--once` catch-up: now is hours later. Tick ZLG before the closed-bar jury."""
+    trades = _load_trades()
+    events = [*_book_events(trades[0]), trades[0]]
+    late = trades[0].exchange_ts + timedelta(hours=2)
+    desk = _desk(tmp_path, user_mode="off")
+    out = desk.play(events, extra_zones=(ZONE,), now=late)
+    kinds = [e.get("event") for e in out]
+    assert kinds.index("zlg") < kinds.index("jury")
+    live = [t for t in desk.registry.touches if t.ts >= trades[0].exchange_ts]
+    assert live
+    assert live[-1].gesture is not None
+    journal = desk.knowledge.get_journal_touch(live[-1].touch_id)
+    assert journal is not None
+    assert journal["zlg_label"] is not None
+
+
+def test_main_once_walks_empty_tape(tmp_path: Path) -> None:
+    root = tmp_path / "cli"
+    assert main(["--userdir", str(root), "--init", "--once"]) == 0
+
+
+def test_stop_on_signals_flips_on_sigterm() -> None:
+    prev_int = signal.getsignal(signal.SIGINT)
+    prev_term = signal.getsignal(signal.SIGTERM)
+    try:
+        should_stop = stop_on_signals()
+        assert should_stop() is False
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+        assert should_stop() is True
+    finally:
+        signal.signal(signal.SIGINT, prev_int)
+        signal.signal(signal.SIGTERM, prev_term)

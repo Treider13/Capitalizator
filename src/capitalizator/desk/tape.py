@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pyarrow.parquet as pq
 
@@ -72,35 +74,44 @@ def consume_tape(
     now: datetime | None = None,
 ) -> int:
     """Feed unseen parquet events into the loop. Second pass does not replay."""
-    n = 0
-    engine = ZoneEngine(tick_size=desk.tick_size, config=desk.config)
-    tf = desk.config.working_tf
+    fresh: list[MarketEvent] = []
     for event in load_tape(tape):
         key = (event.stream, event.symbol, event.exchange_ts.isoformat(), event.seq)
         if key in seen:
             continue
         seen.add(key)
-        if event.stream == "trades":
-            _close_due_bars(desk, event.symbol, event.exchange_ts)
-            st = desk.state_for(event.symbol)
-            work = [b for b in st.bars if b.tf == tf]
-            built = engine.build(event.symbol, event.exchange_ts, work)
-            zones = list(extra_zones) + built
-            desk.on_event(event, zones)
-        else:
-            desk.on_event(event)
-        n += 1
-    if now is not None:
-        for symbol in list(desk.symbols):
-            _close_due_bars(desk, symbol, now)
-    return n
+        fresh.append(event)
+    desk.play(fresh, extra_zones=extra_zones, now=now)
+    return len(fresh)
 
 
-def _close_due_bars(desk: DeskLoop, symbol: str, now: datetime) -> None:
+def zones_for_trade(
+    desk: DeskLoop,
+    event: MarketEvent,
+    extra_zones: Sequence[Zone] = (),
+) -> list[Zone]:
+    """Prior-day / swing zones from already-closed working-TF bars, plus extras."""
+    engine = ZoneEngine(tick_size=desk.tick_size, config=desk.config)
+    tf = desk.config.working_tf
+    st = desk.state_for(event.symbol)
+    work = [b for b in st.bars if b.tf == tf]
+    built = engine.build(event.symbol, event.exchange_ts, work)
+    return list(extra_zones) + built
+
+
+def close_due_bars(desk: DeskLoop, symbol: str, now: datetime) -> list[dict[str, Any]]:
     """Close working TF first, then H4 and D1. CAV is the 15m vote (§6.3/§6.5)."""
     tfs = (desk.config.working_tf, desk.config.htf, desk.config.htf_d1)
     st = desk.state_for(symbol)
+    out: list[dict[str, Any]] = []
     for tf in tfs:
         already = {b.open_ts for b in st.bars if b.tf == tf}
-        for bar in closed_bars_from_trades(st.trades, symbol=symbol, tf=tf, now=now, already=already):
-            desk.on_bar_close(bar)
+        for bar in closed_bars_from_trades(
+            st.trades, symbol=symbol, tf=tf, now=now, already=already
+        ):
+            out.extend(desk.on_bar_close(bar))
+    return out
+
+
+def _close_due_bars(desk: DeskLoop, symbol: str, now: datetime) -> None:
+    close_due_bars(desk, symbol, now)

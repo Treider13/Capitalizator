@@ -6,15 +6,14 @@ when user_mode is demo|live and jury is ACCORD. Shadow always writes.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import uuid4
 
 from capitalizator.book.reconstruct import Book, BookDirty
-from capitalizator.recorder.gap import SeqFault
-from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.btc.break_def import Break
 from capitalizator.btc.regime import BtcRegime
 from capitalizator.btc.veto import BtcVeto
@@ -26,14 +25,20 @@ from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.manage import TradeManager
 from capitalizator.exec.shadow import ShadowWriter
 from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy, in_mid_range
-from capitalizator.jury.desk import decide, voices_for_bounce, voices_for_breakout, voices_for_failed_break
+from capitalizator.jury.desk import (
+    decide,
+    voices_for_bounce,
+    voices_for_breakout,
+    voices_for_failed_break,
+)
 from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
-from capitalizator.ops.product import META_HELLO
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.ops.knowledge import Knowledge
-from capitalizator.ops.product import DEFAULT_MODE
+from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
 from capitalizator.patterns.cav import label as cav_label
+from capitalizator.recorder.gap import SeqFault
+from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import RiskEngine
 from capitalizator.risk.session import SessionWindow, in_desk_window
@@ -110,10 +115,13 @@ class DeskLoop:
         self.btc_veto = BtcVeto()
         self.btc_regime = BtcRegime(self.zones_map)
         self.manager = TradeManager()
+        self.shadow_writes: list[dict[str, Any]] = []
 
     def state_for(self, symbol: str) -> SymbolState:
         if symbol not in self.symbols:
-            self.symbols[symbol] = SymbolState(symbol=symbol, book=Book(tick_size=str(self.tick_size)))
+            self.symbols[symbol] = SymbolState(
+                symbol=symbol, book=Book(tick_size=str(self.tick_size))
+            )
         return self.symbols[symbol]
 
     def hello_ok(self) -> bool:
@@ -490,7 +498,9 @@ class DeskLoop:
                 "shadow_would": shadow_would,
                 "shadow_side": shadow_side,
                 "shadow_tag": shadow_tag,
-                "skip_reason": None if shadow_would else (first.tag if first.tag == "shadow_gesture" else jury),
+                "skip_reason": None
+                if shadow_would
+                else (first.tag if first.tag == "shadow_gesture" else jury),
                 "outcome": row.outcome,
                 "rho_class_id": row.rho_class_id,
             }
@@ -510,7 +520,7 @@ class DeskLoop:
         }
         self.knowledge.put_journal_touch(row.touch_id, {**journal, **extra})
         payload = {"touch_id": row.touch_id, "jury": jury, "shadow_would": shadow_would}
-        self.shadow.write(payload)
+        self.shadow_writes.append(self.shadow.write(payload))
         sent = False
         if (
             shadow_would
@@ -539,8 +549,13 @@ class DeskLoop:
                 btc_broke=self.btc.broke_support if st.symbol != "BTCUSDT" else False,
                 btc_same_side=btc_same_side,
                 gesture_n=n_zlg,
-                first_minute=self.first_minute.blocks(row.ts, bar.close_ts) if idea == "breakout" else False,
+                first_minute=(
+                    self.first_minute.blocks(row.ts, bar.close_ts)
+                    if idea == "breakout"
+                    else False
+                ),
                 close_beyond=cav == "THROUGH",
+                card_bearing_verdict=row.bearing_verdict,
             )
             intent = self.strategy.propose(snap)
             if intent is not None:
@@ -552,6 +567,77 @@ class DeskLoop:
         st.state = "IDLE"
         st.last_touch = None
         return [{"event": "jury", "touch_id": row.touch_id, "jury": jury, "sent": sent}]
+
+    def play(
+        self,
+        events: Sequence[MarketEvent | dict[str, Any]],
+        *,
+        extra_zones: Sequence[Zone] = (),
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """One-pass organism: tape → touch → ZLG → CAV → jury → shadow → queue.
+
+        No sleep. Clocks come from the events (and optional `now`). This is the
+        live cycle the atoms already implement; play() is the only caller that
+        walks a whole tape without `--serve`.
+        """
+        from capitalizator.desk.tape import close_due_bars, zones_for_trade
+
+        out: list[dict[str, Any]] = []
+        extras = tuple(extra_zones)
+
+        def advance(when: datetime) -> None:
+            # Plan: LABEL_ZLG (8s) then CAV on a closed bar, then JURY.
+            # Catch-up `--once` lands both clocks in one now= — tick first.
+            out.extend(self.tick(when))
+            for symbol in list(self.symbols):
+                out.extend(close_due_bars(self, symbol, when))
+
+        for event in _ordered_events(events):
+            if isinstance(event, dict):
+                kind = str(event.get("kind") or event.get("stream") or "")
+                if kind == "bar_close":
+                    bar = event.get("bar")
+                    if isinstance(bar, Bar):
+                        advance(bar.close_ts)
+                out.extend(self.on_event(event, list(extras) or None))
+                continue
+            advance(event.exchange_ts)
+            if event.stream == "trades":
+                out.extend(self.on_event(event, zones_for_trade(self, event, extras)))
+            else:
+                out.extend(self.on_event(event))
+        if now is not None:
+            advance(require_utc(now))
+        return out
+
+
+_STREAM_RANK = {
+    "snapshot": 0,
+    "book_diff": 1,
+    "bbo": 2,
+    "funding": 3,
+    "oi": 4,
+    "mark": 5,
+    "gap": 6,
+    "resync": 7,
+    "trades": 8,
+}
+
+
+def _ordered_events(
+    events: Sequence[MarketEvent | dict[str, Any]],
+) -> list[MarketEvent | dict[str, Any]]:
+    """Stable time order. Snapshot before diffs before prints at the same ts."""
+
+    def key(event: MarketEvent | dict[str, Any]) -> tuple[datetime, int, str]:
+        if isinstance(event, dict):
+            bar = event.get("bar")
+            ts = bar.close_ts if isinstance(bar, Bar) else datetime.min.replace(tzinfo=UTC)
+            return (ts, 9, str(event.get("kind") or event.get("stream") or ""))
+        return (event.exchange_ts, _STREAM_RANK.get(event.stream, 9), event.symbol)
+
+    return sorted(events, key=key)
 
 
 def _level_sizes(book: Book) -> dict[tuple[str, Decimal], Decimal]:
