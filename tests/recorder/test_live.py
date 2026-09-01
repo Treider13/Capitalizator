@@ -68,6 +68,28 @@ def test_ticker_frame_emits_mark() -> None:
     assert events[0].payload["mark"] == "65000.1"
 
 
+def test_fetch_ticker_writes_rest_events(tmp_path: Path) -> None:
+    app = RecorderApp()
+    rest = [
+        MarketEvent(
+            stream="mark",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            payload={"mark": "1"},
+        )
+    ]
+    n = run_live(
+        app,
+        minutes=1,
+        symbol="BTCUSDT",
+        data_root=tmp_path,
+        fetch_ticker=lambda: rest,
+    )
+    assert n == 1
+
+
 def test_subscribe_many_covers_desk_universe() -> None:
     uni = load_desk_universe()
     payload = subscribe_desk(uni.symbols)

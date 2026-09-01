@@ -718,6 +718,29 @@ def test_minutes_cli_announces_24_symbol_subscribe(tmp_path: Path, capsys) -> No
     assert len(payload["subscribe"]["args"]) == 24 * 4
 
 
+def test_rest_ticker_is_funding_oi_mark() -> None:
+    """§6.1 REST half: same three streams as the public ticker WS."""
+    from capitalizator.recorder.rest_ticker import RestTicker
+
+    events = RestTicker().parse(
+        {
+            "retCode": 0,
+            "result": {
+                "list": [
+                    {
+                        "symbol": "ETHUSDT",
+                        "fundingRate": "0.01",
+                        "openInterest": "3",
+                        "markPrice": "3000",
+                    }
+                ]
+            },
+        },
+        recv_ts=WINDOW,
+    )
+    assert {e.stream for e in events} == {"funding", "oi", "mark"}
+
+
 def test_ptf_pickable_only_n20_and_real() -> None:
     from capitalizator.champion.ptf import ClassStat, PtfTable
 

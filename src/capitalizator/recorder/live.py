@@ -99,6 +99,7 @@ def run_live(
     events: Iterable[MarketEvent] | None = None,
     opener: Opener | None = None,
     fetch_snapshot: Callable[[], Any] | None = None,
+    fetch_ticker: Callable[[], list[MarketEvent]] | None = None,
 ) -> int:
     if minutes <= 0:
         raise ValueError("minutes must be > 0")
@@ -114,6 +115,12 @@ def run_live(
             accepted += 1
             app.accepted_count = accepted
         return accepted
+
+    if fetch_ticker is not None:
+        for event in fetch_ticker():
+            sink.write(event)
+            accepted += 1
+            app.accepted_count = accepted
 
     raw_frames: Iterable[dict[str, Any]]
     if frames is not None:
