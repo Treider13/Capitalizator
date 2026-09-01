@@ -336,7 +336,8 @@ def test_last_gap_segment_orders_by_close_not_open() -> None:
     )
     assert current.close_ts < T
     assert abs(current.open - long.close) / long.close < JUMP_RATIO_15M
-    assert abs(current.open - mid.close) / mid.close > JUMP_RATIO_15M
+    # 16/116 < 15%: not a jump into current. Open-order split still ends on [mid] alone.
+    assert abs(current.open - mid.close) / mid.close < JUMP_RATIO_15M
     assert last_gap_segment([long, mid], current, t=T) == [mid, long]
 
 
