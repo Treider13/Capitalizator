@@ -103,6 +103,22 @@ def test_residual_median_uses_the_whole_sample() -> None:
     assert hostile_exam(rows).residual_after_atr == Decimal("3.5")
 
 
+def test_residual_is_absolute_error_not_signed() -> None:
+    """Over and under cancel in a signed median. Abs 2,1,3 → median 2. Signed −2,−1,+3 → −1."""
+    rows = [
+        ExamCase(pred=Decimal("6"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("2")),
+        ExamCase(pred=Decimal("8"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("2")),
+        ExamCase(pred=Decimal("16"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("2")),
+    ]
+    signed = (
+        (rows[0].pred - rows[0].actual) / rows[0].atr,
+        (rows[1].pred - rows[1].actual) / rows[1].atr,
+        (rows[2].pred - rows[2].actual) / rows[2].atr,
+    )
+    assert signed == (Decimal("-2"), Decimal("-1"), Decimal("3"))
+    assert hostile_exam(rows).residual_after_atr == Decimal("2")
+
+
 def test_residual_median_is_not_the_mean() -> None:
     """Two residuals share a mean and a median. Mean of 1, 2, 10 is 13/3, not 2."""
     rows = [

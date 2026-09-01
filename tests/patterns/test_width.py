@@ -413,6 +413,28 @@ def test_gap_into_current_width_is_none() -> None:
     assert width_now_from_history(bar, hist, t=NOW) is None
 
 
+def test_zero_range_after_gap_is_none_not_zero() -> None:
+    """Flat after a jump has no ATR. `if range==0: return 0` would journal a fake width."""
+    hist = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=T0 + timedelta(minutes=15 * i),
+            close_ts=T0 + timedelta(minutes=15 * i + 15),
+            open=Decimal("130"),
+            high=Decimal("131"),
+            low=Decimal("129"),
+            close=Decimal("130"),
+        )
+        for i in range(15)
+    ]
+    bar = _bar(20, high="100.15", low="100.15", open_="100.15", close="100.15")
+    assert bar.high == bar.low
+    assert abs(bar.open - hist[-1].close) / hist[-1].close > Decimal("0.15")
+    assert width_now(bar, Decimal("2")) == Decimal("0")
+    assert width_now_from_history(bar, hist, t=NOW) is None
+
+
 def test_rank_uses_all_priors_not_the_last_twenty() -> None:
     """n<20 is a floor, not a rolling window. Last-20 of 25 would report 1 here, not 20/25."""
     early = [_sample(i, "10") for i in range(5)]
