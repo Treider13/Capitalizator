@@ -165,6 +165,9 @@ class Knowledge:
             self._cx.close()
             self._cx = None
 
+    def available(self) -> bool:
+        return self._cx is not None
+
     def meta(self, key: str) -> str | None:
         if self._cx is None:
             return None
