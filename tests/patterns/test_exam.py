@@ -34,6 +34,21 @@ def test_exact_next_close_beats_last_price() -> None:
     assert hostile_exam(rows).beat_last_price == Decimal("1")
 
 
+def test_equal_error_is_not_a_last_price_beat() -> None:
+    """Tie is not a beat. `<=` would count this as 1."""
+    rows = [ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("10.5"))]
+    assert abs(rows[0].pred - rows[0].actual) == abs(rows[0].last - rows[0].actual)
+    assert hostile_exam(rows).beat_last_price == Decimal("0")
+
+
+def test_zero_atr_is_excluded_from_residual() -> None:
+    """atr=0 is not a divisor. Including it is ZeroDivision or a fake residual."""
+    rows = [ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("0"))]
+    assert hostile_exam(rows).residual_after_atr is None
+    only_none = [ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=None)]
+    assert hostile_exam(only_none).residual_after_atr is None
+
+
 def test_residual_is_median_error_over_atr() -> None:
     rows = [
         ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("2")),
@@ -142,6 +157,30 @@ def test_two_runs_bit_identical() -> None:
         )
 
     assert run() == run()
+
+
+def test_one_vol_pair_is_not_an_ic() -> None:
+    rows = [
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("12"),
+            pred_vol_rank=Decimal("1"),
+            actual_vol=Decimal("2"),
+        )
+    ]
+    assert hostile_exam(rows).vol_rank_ic is None
+
+
+def test_pnl_without_day_does_not_unlock_share() -> None:
+    """A print with pnl and no day is not a fifth day."""
+    rows = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 5, d), pnl=Decimal("1"))
+        for d in range(1, 5)
+    ]
+    rows.append(ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=None, pnl=Decimal("100")))
+    assert len(rows) == 5
+    assert hostile_exam(rows).pnl_share_best_5_days is None
 
 
 def test_no_predicted_direction_is_none() -> None:

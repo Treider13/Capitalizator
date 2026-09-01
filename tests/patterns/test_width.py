@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -260,3 +260,33 @@ def test_foreign_symbol_history_does_not_make_width() -> None:
     assert atr(hist) == Decimal("2")
     assert prior_same_tf(hist, bar, t=NOW) == []
     assert width_now_from_history(bar, hist, t=NOW) is None
+
+
+def test_offset_timezone_sample_counts_by_utc_instant() -> None:
+    """+3 16:30 is 13:30Z. Clock hour 16 vs now 14:00Z would drop a real prior."""
+    plus3 = timezone(timedelta(hours=3))
+    now = datetime(2026, 8, 30, 14, 0, tzinfo=UTC)
+    hist = [_sample(i, "1") for i in range(19)]
+    off = WidthSample(
+        zone_id="z1",
+        ts=datetime(2026, 8, 30, 16, 30, tzinfo=plus3),
+        w_now=Decimal("1"),
+    )
+    assert off.ts.hour == 16
+    assert now.hour == 14
+    assert off.ts < now
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist) is None
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist + [off]) == Decimal("1")
+
+
+def test_offset_timezone_sample_at_now_is_not_a_prior() -> None:
+    plus3 = timezone(timedelta(hours=3))
+    now = datetime(2026, 8, 30, 13, 30, tzinfo=UTC)
+    hist = [_sample(i, "1") for i in range(19)]
+    off = WidthSample(
+        zone_id="z1",
+        ts=datetime(2026, 8, 30, 16, 30, tzinfo=plus3),
+        w_now=Decimal("1"),
+    )
+    assert off.ts == now
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist + [off]) is None
