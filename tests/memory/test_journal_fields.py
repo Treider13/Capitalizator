@@ -14,7 +14,7 @@ from capitalizator.memory.hashlog import touch_payload
 from capitalizator.memory.registry import Registry, Touch
 from capitalizator.patterns.bar_quality import QUALITY_LABELS
 from capitalizator.types import MarketEvent
-from capitalizator.zones.model import Zone
+from capitalizator.zones.model import Bar, Zone
 
 PATTERNS = Path(__file__).resolve().parents[2] / "src" / "capitalizator" / "patterns"
 
@@ -176,18 +176,62 @@ def test_fill_quality_and_hour_on_one_touch_do_not_write_the_other() -> None:
 
 def test_resolve_keeps_journal_fields() -> None:
     """Outcome replace must not drop width / quality / hour."""
-    reg = _reg()
-    reg.fill_width(w_now=Decimal("1.5"), w_rank=Decimal("0.4"))
-    reg.fill_bar_quality(quality="live")
-    reg.fill_session_hour()
+    def _journal(reg: Registry) -> None:
+        reg.fill_width(w_now=Decimal("1.5"), w_rank=Decimal("0.4"))
+        reg.fill_bar_quality(quality="live")
+        reg.fill_session_hour()
+
+    def _assert_journal(row: Touch) -> None:
+        assert row.w_now == Decimal("1.5")
+        assert row.w_rank == Decimal("0.4")
+        assert row.bar_quality == "live"
+        assert row.session_hour == 16
+
+    bounce = _reg()
+    _journal(bounce)
     later = PRINT + timedelta(minutes=20)
-    changed = reg.resolve(now=later, bars=[], last_px=Decimal("101.0"))
-    assert [t.outcome for t in changed] == ["bounce"]
-    row = changed[0]
-    assert row.w_now == Decimal("1.5")
-    assert row.w_rank == Decimal("0.4")
-    assert row.bar_quality == "live"
-    assert row.session_hour == 16
+    bounced = bounce.resolve(now=later, bars=[], last_px=Decimal("101.0"))
+    assert [t.outcome for t in bounced] == ["bounce"]
+    _assert_journal(bounced[0])
+
+    brk = _reg()
+    _journal(brk)
+    close_ts = PRINT + timedelta(minutes=15)
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=close_ts - timedelta(minutes=15),
+        close_ts=close_ts,
+        open=Decimal("99.9"),
+        high=Decimal("99.9"),
+        low=Decimal("99.9"),
+        close=Decimal("99.9"),
+    )
+    broken = brk.resolve(now=close_ts + timedelta(seconds=1), bars=[bar], last_px=Decimal("101.0"))
+    assert [t.outcome for t in broken] == ["break"]
+    _assert_journal(broken[0])
+
+    dying = _reg()
+    _journal(dying)
+    died = dying.resolve(now=PRINT + timedelta(hours=6, seconds=1), bars=[], last_px=Decimal("100.1"))
+    assert [t.outcome for t in died] == ["die"]
+    _assert_journal(died[0])
+
+
+def test_stamp_jury_on_one_touch_keeps_the_other_and_journal() -> None:
+    reg, first, second = _two_zone_reg()
+    reg.fill_width(w_now=Decimal("2"), w_rank=Decimal("0.5"))
+    reg.fill_cav(cav_label="REJECT")
+    reg.fill_gesture(gesture="DEFEND")
+    reg.fill_btc(regime="box")
+    reg.stamp_jury(n_cav=20, n_zlg=20, touch_id=first.touch_id)
+    by_id = {t.touch_id: t for t in reg.touches}
+    assert by_id[first.touch_id].jury == "ACCORD"
+    assert by_id[first.touch_id].rho_class_id == "bounce × REJECT × DEFEND × BTC_box"
+    assert by_id[first.touch_id].w_now == Decimal("2")
+    assert by_id[second.touch_id].jury is None
+    assert by_id[second.touch_id].rho_class_id is None
+    assert by_id[second.touch_id].w_now == Decimal("2")
 
 
 def test_patterns_modules_do_not_import_memory() -> None:

@@ -242,6 +242,27 @@ def test_later_zero_volume_is_not_illiquid() -> None:
     assert classify_bar_quality(hist, current, t=T) == LIVE
 
 
+def test_unclosed_prior_does_not_make_illiquid() -> None:
+    """Forming zero-vol bar is not a fact. Alone with a closed zero-vol current → LIVE."""
+    hist = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=T - timedelta(minutes=15),
+            close_ts=T,
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=Decimal("0"),
+        )
+    ]
+    current = _bar(4, close="101", volume=Decimal("0"))
+    assert hist[0].close_ts >= T
+    assert current.close_ts < T
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
 def test_unclosed_prior_does_not_make_stagnant() -> None:
     """A forming bar in history is not a close fact. 3 closed + unclosed + current = 4."""
     hist = [_bar(i, close="100") for i in range(3)]

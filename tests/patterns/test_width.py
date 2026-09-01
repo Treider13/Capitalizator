@@ -219,6 +219,26 @@ def test_sample_at_now_is_not_a_prior() -> None:
     assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) is None
 
 
+def test_later_bar_does_not_complete_width() -> None:
+    """14 priors + a bar that closes after current but before t would ATR if lookahead leaked."""
+    fourteen = [_bar(i) for i in range(14)]
+    later = _bar(21)
+    bar = _bar(20, high="100.2", low="100.1")
+    assert later.close_ts > bar.close_ts
+    assert later.close_ts < NOW
+    assert atr(fourteen + [later]) == Decimal("2")
+    assert width_now_from_history(bar, fourteen, t=NOW) is None
+    assert width_now_from_history(bar, fourteen + [later], t=NOW) is None
+
+
+def test_labeled_bar_in_history_does_not_complete_width() -> None:
+    fourteen = [_bar(i) for i in range(14)]
+    bar = _bar(20, high="100.2", low="100.1")
+    assert atr(fourteen + [bar]) is not None
+    assert width_now_from_history(bar, fourteen, t=NOW) is None
+    assert width_now_from_history(bar, fourteen + [bar], t=NOW) is None
+
+
 def test_foreign_symbol_history_does_not_make_width() -> None:
     hist = []
     for i in range(15):
@@ -236,4 +256,7 @@ def test_foreign_symbol_history_does_not_make_width() -> None:
             )
         )
     bar = _bar(20, high="100.2", low="100.1")
+    assert sum(1 for b in hist if b.close_ts < bar.close_ts) == 15
+    assert atr(hist) == Decimal("2")
+    assert prior_same_tf(hist, bar, t=NOW) == []
     assert width_now_from_history(bar, hist, t=NOW) is None
