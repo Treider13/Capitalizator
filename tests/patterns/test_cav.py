@@ -2788,3 +2788,407 @@ def test_compress_survives_when_post_gap_segment_is_long() -> None:
         )
     bar = _bar(low="100.05", high="100.15", close="100.10")
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"
+
+
+def test_stagnant_would_be_drift_is_noise() -> None:
+    """Quality is not only REJECT/THROUGH/COMPRESS. A dead drift-bar is still NOISE."""
+    closed = [_hist(i, close="100.1") for i in range(4)]
+    bar = _bar(low="100.0", high="101.0", close="100.1")
+    assert label(ZONE, bar, t=T, htf_bias="box") == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
+
+
+def test_illiquid_would_be_drift_is_noise() -> None:
+    closed = [_hist(0, close="101", volume=Decimal("0"))]
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("101.0"),
+        low=Decimal("100.0"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert label(ZONE, bar, t=T, htf_bias="box") == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
+
+
+def test_resistance_htf_against_drift_is_noise() -> None:
+    """HTF is not only REJECT/THROUGH/COMPRESS on resistance. Drift against the bounce is NOISE."""
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    bar = _bar(low="100.0", high="100.2", close="100.1")
+    assert label(res, bar, t=T, htf_bias="box") == "DRIFT"
+    assert label(res, bar, t=T, htf_bias="long") == "NOISE"
+    assert label(res, bar, t=T, htf_bias="short") == "DRIFT"
+
+
+def test_drift_does_not_go_noise_when_last_two_would_be_illiquid_only_via_eth_zero() -> None:
+    """15m BTC vol=1 + 15m ETH vol=0 + drift vol=0. Mixed last-2 is ILLIQUID → NOISE."""
+    neighbor = _hist(0, volume=Decimal("1"))
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("101.0"),
+        low=Decimal("100.0"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box") == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "DRIFT"
+
+
+def test_drift_stays_noise_when_foreign_volume_sits_between_two_zeros() -> None:
+    """BTC vol=0 + ETH vol=1 + drift vol=0. Mixed last-2 is LIVE → DRIFT."""
+    neighbor = _hist(0, volume=Decimal("0"))
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("101.0"),
+        low=Decimal("100.0"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box") == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
+
+
+def test_resistance_drift_does_not_go_noise_when_last_two_would_be_illiquid_only_via_eth_zero() -> None:
+    """Quality is not a support-only gate. Mixed last-2 on resistance drift is ILLIQUID → NOISE."""
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = _hist(0, volume=Decimal("1"))
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.2"),
+        low=Decimal("100.0"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(res, bar, t=T, htf_bias="box") == "DRIFT"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "DRIFT"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "DRIFT"
+
+
+def test_resistance_drift_stays_noise_when_foreign_volume_sits_between_two_zeros() -> None:
+    """Quality is not a support-only gate. Mixed last-2 on resistance drift is LIVE → DRIFT."""
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = _hist(0, volume=Decimal("0"))
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.2"),
+        low=Decimal("100.0"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(res, bar, t=T, htf_bias="box") == "DRIFT"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
+
+
+def test_eth_drift_does_not_go_noise_when_last_two_would_be_illiquid_only_via_btc_zero() -> None:
+    """Hardcoded `history is BTC` takes BTC vol=0 + ETH drift vol=0 as last-2 → NOISE."""
+    eth_zone = Zone.create(
+        symbol="ETHUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 0, 30, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    foreign = _hist(10, volume=Decimal("0"))
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("101.0"),
+        low=Decimal("100.0"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < eth.close_ts
+    assert label(eth_zone, eth, t=T, htf_bias="box") == "DRIFT"
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[neighbor]) == "DRIFT"
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "DRIFT"
+
+
+def test_eth_drift_stays_noise_when_btc_volume_sits_between_two_zeros() -> None:
+    """Hardcoded `history is BTC` takes BTC vol=1 + ETH drift vol=0 as last-2 → DRIFT."""
+    eth_zone = Zone.create(
+        symbol="ETHUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 0, 30, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    foreign = _hist(10, volume=Decimal("1"))
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("101.0"),
+        low=Decimal("100.0"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < eth.close_ts
+    assert label(eth_zone, eth, t=T, htf_bias="box") == "DRIFT"
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
+
+
+def test_hourly_drift_does_not_go_noise_when_last_two_would_be_illiquid_only_via_15m_zero() -> None:
+    """Hardcoded `tf==15m` takes 15m vol=0 + 1h drift vol=0 as last-2 → NOISE."""
+    hourly_zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1h",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 14, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 15, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("101.0"),
+        low=Decimal("100.0"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < hourly.close_ts
+    assert label(hourly_zone, hourly, t=T, htf_bias="box") == "DRIFT"
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor]) == "DRIFT"
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "DRIFT"
+
+
+def test_hourly_drift_stays_noise_when_15m_volume_sits_between_two_zeros() -> None:
+    """Hardcoded `tf==15m` takes 15m vol=1 + 1h drift vol=0 as last-2 → DRIFT."""
+    hourly_zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1h",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 14, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 15, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("101.0"),
+        low=Decimal("100.0"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < hourly.close_ts
+    assert label(hourly_zone, hourly, t=T, htf_bias="box") == "DRIFT"
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
+
+
+def test_resistance_reject_does_not_go_noise_when_last_two_would_be_illiquid_only_via_eth_zero() -> None:
+    """Quality is not a support-only gate. Mixed last-2 on resistance reject is ILLIQUID → NOISE."""
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = _hist(0, volume=Decimal("1"))
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.4"),
+        low=Decimal("99.8"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(res, bar, t=T, htf_bias="box") == "REJECT"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "REJECT"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "REJECT"
