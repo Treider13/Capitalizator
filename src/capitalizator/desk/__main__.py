@@ -12,11 +12,19 @@ from pathlib import Path
 
 from capitalizator.desk.loop import DeskLoop
 from capitalizator.desk.tape import consume_tape
+from capitalizator.news_macro.ingest import NewsIngest, NewsRow, default_macro_path
 from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.product import read_user_mode
 from capitalizator.ops.vault import Vault, init_vault, load_vault
 from capitalizator.screener.universe import load_desk_universe
 from capitalizator.zones.model import Zone
+
+
+def load_desk_calendar() -> tuple[NewsRow, ...]:
+    try:
+        return tuple(NewsIngest.from_csv(default_macro_path()).rows)
+    except FileNotFoundError:
+        return ()
 
 
 def stop_on_signals() -> Callable[[], bool]:
@@ -40,7 +48,11 @@ def run_once(
     extra_zones: Sequence[Zone] = (),
 ) -> DeskLoop:
     """One pass over the parquet tape. No sleep. Used by `--once` and tests."""
-    desk = DeskLoop(knowledge=knowledge, user_mode=read_user_mode(vault))
+    desk = DeskLoop(
+        knowledge=knowledge,
+        user_mode=read_user_mode(vault),
+        calendar=load_desk_calendar(),
+    )
     when = now if now is not None else datetime.now(tz=UTC)
     consume_tape(desk, vault.tape, seen=set(), extra_zones=tuple(extra_zones), now=when)
     return desk
@@ -58,7 +70,11 @@ def serve_loop(
     extra_zones: Sequence[Zone] = (),
 ) -> DeskLoop:
     """Stay up. Read parquet tape, tick ZLG, re-read user_mode. No invented rows."""
-    desk = DeskLoop(knowledge=knowledge, user_mode=read_user_mode(vault))
+    desk = DeskLoop(
+        knowledge=knowledge,
+        user_mode=read_user_mode(vault),
+        calendar=load_desk_calendar(),
+    )
     seen: set[tuple[str, str, str, int | None]] = set()
     zones = tuple(extra_zones)
     while not should_stop():

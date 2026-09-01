@@ -378,3 +378,69 @@ def test_http_unknown_contour_meta_is_plain_500(tmp_path: Path) -> None:
     finally:
         kn.close()
     assert trading_mode() == "off"
+
+
+def test_chronos_api_empty_shapes(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    app = ConsoleApp(vault)
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        paths = [
+            "/api/bars?symbol=BTCUSDT&tf=15m&limit=10",
+            "/api/zones?symbol=BTCUSDT",
+            "/api/book?symbol=BTCUSDT",
+            "/api/trades?symbol=BTCUSDT&limit=5",
+            "/api/touch/latest?symbol=BTCUSDT",
+            "/api/dashboard",
+            "/api/news",
+            "/api/authors",
+            "/api/llm_summary",
+            "/api/gates",
+            "/api/hello/status",
+        ]
+        for path in paths:
+            conn = HTTPConnection(host, port, timeout=3)
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            assert resp.status == 200, path
+            payload = json.loads(resp.read().decode())
+            assert isinstance(payload, dict), path
+            blob = json.dumps(payload, ensure_ascii=False).lower()
+            for word in ("лонг", "шорт", "купи", "продай", "завтра"):
+                assert word not in blob
+            conn.close()
+        conn = HTTPConnection(host, port, timeout=3)
+        conn.request("GET", "/api/status")
+        status = json.loads(conn.getresponse().read().decode())
+        conn.close()
+        assert "last_price" in status
+        assert status["session_window"]["start"] == "16:30"
+        assert status["last_jury"] == {}
+        conn = HTTPConnection(host, port, timeout=3)
+        conn.request("GET", "/api/hello/status")
+        hello = json.loads(conn.getresponse().read().decode())
+        conn.close()
+        assert hello == {"hello_ok": False, "real": False}
+        conn = HTTPConnection(host, port, timeout=3)
+        conn.request("GET", "/api/bars?symbol=BTCUSDT")
+        bars = json.loads(conn.getresponse().read().decode())
+        conn.close()
+        assert bars["bars"] == []
+        conn = HTTPConnection(host, port, timeout=3)
+        conn.request("GET", "/api/touch/latest")
+        touch = json.loads(conn.getresponse().read().decode())
+        conn.close()
+        assert touch["touch"] is None
+        conn = HTTPConnection(host, port, timeout=3)
+        conn.request("GET", "/")
+        page = conn.getresponse().read().decode()
+        conn.close()
+        assert "ХРОНОС" in page
+        assert "Касаний нет" in page
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -670,6 +670,13 @@ def test_desk_cav_on_closed_reject_bar_is_not_noise(tmp_path: Path) -> None:
     row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
     assert row is not None
     assert row["cav_label"] == "REJECT"
+    assert row["bar_quality"] in {"live", "stagnant", "illiquid"}
+    assert row["symbol"] == "BTCUSDT"
+    assert row["card_id"]
+    assert "BTCUSDT" in desk.last_price
+    assert desk.knowledge.last_prices()["BTCUSDT"] == str(desk.last_price["BTCUSDT"])
+    assert desk.knowledge.list_zones(symbol="BTCUSDT")
+    assert desk.knowledge.list_claims(card_id=str(row["card_id"]))
 
 
 def test_desk_d1_against_is_cav_noise(tmp_path: Path) -> None:
