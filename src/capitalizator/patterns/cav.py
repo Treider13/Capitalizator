@@ -4,6 +4,7 @@ INVENTION-JURY.md: REJECT / THROUGH / COMPRESS / DRIFT / NOISE.
 THROUGH and REJECT only after close_ts < t. Unclosed bar → NOISE.
 stagnant / illiquid K-line → NOISE. A jump gap is not NOISE; it only splits ATR.
 HTF against the bounce side → NOISE. Bar that does not touch the zone → NOISE.
+Wrong symbol or tf vs the zone → NOISE.
 COMPRESS uses range < mean TR of the last 14 steps after the last gap
 (needs 15 closed bars in that segment; k=1). A jump into the labeled bar
 starts a new segment — old ATR is not borrowed.
