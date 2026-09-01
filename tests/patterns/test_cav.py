@@ -100,7 +100,7 @@ def test_resistance_close_on_hi_is_not_through() -> None:
         method="swing",
         created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
     )
-    bar = _bar(low="99.8", high="100.2", close="100.2")
+    bar = _bar(low="100.0", high="100.2", close="100.2")
     assert bar.close == res.hi
     assert bar.high <= res.hi
     assert label(res, bar, t=T, htf_bias="box") == "DRIFT"
