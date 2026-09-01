@@ -141,10 +141,13 @@ class DeskLoop:
             if seq is None:
                 st.book = Book(tick_size=str(self.tick_size))
                 return
+            before = _level_sizes(st.book) if st.book.ready else {}
             try:
                 st.book.apply_diff(bids, asks, seq=int(seq))
             except (BookDirty, SeqFault):
                 st.book = Book(tick_size=str(self.tick_size))
+                return
+            _record_adds(st, event.exchange_ts, before)
             return
 
     def on_add(self, symbol: str, add: BookAdd) -> None:
@@ -222,6 +225,7 @@ class DeskLoop:
             return []
         touch = opened[-1]
         st.last_touch = touch
+        st.adds.clear()
         if st.book.ready:
             st.book_pre = st.book.snapshot_copy()
         st.state = "ARM_ZLG"
@@ -510,6 +514,28 @@ class DeskLoop:
         st.state = "IDLE"
         st.last_touch = None
         return [{"event": "jury", "touch_id": row.touch_id, "jury": jury, "sent": sent}]
+
+
+def _level_sizes(book: Book) -> dict[tuple[str, Decimal], Decimal]:
+    out: dict[tuple[str, Decimal], Decimal] = {}
+    for side in ("bid", "ask"):
+        for px, sz in book.levels(side).items():
+            out[(side, px)] = sz
+    return out
+
+
+def _record_adds(
+    st: SymbolState,
+    ts: datetime,
+    before: dict[tuple[str, Decimal], Decimal],
+) -> None:
+    """Positive size deltas after a diff are ZLG BookAdds. Pulls are not adds."""
+    for side in ("bid", "ask"):
+        for px, sz in st.book.levels(side).items():
+            delta = sz - before.get((side, px), Decimal("0"))
+            if delta > 0:
+                hit: Literal["bid", "ask"] = "bid" if side == "bid" else "ask"
+                st.adds.append(BookAdd(ts=ts, side=hit, px=px, qty=delta))
 
 
 def _levels(rows: object) -> tuple[tuple[str, str], ...]:

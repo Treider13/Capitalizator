@@ -169,3 +169,48 @@ def test_snapshot_event_applies_to_book(tmp_path: Path) -> None:
     book = desk.state_for("BTCUSDT").book
     assert book.ready is True
     assert book.best() == (Decimal("100.4"), Decimal("100.6"))
+
+
+def test_book_diff_after_touch_is_zlg_defend(tmp_path: Path) -> None:
+    """§6.4 / wave 3: tape book_diff must become BookAdd. Else VPS ZLG is always SILENCE."""
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW,
+            recv_ts=WINDOW,
+            seq=1,
+            payload={"bids": [["100.4", "20"]], "asks": [["100.6", "20"]]},
+        )
+    )
+    desk.on_event(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW,
+            recv_ts=WINDOW,
+            payload={"px": "100.4", "qty": "1", "side": "sell"},
+        ),
+        [ZONE],
+    )
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW + timedelta(seconds=1),
+            recv_ts=WINDOW + timedelta(seconds=1),
+            seq=2,
+            payload={"bids": [["100.4", "25"]], "asks": []},
+        )
+    )
+    events = desk.tick(WINDOW + timedelta(seconds=8))
+    assert events
+    assert events[0]["gesture"] == "DEFEND"
+    st = desk.state_for("BTCUSDT")
+    assert st.adds
+    assert st.adds[0].qty == Decimal("5")
