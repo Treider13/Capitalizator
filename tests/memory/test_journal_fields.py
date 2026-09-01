@@ -265,9 +265,10 @@ def test_resolve_keeps_journal_fields() -> None:
 def test_stamp_jury_on_one_touch_keeps_the_other_and_journal() -> None:
     reg, first, second = _two_zone_reg()
     reg.fill_width(w_now=Decimal("2"), w_rank=Decimal("0.5"))
-    reg.fill_cav(cav_label="REJECT")
-    reg.fill_gesture(gesture="DEFEND")
-    reg.fill_btc(regime="box")
+    for tid in (first.touch_id, second.touch_id):
+        reg.fill_cav(cav_label="REJECT", touch_id=tid)
+        reg.fill_gesture(gesture="DEFEND", touch_id=tid)
+        reg.fill_btc(regime="box", touch_id=tid)
     reg.stamp_jury(n_cav=20, n_zlg=20, touch_id=first.touch_id)
     by_id = {t.touch_id: t for t in reg.touches}
     assert by_id[first.touch_id].jury == "ACCORD"
