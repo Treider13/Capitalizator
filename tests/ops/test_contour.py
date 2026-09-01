@@ -516,6 +516,45 @@ def test_observe_mid_equals_print_writes_nothing() -> None:
     assert row.jury is None
 
 
+def test_observe_unknown_reads_btc_bars() -> None:
+    """unknown is not a guess. Closed BTC HTF bars may still label trend."""
+    bars = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="4h",
+            open_ts=datetime(2026, 8, 30, hour, tzinfo=UTC),
+            close_ts=datetime(2026, 8, 30, hour + 4, tzinfo=UTC),
+            open=Decimal(close),
+            high=Decimal(high),
+            low=Decimal(low),
+            close=Decimal(close),
+        )
+        for hour, high, low, close in (
+            (0, "10", "8", "9"),
+            (4, "11", "8", "10"),
+            (8, "20", "12", "19"),
+        )
+    ]
+    inp = ObserveIn(
+        book=_book(),
+        trades=[_trade(PRINT, qty="1", side="sell")],
+        adds=[
+            BookAdd(
+                ts=PRINT + timedelta(seconds=1),
+                side="bid",
+                px=Decimal("100"),
+                qty=Decimal("2"),
+            )
+        ],
+        cav_bar=_bar(),
+        htf_bias="unknown",
+        btc_bars=bars,
+    )
+    row = observe(_reg(), inp, contour_on=True)[0]
+    assert row.btc_regime == "trend"
+    assert row.jury == "SILENCE"
+
+
 def test_observe_unknown_btc_does_not_freeze_jury() -> None:
     """No BTC label → no jury. A later box fact may still stamp."""
     reg = _reg()

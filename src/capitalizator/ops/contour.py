@@ -214,7 +214,8 @@ def observe(
     A bar of another symbol is an error before any fill. mid == print is
     an error only when tape or ZLG is still empty — a BTC-only retry must
     not freeze the card if the book has since centered on the print.
-    Missing BTC does not stamp jury.
+    Missing BTC does not stamp jury. htf_bias=unknown lets btc_bars speak;
+    an explicit box/long/short is a fact and does not look at bars.
     n_cav / n_zlg count only the same symbol — ETH history does not unlock BTC.
     """
     if not contour_on:
@@ -265,7 +266,7 @@ def observe(
         regime = BtcRegime().classify(
             live.ts,
             bars=inp.btc_bars,
-            htf_bias=inp.htf_bias,
+            htf_bias=None if inp.htf_bias == "unknown" else inp.htf_bias,
             news_known_at=inp.news_known_at,
         )
         if regime is not None:
