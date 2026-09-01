@@ -20,7 +20,7 @@ from typing import Any
 import yaml
 
 REQUIRED_SYMBOLS = ("BTCUSDT", "ETHUSDT")
-MAX_SYMBOLS = 15
+MAX_SYMBOLS = 24
 SYMBOL_RE = re.compile(r"^[A-Z0-9]+USDT$")
 FORBIDDEN_EXCHANGES = frozenset({"htx", "huobi"})
 
@@ -82,3 +82,15 @@ def default_week0_path() -> Path:
         if candidate.is_file():
             return candidate
     raise FileNotFoundError("infra/universe.week0.yaml not found from package tree")
+
+
+def default_desk_path() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "infra" / "universe.yaml"
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError("infra/universe.yaml not found from package tree")
+
+
+def load_desk_universe(path: Path | None = None) -> Universe:
+    return load_universe(path or default_desk_path())

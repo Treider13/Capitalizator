@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-MODES = frozenset({"shadow", "demo"})
+MODES = frozenset({"shadow", "demo", "micro", "live"})
 REQUIRED = ("trade_id", "mode", "zone_id", "gesture", "fill", "slip", "fees", "r")
 
 
@@ -18,7 +18,9 @@ class EpisodeLog:
         if missing:
             raise ValueError(f"episode missing: {missing}")
         if row["mode"] not in MODES:
-            raise ValueError(f"episode.mode must be shadow|demo, got {row['mode']!r}")
+            raise ValueError(
+                f"episode.mode must be shadow|demo|micro|live, got {row['mode']!r}"
+            )
         if not isinstance(row["fill"], datetime):
             raise TypeError("episode.fill must be a datetime")
         self.rows.append(dict(row))

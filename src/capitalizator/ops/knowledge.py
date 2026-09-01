@@ -56,9 +56,32 @@ CREATE TABLE IF NOT EXISTS reports (
   body TEXT NOT NULL,
   PRIMARY KEY (day, kind)
 );
+CREATE TABLE IF NOT EXISTS journal_touches (
+  touch_id TEXT PRIMARY KEY,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS intent_queue (
+  id INTEGER PRIMARY KEY,
+  created_ts TEXT NOT NULL,
+  status TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS order_queue (
+  id INTEGER PRIMARY KEY,
+  intent_id INTEGER,
+  created_ts TEXT NOT NULL,
+  status TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS overlay (
+  setup_id TEXT PRIMARY KEY,
+  r_shadow TEXT,
+  r_demo TEXT,
+  r_live TEXT
+);
 """
 
-EPISODE_MODES = frozenset({"shadow", "demo"})
+EPISODE_MODES = frozenset({"shadow", "demo", "micro", "live"})
 EPISODE_KEYS = ("trade_id", "mode", "zone_id", "gesture", "fill", "slip", "fees", "r")
 EMPTY_COUNTS = {"hash_links": 0, "episodes": 0, "reports": 0}
 
@@ -323,7 +346,9 @@ class Knowledge:
         if missing:
             raise ValueError(f"episode missing: {missing}")
         if row["mode"] not in EPISODE_MODES:
-            raise ValueError(f"episode.mode must be shadow|demo, got {row['mode']!r}")
+            raise ValueError(
+                f"episode.mode must be shadow|demo|micro|live, got {row['mode']!r}"
+            )
         fill = row["fill"]
         fill_text = fill.isoformat() if isinstance(fill, datetime) else str(fill)
         stored = {
@@ -410,6 +435,150 @@ class Knowledge:
         if row is None:
             return None
         return {"day": str(row["day"]), "kind": str(row["kind"]), "body": str(row["body"])}
+
+
+    def put_journal_touch(self, touch_id: str, payload: Mapping[str, Any]) -> None:
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        body = json.dumps(dict(payload), sort_keys=True, ensure_ascii=False, default=str)
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            self._cx.execute(
+                "INSERT OR REPLACE INTO journal_touches(touch_id, payload) VALUES (?, ?)",
+                (str(touch_id), body),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+
+    def get_journal_touch(self, touch_id: str) -> dict[str, Any] | None:
+        if self._cx is None:
+            return None
+        row = self._cx.execute(
+            "SELECT payload FROM journal_touches WHERE touch_id = ?",
+            (touch_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        raw = json.loads(str(row["payload"]))
+        return raw if isinstance(raw, dict) else None
+
+    def enqueue_intent(self, payload: Mapping[str, Any], *, created_ts: str) -> int:
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        body = json.dumps(dict(payload), sort_keys=True, ensure_ascii=False, default=str)
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self._cx.execute(
+                "INSERT INTO intent_queue(created_ts, status, payload) VALUES (?, ?, ?)",
+                (created_ts, "pending", body),
+            )
+            row_id = int(cur.lastrowid or 0)
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+        return row_id
+
+    def pending_intents(self) -> list[dict[str, Any]]:
+        if self._cx is None:
+            return []
+        rows = self._cx.execute(
+            "SELECT id, created_ts, status, payload FROM intent_queue "
+            "WHERE status = 'pending' ORDER BY id"
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(str(row["payload"]))
+            out.append(
+                {
+                    "id": int(row["id"]),
+                    "created_ts": str(row["created_ts"]),
+                    "status": str(row["status"]),
+                    "payload": payload if isinstance(payload, dict) else {},
+                }
+            )
+        return out
+
+    def mark_intent(self, intent_id: int, status: str) -> None:
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        if status not in {"pending", "sent", "skipped", "failed"}:
+            raise ValueError(f"bad intent status: {status!r}")
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            self._cx.execute(
+                "UPDATE intent_queue SET status = ? WHERE id = ?",
+                (status, int(intent_id)),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+
+    def enqueue_order(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        created_ts: str,
+        intent_id: int | None = None,
+        status: str = "accepted",
+    ) -> int:
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        body = json.dumps(dict(payload), sort_keys=True, ensure_ascii=False, default=str)
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self._cx.execute(
+                "INSERT INTO order_queue(intent_id, created_ts, status, payload) "
+                "VALUES (?, ?, ?, ?)",
+                (intent_id, created_ts, status, body),
+            )
+            row_id = int(cur.lastrowid or 0)
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+        return row_id
+
+    def put_overlay(
+        self,
+        setup_id: str,
+        *,
+        r_shadow: str | None = None,
+        r_demo: str | None = None,
+        r_live: str | None = None,
+    ) -> None:
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            self._cx.execute(
+                "INSERT OR REPLACE INTO overlay(setup_id, r_shadow, r_demo, r_live) "
+                "VALUES (?, ?, ?, ?)",
+                (setup_id, r_shadow, r_demo, r_live),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+
+    def get_overlay(self, setup_id: str) -> dict[str, str | None] | None:
+        if self._cx is None:
+            return None
+        row = self._cx.execute(
+            "SELECT setup_id, r_shadow, r_demo, r_live FROM overlay WHERE setup_id = ?",
+            (setup_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "setup_id": str(row["setup_id"]),
+            "r_shadow": None if row["r_shadow"] is None else str(row["r_shadow"]),
+            "r_demo": None if row["r_demo"] is None else str(row["r_demo"]),
+            "r_live": None if row["r_live"] is None else str(row["r_live"]),
+        }
 
 
 def open_knowledge(vault: Vault, *, create: bool = True) -> Knowledge:
