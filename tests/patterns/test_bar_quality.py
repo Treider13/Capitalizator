@@ -87,6 +87,16 @@ def test_four_same_closes_are_live() -> None:
     assert classify_bar_quality(hist, current, t=T) == LIVE
 
 
+def test_same_close_ts_twin_is_not_a_stagnant_prior() -> None:
+    """3 same + a twin of current would be 5 if `<= close_ts` or `is not current` leaked."""
+    hist = [_bar(i, close="100") for i in range(3)]
+    current = _bar(5, close="100")
+    twin = _bar(5, close="100")
+    assert twin.close_ts == current.close_ts
+    assert twin is not current
+    assert classify_bar_quality(hist + [twin], current, t=T) == LIVE
+
+
 def test_stagnant_is_the_last_five_closes() -> None:
     """Five equal closes in the series is not enough if the last five are broken."""
     hist = [_bar(i, close="100") for i in range(4)] + [_bar(4, close="101")]
