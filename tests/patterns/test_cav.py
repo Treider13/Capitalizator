@@ -77,6 +77,33 @@ def test_wick_in_close_inside_is_reject() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box") == label(ZONE, bar, t=T, htf_bias="box")
 
 
+def test_foreign_symbol_or_tf_bar_is_noise() -> None:
+    """History isolation is not enough. An ETH or 1h reject-shape vs a BTC 15m zone is not REJECT."""
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+    )
+    assert label(ZONE, _bar(low="99.9", high="100.5", close="100.1"), t=T, htf_bias="box") == "REJECT"
+    assert label(ZONE, eth, t=T, htf_bias="box") == "NOISE"
+    assert label(ZONE, hourly, t=T, htf_bias="box") == "NOISE"
+
+
 def test_close_beyond_support_is_through() -> None:
     bar = _bar(low="99.5", high="100.1", close="99.8")
     assert label(ZONE, bar, t=T, htf_bias="box") == "THROUGH"
@@ -354,6 +381,16 @@ def _atr15(*, close: str = "101") -> list[Bar]:
 def test_small_range_inside_zone_is_compress() -> None:
     bar = _bar(low="100.05", high="100.15", close="100.10")
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
+
+
+def test_tight_range_close_above_zone_is_not_compress() -> None:
+    """COMPRESS needs close inside. A touch with range < ATR and close above the box is NOISE."""
+    bar = _bar(low="100.15", high="100.25", close="100.22")
+    assert bar.low <= ZONE.hi
+    assert bar.high >= ZONE.lo
+    assert bar.close > ZONE.hi
+    assert (bar.high - bar.low) < Decimal("2")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "NOISE"
 
 
 def test_range_equal_to_atr_is_drift_not_compress() -> None:

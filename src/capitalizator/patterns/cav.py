@@ -45,6 +45,8 @@ def label(
     when = require_utc(t)
     if bar.close_ts >= when:
         return "NOISE"
+    if bar.symbol != zone.symbol or bar.tf != zone.tf:
+        return "NOISE"
     if not _touches(bar, zone):
         return "NOISE"
     quality = classify_bar_quality(closed_bars, bar, t=when)
