@@ -87,6 +87,14 @@ def test_four_same_closes_are_live() -> None:
     assert classify_bar_quality(hist, current, t=T) == LIVE
 
 
+def test_stagnant_is_the_last_five_closes() -> None:
+    """Five equal closes in the series is not enough if the last five are broken."""
+    hist = [_bar(i, close="100") for i in range(4)] + [_bar(4, close="101")]
+    current = _bar(5, close="100")
+    assert sum(1 for b in hist + [current] if b.close == Decimal("100")) == 5
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
 def test_two_zero_volume_bars_are_illiquid() -> None:
     hist = [_bar(0, close="100", volume=Decimal("0"))]
     current = _bar(1, close="101", volume=Decimal("0"))
@@ -102,6 +110,13 @@ def test_volume_none_skips_illiquid() -> None:
 def test_one_zero_volume_bar_is_live() -> None:
     current = _bar(0, close="101", volume=Decimal("0"))
     assert classify_bar_quality([], current, t=T) == LIVE
+
+
+def test_illiquid_is_the_last_two_zero_volumes() -> None:
+    """A zero-vol bar earlier in the series is not the neighbor. Two zeros anywhere would fake ILLIQUID."""
+    hist = [_bar(0, close="100", volume=Decimal("0")), _bar(1, close="101", volume=Decimal("1"))]
+    current = _bar(2, close="102", volume=Decimal("0"))
+    assert classify_bar_quality(hist, current, t=T) == LIVE
 
 
 def test_stagnant_wins_over_illiquid() -> None:

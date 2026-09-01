@@ -253,6 +253,17 @@ def test_gap_into_current_width_is_none() -> None:
     assert width_now_from_history(bar, hist, t=NOW) is None
 
 
+def test_rank_uses_all_priors_not_the_last_twenty() -> None:
+    """n<20 is a floor, not a rolling window. Last-20 of 25 would report 1 here, not 20/25."""
+    early = [_sample(i, "10") for i in range(5)]
+    later = [_sample(5 + i, "1") for i in range(20)]
+    hist = early + later
+    assert len(hist) == 25
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) == Decimal("20") / Decimal(
+        "25"
+    )
+
+
 def test_rank_needs_twenty_priors() -> None:
     hist = [_sample(i, "1") for i in range(19)]
     assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) is None

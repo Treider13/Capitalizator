@@ -408,8 +408,8 @@ def test_vol_rank_ic_is_plus_one_and_minus_one() -> None:
     down_ic = hostile_exam(down).vol_rank_ic
     assert up_ic is not None and down_ic is not None
     # Decimal.sqrt is not bit-exact; do not pretend the IC is exactly ±1.
-    assert Decimal("0.999") < up_ic <= 1
-    assert -1 <= down_ic < Decimal("-0.999")
+    assert Decimal("0.999") < up_ic < Decimal("1.002")
+    assert Decimal("-1.002") < down_ic < Decimal("-0.999")
 
 
 def test_pnl_share_needs_five_unique_days_not_five_cases() -> None:

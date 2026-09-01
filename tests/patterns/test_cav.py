@@ -435,6 +435,14 @@ def test_four_same_closes_is_still_reject() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "REJECT"
 
 
+def test_broken_last_five_is_still_reject() -> None:
+    """Five 100.1 closes exist in the series, but the last five are broken — not NOISE."""
+    closed = [_hist(i, close="100.1") for i in range(4)] + [_hist(4, close="101")]
+    bar = _bar(low="99.9", high="100.5", close="100.1")
+    assert sum(1 for b in closed + [bar] if b.close == Decimal("100.1")) == 5
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "REJECT"
+
+
 def test_illiquid_would_be_reject_is_noise() -> None:
     closed = [_hist(0, close="101", volume=Decimal("0"))]
     bar = Bar(
