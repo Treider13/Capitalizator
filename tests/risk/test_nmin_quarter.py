@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from capitalizator.risk.nmin import size_mult
+from capitalizator.risk.nmin import NMIN_SIZE, size_mult
 
 
 def test_f1_silence_does_not_change_size() -> None:
@@ -26,3 +26,7 @@ def test_f4_n19_is_quarter() -> None:
 def test_never_raises_size() -> None:
     assert size_mult(n=100, gesture="DEFEND", phase="f4") == Decimal("1")
     assert size_mult(n=100, gesture="DEFEND", phase="f1") == Decimal("1")
+
+
+def test_nmin_size_is_zero_until_decided() -> None:
+    assert NMIN_SIZE == Decimal("0")

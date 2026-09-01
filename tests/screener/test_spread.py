@@ -62,3 +62,33 @@ def test_symbol_outside_week0_rejects() -> None:
         )
         is False
     )
+
+
+def test_delisted_and_funding_extreme_reject() -> None:
+    assert (
+        Screener().ok(
+            "BTCUSDT",
+            spread_frac=Decimal("0.001"),
+            typical_move=Decimal("0.01"),
+            delisted=True,
+        )
+        is False
+    )
+    assert (
+        Screener().ok(
+            "BTCUSDT",
+            spread_frac=Decimal("0.001"),
+            typical_move=Decimal("0.01"),
+            funding_extreme=True,
+        )
+        is False
+    )
+    assert (
+        Screener().ok(
+            "BTCUSDT",
+            spread_frac=Decimal("0.001"),
+            typical_move=Decimal("0.01"),
+            volume_ok=False,
+        )
+        is False
+    )

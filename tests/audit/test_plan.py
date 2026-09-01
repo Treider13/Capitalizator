@@ -244,7 +244,8 @@ def test_console_snapshot_lists_24_symbols(tmp_path: Path) -> None:
     snap = desk_snapshot(vault)
     assert snap["n_symbols"] == 24
     assert snap["symbols"][0] == "BTCUSDT"
-    assert "нет testnet hello" in snap["hello_banner"]
+    assert "Демо: нет hello" in snap["hello_banner"]
+    assert "мало n" in snap["hello_banner"]
 
 
 def test_signer_requires_reduce_only_stop() -> None:
@@ -459,6 +460,11 @@ def test_demo_hello_sends_stop_in_payload(tmp_path: Path) -> None:
         )
     desk.on_book("BTCUSDT", _book())
     desk.on_event(_trade(), [ZONE])
+    live = desk.state_for("BTCUSDT").last_touch
+    assert live is not None
+    desk.registry._patch(
+        touch_id=live.touch_id, overwrite=True, bearing_verdict="VERIFIED"
+    )
     desk.tick(WINDOW + timedelta(seconds=8))
     events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
     row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
@@ -470,3 +476,93 @@ def test_demo_hello_sends_stop_in_payload(tmp_path: Path) -> None:
         assert pending[0]["payload"].get("stop") is not None
     else:
         assert events[0]["sent"] is False
+
+
+def test_demo_without_verified_card_does_not_send() -> None:
+    from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy
+    from capitalizator.risk.halts import Halts
+    from capitalizator.risk.schema import RiskEngine
+
+    strat = BounceStrategy(
+        risk=RiskEngine(),
+        halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
+        require_card=False,
+        require_jury=True,
+    )
+    snap = BounceSnapshot(
+        now=WINDOW,
+        symbol="BTCUSDT",
+        price=Decimal("100.5"),
+        tick=TICK,
+        trading_mode="demo",
+        zone=ZONE,
+        zones=(ZONE,),
+        spread_frac=Decimal("0.001"),
+        typical_move=Decimal("0.01"),
+        idea="bounce",
+        jury="ACCORD",
+        cav_label="REJECT",
+        zlg_label="DEFEND",
+        n_cav=20,
+        n_zlg=20,
+        tape_eaten=False,
+        btc_regime="box",
+        gesture_n=20,
+        card_bearing_verdict=None,
+    )
+    assert strat.propose(snap) is None
+    assert strat.propose(
+        BounceSnapshot(**{**snap.__dict__, "card_bearing_verdict": "VERIFIED"})
+    ) is not None
+
+
+def test_screener_rejects_delist_funding_volume() -> None:
+    from capitalizator.screener.filters import Screener
+
+    scr = Screener()
+    assert (
+        scr.ok("BTCUSDT", spread_frac=Decimal("0.001"), typical_move=Decimal("0.01"))
+        is True
+    )
+    assert (
+        scr.ok(
+            "BTCUSDT",
+            spread_frac=Decimal("0.001"),
+            typical_move=Decimal("0.01"),
+            delisted=True,
+        )
+        is False
+    )
+    assert (
+        scr.ok(
+            "BTCUSDT",
+            spread_frac=Decimal("0.001"),
+            typical_move=Decimal("0.01"),
+            funding_extreme=True,
+        )
+        is False
+    )
+    assert (
+        scr.ok(
+            "BTCUSDT",
+            spread_frac=Decimal("0.001"),
+            typical_move=Decimal("0.01"),
+            volume_ok=False,
+        )
+        is False
+    )
+
+
+def test_nmin_size_stays_zero() -> None:
+    from capitalizator.risk.nmin import NMIN_SIZE
+
+    assert NMIN_SIZE == Decimal("0")
+
+
+def test_f5_1_2_needs_ack() -> None:
+    from capitalizator.risk.f5 import F1_TARGET, F5_TARGET, active_target, f5_target
+
+    assert f5_target(equity_source="main", gate_f4=True, ack=False) is None
+    assert f5_target(equity_source="main", gate_f4=True, ack=True) == F5_TARGET
+    assert active_target(equity_source="main", gate_f4=True, ack=False) == F1_TARGET

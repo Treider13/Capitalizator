@@ -27,10 +27,15 @@ class Screener:
         typical_move: Decimal,
         unlock_tomorrow: bool = False,
         unlock_today: bool = False,
+        delisted: bool = False,
+        funding_extreme: bool = False,
+        volume_ok: bool = True,
     ) -> bool:
         if symbol not in self.universe.symbols:
             return False
         if unlock_tomorrow or unlock_today:
+            return False
+        if delisted or funding_extreme or not volume_ok:
             return False
         if spread_frac < 0 or typical_move <= 0:
             return False

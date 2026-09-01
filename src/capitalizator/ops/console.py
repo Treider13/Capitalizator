@@ -122,13 +122,19 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     contour = contour_status(vault)
     user = read_user_mode(vault)
     hello_ok = hello_recorded(vault)
-    banner = "" if hello_ok else "нет testnet hello — send закрыт"
+    banners: list[str] = []
+    if not hello_ok:
+        banners.append("Демо: нет hello")
+    if n_touches < 20:
+        banners.append("мало n")
+    banner = " — ".join(banners)
     symbols = list(load_desk_universe().symbols)
     snap = {
         "trading_mode": mode,
         "user_mode": user,
         "hello_ok": hello_ok,
         "hello_banner": banner,
+        "n_banner": "мало n" if n_touches < 20 else "",
         "symbols": symbols,
         "n_symbols": len(symbols),
         "learn_n_days": n_days,

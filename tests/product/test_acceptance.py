@@ -186,6 +186,7 @@ def _snap(**overrides: object) -> BounceSnapshot:
         "tape_eaten": False,
         "btc_regime": "box",
         "gesture_n": 20,
+        "card_bearing_verdict": "VERIFIED",
     }
     raw.update(overrides)
     return BounceSnapshot(**raw)  # type: ignore[arg-type]
@@ -460,7 +461,8 @@ def test_20_hello_banner_when_missing(tmp_path: Path) -> None:
     open_knowledge(vault).close()
     snap = desk_snapshot(vault)
     assert snap["hello_ok"] is False
-    assert "нет testnet hello" in snap["hello_banner"]
+    assert "Демо: нет hello" in snap["hello_banner"]
+    assert "мало n" in snap["hello_banner"]
     mark_hello(vault, ok=True)
     assert hello_recorded(vault) is True
     assert desk_snapshot(vault)["hello_ok"] is True

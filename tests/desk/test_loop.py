@@ -135,6 +135,11 @@ def test_demo_window_enqueues_after_accord(tmp_path: Path) -> None:
         desk.registry.touches.append(touch)
     desk.on_book("BTCUSDT", _book())
     desk.on_trade(_trade(WINDOW), [ZONE])
+    live = desk.state_for("BTCUSDT").last_touch
+    assert live is not None
+    desk.registry._patch(
+        touch_id=live.touch_id, overwrite=True, bearing_verdict="VERIFIED"
+    )
     desk.tick(WINDOW + timedelta(seconds=8))
     events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
     assert events

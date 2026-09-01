@@ -55,6 +55,9 @@ class BounceSnapshot:
     typical_move: Decimal = Decimal("0.01")
     unlock_tomorrow: bool = False
     unlock_today: bool = False
+    delisted: bool = False
+    funding_extreme: bool = False
+    volume_ok: bool = True
     calendar: Sequence[NewsRow] = field(default_factory=tuple)
     no_us_today: bool = False
     lev: Decimal = Decimal("3")
@@ -209,6 +212,9 @@ class BounceStrategy:
             typical_move=snap.typical_move,
             unlock_tomorrow=snap.unlock_tomorrow,
             unlock_today=snap.unlock_today,
+            delisted=snap.delisted,
+            funding_extreme=snap.funding_extreme,
+            volume_ok=snap.volume_ok,
         ):
             return None
         zone = snap.zone
@@ -240,6 +246,12 @@ class BounceStrategy:
             return None
         fact = resolve_first_fact(snap.zlg_label, snap.gesture_n)
         if self.require_jury and fact.tag == "shadow_gesture":
+            return None
+        if (
+            self.require_jury
+            and self.desk_mode in {"demo", "live"}
+            and snap.card_bearing_verdict != "VERIFIED"
+        ):
             return None
         if prs_cut(snap.prs_y, threshold=Decimal("3")).action == "reject":
             return None
