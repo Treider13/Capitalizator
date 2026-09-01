@@ -36,6 +36,28 @@ class GapRow:
     n: int
 
 
+def skip_line(rows: Sequence[Touch] | Sequence[dict[str, object]]) -> str | None:
+    """Ramil-style skip counts. No advice tokens. Missing R is not invented."""
+    no_tvh = 0
+    other = 0
+    for row in rows:
+        reason = row.skip_reason if isinstance(row, Touch) else row.get("skip_reason")
+        if not reason:
+            continue
+        if reason == "no_tvh":
+            no_tvh += 1
+        else:
+            other += 1
+    if no_tvh == 0 and other == 0:
+        return None
+    bits = []
+    if no_tvh:
+        bits.append(f"без ТВХ {no_tvh}")
+    if other:
+        bits.append(f"иное {other}")
+    return "Пропуски: " + "; ".join(bits) + "."
+
+
 def daily_map_report(
     *,
     day: str,
@@ -59,6 +81,9 @@ def daily_map_report(
         lines.append(
             f"{zone.symbol} {zone.lo}–{zone.hi} — {n} {_touches_word(n)}{eaten_bit}{gesture_bit}."
         )
+    skips = skip_line([touch for _, touch in rows])
+    if skips:
+        lines.append(skips)
     lines.append("")
     if gaps:
         total = sum(g.n for g in gaps)

@@ -92,6 +92,7 @@ def session_counts(vault: Vault, *, now: datetime | None = None) -> dict[str, in
     n_touches = 0
     n_shadow = 0
     n_skip = 0
+    n_no_tvh = 0
     for row in rows:
         ts = str(row.get("touch_ts") or "")
         if not ts.startswith(day):
@@ -106,7 +107,14 @@ def session_counts(vault: Vault, *, now: datetime | None = None) -> dict[str, in
             n_shadow += 1
         if row.get("skip_reason"):
             n_skip += 1
-    return {"n_touches": n_touches, "n_shadow": n_shadow, "n_skip": n_skip}
+        if row.get("skip_reason") == "no_tvh":
+            n_no_tvh += 1
+    return {
+        "n_touches": n_touches,
+        "n_shadow": n_shadow,
+        "n_skip": n_skip,
+        "n_no_tvh": n_no_tvh,
+    }
 
 
 def latest_touch(vault: Vault, *, symbol: str | None = None) -> dict[str, Any] | None:

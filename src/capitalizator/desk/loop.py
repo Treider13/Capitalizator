@@ -22,11 +22,18 @@ from capitalizator.card.draft import pending_card
 from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.desk.session_name import session_name
-from capitalizator.exec.failed_break import FailedBreak
+from capitalizator.exec.failed_break import FailedBreak, sweep_wick
 from capitalizator.exec.first_minute import FirstMinute
+from capitalizator.exec.fvg_mark import fvg_present
 from capitalizator.exec.manage import TradeManager
 from capitalizator.exec.shadow import ShadowWriter
-from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy, in_mid_range
+from capitalizator.exec.strategy_bounce import (
+    BounceSnapshot,
+    BounceStrategy,
+    in_mid_range,
+    price_in_zone,
+)
+from capitalizator.exec.tvh import NO_TVH, tvh_ok
 from capitalizator.jury.desk import (
     decide,
     voices_for_bounce,
@@ -38,6 +45,7 @@ from capitalizator.memory.registry import Registry, Touch
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
 from capitalizator.ops.knowledge import Knowledge
+from capitalizator.ops.phase import breakout_enabled
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
 from capitalizator.patterns.bar_quality import classify_bar_quality
 from capitalizator.patterns.cav import label as cav_label
@@ -525,7 +533,38 @@ class DeskLoop:
         else:
             card_id = self.open_card_id[st.symbol]
         self._persist_card(card_id, idea, st.symbol, row.ts)
+        mid = in_mid_range(
+            row.trade_px,
+            known_zones,
+            tick=self.tick_size,
+            band_ticks=self.config.mid_band_ticks,
+        )
+        has_tvh = tvh_ok(
+            price_in_zone=price_in_zone(row.trade_px, zone),
+            mid=mid,
+            cav=row.cav_label,
+            zlg=row.gesture,
+            n_cav=n_cav,
+            n_zlg=n_zlg,
+            tape_eaten=row.tape_eaten,
+        )
         shadow_would = jury == "ACCORD"
+        skip: str | None
+        if not has_tvh:
+            shadow_would = False
+            skip = NO_TVH
+        elif shadow_would:
+            skip = None
+        else:
+            skip = first.tag if first.tag == "shadow_gesture" else jury
+        if idea == "breakout" and not breakout_enabled() and skip is None:
+            skip = "breakout_off"
+        self.registry._patch(
+            touch_id=row.touch_id,
+            overwrite=True,
+            skip_reason=skip,
+        )
+        row = next(t for t in self.registry.touches if t.touch_id == row.touch_id)
         shadow_side = None
         shadow_tag = None
         if shadow_would:
@@ -587,9 +626,7 @@ class DeskLoop:
                 "shadow_would": shadow_would,
                 "shadow_side": shadow_side,
                 "shadow_tag": shadow_tag,
-                "skip_reason": None
-                if shadow_would
-                else (first.tag if first.tag == "shadow_gesture" else jury),
+                "skip_reason": skip,
                 "outcome": row.outcome,
                 "rho_class_id": row.rho_class_id,
             }
@@ -630,6 +667,7 @@ class DeskLoop:
         sent = False
         if (
             shadow_would
+            and skip is None
             and self.user_mode in {"demo", "live"}
             and self.hello_ok()
             and in_desk_window(row.ts)
@@ -698,6 +736,19 @@ class DeskLoop:
                 WidthSample(zone_id=zone.zone_id, ts=row.ts, w_now=w_now)
             )
         self.registry.fill_width(w_now=w_now, w_rank=w_rank, touch_id=row.touch_id)
+        self.registry.fill_sweep_wick(
+            flag=sweep_wick(zone=zone, bar=bar),
+            touch_id=row.touch_id,
+        )
+        self.registry.fill_fvg_present(
+            flag=fvg_present(
+                st.bars,
+                symbol=st.symbol,
+                tf=bar.tf,
+                close_ts=bar.close_ts,
+            ),
+            touch_id=row.touch_id,
+        )
         ofi_val = None
         books = [copy for _, copy in st.book_history if copy.ready]
         if len(books) >= 2:

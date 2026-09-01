@@ -3,7 +3,8 @@
 trading_mode and desk_mode must be demo|live. TAKER_OK is false (limit only).
 Jury, BtcVeto, FirstMinute, MacroRules, first-fact, and PRS cut are gates
 when the desk sets require_jury (isolated F1 tests leave it off).
-check_tape / check_wall are always on in the product and do not filter.
+check_tape / check_wall record in F1 and do not filter there.
+require_jury (desk) applies 2.10.1: eaten or wall-without-print blocks bounce.
 """
 
 from __future__ import annotations
@@ -19,7 +20,12 @@ from capitalizator.card.draft import CardDraft, load_bearing_ok, require_card
 from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.exec.breakout_close import BreakoutClose
 from capitalizator.exec.first_minute import FirstMinute
-from capitalizator.jury.desk import decide, voices_for_bounce, voices_for_breakout, voices_for_failed_break
+from capitalizator.jury.desk import (
+    decide,
+    voices_for_bounce,
+    voices_for_breakout,
+    voices_for_failed_break,
+)
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
 from capitalizator.ops.phase import trading_mode as phase_trading_mode
@@ -39,6 +45,8 @@ ORDER_TYPE = "limit"
 SETUP_TAG = "bounce"
 MIN_R = Decimal("1.5")
 DEFAULT_R = Decimal("2")
+BREAK_MIN_R = Decimal("3")
+_BREAK_IDEAS = frozenset({"breakout", "failed_break"})
 
 
 @dataclass(frozen=True)
@@ -120,24 +128,36 @@ def stop_behind(zone: Zone, tick: Decimal, away_ticks: int) -> Decimal:
     return stop
 
 
+def reward_multiple(idea: str) -> Decimal:
+    return BREAK_MIN_R if idea in _BREAK_IDEAS else MIN_R
+
+
+def default_multiple(idea: str) -> Decimal:
+    return BREAK_MIN_R if idea in _BREAK_IDEAS else DEFAULT_R
+
+
 def take_profit(
     side: str,
     entry: Decimal,
     stop: Decimal,
     next_zone: Zone | None,
+    *,
+    idea: str = "bounce",
 ) -> Decimal | None:
     r = abs(entry - stop)
     if r <= 0:
         return None
+    need = reward_multiple(idea)
     if next_zone is not None:
         tp = next_zone.lo if side == "buy" else next_zone.hi
         reward = (tp - entry) if side == "buy" else (entry - tp)
-        if reward < MIN_R * r:
+        if reward < need * r:
             return None
         return tp
+    span = default_multiple(idea) * r
     if side == "buy":
-        return entry + DEFAULT_R * r
-    return entry - DEFAULT_R * r
+        return entry + span
+    return entry - span
 
 
 class BounceStrategy:
@@ -230,9 +250,16 @@ class BounceStrategy:
             return None
         if not price_in_zone(snap.price, zone):
             return None
-        # check_tape / check_wall always recorded by the desk; they do not filter here.
-        _ = (self.check_tape, self.check_wall, snap.tape_eaten, snap.wall_no_print)
+        # F1 isolated tests: check_tape / check_wall record only.
+        # Desk require_jury: 2.10.1 — eaten or silent wall is not a bounce.
+        _ = (self.check_tape, self.check_wall)
         idea = snap.idea if snap.idea in {"bounce", "breakout", "failed_break"} else "bounce"
+        if (
+            idea == "bounce"
+            and self.require_jury
+            and (snap.tape_eaten is True or snap.wall_no_print is True)
+        ):
+            return None
         side = "buy" if zone.side == "support" else "sell"
         if idea == "failed_break":
             side = "sell" if zone.side == "support" else "buy"
@@ -310,7 +337,7 @@ class BounceStrategy:
             stop = stop_behind(zone, snap.tick, self.registry.bounce_away_ticks)
         except ValueError:
             return None
-        tp = take_profit(side, snap.price, stop, snap.next_target)
+        tp = take_profit(side, snap.price, stop, snap.next_target, idea=idea)
         if tp is None:
             return None
         if not self.budget.allow_entry():
