@@ -11,7 +11,7 @@
 5. Testnet hello: лимит+cancel на демо, затем `mark_hello`. Без hello консоль показывает баннер, send закрыт.
 6. Рекордер: `--minutes` + `--data-root` (без JSONL — живая лента). Сокет инжектируется на VPS.
 7. Подписка: trades + book + funding + OI на 24 символа. Gap → resync, глубину не выдумывать.
-8. Консоль: `127.0.0.1:8082`, туннель `ssh -L 8082:127.0.0.1:8082`. `POST /order` = 405.
+8. Консоль: `python -m capitalizator.ops.console --userdir ./user_data --serve` → интерфейс «Хронос» на `http://127.0.0.1:8082/`. Туннель `ssh -L 8082:127.0.0.1:8082`. Блок «Контур» показывает on/off и сутки ленты; кнопка «Включить контур» активна только при `can_enable`. Журнал касаний пишется всегда, контур это не выключает. `POST /order` = 405. Без ленты блоки честно пустые.
 9. Signer — отдельный процесс. Desk пишет `intent_queue`. Ключ только у signer.
 10. Dead-man 30 с, reconcile 60 с. Ночной replay + daily report + overlay. Карточка-черновик: 5–7 pending, вердикт не от LLM.
 11. Desk: `python -m capitalizator.desk --userdir ./user_data --serve` читает `tape/` (parquet рекордера), пишет journal + тень + `intent_queue`. `--once` — один проход без сети. SIGINT/SIGTERM останавливают `--serve`.

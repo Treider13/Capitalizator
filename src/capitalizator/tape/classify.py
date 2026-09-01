@@ -50,6 +50,37 @@ class TapeClassifier:
         if tick_size <= 0:
             raise ValueError("tick_size must be > 0")
         cfg = config or load_registry()
+        side = "bid" if zone.side == "support" else "ask"
+        center = (zone.lo + zone.hi) / 2
+        d_pre = book.depth_near(side, str(center), cfg.prs_delta_ticks)
+        taken = self.eaten_qty(
+            book=book,
+            trades=trades,
+            zone=zone,
+            t0=t0,
+            tick_size=tick_size,
+            config=cfg,
+        )
+        if d_pre <= 0:
+            return False
+        return taken >= EATEN_SHARE * d_pre
+
+    def eaten_qty(
+        self,
+        *,
+        book: Book,
+        trades: Sequence[MarketEvent],
+        zone: Zone,
+        t0: datetime,
+        tick_size: Decimal,
+        config: RegistryConfig | None = None,
+    ) -> Decimal:
+        """Taken zone-side qty in the 8s window. 0 if the book has no depth."""
+        if not book.ready:
+            raise ValueError("eaten needs a ready book")
+        if tick_size <= 0:
+            raise ValueError("tick_size must be > 0")
+        cfg = config or load_registry()
         start = require_utc(t0)
         end = start + timedelta(seconds=cfg.zlg_window_s)
         pad = tick_size * cfg.epsilon_ticks
@@ -58,7 +89,7 @@ class TapeClassifier:
         center = (zone.lo + zone.hi) / 2
         d_pre = book.depth_near(side, str(center), cfg.prs_delta_ticks)
         if d_pre <= 0:
-            return False
+            return Decimal("0")
         taken = Decimal("0")
         lo, hi = zone.lo - pad, zone.hi + pad
         for trade in trades:
@@ -75,4 +106,4 @@ class TapeClassifier:
             if px < lo or px > hi:
                 continue
             taken += Decimal(str(trade.payload["qty"]))
-        return taken >= EATEN_SHARE * d_pre
+        return taken

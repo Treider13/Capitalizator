@@ -18,6 +18,16 @@ from capitalizator.types import require_utc
 NEWS_CLASSES = frozenset(
     {"CPI", "FOMC", "NFP", "PCE", "SEC", "LISTING", "HACK", "ETF", "OTHER"}
 )
+
+
+def default_macro_path() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "infra" / "calendars" / "macro.csv"
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError("infra/calendars/macro.csv not found")
+
+
 REQUIRED = (
     "event_id",
     "class",
