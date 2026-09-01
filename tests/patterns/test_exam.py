@@ -508,6 +508,34 @@ def test_pnl_share_can_exceed_one_when_a_day_loses() -> None:
     assert share > 1
 
 
+def test_six_equal_days_share_is_five_sixths() -> None:
+    """Best 5 of 6 identical days is 5/6. 'All tied so share=1' or the whole book would report 1."""
+    rows = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 10, d), pnl=Decimal("10"))
+        for d in range(1, 7)
+    ]
+    assert hostile_exam(rows).pnl_share_best_5_days == Decimal("50") / Decimal("60")
+
+
+def test_pnl_share_tie_for_fifth_does_not_include_the_sixth() -> None:
+    """Two days tied for 5th: still exactly 5 days in the numerator, not 6."""
+    pnls = (
+        Decimal("10"),
+        Decimal("10"),
+        Decimal("10"),
+        Decimal("10"),
+        Decimal("5"),
+        Decimal("5"),
+    )
+    rows = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 11, d), pnl=pnl)
+        for d, pnl in zip(range(1, 7), pnls)
+    ]
+    share = hostile_exam(rows).pnl_share_best_5_days
+    assert share == Decimal("45") / Decimal("50")
+    assert share != Decimal("1")
+
+
 def test_exam_source_has_no_numpy() -> None:
     text = SRC.read_text(encoding="utf-8")
     assert "import numpy" not in text
