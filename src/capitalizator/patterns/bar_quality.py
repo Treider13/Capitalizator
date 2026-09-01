@@ -82,8 +82,12 @@ def last_gap_segment(
 
     If `current` itself opens across a jump, the new segment has no closed bars yet.
     Empty if there is no usable history. Does not include `current` (PIT ATR).
+    An unclosed `current` (close_ts >= t) has no segment yet.
     """
-    priors = prior_same_tf(history, current, t=t)
+    when = require_utc(t)
+    if current.close_ts >= when:
+        return []
+    priors = prior_same_tf(history, current, t=when)
     if not priors:
         return []
     if _is_gap(priors[-1], current, jump_ratio):

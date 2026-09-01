@@ -187,9 +187,11 @@ def test_mixed_symbol_or_tf_is_not_a_gap_series() -> None:
 
 def test_last_gap_segment_empty_when_current_jumps() -> None:
     priors = [_bar(i, close="130", open_="130") for i in range(15)]
-    jumped = _bar(20, close="100", open_="100")
+    # i=17 closes 16:30, before T=16:45 — must stay a closed bar.
+    jumped = _bar(17, close="100", open_="100")
+    assert jumped.close_ts < T
     assert last_gap_segment(priors, jumped, t=T) == []
-    cont = _bar(20, close="130", open_="130")
+    cont = _bar(17, close="130", open_="130")
     assert len(last_gap_segment(priors, cont, t=T)) == 15
 
 

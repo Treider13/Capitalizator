@@ -95,6 +95,15 @@ def test_w_rank_outside_unit_rejected() -> None:
         reg.fill_width(w_now=Decimal("-0.1"), w_rank=None)
 
 
+def test_w_rank_unit_endpoints_are_kept() -> None:
+    reg = _reg()
+    lo = reg.fill_width(w_now=Decimal("0"), w_rank=Decimal("0"))[0]
+    assert lo.w_now == Decimal("0")
+    assert lo.w_rank == Decimal("0")
+    hi = reg.fill_width(w_now=Decimal("0"), w_rank=Decimal("1"))[0]
+    assert hi.w_rank == Decimal("1")
+
+
 def test_two_runs_same_journal() -> None:
     def run() -> tuple[Decimal | None, str | None, int | None, str | None]:
         reg = _reg()

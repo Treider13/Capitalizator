@@ -45,8 +45,14 @@ def width_now_from_history(
     *,
     t: datetime,
 ) -> Decimal | None:
-    """w_now on the last gap-split segment that closed before this bar."""
-    return width_now(bar, atr(last_gap_segment(history, bar, t=t)))
+    """w_now on the last gap-split segment that closed before this bar.
+
+    Unclosed bar (close_ts >= t) → None: range is not a fact yet.
+    """
+    when = require_utc(t)
+    if bar.close_ts >= when:
+        return None
+    return width_now(bar, atr(last_gap_segment(history, bar, t=when)))
 
 
 def width_rank(

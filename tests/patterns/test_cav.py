@@ -39,6 +39,29 @@ def test_unclosed_bar_is_noise() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box") == "NOISE"
 
 
+def test_unclosed_with_compress_history_is_still_noise() -> None:
+    """Forming bar must not become COMPRESS even if 15 priors would allow it."""
+    closed = []
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = _bar(low="100.05", high="100.15", close="100.10", close_ts=T)
+    assert bar.close_ts >= T
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "NOISE"
+
+
 def test_wick_in_close_inside_is_reject() -> None:
     bar = _bar(low="99.9", high="100.5", close="100.1")
     assert label(ZONE, bar, t=T, htf_bias="box") == "REJECT"

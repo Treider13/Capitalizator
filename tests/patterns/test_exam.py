@@ -144,6 +144,11 @@ def test_two_runs_bit_identical() -> None:
     assert run() == run()
 
 
+def test_no_predicted_direction_is_none() -> None:
+    rows = [ExamCase(pred=Decimal("10"), last=Decimal("10"), actual=Decimal("11"))]
+    assert hostile_exam(rows).direction_hit is None
+
+
 def test_flat_actual_is_a_direction_miss() -> None:
     rows = [ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("10"))]
     assert hostile_exam(rows).direction_hit == Decimal("0")

@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 
+from capitalizator.patterns.bar_quality import last_gap_segment
 from capitalizator.patterns.width import (
     WidthSample,
     width_now,
@@ -52,6 +53,24 @@ def test_width_from_history_uses_post_gap_segment() -> None:
         _bar(i + 1, open_="101", close="101") for i in range(3)
     ]
     assert width_now_from_history(bar, gapped, t=NOW) is None
+
+
+def test_unclosed_bar_has_no_width() -> None:
+    """Range is not a fact until close_ts < t. Do not journal a forming bar."""
+    hist = [_bar(i) for i in range(15)]
+    forming = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=NOW - timedelta(minutes=15),
+        close_ts=NOW,
+        open=Decimal("101"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert forming.close_ts >= NOW
+    assert last_gap_segment(hist, forming, t=NOW) == []
+    assert width_now_from_history(forming, hist, t=NOW) is None
 
 
 def test_gap_into_current_width_is_none() -> None:
