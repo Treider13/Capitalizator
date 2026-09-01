@@ -209,6 +209,59 @@ def test_stagnant_last_five_ignores_foreign_tf_different_close() -> None:
     assert classify_bar_quality(hist, current, t=T) == STAGNANT
 
 
+def test_eth_stagnant_last_five_ignores_btc_different_close() -> None:
+    """Hardcoded `history is BTC` drops four ETH 100s and keeps BTC 200 — last-5 breaks."""
+    hist = [_bar(i, close="100", symbol="ETHUSDT") for i in range(4)] + [_bar(4, close="200")]
+    current = _bar(5, close="100", symbol="ETHUSDT")
+    assert classify_bar_quality(hist[:4], current, t=T) == STAGNANT
+    assert classify_bar_quality(hist, current, t=T) == STAGNANT
+    assert classify_bar_quality([hist[4]], current, t=T) == LIVE
+
+
+def test_hourly_stagnant_last_five_ignores_15m_different_close() -> None:
+    """Hardcoded `tf==15m` drops four 1h 100s and keeps a 15m 200 — last-5 breaks."""
+    hourlies = []
+    start = datetime(2026, 8, 30, 8, 0, tzinfo=UTC)
+    for i in range(4):
+        ts = start + timedelta(hours=i)
+        hourlies.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ts,
+                close_ts=ts + timedelta(hours=1),
+                open=Decimal("100"),
+                high=Decimal("101"),
+                low=Decimal("99"),
+                close=Decimal("100"),
+            )
+        )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 15, tzinfo=UTC),
+        open=Decimal("200"),
+        high=Decimal("201"),
+        low=Decimal("199"),
+        close=Decimal("200"),
+    )
+    current = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 12, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 15, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    assert hourlies[-1].close_ts < foreign.close_ts < current.close_ts
+    assert current.close_ts < T
+    assert classify_bar_quality(hourlies, current, t=T) == STAGNANT
+    assert classify_bar_quality(hourlies + [foreign], current, t=T) == STAGNANT
+
+
 def test_three_15m_and_one_1h_do_not_stagnate() -> None:
     """3 same 15m + 1h + current is 5 prints. Counting every tf would STAGNANT."""
     hourly = Bar(
@@ -1025,6 +1078,64 @@ def test_illiquid_last_two_does_not_use_foreign_tf_zero_as_neighbor() -> None:
         current,
         t=T,
     ) == ILLIQUID
+
+
+def test_eth_illiquid_last_two_does_not_use_btc_zero_as_neighbor() -> None:
+    """Hardcoded `history is BTC` takes BTC vol=0 + ETH current vol=0 as last-2."""
+    hist = [
+        _bar(0, close="100", symbol="ETHUSDT", volume=Decimal("1")),
+        _bar(1, close="100", volume=Decimal("0")),
+    ]
+    current = _bar(2, close="101", symbol="ETHUSDT", volume=Decimal("0"))
+    assert classify_bar_quality([hist[0]], current, t=T) == LIVE
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+    assert classify_bar_quality(
+        [_bar(1, close="100", symbol="ETHUSDT", volume=Decimal("0"))],
+        current,
+        t=T,
+    ) == ILLIQUID
+
+
+def test_hourly_illiquid_last_two_does_not_use_15m_zero_as_neighbor() -> None:
+    """Hardcoded `tf==15m` takes 15m vol=0 + 1h current vol=0 as last-2."""
+    neighbor = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 0, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+        volume=Decimal("1"),
+    )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 13, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 15, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+        volume=Decimal("0"),
+    )
+    current = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 13, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 14, 15, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < current.close_ts
+    assert current.close_ts < T
+    assert classify_bar_quality([neighbor], current, t=T) == LIVE
+    assert classify_bar_quality([neighbor, foreign], current, t=T) == LIVE
+    assert classify_bar_quality([foreign], current, t=T) == LIVE
 
 
 def test_btc_zero_volume_does_not_illiquid_an_eth_bar() -> None:

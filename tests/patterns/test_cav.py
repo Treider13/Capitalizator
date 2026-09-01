@@ -316,6 +316,112 @@ def test_fifteen_btc_still_compress_when_later_eth_looks_like_a_jump() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed + [eth]) == "COMPRESS"
 
 
+def test_fifteen_eth_still_compress_when_later_btc_looks_like_a_jump() -> None:
+    """Hardcoded `history is BTC` keeps only the late BTC 80 — a jump that empties ATR."""
+    eth_zone = Zone.create(
+        symbol="ETHUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    closed = []
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="ETHUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    btc = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.10"),
+        high=Decimal("100.15"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+    )
+    assert closed[-1].close_ts < btc.close_ts < eth.close_ts
+    assert abs(eth.open - btc.close) / btc.close > Decimal("0.15")
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=closed + [btc]) == "COMPRESS"
+
+
+def test_fifteen_hourly_still_compress_when_later_15m_looks_like_a_jump() -> None:
+    """Hardcoded `tf==15m` keeps only the late 15m 80 — a jump that empties ATR."""
+    hourly_zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1h",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    closed = []
+    start = datetime(2026, 8, 29, 0, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start + timedelta(hours=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ts,
+                close_ts=ts + timedelta(hours=1),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 15, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.10"),
+        high=Decimal("100.15"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+    )
+    assert closed[-1].close_ts < foreign.close_ts < hourly.close_ts
+    assert abs(hourly.open - foreign.close) / foreign.close > Decimal("0.15")
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=closed + [foreign]) == "COMPRESS"
+
+
 def test_fourteen_15m_and_one_1h_do_not_compress() -> None:
     """14 15m + 1h is 15 bars. Counting every tf would COMPRESS (or split_on_gaps raise)."""
     closed = _atr15()[:14]
@@ -936,6 +1042,94 @@ def test_reject_does_not_go_noise_when_last_two_would_be_illiquid_only_via_1h_ze
     assert neighbor.close_ts < hourly.close_ts < bar.close_ts
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "REJECT"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor, hourly]) == "REJECT"
+
+
+def test_eth_reject_does_not_go_noise_when_last_two_would_be_illiquid_only_via_btc_zero() -> None:
+    """Hardcoded `history is BTC` takes BTC vol=0 + ETH reject vol=0 as last-2 → NOISE."""
+    eth_zone = Zone.create(
+        symbol="ETHUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 0, 30, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    foreign = _hist(10, volume=Decimal("0"))
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < eth.close_ts
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[neighbor]) == "REJECT"
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "REJECT"
+
+
+def test_hourly_reject_does_not_go_noise_when_last_two_would_be_illiquid_only_via_15m_zero() -> None:
+    """Hardcoded `tf==15m` takes 15m vol=0 + 1h reject vol=0 as last-2 → NOISE."""
+    hourly_zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="1h",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 14, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 15, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 15, 15, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 15, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < hourly.close_ts
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor]) == "REJECT"
+    assert label(hourly_zone, hourly, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "REJECT"
 
 
 def test_15m_zero_volume_does_not_noise_a_1h_reject() -> None:

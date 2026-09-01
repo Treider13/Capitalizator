@@ -602,6 +602,94 @@ def test_fifteen_btc_keep_width_when_later_eth_looks_like_a_jump() -> None:
     assert width_now_from_history(bar, fifteen + [eth], t=NOW) == Decimal("0.1") / Decimal("2")
 
 
+def test_fifteen_eth_keep_width_when_later_btc_looks_like_a_jump() -> None:
+    """Hardcoded `history is BTC` keeps only the late BTC 80 — a jump that empties ATR."""
+    fifteen = []
+    for i in range(15):
+        ts = T0 + timedelta(minutes=15 * i)
+        fifteen.append(
+            Bar(
+                symbol="ETHUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    btc = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 20),
+        close_ts=T0 + timedelta(minutes=15 * 21),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert fifteen[-1].close_ts < btc.close_ts < eth.close_ts
+    assert abs(eth.open - btc.close) / btc.close > Decimal("0.15")
+    assert width_now_from_history(eth, fifteen, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert width_now_from_history(eth, fifteen + [btc], t=NOW) == Decimal("0.1") / Decimal("2")
+
+
+def test_fifteen_hourly_keep_width_when_later_15m_looks_like_a_jump() -> None:
+    """Hardcoded `tf==15m` keeps only the late 15m 80 — a jump that empties ATR."""
+    fifteen = []
+    start = datetime(2026, 8, 29, 0, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start + timedelta(hours=i)
+        fifteen.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ts,
+                close_ts=ts + timedelta(hours=1),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 17, 30, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert fifteen[-1].close_ts < foreign.close_ts < hourly.close_ts
+    assert hourly.close_ts < NOW
+    assert abs(hourly.open - foreign.close) / foreign.close > Decimal("0.15")
+    assert width_now_from_history(hourly, fifteen, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert width_now_from_history(hourly, fifteen + [foreign], t=NOW) == Decimal("0.1") / Decimal("2")
+
+
 def test_foreign_symbol_history_does_not_make_width() -> None:
     hist = []
     for i in range(15):
