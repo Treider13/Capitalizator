@@ -1757,6 +1757,226 @@ def test_through_stays_noise_when_foreign_volume_sits_between_two_zeros() -> Non
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
 
 
+def test_resistance_through_does_not_go_noise_when_last_two_would_be_illiquid_only_via_eth_zero() -> None:
+    """Quality is not a support-only gate. Mixed last-2 on resistance through is ILLIQUID → NOISE."""
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = _hist(0, volume=Decimal("1"))
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.3"),
+        high=Decimal("100.4"),
+        low=Decimal("100.1"),
+        close=Decimal("100.3"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(res, bar, t=T, htf_bias="box") == "THROUGH"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "THROUGH"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "THROUGH"
+
+
+def test_resistance_through_stays_noise_when_foreign_volume_sits_between_two_zeros() -> None:
+    """Quality is not a support-only gate. Mixed last-2 on resistance through is LIVE → THROUGH."""
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = _hist(0, volume=Decimal("0"))
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.3"),
+        high=Decimal("100.4"),
+        low=Decimal("100.1"),
+        close=Decimal("100.3"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(res, bar, t=T, htf_bias="box") == "THROUGH"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
+
+
+def test_resistance_compress_does_not_go_noise_when_last_two_would_be_illiquid_only_via_eth_zero() -> None:
+    """Quality is not a support-only gate. Mixed last-2 on resistance compress is ILLIQUID → NOISE."""
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 10, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 10, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.10"),
+        high=Decimal("100.15"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+        volume=Decimal("0"),
+    )
+    closed = _atr15()
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=closed + [neighbor]) == "COMPRESS"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=closed + [neighbor, foreign]) == "COMPRESS"
+
+
+def test_resistance_compress_stays_noise_when_foreign_volume_sits_between_two_zeros() -> None:
+    """Quality is not a support-only gate. Mixed last-2 on resistance compress is LIVE → COMPRESS."""
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 10, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 10, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.10"),
+        high=Decimal("100.15"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+        volume=Decimal("0"),
+    )
+    closed = _atr15()
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=closed + [neighbor]) == "NOISE"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=closed + [neighbor, foreign]) == "NOISE"
+
+
+def test_resistance_reject_stays_noise_when_foreign_volume_sits_between_two_zeros() -> None:
+    """Quality is not a support-only gate. Mixed last-2 on resistance reject is LIVE → REJECT."""
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    neighbor = _hist(0, volume=Decimal("0"))
+    foreign = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 14, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.4"),
+        low=Decimal("99.8"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert neighbor.close_ts < foreign.close_ts < bar.close_ts
+    assert label(res, bar, t=T, htf_bias="box") == "REJECT"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
+
+
 def test_eth_through_does_not_go_noise_when_last_two_would_be_illiquid_only_via_btc_zero() -> None:
     """Hardcoded `history is BTC` takes BTC vol=0 + ETH through vol=0 as last-2 → NOISE."""
     eth_zone = Zone.create(
