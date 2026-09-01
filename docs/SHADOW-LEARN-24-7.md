@@ -89,7 +89,7 @@
 | Фактор | Статус | Забыть = |
 |---|---|---|
 | Сделки / книга / BBO / snapshot / ресинк | B: код зелёный, **живого часа нет** | дырявая книга → ZLG врать |
-| Фандинг и OI | D/C: тип стрима есть (`types.py`), хрупкость китов ждёт оба; живого фида нет | ночной squeeze невидим |
+| Фандинг и OI | D/C: имя стрима в `types.py` есть, **рекордера нет** | хрупкость китов без фида = всегда None |
 | Mark, gap | B на фикстурах | дыра без метки = выдуманная непрерывность |
 | Вселенная week0 = BTC+ETH | A в скринере | альты «дописать потом» — не учить на выдуманном SOL |
 
@@ -100,6 +100,10 @@
 | Зона без lookahead, `zone_id` = blake2s | A в тестах | `zone_id`, сторона, lo/hi, `created_as_of` |
 | HTF bias long/short/box | B | `htf_bias` |
 | Касание → bounce / break / die | B, live-ленты нет | `outcome` позже, не в ту же мс |
+| `die_no_touch_h: 24` в yaml | D/C: ключ есть, в `Registry._decide()` **не** реализован | не считать «зона умерла за сутки», пока кода нет |
+| Bounce 0.3R (глоссарий PHASE-BUILD) | D: в коде только `bounce_away_ticks` | не мешать две гипотезы в одну клетку |
+| Круглые / профиль объёма | D, в очереди не сейчас | не выдумывать POC/00 |
+| ICT / FVG | запрещены | никогда |
 | Середина диапазона | A в `propose` | `mid_range` да/нет |
 | CAV | B: считается, `propose` не читает | `cav_label`; незакрытая свеча = NOISE |
 | `failed_break` (фитиль за, close внутри) | B, не вход | тег; в счётчик bounce/breakout не класть |
@@ -133,7 +137,8 @@
 |---|---|---|---|
 | Макро PIT: CPI / FOMC / NFP / PCE | B | `us_data_day`, событие, `known_at` | Нет. Режет |
 | Окно сессии + `us_data_day` до 16:30 | A в `propose` | `clock` = session / night / us_wait | — |
-| 24ч до CPI/FOMC ×0.5 и ET-blackout | B, **не** вшито в Session | `macro_size_mult`, `et_blackout` | Нет |
+| 24ч до CPI/FOMC ×0.5 и ET-blackout | B, **не** вшито в Session; NFP/PCE в PRE_CLASSES **нет** | `macro_size_mult`, `et_blackout`, класс события | Нет |
+| SEC / listing / hack / ETF | B: классы в ingest, гейта входа нет | `event_class`, `assets[]` | Нет |
 | Реакция class×regime | C: CSV — **только заголовок** | coef только если n≥5 *наших*; иначе None | `opens_size` всегда false |
 | Сентимент (жадность / страх) | B на тесте, индекса нет | месяц+жадность = derisk; час ≠ «купи страх» | Нет (не шорт «все купили») |
 | GDELT / мировая обстановка | D: закон в `intelligence-layer`, модуля нет | если появится — только PIT `coded_at`, не `event_date` | Нет. Фон, лаг ~38 мин, ~45% истинных |
@@ -189,6 +194,8 @@
 | Виртуальный fill | slip, fees VIP0, R после комиссии, `sent=false` | не close свечи |
 | Хеш | звено касания, звено жеста | подмена ломает verify |
 | Skip | причина отказа жюри / риска + `saved_r` позже | чужая причина — отказ считать |
+| Тонкий кран | `propose_would_pass`, `propose_block_reason` | тень живёт, даже если `propose` = None |
+| Сайзер | `lev`, `target_risk`, `computed_qty` | `propose` **не** зовёт Sizer; qty в Intent нет |
 
 Два параллельных журнала претендента (ширина, вето) — те же поля, другой `champion_id`. Утром отчёт: чемпиона не меняем.
 
