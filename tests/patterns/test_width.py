@@ -440,6 +440,14 @@ def test_z1_history_does_not_rank_z2() -> None:
     assert width_rank(zone_id="z2", now=NOW, w_now=Decimal("2"), history=hist) is None
 
 
+def test_nineteen_z1_and_one_z2_do_not_unlock_z1_rank() -> None:
+    """19 z1 + 1 z2 is 20 rows. Counting every zone would unlock rank. z1 still has 19."""
+    hist = [_sample(i, "1") for i in range(19)] + [_sample(19, "1", zone="z2")]
+    assert len(hist) == 20
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) is None
+    assert width_rank(zone_id="z2", now=NOW, w_now=Decimal("2"), history=hist) is None
+
+
 def test_future_sample_is_invisible() -> None:
     hist = [_sample(i, "1") for i in range(20)]
     cut = T0 + timedelta(minutes=19)
