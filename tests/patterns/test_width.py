@@ -50,6 +50,17 @@ def test_width_now_is_range_over_atr() -> None:
     assert width_now(bar, Decimal("-1")) is None
 
 
+def test_zero_range_width_is_zero_not_missing() -> None:
+    """A flat bar has w_now=0. Treating range==0 as unknown would journal None."""
+    flat = _bar(0, high="100.1", low="100.1")
+    hist = [_bar(i) for i in range(15)]
+    current = _bar(20, high="101", low="101")
+    assert flat.high == flat.low
+    assert current.high == current.low
+    assert width_now(flat, Decimal("2")) == Decimal("0")
+    assert width_now_from_history(current, hist, t=NOW) == Decimal("0")
+
+
 def test_width_from_history_uses_post_gap_segment() -> None:
     hist = [_bar(i) for i in range(15)]
     bar = _bar(20, high="100.2", low="100.1")

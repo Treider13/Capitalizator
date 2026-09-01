@@ -59,6 +59,17 @@ def test_direction_hit_uses_the_whole_sample() -> None:
     assert hostile_exam(rows).direction_hit == Decimal("2") / Decimal("3")
 
 
+def test_actual_between_last_and_pred_is_a_direction_hit() -> None:
+    """Direction is vs last, not vs pred. 10→10.5 with pred 11 is a hit; vs pred it is a miss."""
+    up = ExamCase(pred=Decimal("11"), last=Decimal("10"), actual=Decimal("10.5"))
+    down = ExamCase(pred=Decimal("9"), last=Decimal("10"), actual=Decimal("9.5"))
+    assert Decimal("10") < up.actual < up.pred
+    assert down.pred < down.actual < Decimal("10")
+    assert hostile_exam([up]).direction_hit == Decimal("1")
+    assert hostile_exam([down]).direction_hit == Decimal("1")
+    assert hostile_exam([up]).beat_last_price == Decimal("0")
+
+
 def test_zero_atr_is_excluded_from_residual() -> None:
     """atr=0 is not a divisor. Including it is ZeroDivision or a fake residual."""
     rows = [ExamCase(pred=Decimal("12"), last=Decimal("10"), actual=Decimal("10"), atr=Decimal("0"))]
