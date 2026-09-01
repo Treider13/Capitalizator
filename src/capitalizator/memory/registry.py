@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from hashlib import blake2s
 from typing import Literal
@@ -232,7 +232,7 @@ class Registry:
             if touch_id is not None and touch.touch_id != touch_id:
                 next_rows.append(touch)
                 continue
-            row = replace(touch, session_hour=touch.ts.astimezone(UTC).hour)
+            row = replace(touch, session_hour=require_utc(touch.ts).hour)
             next_rows.append(row)
             changed.append(row)
         if touch_id is not None and not changed:

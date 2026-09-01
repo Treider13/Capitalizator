@@ -10,7 +10,7 @@ import pytest
 
 from capitalizator.jury import desk
 from capitalizator.memory.hashlog import touch_payload
-from capitalizator.memory.registry import Registry
+from capitalizator.memory.registry import Registry, Touch
 from capitalizator.types import MarketEvent
 from capitalizator.zones.model import Zone
 
@@ -145,6 +145,23 @@ def test_fill_width_on_one_touch_does_not_write_the_other() -> None:
     assert by_id[first.touch_id].w_now == Decimal("1.5")
     assert by_id[second.touch_id].w_now is None
     assert by_id[second.touch_id].w_rank is None
+
+
+def test_naive_touch_ts_rejected_by_session_hour() -> None:
+    """Naive ts.astimezone(UTC) follows the host TZ — that is not a journal fact."""
+    reg = Registry(tick_size=TICK)
+    reg.touches = [
+        Touch(
+            touch_id="naive",
+            zone_id=ZONE.zone_id,
+            ts=datetime(2026, 8, 30, 16, 30),
+            trade_px=Decimal("100.1"),
+            trade_qty=Decimal("0.001"),
+            outcome="pending",
+        )
+    ]
+    with pytest.raises(TypeError, match="naive"):
+        reg.fill_session_hour()
 
 
 def test_midnight_utc_session_hour_is_zero() -> None:

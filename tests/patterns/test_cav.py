@@ -89,6 +89,50 @@ def test_close_inside_without_wick_beyond_is_drift() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box") == "DRIFT"
 
 
+def test_labeled_bar_in_history_does_not_complete_atr() -> None:
+    """14 priors: no ATR. Putting the labeled bar into closed_bars must not make the 15th."""
+    closed = []
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    for i in range(14):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed + [bar]) == "DRIFT"
+
+
+def test_reversed_history_still_compresses() -> None:
+    closed = []
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=list(reversed(closed))) == "COMPRESS"
+
+
 def test_small_range_inside_zone_is_compress() -> None:
     closed = []
     start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
@@ -202,7 +246,17 @@ def test_gap_is_not_noise_reject_still_holds() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "REJECT"
 
 
-def test_gap_resets_atr_so_compress_needs_new_segment() -> None:
+def test_short_post_gap_segment_is_not_compress() -> None:
+    """3 bars after a jump, current continues that price — ATR window is short, not a gap-into-current."""
+    zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("129.9"),
+        hi=Decimal("130.1"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
     closed = []
     start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
     for i in range(12):
@@ -233,8 +287,34 @@ def test_gap_resets_atr_so_compress_needs_new_segment() -> None:
                 close=Decimal("130"),
             )
         )
-    bar = _bar(low="100.05", high="100.15", close="100.10")
-    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("130"),
+        high=Decimal("130.05"),
+        low=Decimal("129.95"),
+        close=Decimal("130.00"),
+    )
+    assert abs(bar.open - closed[-1].close) / closed[-1].close == Decimal("0")
+    assert label(zone, bar, t=T, htf_bias="box", closed_bars=closed) == "DRIFT"
+    # Closes must not all equal current.close, or quality becomes stagnant → NOISE.
+    long_seg = closed[:12] + [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=start.replace(minute=12 + i),
+            close_ts=start.replace(minute=12 + i, second=30),
+            open=Decimal("131"),
+            high=Decimal("132"),
+            low=Decimal("130"),
+            close=Decimal("131"),
+        )
+        for i in range(15)
+    ]
+    assert abs(bar.open - long_seg[-1].close) / long_seg[-1].close < Decimal("0.15")
+    assert label(zone, bar, t=T, htf_bias="box", closed_bars=long_seg) == "COMPRESS"
 
 
 def test_stagnant_through_is_noise() -> None:
