@@ -227,6 +227,29 @@ def test_one_vol_pair_is_not_an_ic() -> None:
     assert hostile_exam(rows).vol_rank_ic is None
 
 
+def test_two_vol_pairs_unlock_ic() -> None:
+    """Success fixtures use 4 pairs. `len(pairs) < 3` would still pass those."""
+    rows = [
+        ExamCase(
+            pred=Decimal("11"),
+            last=Decimal("10"),
+            actual=Decimal("12"),
+            pred_vol_rank=Decimal("1"),
+            actual_vol=Decimal("1"),
+        ),
+        ExamCase(
+            pred=Decimal("9"),
+            last=Decimal("10"),
+            actual=Decimal("8"),
+            pred_vol_rank=Decimal("2"),
+            actual_vol=Decimal("2"),
+        ),
+    ]
+    ic = hostile_exam(rows).vol_rank_ic
+    assert ic is not None
+    assert Decimal("0.999") < ic <= 1
+
+
 def test_pnl_without_day_does_not_unlock_share() -> None:
     """A print with pnl and no day is not a fifth day."""
     rows = [
