@@ -1002,3 +1002,25 @@ def test_plus530_sample_is_a_prior_at_utc_noon() -> None:
 def test_naive_width_sample_rejected() -> None:
     with pytest.raises(TypeError, match="naive"):
         WidthSample(zone_id="z1", ts=datetime(2026, 8, 30, 12, 0), w_now=Decimal("1"))
+
+
+def test_width_is_none_when_mid_bar_hides_a_real_jump() -> None:
+    """15 at ~101 + mid at 80 during current. `< open_ts` would keep old ATR and journal width."""
+    fifteen = [_bar(i) for i in range(15)]
+    bar = _bar(17, high="100.2", low="100.1", open_="100.15", close="100.15")
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    assert bar.open_ts < mid.close_ts < bar.close_ts
+    assert abs(bar.open - fifteen[-1].close) / fifteen[-1].close < Decimal("0.15")
+    assert abs(bar.open - mid.close) / mid.close > Decimal("0.15")
+    assert width_now_from_history(bar, fifteen, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert last_gap_segment(fifteen + [mid], bar, t=NOW) == []
+    assert width_now_from_history(bar, fifteen + [mid], t=NOW) is None

@@ -1419,3 +1419,83 @@ def test_wrong_tf_is_not_a_stagnant_prior() -> None:
     assert sum(1 for b in hist if b.close_ts < current.close_ts) == 4
     assert prior_same_tf(hist, current, t=T) == []
     assert classify_bar_quality(hist, current, t=T) == LIVE
+
+
+def test_bar_closing_during_current_is_an_illiquid_neighbor() -> None:
+    """close_ts < current.close_ts is a last-2 prior even after current.open. `< open_ts` would stay LIVE."""
+    current = _bar(17, close="101", volume=Decimal("0"))
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    assert current.open_ts < mid.close_ts < current.close_ts
+    assert classify_bar_quality([], current, t=T) == LIVE
+    assert classify_bar_quality([mid], current, t=T) == ILLIQUID
+
+
+def test_bar_closing_during_current_breaks_illiquid_last_two() -> None:
+    """Earlier zero + mid vol=1 + current zero. Dropping mid makes last-2 two zeros → false ILLIQUID."""
+    early = _bar(16, close="101", volume=Decimal("0"))
+    current = _bar(17, close="101", volume=Decimal("0"))
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    assert early.close_ts < mid.close_ts < current.close_ts
+    assert current.open_ts < mid.close_ts
+    assert classify_bar_quality([early], current, t=T) == ILLIQUID
+    assert classify_bar_quality([early, mid], current, t=T) == LIVE
+
+
+def test_bar_closing_during_current_is_a_stagnant_prior() -> None:
+    """3 early same + mid same + current same is last-5. `< open_ts` would leave 4 and stay LIVE."""
+    hist = [_bar(i, close="100") for i in range(3)]
+    current = _bar(17, close="100")
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    assert current.open_ts < mid.close_ts < current.close_ts
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+    assert classify_bar_quality(hist + [mid], current, t=T) == STAGNANT
+
+
+def test_bar_closing_during_current_can_hide_a_real_jump() -> None:
+    """15 at 101 + mid at 80 during current. `< open_ts` would keep the old segment."""
+    priors = [_bar(i, close="101", open_="101") for i in range(15)]
+    current = _bar(17, close="100", open_="100")
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    assert current.open_ts < mid.close_ts < current.close_ts
+    assert abs(current.open - priors[-1].close) / priors[-1].close < JUMP_RATIO_15M
+    assert abs(current.open - mid.close) / mid.close > JUMP_RATIO_15M
+    assert len(last_gap_segment(priors, current, t=T)) == 15
+    assert last_gap_segment(priors + [mid], current, t=T) == []

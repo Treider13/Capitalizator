@@ -3380,3 +3380,144 @@ def test_hourly_resistance_drift_stays_noise_when_15m_volume_sits_between_two_ze
     assert label(res, hourly, t=T, htf_bias="box") == "DRIFT"
     assert label(res, hourly, t=T, htf_bias="box", closed_bars=[neighbor]) == "NOISE"
     assert label(res, hourly, t=T, htf_bias="box", closed_bars=[neighbor, foreign]) == "NOISE"
+
+
+def test_reject_goes_noise_when_last_two_are_illiquid_via_mid_bar_zero() -> None:
+    """A zero that closes during current is the last-2 neighbor. `< open_ts` would keep REJECT."""
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert bar.open_ts < mid.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box") == "REJECT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[mid]) == "NOISE"
+
+
+def test_reject_does_not_go_noise_when_mid_bar_volume_sits_between_two_zeros() -> None:
+    """Earlier zero + mid vol=1 during current + reject vol=0. Dropping mid makes last-2 ILLIQUID."""
+    early = _hist(0, volume=Decimal("0"))
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("100.5"),
+        low=Decimal("99.9"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert early.close_ts < mid.close_ts < bar.close_ts
+    assert bar.open_ts < mid.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[early]) == "NOISE"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[early, mid]) == "REJECT"
+
+
+def test_drift_goes_noise_when_last_two_are_illiquid_via_mid_bar_zero() -> None:
+    """Quality is not only REJECT. Mid-bar zero + drift zero is last-2 ILLIQUID → NOISE."""
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("0"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("101.0"),
+        low=Decimal("100.0"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert bar.open_ts < mid.close_ts < bar.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box") == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[mid]) == "NOISE"
+
+
+def test_drift_does_not_go_noise_when_mid_bar_volume_sits_between_two_zeros() -> None:
+    """Earlier zero + mid vol=1 during current + drift vol=0. Dropping mid makes last-2 ILLIQUID."""
+    early = _hist(0, volume=Decimal("0"))
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+    )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.1"),
+        high=Decimal("101.0"),
+        low=Decimal("100.0"),
+        close=Decimal("100.1"),
+        volume=Decimal("0"),
+    )
+    assert early.close_ts < mid.close_ts < bar.close_ts
+    assert bar.open_ts < mid.close_ts
+    assert label(ZONE, bar, t=T, htf_bias="box") == "DRIFT"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[early]) == "NOISE"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=[early, mid]) == "DRIFT"
+
+
+def test_compress_stays_drift_when_mid_bar_hides_a_real_jump() -> None:
+    """15 at 101 + mid at 80 during current. `< open_ts` would borrow old ATR → COMPRESS."""
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert bar.open_ts < mid.close_ts < bar.close_ts
+    assert abs(bar.open - Decimal("101")) / Decimal("101") < Decimal("0.15")
+    assert abs(bar.open - mid.close) / mid.close > Decimal("0.15")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15() + [mid]) == "DRIFT"
