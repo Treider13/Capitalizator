@@ -431,6 +431,28 @@ def test_compress_uses_mean_true_range_not_median() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"
 
 
+def test_plus530_t_does_not_close_a_1300z_bar() -> None:
+    """+3 16:45 is 13:45Z — bar is closed. +5:30 16:45 is 11:15Z. Hardcoded -3 would COMPRESS."""
+    plus3 = timezone(timedelta(hours=3))
+    plus530 = timezone(timedelta(hours=5, minutes=30))
+    t3 = datetime(2026, 8, 30, 16, 45, tzinfo=plus3)
+    t530 = datetime(2026, 8, 30, 16, 45, tzinfo=plus530)
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 45, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 0, tzinfo=UTC),
+        open=Decimal("100.10"),
+        high=Decimal("100.15"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+    )
+    assert t3.astimezone(UTC) == datetime(2026, 8, 30, 13, 45, tzinfo=UTC)
+    assert t530.astimezone(UTC) == datetime(2026, 8, 30, 11, 15, tzinfo=UTC)
+    assert label(ZONE, bar, t=t3, htf_bias="box", closed_bars=_atr15()) == "COMPRESS"
+    assert label(ZONE, bar, t=t530, htf_bias="box", closed_bars=_atr15()) == "NOISE"
+
+
 def test_offset_t_does_not_close_a_later_utc_bar() -> None:
     """+3 16:45 is 13:45Z. Clock 16:30<16:45 would COMPRESS a bar that is still open."""
     plus3 = timezone(timedelta(hours=3))

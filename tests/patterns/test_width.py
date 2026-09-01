@@ -71,6 +71,42 @@ def test_width_from_history_uses_post_gap_segment() -> None:
     assert width_now_from_history(bar, long_post, t=NOW) == Decimal("0.1") / Decimal("2")
 
 
+def test_plus530_t_has_no_width_on_1300z_bar() -> None:
+    """+3 16:45 closes a 13:00Z bar. +5:30 16:45 is 11:15Z — hardcoded -3 would journal width."""
+    plus3 = timezone(timedelta(hours=3))
+    plus530 = timezone(timedelta(hours=5, minutes=30))
+    t3 = datetime(2026, 8, 30, 16, 45, tzinfo=plus3)
+    t530 = datetime(2026, 8, 30, 16, 45, tzinfo=plus530)
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    hist = []
+    for i in range(15):
+        ts = start.replace(minute=i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 45, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 0, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert width_now_from_history(bar, hist, t=t3) == Decimal("0.1") / Decimal("2")
+    assert width_now_from_history(bar, hist, t=t530) is None
+
+
 def test_offset_t_has_no_width_on_later_utc_bar() -> None:
     """+3 16:45 is 13:45Z. Clock 16:30<16:45 would journal width on an open bar."""
     plus3 = timezone(timedelta(hours=3))

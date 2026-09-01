@@ -309,6 +309,25 @@ def test_offset_timezone_session_hour_is_utc_not_local() -> None:
     assert direct.fill_session_hour()[0].session_hour == 13
 
 
+def test_plus9_session_hour_is_not_hardcoded_plus3() -> None:
+    """+9 16:30 is 07:30Z. `(hour - 3) % 24` would still write 13."""
+    plus9 = timezone(timedelta(hours=9))
+    ts = datetime(2026, 8, 30, 16, 30, tzinfo=plus9)
+    assert ts.hour == 16
+    direct = Registry(tick_size=TICK)
+    direct.touches = [
+        Touch(
+            touch_id="plus9",
+            zone_id=ZONE.zone_id,
+            ts=ts,
+            trade_px=Decimal("100.1"),
+            trade_qty=Decimal("0.001"),
+            outcome="pending",
+        )
+    ]
+    assert direct.fill_session_hour()[0].session_hour == 7
+
+
 def test_two_touches_keep_their_own_utc_hours() -> None:
     born = datetime(2026, 8, 29, 12, 0, tzinfo=UTC)
     first_zone = Zone.create(

@@ -482,6 +482,30 @@ def test_offset_t_keeps_a_later_utc_close_unclosed() -> None:
     assert last_gap_segment(hist, current, t=t) == []
 
 
+def test_plus530_t_does_not_stagnate_a_1315z_bar() -> None:
+    """+3 16:45 is 13:45Z — five same closes are a fact. +5:30 16:45 is 11:15Z. Hardcoded -3 would STAGNANT."""
+    plus3 = timezone(timedelta(hours=3))
+    plus530 = timezone(timedelta(hours=5, minutes=30))
+    t3 = datetime(2026, 8, 30, 16, 45, tzinfo=plus3)
+    t530 = datetime(2026, 8, 30, 16, 45, tzinfo=plus530)
+    hist = [_bar(i, close="100") for i in range(4)]
+    current = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 13, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 15, tzinfo=UTC),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    assert t3.astimezone(UTC) == datetime(2026, 8, 30, 13, 45, tzinfo=UTC)
+    assert t530.astimezone(UTC) == datetime(2026, 8, 30, 11, 15, tzinfo=UTC)
+    assert classify_bar_quality(hist, current, t=t3) == STAGNANT
+    assert classify_bar_quality(hist, current, t=t530) == LIVE
+    assert last_gap_segment(hist, current, t=t530) == []
+
+
 def test_unclosed_zero_volume_is_live_not_illiquid() -> None:
     hist = [_bar(0, close="100", volume=Decimal("0"))]
     current = Bar(
