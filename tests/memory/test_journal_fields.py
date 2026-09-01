@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,8 @@ from capitalizator.memory.hashlog import touch_payload
 from capitalizator.memory.registry import Registry, Touch
 from capitalizator.types import MarketEvent
 from capitalizator.zones.model import Zone
+
+PATTERNS = Path(__file__).resolve().parents[2] / "src" / "capitalizator" / "patterns"
 
 TICK = Decimal("0.1")
 CREATED = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
@@ -117,7 +120,7 @@ def test_two_runs_same_journal() -> None:
     assert run() == (Decimal("1.25"), "illiquid", 16, None)
 
 
-def test_fill_width_on_one_touch_does_not_write_the_other() -> None:
+def _two_zone_reg() -> tuple[Registry, Touch, Touch]:
     other = Zone.create(
         symbol="BTCUSDT",
         tf="1d",
@@ -139,12 +142,51 @@ def test_fill_width_on_one_touch_does_not_write_the_other() -> None:
     )
     opened = reg.on_trade(trade, [ZONE, other])
     assert len(opened) == 2
-    first, second = opened
+    return reg, opened[0], opened[1]
+
+
+def test_fill_width_on_one_touch_does_not_write_the_other() -> None:
+    reg, first, second = _two_zone_reg()
     reg.fill_width(w_now=Decimal("1.5"), w_rank=Decimal("0.2"), touch_id=first.touch_id)
     by_id = {t.touch_id: t for t in reg.touches}
     assert by_id[first.touch_id].w_now == Decimal("1.5")
     assert by_id[second.touch_id].w_now is None
     assert by_id[second.touch_id].w_rank is None
+
+
+def test_fill_quality_and_hour_on_one_touch_do_not_write_the_other() -> None:
+    reg, first, second = _two_zone_reg()
+    reg.fill_bar_quality(quality="stagnant", touch_id=first.touch_id)
+    reg.fill_session_hour(touch_id=first.touch_id)
+    by_id = {t.touch_id: t for t in reg.touches}
+    assert by_id[first.touch_id].bar_quality == "stagnant"
+    assert by_id[first.touch_id].session_hour == 16
+    assert by_id[second.touch_id].bar_quality is None
+    assert by_id[second.touch_id].session_hour is None
+
+
+def test_resolve_keeps_journal_fields() -> None:
+    """Outcome replace must not drop width / quality / hour."""
+    reg = _reg()
+    reg.fill_width(w_now=Decimal("1.5"), w_rank=Decimal("0.4"))
+    reg.fill_bar_quality(quality="live")
+    reg.fill_session_hour()
+    later = PRINT + timedelta(minutes=20)
+    changed = reg.resolve(now=later, bars=[], last_px=Decimal("101.0"))
+    assert [t.outcome for t in changed] == ["bounce"]
+    row = changed[0]
+    assert row.w_now == Decimal("1.5")
+    assert row.w_rank == Decimal("0.4")
+    assert row.bar_quality == "live"
+    assert row.session_hour == 16
+
+
+def test_patterns_modules_do_not_import_memory() -> None:
+    """WidthSample exists so patterns never see Touch."""
+    for name in ("width.py", "bar_quality.py", "exam.py", "cav.py"):
+        text = (PATTERNS / name).read_text(encoding="utf-8")
+        assert "capitalizator.memory" not in text
+        assert "from capitalizator.memory" not in text
 
 
 def test_naive_touch_ts_rejected() -> None:

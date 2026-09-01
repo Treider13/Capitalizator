@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from capitalizator.patterns.bar_quality import prior_same_tf
 from capitalizator.patterns.cav import label
 from capitalizator.zones.model import Bar, Zone
 
@@ -151,6 +152,39 @@ def test_small_range_inside_zone_is_compress() -> None:
             )
         )
     bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"
+
+
+def test_exact_15pct_into_current_still_compresses() -> None:
+    """|open − prev.close| / prev.close == 15% is not a gap — old ATR stays available."""
+    closed = []
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start.replace(minute=i)
+        closed.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("100"),
+                high=Decimal("120"),
+                low=Decimal("80"),
+                close=Decimal("100"),
+            )
+        )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("115"),
+        high=Decimal("115"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+    )
+    assert abs(bar.open - closed[-1].close) / closed[-1].close == Decimal("0.15")
+    assert (bar.high - bar.low) < Decimal("40")
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=closed) == "COMPRESS"
 
 
@@ -341,7 +375,7 @@ def test_stagnant_resistance_reject_is_noise() -> None:
 
 
 def test_foreign_symbol_and_tf_do_not_feed_atr() -> None:
-    """ETH or 1h history must not invent a 15m BTC COMPRESS."""
+    """ETH or 1h history that *would* COMPRESS if the filter dropped must stay DRIFT."""
     start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
     eth = []
     hourly = []
@@ -359,7 +393,8 @@ def test_foreign_symbol_and_tf_do_not_feed_atr() -> None:
                 close=Decimal("101"),
             )
         )
-        ht = start + timedelta(hours=i)
+        # Unique hours, all closed before the labeled 15m bar (16:30).
+        ht = datetime(2026, 8, 29, 0, 0, tzinfo=UTC) + timedelta(hours=i)
         hourly.append(
             Bar(
                 symbol="BTCUSDT",
@@ -373,6 +408,10 @@ def test_foreign_symbol_and_tf_do_not_feed_atr() -> None:
             )
         )
     bar = _bar(low="100.05", high="100.15", close="100.10")
+    assert sum(1 for b in eth if b.close_ts < bar.close_ts) == 15
+    assert sum(1 for b in hourly if b.close_ts < bar.close_ts) == 15
+    assert prior_same_tf(eth, bar, t=T) == []
+    assert prior_same_tf(hourly, bar, t=T) == []
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=eth) == "DRIFT"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=hourly) == "DRIFT"
 

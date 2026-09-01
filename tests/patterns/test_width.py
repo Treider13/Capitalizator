@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from capitalizator.patterns.bar_quality import last_gap_segment
+from capitalizator.patterns.bar_quality import atr, last_gap_segment, prior_same_tf
 from capitalizator.patterns.width import (
     WidthSample,
     width_now,
@@ -75,6 +75,60 @@ def test_unclosed_bar_has_no_width() -> None:
     assert forming.close_ts >= NOW
     assert last_gap_segment(hist, forming, t=NOW) == []
     assert width_now_from_history(forming, hist, t=NOW) is None
+
+
+def test_exact_15pct_into_current_still_has_width() -> None:
+    """Equality is not a gap. A `>= 15%` cut would drop the 15-bar ATR and yield None."""
+    hist = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=T0 + timedelta(minutes=15 * i),
+            close_ts=T0 + timedelta(minutes=15 * i + 15),
+            open=Decimal("100"),
+            high=Decimal("120"),
+            low=Decimal("80"),
+            close=Decimal("100"),
+        )
+        for i in range(15)
+    ]
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 20),
+        close_ts=T0 + timedelta(minutes=15 * 20 + 15),
+        open=Decimal("115"),
+        high=Decimal("115"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert abs(bar.open - hist[-1].close) / hist[-1].close == Decimal("0.15")
+    assert len(last_gap_segment(hist, bar, t=NOW)) == 15
+    assert width_now_from_history(bar, hist, t=NOW) == (bar.high - bar.low) / Decimal("40")
+
+
+def test_hourly_history_does_not_make_width() -> None:
+    """15 same-symbol 1h bars would yield ATR if the tf filter dropped."""
+    hourly = []
+    for i in range(15):
+        ht = datetime(2026, 8, 29, 0, 0, tzinfo=UTC) + timedelta(hours=i)
+        hourly.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ht,
+                close_ts=ht + timedelta(minutes=59),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = _bar(20, high="100.2", low="100.1")
+    assert sum(1 for b in hourly if b.close_ts < bar.close_ts) == 15
+    assert atr(hourly) == Decimal("2")
+    assert prior_same_tf(hourly, bar, t=NOW) == []
+    assert width_now_from_history(bar, hourly, t=NOW) is None
 
 
 def test_gap_into_current_width_is_none() -> None:

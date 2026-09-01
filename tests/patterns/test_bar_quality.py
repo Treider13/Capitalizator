@@ -166,6 +166,15 @@ def test_exact_15pct_is_not_a_gap() -> None:
     assert len(segs[0]) == 2
 
 
+def test_exact_15pct_into_current_keeps_segment() -> None:
+    """Jump is strict >15%. Equality into the labeled bar must not empty ATR."""
+    priors = [_bar(i, close="100", open_="100") for i in range(15)]
+    current = _bar(17, close="115", open_="115")
+    assert current.close_ts < T
+    assert abs(current.open - priors[-1].close) / priors[-1].close == JUMP_RATIO_15M
+    assert len(last_gap_segment(priors, current, t=T)) == 15
+
+
 def test_mixed_symbol_or_tf_is_not_a_gap_series() -> None:
     btc = _bar(0, close="100")
     eth = _bar(1, close="116", open_="116", symbol="ETHUSDT")
