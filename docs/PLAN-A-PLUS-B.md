@@ -1,7 +1,7 @@
 # Финальный план A + B (утверждённая схема заказчика)
 
 **Дата:** 2026-09-01  
-**Статус:** схема принята. Пакеты P0–P8 реализованы.  
+**Статус:** схема принята. P0–P8 + шина B (`put_card_live` / TTL / POC с карточки / Fib от свинга / B до ZLG).  
 **Спотовый рельс:** вариант 2 (предложение + адаптер спота только после ручного ack на тикер вне 24).
 
 Жёсткая привязка к живым функциям: `hours24`, `enable`, `status`, `observe`, `observe_if_on` в `src/capitalizator/ops/contour.py`; роли 1–3 и жюри — `zones`, `tape`, `prs`, `zlg`, `patterns/cav`, `jury/desk`, `btc`; вход — `exec/strategy_bounce.propose`; риск — `risk`; ключ — только `signer`.
@@ -34,7 +34,7 @@ B **не считает** ZLG, CAV, tape eaten, PRS. Это только A. Об
 | `observe_if_on` | тот же | читает кнопку из SQLite, булевым не обойти | ок |
 | `recorder` | `recorder/` | trades, L2, BBO, funding, OI, gap+resync | живой сокет — шаг VPS |
 | `book` | `book/reconstruct.py` | best, spread, depth, imbalance | ок |
-| `zones` роль 1 | `zones/` | прошлое: cluster, round, prior H/L, swing; `vp_hyp` POC | VAH/VAL как границы range из B-метки `market_regime=range` |
+| `zones` роль 1 | `zones/` | прошлое: cluster, round, prior H/L, swing; POC **из карточки B** (`claim` `b_card:SYMBOL`), не VWAP | VAH/VAL как границы range из B-метки `market_regime=range` |
 | `tape` роль 2 | `tape/classify.py` | eaten ≥50% depth_near за 8 с; OFI | снять хардкод `wall_no_print=False` |
 | `PRS` | `prs/score.py` | τ возврата глубины, Y; журнал / `prs_cut` | считать в цикле касания |
 | `ZLG` | `zlg/gesture.py` | DEFEND/RETREAT/IMPROVE/FADE/SILENCE, A_* | ок |
@@ -74,7 +74,7 @@ CardLive {
 }
 ```
 
-B пишет это в `knowledge` (SQLite), не в signer.
+B пишет это в `knowledge` (SQLite, таблица `claim`, id `b_card:SYMBOL`) через `put_card_live` на закрытии HTF и при сборке карточки столом. A читает `get_card_live` / `_card_for` (TTL 60 с). Не signer.
 
 ### Источники B (закон файла, не «все соцсети»)
 
@@ -119,7 +119,7 @@ TradingAgents — только B, ≥60 с, карантин без ключей
 ## 4. Боковик
 
 B: `market_regime=range` (своя метка; ADX в коде нет — не выдумываем ADX, режим из HTF/профиля B).  
-A: цена у VAL → кандидат лонг отскок (tape не ест, ZLG DEFEND/IMPROVE). У VAH → шорт. Середина → SPLIT. Это уже закон mid + зоны; VAH/VAL подставляем из карточки B / `vp_hyp`, не из будущих баров.
+A: цена у VAL → кандидат лонг отскок (tape не ест, ZLG DEFEND/IMPROVE). У VAH → шорт. Середина → SPLIT. Это уже закон mid + зоны; VAH/VAL и POC подставляем из карточки B (`volume.poc`), не из внутренних зон и не из будущих баров.
 
 ---
 

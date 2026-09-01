@@ -190,6 +190,23 @@ class CardLive:
         )
 
 
+def card_is_fresh(
+    card: CardLive,
+    *,
+    symbol: str,
+    now: datetime,
+    ttl_s: float | None = None,
+) -> bool:
+    """False when the claim is for another pair or older than CARD_TTL_S."""
+    from capitalizator.card.params import CARD_TTL_S
+
+    if card.symbol != symbol:
+        return False
+    age = (now - card.known_at).total_seconds()
+    limit = CARD_TTL_S if ttl_s is None else ttl_s
+    return 0 <= age <= limit
+
+
 def touch_line(*, symbol: str, card: CardLive | None, jury: str | None) -> str:
     """Operator line. English tokens only — no advice verbs."""
     b = card.bearing_verdict if card is not None else "hold"

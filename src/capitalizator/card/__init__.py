@@ -10,7 +10,13 @@ from capitalizator.card.draft import (
 from capitalizator.card.first_fact import FirstFact, RankedClaim, pick_by_horizon, resolve
 from capitalizator.card.gex import OptionRow, gex_bg
 from capitalizator.card.labels import compute_b_labels
-from capitalizator.card.live import CardLive, VolumeSnapshot, fib_zone_at, touch_line
+from capitalizator.card.live import (
+    CardLive,
+    VolumeSnapshot,
+    card_is_fresh,
+    fib_zone_at,
+    touch_line,
+)
 from capitalizator.card.volume import snapshot as volume_snapshot
 from capitalizator.verifier.manual import BindReceipt
 
@@ -24,6 +30,7 @@ __all__ = [
     "RankedClaim",
     "VolumeSnapshot",
     "apply_bind",
+    "card_is_fresh",
     "compute_b_labels",
     "fib_zone_at",
     "from_news",

@@ -68,6 +68,8 @@ class Touch:
     shadow_tag: str | None = None
     skip_reason: str | None = None
     card_id: str | None = None
+    ob_status: str | None = None
+    bos_status: str | None = None
     idea: str | None = None
     prior_session_hi: str | None = None
     prior_session_lo: str | None = None

@@ -498,7 +498,10 @@ class Knowledge:
         ).fetchone()
         if row is None:
             return None
-        raw = json.loads(str(row["payload"]))
+        try:
+            raw = json.loads(str(row["payload"]))
+        except json.JSONDecodeError:
+            return None
         return raw if isinstance(raw, dict) else None
 
     def put_spot_ack(self, symbol: str, payload: Mapping[str, Any]) -> None:

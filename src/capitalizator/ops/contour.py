@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Literal
 
@@ -18,7 +18,7 @@ import pyarrow.parquet as pq
 
 from capitalizator.book.reconstruct import Book
 from capitalizator.btc.regime import BtcRegime
-from capitalizator.card.live import CardLive
+from capitalizator.card.live import CardLive, card_is_fresh
 from capitalizator.memory.registry import Registry, Touch
 from capitalizator.ops.check_uptime import check_uptime, parse_event_row
 from capitalizator.ops.daily_map_report import contains_advice
@@ -345,6 +345,8 @@ def _paint_b_fields(
         "fvg_present": card.fvg_status == "filled",
         "sweep_wick": card.sweep_status == "done",
         "gex_bg": card.gex_bg,
+        "ob_status": card.ob_status,
+        "bos_status": card.bos_status,
         "poc": vol.poc,
         "vah": vol.vah,
         "val": vol.val,
@@ -367,4 +369,22 @@ def observe_if_on(
     """Production glue. Reads the switch. A bool cannot bypass the button."""
     if contour_state(vault) != "on":
         return []
+    card = inp.card
+    if card is None:
+        touch = _pick_touch(reg, touch_id)
+        if touch is not None:
+            kn = open_knowledge(vault, create=False)
+            try:
+                raw = kn.get_card_live(reg.zone(touch.zone_id).symbol)
+            finally:
+                kn.close()
+            if raw is not None:
+                try:
+                    loaded = CardLive.from_payload(raw)
+                except (ValueError, KeyError, TypeError):
+                    loaded = None
+                if loaded is not None and card_is_fresh(
+                    loaded, symbol=reg.zone(touch.zone_id).symbol, now=touch.ts
+                ):
+                    inp = replace(inp, card=loaded)
     return observe(reg, inp, contour_on=True, touch_id=touch_id)

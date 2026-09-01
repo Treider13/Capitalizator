@@ -36,3 +36,7 @@ VALUE_AREA_FRAC = Decimal("0.70")
 # and context_ok skips GEX (does not vote).
 # https://github.com/FlashAlpha-lab/gex-explained
 GEX_THRESHOLD = Decimal("1000000")
+
+# Card bus TTL. A must not trade a B snapshot older than one minute.
+# Desk B writes on HTF close; 60s is one serve-loop beat plus slack.
+CARD_TTL_S = 60.0

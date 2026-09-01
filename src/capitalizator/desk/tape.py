@@ -11,6 +11,7 @@ from typing import Any
 
 import pyarrow.parquet as pq
 
+from capitalizator.card.live import CardLive
 from capitalizator.desk.bars import closed_bars_from_trades
 from capitalizator.desk.loop import DeskLoop
 from capitalizator.ops.vault import VaultError, iter_regular_files
@@ -90,26 +91,26 @@ def zones_for_trade(
     desk: DeskLoop,
     event: MarketEvent,
     extra_zones: Sequence[Zone] = (),
+    card: CardLive | None = None,
 ) -> list[Zone]:
-    """Prior-day / swing zones from already-closed working-TF bars, plus extras."""
+    """Prior-day / swing zones. POC comes from the live B card, not a VWAP stand-in."""
     engine = ZoneEngine(tick_size=desk.tick_size, config=desk.config)
     tf = desk.config.working_tf
     st = desk.state_for(event.symbol)
     work = [b for b in st.bars if b.tf == tf]
-    poc = _card_poc(desk, event.symbol)
+    live = card if card is not None else desk._card_for(event.symbol, event.exchange_ts)
+    poc = _poc_from_card(live)
     built = engine.build(event.symbol, event.exchange_ts, work, poc=poc)
     return list(extra_zones) + built
 
 
-def _card_poc(desk: DeskLoop, symbol: str) -> Decimal | None:
-    raw = desk.knowledge.get_card_live(symbol)
-    if not isinstance(raw, dict):
-        return None
-    vol = raw.get("volume")
-    if not isinstance(vol, dict) or not vol.get("poc"):
+def _poc_from_card(card: object) -> Decimal | None:
+    volume = getattr(card, "volume", None)
+    raw = getattr(volume, "poc", None) if volume is not None else None
+    if not raw:
         return None
     try:
-        value = Decimal(str(vol["poc"]))
+        value = Decimal(str(raw))
     except Exception:
         return None
     return value if value > 0 else None

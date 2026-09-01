@@ -8,6 +8,7 @@ from decimal import Decimal
 from capitalizator.card.build import from_news
 from capitalizator.card.fvg import fvg_status, latest_fvg
 from capitalizator.card.gex import OptionRow, format_gex, gex_bg, gex_is_green
+from capitalizator.card.labels import compute_b_labels
 from capitalizator.card.live import CardLive
 from capitalizator.card.params import (
     FVG_FILL_FRAC,
@@ -265,6 +266,18 @@ def test_zones_use_card_poc_not_vwap() -> None:
     poc_zones = [z for z in with_card if z.method == "vp_hyp"]
     assert poc_zones
     assert any(z.lo == card_poc or z.hi == card_poc for z in poc_zones)
+
+
+def test_fib_uses_confirmed_swing_not_window_minmax() -> None:
+    """Uptrend close near the last high is an extension, not forbidden_0_05."""
+    rows: list[tuple[str, str, str, str]] = [("100", "101", "99", "100.5")] * 16
+    rows = list(rows)
+    rows[5] = ("100", "110", "99", "108")
+    rows[6] = ("108", "109", "104", "105")
+    rows[7] = ("105", "106", "100", "101")
+    rows[-1] = ("108", "112", "107", "111")
+    labels = compute_b_labels(_ohlc(rows))
+    assert labels.fib_zone != "forbidden_0_05"
 
 
 def test_from_news_uses_real_bar_labels() -> None:

@@ -9,10 +9,9 @@ from decimal import Decimal
 from capitalizator.card.fvg import fvg_status
 from capitalizator.card.gex import OptionRow, gex_bg
 from capitalizator.card.live import FibZone, FvgStatus, SweepStatus, fib_zone_at
-from capitalizator.card.params import SWEEP_LOOKBACK
 from capitalizator.card.rsi import rsi_htf
 from capitalizator.card.smc import bos_status, ob_status
-from capitalizator.card.sweep import sweep_status
+from capitalizator.card.sweep import fractals, sweep_status
 from capitalizator.zones.model import Bar
 
 _STRUCTURE_TF = ("15m", "1h", "4h", "1d")
@@ -63,10 +62,18 @@ def _structure_bars(bars: Sequence[Bar]) -> list[Bar]:
 
 
 def _fib(bars: Sequence[Bar], price: Decimal) -> tuple[FibZone, str | None]:
-    window = list(bars[-SWEEP_LOOKBACK:]) if len(bars) > SWEEP_LOOKBACK else list(bars)
-    if len(window) < 2:
+    """Retrace between the last confirmed swing high and swing low.
+
+    Window min/max on a trend pins the high at the last bar and paints
+    forbidden_0_05 forever. A confirmed fractal is already two bars old, so a
+    new high is an extension (fib none), not a 0–0.5 pullback.
+    """
+    highs, lows = fractals(bars)
+    if not highs or not lows:
         return "none", None
-    low = min(b.low for b in window)
-    high = max(b.high for b in window)
+    high = bars[highs[-1]].high
+    low = bars[lows[-1]].low
+    if high <= low:
+        return "none", None
     zone, level = fib_zone_at(low=low, high=high, price=price)
     return zone, level

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,6 +19,8 @@ from capitalizator.types import require_utc
 NEWS_CLASSES = frozenset(
     {"CPI", "FOMC", "NFP", "PCE", "SEC", "LISTING", "HACK", "ETF", "OTHER"}
 )
+MACRO_ENV = "CAPITALIZATOR_MACRO_CSV"
+
 REQUIRED = (
     "event_id",
     "class",
@@ -78,6 +81,26 @@ class NewsIngest:
     def visible(self, as_of: datetime) -> list[NewsRow]:
         when = require_utc(as_of)
         return [r for r in self.rows if r.known_at <= when]
+
+
+def default_macro_path() -> Path | None:
+    """`CAPITALIZATOR_MACRO_CSV` or the repo `infra/calendars/macro.csv`."""
+    env = (os.environ.get(MACRO_ENV) or "").strip()
+    if env:
+        return Path(env)
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "infra" / "calendars" / "macro.csv"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def load_desk_calendar(path: Path | str | None = None) -> tuple[NewsRow, ...]:
+    """Official macro rows for the desk. Missing file → empty (honest)."""
+    loc = Path(path) if path is not None else default_macro_path()
+    if loc is None or not loc.is_file():
+        return ()
+    return tuple(NewsIngest.from_csv(loc).rows)
 
 
 def _parse_row(raw: dict[str, str], *, line: int) -> NewsRow:
