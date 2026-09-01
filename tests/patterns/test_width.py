@@ -1,0 +1,1082 @@
+"""Width journal: PIT rank, gap segment, n<20 → None. Not size."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal
+
+import pytest
+
+from capitalizator.patterns.bar_quality import atr, last_gap_segment, prior_same_tf
+from capitalizator.patterns.width import (
+    WidthSample,
+    width_now,
+    width_now_from_history,
+    width_rank,
+)
+from capitalizator.zones.model import Bar
+
+T0 = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+NOW = datetime(2026, 8, 30, 18, 0, tzinfo=UTC)
+
+
+def _bar(i: int, *, high: str = "102", low: str = "100", open_: str | None = None, close: str | None = None) -> Bar:
+    ts = T0 + timedelta(minutes=15 * i)
+    hi, lo = Decimal(high), Decimal(low)
+    mid = (hi + lo) / Decimal("2")
+    op = Decimal(open_) if open_ is not None else mid
+    cl = Decimal(close) if close is not None else mid
+    return Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=ts,
+        close_ts=ts + timedelta(minutes=15),
+        open=op,
+        high=hi,
+        low=lo,
+        close=cl,
+    )
+
+
+def _sample(i: int, w: str, *, zone: str = "z1") -> WidthSample:
+    return WidthSample(zone_id=zone, ts=T0 + timedelta(minutes=i), w_now=Decimal(w))
+
+
+def test_width_now_is_range_over_atr() -> None:
+    bar = _bar(0, high="103", low="101")
+    assert width_now(bar, Decimal("2")) == Decimal("1")
+    assert width_now(bar, None) is None
+    assert width_now(bar, Decimal("0")) is None
+    assert width_now(bar, Decimal("-1")) is None
+
+
+def test_zero_range_width_is_zero_not_missing() -> None:
+    """A flat bar has w_now=0. Treating range==0 as unknown would journal None."""
+    flat = _bar(0, high="100.1", low="100.1")
+    hist = [_bar(i) for i in range(15)]
+    current = _bar(20, high="101", low="101")
+    assert flat.high == flat.low
+    assert current.high == current.low
+    assert width_now(flat, Decimal("2")) == Decimal("0")
+    assert width_now_from_history(current, hist, t=NOW) == Decimal("0")
+
+
+def test_width_from_history_uses_post_gap_segment() -> None:
+    hist = [_bar(i) for i in range(15)]
+    bar = _bar(20, high="100.2", low="100.1")
+    assert width_now_from_history(bar, hist, t=NOW) == Decimal("0.1") / Decimal("2")
+    # 17 pre-gap + 3 post-gap = 20. Combined ATR exists; a 4-bar fixture
+    # would be None even without a split and does not lock the cut.
+    pre = [_bar(i, open_="80", close="80", high="81", low="79") for i in range(17)]
+    post = [_bar(i, open_="101", close="101") for i in range(17, 20)]
+    gapped = pre + post
+    assert len(gapped) == 20
+    assert atr(gapped) is not None
+    assert abs(bar.open - post[-1].close) / post[-1].close < Decimal("0.15")
+    assert len(last_gap_segment(gapped, bar, t=NOW)) == 3
+    assert width_now_from_history(bar, gapped, t=NOW) is None
+    long_post = [_bar(i, open_="80", close="80", high="81", low="79") for i in range(5)] + [
+        _bar(i, open_="101", close="101") for i in range(5, 20)
+    ]
+    assert len(last_gap_segment(long_post, bar, t=NOW)) == 15
+    assert width_now_from_history(bar, long_post, t=NOW) == Decimal("0.1") / Decimal("2")
+
+
+def test_plus530_t_has_no_width_on_1300z_bar() -> None:
+    """+3 16:45 closes a 13:00Z bar. +5:30 16:45 is 11:15Z — hardcoded -3 would journal width."""
+    plus3 = timezone(timedelta(hours=3))
+    plus530 = timezone(timedelta(hours=5, minutes=30))
+    t3 = datetime(2026, 8, 30, 16, 45, tzinfo=plus3)
+    t530 = datetime(2026, 8, 30, 16, 45, tzinfo=plus530)
+    start = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    hist = []
+    for i in range(15):
+        ts = start.replace(minute=i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts.replace(second=30),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 45, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 13, 0, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert width_now_from_history(bar, hist, t=t3) == Decimal("0.1") / Decimal("2")
+    assert width_now_from_history(bar, hist, t=t530) is None
+
+
+def test_plus9_close_ts_has_width_at_utc_noon() -> None:
+    """+9 16:30 close is 07:30Z. Clock 16:30 > 12:00 would drop width on a closed bar."""
+    plus9 = timezone(timedelta(hours=9))
+    t = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    start = datetime(2026, 8, 30, 3, 30, tzinfo=UTC)
+    hist = []
+    for i in range(15):
+        ts = start + timedelta(minutes=15 * i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=plus9),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=plus9),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert bar.close_ts.hour == 16
+    assert t.hour == 12
+    assert bar.close_ts < t
+    assert width_now_from_history(bar, hist, t=t) == Decimal("0.1") / Decimal("2")
+
+
+def test_offset_t_has_no_width_on_later_utc_bar() -> None:
+    """+3 16:45 is 13:45Z. Clock 16:30<16:45 would journal width on an open bar."""
+    plus3 = timezone(timedelta(hours=3))
+    t = datetime(2026, 8, 30, 16, 45, tzinfo=plus3)
+    hist = [_bar(i) for i in range(15)]
+    bar = _bar(17, high="100.2", low="100.1")
+    assert bar.close_ts == datetime(2026, 8, 30, 16, 30, tzinfo=UTC)
+    assert width_now_from_history(bar, hist, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert width_now_from_history(bar, hist, t=t) is None
+    assert last_gap_segment(hist, bar, t=t) == []
+
+
+def test_early_gap_appended_last_still_has_width() -> None:
+    """An early 80 stuffed at list end must not look like a jump into the current bar."""
+    hist = [_bar(i) for i in range(15)]
+    early = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 11, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 11, 14, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    bar = _bar(20, high="100.2", low="100.1")
+    mixed = hist + [early]
+    assert mixed[-1].close == Decimal("80")
+    assert abs(bar.open - mixed[-1].close) / mixed[-1].close > Decimal("0.15")
+    assert width_now_from_history(bar, hist, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert width_now_from_history(bar, mixed, t=NOW) == Decimal("0.1") / Decimal("2")
+
+
+def test_unclosed_bar_has_no_width() -> None:
+    """Range is not a fact until close_ts < t. Do not journal a forming bar."""
+    hist = [_bar(i) for i in range(15)]
+    forming = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=NOW - timedelta(minutes=15),
+        close_ts=NOW,
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert forming.close_ts >= NOW
+    assert last_gap_segment(hist, forming, t=NOW) == []
+    assert width_now_from_history(forming, hist, t=NOW) is None
+
+
+def test_exact_15pct_into_current_still_has_width() -> None:
+    """Equality is not a gap. A `>= 15%` cut would drop the 15-bar ATR and yield None."""
+    hist = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=T0 + timedelta(minutes=15 * i),
+            close_ts=T0 + timedelta(minutes=15 * i + 15),
+            open=Decimal("100"),
+            high=Decimal("120"),
+            low=Decimal("80"),
+            close=Decimal("100"),
+        )
+        for i in range(15)
+    ]
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 20),
+        close_ts=T0 + timedelta(minutes=15 * 20 + 15),
+        open=Decimal("115"),
+        high=Decimal("115"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert abs(bar.open - hist[-1].close) / hist[-1].close == Decimal("0.15")
+    assert len(last_gap_segment(hist, bar, t=NOW)) == 15
+    assert width_now_from_history(bar, hist, t=NOW) == (bar.high - bar.low) / Decimal("40")
+
+
+def test_hourly_history_does_not_make_width() -> None:
+    """15 same-symbol 1h bars would yield ATR if the tf filter dropped."""
+    hourly = []
+    for i in range(15):
+        ht = datetime(2026, 8, 29, 0, 0, tzinfo=UTC) + timedelta(hours=i)
+        hourly.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ht,
+                close_ts=ht + timedelta(minutes=59),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = _bar(20, high="100.2", low="100.1")
+    assert sum(1 for b in hourly if b.close_ts < bar.close_ts) == 15
+    assert atr(hourly) == Decimal("2")
+    assert prior_same_tf(hourly, bar, t=NOW) == []
+    assert width_now_from_history(bar, hourly, t=NOW) is None
+
+
+def test_15m_history_does_not_width_a_1h_bar() -> None:
+    """Hardcoded `tf==15m` would journal 0.1/2 on a 1h bar. Filter is current.tf."""
+    hist = [_bar(i) for i in range(15)]
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 17, 0, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert hourly.close_ts < NOW
+    assert atr(hist) == Decimal("2")
+    assert width_now_from_history(_bar(20, high="100.2", low="100.1"), hist, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert prior_same_tf(hist, hourly, t=NOW) == []
+    assert width_now_from_history(hourly, hist, t=NOW) is None
+
+
+def test_width_uses_last_atr_window_not_the_first() -> None:
+    """5 wide + 15 tight: first-15 ATR is 60/14. Last 14 TRs are 2 — w_now must be 0.1/2."""
+    start = T0
+    hist = []
+    for i in range(5):
+        ts = start + timedelta(minutes=15 * i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("100"),
+                high=Decimal("110"),
+                low=Decimal("100"),
+                close=Decimal("100"),
+            )
+        )
+    for i in range(5, 20):
+        ts = start + timedelta(minutes=15 * i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("100"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("100"),
+            )
+        )
+    bar = _bar(21, high="100.2", low="100.1", open_="100.15", close="100.15")
+    assert len(last_gap_segment(hist, bar, t=NOW)) == 20
+    assert atr(hist[:15]) == Decimal("60") / Decimal("14")
+    assert width_now_from_history(bar, hist, t=NOW) == Decimal("0.1") / Decimal("2")
+
+
+def test_width_uses_mean_true_range_not_median() -> None:
+    """Same 14% open series as ATR: w_now is 0.1 / (40/14), not 0.1/2."""
+    start = T0
+    hist = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=start,
+            close_ts=start + timedelta(minutes=15),
+            open=Decimal("100"),
+            high=Decimal("102"),
+            low=Decimal("100"),
+            close=Decimal("100"),
+        )
+    ]
+    ts = start + timedelta(minutes=15)
+    hist.append(
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=ts,
+            close_ts=ts + timedelta(minutes=15),
+            open=Decimal("114"),
+            high=Decimal("114"),
+            low=Decimal("113"),
+            close=Decimal("114"),
+        )
+    )
+    for i in range(2, 15):
+        ts = start + timedelta(minutes=15 * i)
+        hist.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("114"),
+                high=Decimal("116"),
+                low=Decimal("114"),
+                close=Decimal("114"),
+            )
+        )
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 16),
+        close_ts=T0 + timedelta(minutes=15 * 16 + 15),
+        open=Decimal("114.05"),
+        high=Decimal("114.1"),
+        low=Decimal("114.0"),
+        close=Decimal("114.05"),
+    )
+    assert abs(hist[1].open - hist[0].close) / hist[0].close < Decimal("0.15")
+    assert atr(hist) == Decimal("40") / Decimal("14")
+    assert width_now_from_history(bar, hist, t=NOW) == Decimal("0.1") / (Decimal("40") / Decimal("14"))
+
+
+def test_down_open_gap_close_back_has_no_width() -> None:
+    """Gap is the open, not the close. A 16% down open that closes back would keep ATR if close-to-close."""
+    hist = [_bar(i, open_="100", close="100") for i in range(15)]
+    bar = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 20),
+        close_ts=T0 + timedelta(minutes=15 * 20 + 15),
+        open=Decimal("84"),
+        high=Decimal("100.2"),
+        low=Decimal("84"),
+        close=Decimal("100.15"),
+    )
+    assert (bar.open - hist[-1].close) / hist[-1].close < 0
+    assert abs(bar.open - hist[-1].close) / hist[-1].close > Decimal("0.15")
+    assert abs(bar.close - hist[-1].close) / hist[-1].close < Decimal("0.15")
+    assert atr(hist) == Decimal("2")
+    assert width_now_from_history(bar, hist, t=NOW) is None
+
+
+def test_gap_into_current_width_is_none() -> None:
+    hist = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=T0 + timedelta(minutes=15 * i),
+            close_ts=T0 + timedelta(minutes=15 * i + 15),
+            open=Decimal("130"),
+            high=Decimal("131"),
+            low=Decimal("129"),
+            close=Decimal("130"),
+        )
+        for i in range(15)
+    ]
+    bar = _bar(20, high="100.2", low="100.1", open_="100.15", close="100.15")
+    assert abs(bar.open - hist[-1].close) / hist[-1].close > Decimal("0.15")
+    assert width_now_from_history(bar, hist, t=NOW) is None
+
+
+def test_zero_range_after_gap_is_none_not_zero() -> None:
+    """Flat after a jump has no ATR. `if range==0: return 0` would journal a fake width."""
+    hist = [
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=T0 + timedelta(minutes=15 * i),
+            close_ts=T0 + timedelta(minutes=15 * i + 15),
+            open=Decimal("130"),
+            high=Decimal("131"),
+            low=Decimal("129"),
+            close=Decimal("130"),
+        )
+        for i in range(15)
+    ]
+    bar = _bar(20, high="100.15", low="100.15", open_="100.15", close="100.15")
+    assert bar.high == bar.low
+    assert abs(bar.open - hist[-1].close) / hist[-1].close > Decimal("0.15")
+    assert width_now(bar, Decimal("2")) == Decimal("0")
+    assert width_now_from_history(bar, hist, t=NOW) is None
+
+
+def test_rank_uses_all_priors_not_the_last_twenty() -> None:
+    """n<20 is a floor, not a rolling window. Last-20 of 25 would report 1 here, not 20/25."""
+    early = [_sample(i, "10") for i in range(5)]
+    later = [_sample(5 + i, "1") for i in range(20)]
+    hist = early + later
+    assert len(hist) == 25
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) == Decimal("20") / Decimal(
+        "25"
+    )
+
+
+def test_rank_needs_twenty_priors() -> None:
+    hist = [_sample(i, "1") for i in range(19)]
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) is None
+    hist.append(_sample(19, "1"))
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) == Decimal("1")
+
+
+def test_rank_is_share_of_strictly_smaller() -> None:
+    hist = [_sample(i, "1") for i in range(10)] + [_sample(10 + i, "3") for i in range(10)]
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) == Decimal("10") / Decimal(
+        "20"
+    )
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("1"), history=hist) == Decimal("0")
+
+
+def test_other_zone_is_not_a_prior() -> None:
+    hist = [_sample(i, "1", zone="z2") for i in range(20)]
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) is None
+
+
+def test_z1_history_does_not_rank_z2() -> None:
+    """Hardcoded `zone_id==z1` would unlock rank on a z2 query. Filter is the requested zone."""
+    hist = [_sample(i, "1") for i in range(20)]
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) == Decimal("1")
+    assert width_rank(zone_id="z2", now=NOW, w_now=Decimal("2"), history=hist) is None
+
+
+def test_nineteen_z1_and_one_z2_do_not_unlock_z1_rank() -> None:
+    """19 z1 + 1 z2 is 20 rows. Counting every zone would unlock rank. z1 still has 19."""
+    hist = [_sample(i, "1") for i in range(19)] + [_sample(19, "1", zone="z2")]
+    assert len(hist) == 20
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) is None
+    assert width_rank(zone_id="z2", now=NOW, w_now=Decimal("2"), history=hist) is None
+
+
+def test_rank_counts_two_samples_at_the_same_ts() -> None:
+    """n is observations, not unique clocks. 19 ts + a second print at ts[0] is 20 priors.
+
+    Deduping by ts (exam-style unique days) would leave 19 and keep rank None.
+    """
+    hist = [_sample(i, "1") for i in range(19)]
+    dup = WidthSample(zone_id="z1", ts=hist[0].ts, w_now=Decimal("1"))
+    assert dup.ts == hist[0].ts
+    assert dup is not hist[0]
+    assert len({row.ts for row in hist + [dup]}) == 19
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) is None
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist + [dup]) == Decimal("1")
+
+
+def test_rank_counts_twenty_samples_at_the_same_ts() -> None:
+    """Twenty same-ts prints still unlock. Unique-ts would be n=1 → None."""
+    ts = T0 + timedelta(minutes=1)
+    hist = [WidthSample(zone_id="z1", ts=ts, w_now=Decimal("1")) for _ in range(20)]
+    assert len({row.ts for row in hist}) == 1
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) == Decimal("1")
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("0.5"), history=hist) == Decimal("0")
+
+
+def test_future_sample_is_invisible() -> None:
+    hist = [_sample(i, "1") for i in range(20)]
+    cut = T0 + timedelta(minutes=19)
+    assert width_rank(zone_id="z1", now=cut, w_now=Decimal("2"), history=hist) is None
+    hist.append(_sample(100, "0.1"))
+    later = T0 + timedelta(minutes=20)
+    assert width_rank(zone_id="z1", now=later, w_now=Decimal("2"), history=hist) == Decimal("1")
+
+
+def test_two_runs_same_rank() -> None:
+    hist = [_sample(i, str(i)) for i in range(20)]
+
+    def run() -> Decimal | None:
+        return width_rank(zone_id="z1", now=NOW, w_now=Decimal("10"), history=hist)
+
+    assert run() == run()
+    assert run() == Decimal("10") / Decimal("20")
+
+
+def test_negative_w_now_rejected() -> None:
+    with pytest.raises(ValueError, match="w_now"):
+        width_rank(zone_id="z1", now=NOW, w_now=Decimal("-1"), history=[])
+    with pytest.raises(ValueError, match="w_now"):
+        WidthSample(zone_id="z1", ts=T0, w_now=Decimal("-1"))
+
+
+def test_naive_t_is_rejected() -> None:
+    with pytest.raises(TypeError, match="naive"):
+        width_now_from_history(_bar(0), [], t=datetime(2026, 8, 30, 18, 0))
+
+
+def test_naive_now_is_rejected() -> None:
+    hist = [_sample(i, "1") for i in range(20)]
+    with pytest.raises(TypeError, match="naive"):
+        width_rank(zone_id="z1", now=datetime(2026, 8, 30, 18, 0), w_now=Decimal("2"), history=hist)
+
+
+def test_sample_at_now_is_not_a_prior() -> None:
+    hist = [_sample(i, "1") for i in range(19)]
+    hist.append(WidthSample(zone_id="z1", ts=NOW, w_now=Decimal("1")))
+    assert width_rank(zone_id="z1", now=NOW, w_now=Decimal("2"), history=hist) is None
+
+
+def test_later_bar_does_not_complete_width() -> None:
+    """14 priors + a bar that closes after current but before t would ATR if lookahead leaked."""
+    fourteen = [_bar(i) for i in range(14)]
+    later = _bar(21)
+    bar = _bar(20, high="100.2", low="100.1")
+    assert later.close_ts > bar.close_ts
+    assert later.close_ts < NOW
+    assert atr(fourteen + [later]) == Decimal("2")
+    assert width_now_from_history(bar, fourteen, t=NOW) is None
+    assert width_now_from_history(bar, fourteen + [later], t=NOW) is None
+
+
+def test_labeled_bar_in_history_does_not_complete_width() -> None:
+    fourteen = [_bar(i) for i in range(14)]
+    bar = _bar(20, high="100.2", low="100.1")
+    assert atr(fourteen + [bar]) is not None
+    assert width_now_from_history(bar, fourteen, t=NOW) is None
+    assert width_now_from_history(bar, fourteen + [bar], t=NOW) is None
+
+
+def test_same_close_ts_twin_does_not_complete_width() -> None:
+    """A different bar with the same close_ts is not a prior. `is bar` would leak ATR."""
+    fourteen = [_bar(i) for i in range(14)]
+    bar = _bar(20, high="100.2", low="100.1")
+    twin = _bar(20, high="102", low="100")
+    assert twin.close_ts == bar.close_ts
+    assert twin is not bar
+    assert atr(fourteen + [twin]) == Decimal("2")
+    assert width_now_from_history(bar, fourteen + [twin], t=NOW) is None
+
+
+def test_bar_closing_during_current_completes_width() -> None:
+    """close_ts < current.close_ts is a prior even if it closes after current.open. `< open_ts` would drop it."""
+    fourteen = [_bar(i) for i in range(14)]
+    bar = _bar(17, high="100.2", low="100.1")
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    assert bar.open_ts < mid.close_ts < bar.close_ts
+    assert mid.close_ts < NOW
+    assert len(prior_same_tf(fourteen, bar, t=NOW)) == 14
+    assert len(prior_same_tf(fourteen + [mid], bar, t=NOW)) == 15
+    assert width_now_from_history(bar, fourteen, t=NOW) is None
+    assert width_now_from_history(bar, fourteen + [mid], t=NOW) == Decimal("0.1") / Decimal("2")
+
+
+def test_fourteen_15m_and_one_1h_do_not_make_width() -> None:
+    """14 15m + 1h is 15 bars. Counting every tf would journal width (or atr() raise)."""
+    fourteen = [_bar(i) for i in range(14)]
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 59, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    bar = _bar(20, high="100.2", low="100.1")
+    assert hourly.close_ts < bar.close_ts
+    assert width_now_from_history(bar, fourteen, t=NOW) is None
+    assert width_now_from_history(bar, fourteen + [hourly], t=NOW) is None
+
+
+def test_fourteen_btc_and_one_eth_do_not_make_width() -> None:
+    """14 BTC + 1 ETH is 15 bars. Counting every symbol would journal width (or atr() raise)."""
+    fourteen = [_bar(i) for i in range(14)]
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("101"),
+        high=Decimal("102"),
+        low=Decimal("100"),
+        close=Decimal("101"),
+    )
+    bar = _bar(20, high="100.2", low="100.1")
+    assert eth.close_ts < bar.close_ts
+    assert width_now_from_history(bar, fourteen, t=NOW) is None
+    assert width_now_from_history(bar, fourteen + [eth], t=NOW) is None
+
+
+def test_fourteen_eth_and_one_btc_do_not_make_width() -> None:
+    """14 ETH + 1 BTC is 15 bars. Counting every symbol would journal width on an ETH print."""
+    fourteen = []
+    for i in range(14):
+        ts = T0 + timedelta(minutes=15 * i)
+        fourteen.append(
+            Bar(
+                symbol="ETHUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    btc = _bar(16)
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 20),
+        close_ts=T0 + timedelta(minutes=15 * 21),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert fourteen[-1].close_ts < btc.close_ts < eth.close_ts
+    assert width_now_from_history(eth, fourteen, t=NOW) is None
+    assert width_now_from_history(eth, fourteen + [btc], t=NOW) is None
+
+
+def test_fourteen_hourly_and_one_15m_do_not_make_width() -> None:
+    """14 1h + 1 15m is 15 bars. Counting every tf would journal width on a 1h print."""
+    fourteen = []
+    start = datetime(2026, 8, 29, 0, 0, tzinfo=UTC)
+    for i in range(14):
+        ts = start + timedelta(hours=i)
+        fourteen.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ts,
+                close_ts=ts + timedelta(hours=1),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    foreign = _bar(16)
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 17, 30, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert fourteen[-1].close_ts < foreign.close_ts < hourly.close_ts
+    assert hourly.close_ts < NOW
+    assert width_now_from_history(hourly, fourteen, t=NOW) is None
+    assert width_now_from_history(hourly, fourteen + [foreign], t=NOW) is None
+
+
+def test_fifteen_eth_lose_width_when_later_btc_hides_a_real_jump() -> None:
+    """15 ETH at 130 + later BTC at current open. Counting every symbol keeps ATR."""
+    fifteen = []
+    for i in range(15):
+        ts = T0 + timedelta(minutes=15 * i)
+        fifteen.append(
+            Bar(
+                symbol="ETHUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("130"),
+                high=Decimal("131"),
+                low=Decimal("129"),
+                close=Decimal("130"),
+            )
+        )
+    btc = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 20),
+        close_ts=T0 + timedelta(minutes=15 * 21),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert fifteen[-1].close_ts < btc.close_ts < eth.close_ts
+    assert abs(eth.open - fifteen[-1].close) / fifteen[-1].close > Decimal("0.15")
+    assert width_now_from_history(eth, fifteen, t=NOW) is None
+    assert width_now_from_history(eth, fifteen + [btc], t=NOW) is None
+
+
+def test_fifteen_btc_lose_width_when_later_eth_hides_a_real_jump() -> None:
+    """15 BTC at 130 + later ETH at current open. Mixed last-prior has no jump and journals width."""
+    fifteen = [_bar(i, open_="130", close="130", high="131", low="129") for i in range(15)]
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    bar = _bar(20, high="100.2", low="100.1")
+    assert fifteen[-1].close_ts < eth.close_ts < bar.close_ts
+    assert abs(bar.open - fifteen[-1].close) / fifteen[-1].close > Decimal("0.15")
+    assert abs(bar.open - eth.close) / eth.close < Decimal("0.15")
+    assert width_now_from_history(bar, fifteen, t=NOW) is None
+    assert width_now_from_history(bar, fifteen + [eth], t=NOW) is None
+
+
+def test_fifteen_hourly_lose_width_when_later_15m_hides_a_real_jump() -> None:
+    """15 1h at 130 + later 15m at current open. Mixed last-prior has no jump and journals width."""
+    fifteen = []
+    start = datetime(2026, 8, 29, 0, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start + timedelta(hours=i)
+        fifteen.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ts,
+                close_ts=ts + timedelta(hours=1),
+                open=Decimal("130"),
+                high=Decimal("131"),
+                low=Decimal("129"),
+                close=Decimal("130"),
+            )
+        )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 17, 30, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert fifteen[-1].close_ts < foreign.close_ts < hourly.close_ts
+    assert hourly.close_ts < NOW
+    assert abs(hourly.open - fifteen[-1].close) / fifteen[-1].close > Decimal("0.15")
+    assert width_now_from_history(hourly, fifteen, t=NOW) is None
+    assert width_now_from_history(hourly, fifteen + [foreign], t=NOW) is None
+
+
+def test_fifteen_btc_keep_width_when_later_eth_looks_like_a_jump() -> None:
+    """15 BTC + later ETH at 80. Mixed last-prior jumps into current and empties ATR."""
+    fifteen = [_bar(i) for i in range(15)]
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    bar = _bar(20, high="100.2", low="100.1")
+    assert fifteen[-1].close_ts < eth.close_ts < bar.close_ts
+    assert abs(bar.open - eth.close) / eth.close > Decimal("0.15")
+    assert width_now_from_history(bar, fifteen, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert width_now_from_history(bar, fifteen + [eth], t=NOW) == Decimal("0.1") / Decimal("2")
+
+
+def test_fifteen_eth_keep_width_when_later_btc_looks_like_a_jump() -> None:
+    """Hardcoded `history is BTC` keeps only the late BTC 80 — a jump that empties ATR."""
+    fifteen = []
+    for i in range(15):
+        ts = T0 + timedelta(minutes=15 * i)
+        fifteen.append(
+            Bar(
+                symbol="ETHUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    btc = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 20),
+        close_ts=T0 + timedelta(minutes=15 * 21),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert fifteen[-1].close_ts < btc.close_ts < eth.close_ts
+    assert abs(eth.open - btc.close) / btc.close > Decimal("0.15")
+    assert width_now_from_history(eth, fifteen, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert width_now_from_history(eth, fifteen + [btc], t=NOW) == Decimal("0.1") / Decimal("2")
+
+
+def test_fifteen_hourly_keep_width_when_later_15m_looks_like_a_jump() -> None:
+    """Hardcoded `tf==15m` keeps only the late 15m 80 — a jump that empties ATR."""
+    fifteen = []
+    start = datetime(2026, 8, 29, 0, 0, tzinfo=UTC)
+    for i in range(15):
+        ts = start + timedelta(hours=i)
+        fifteen.append(
+            Bar(
+                symbol="BTCUSDT",
+                tf="1h",
+                open_ts=ts,
+                close_ts=ts + timedelta(hours=1),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    foreign = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    hourly = Bar(
+        symbol="BTCUSDT",
+        tf="1h",
+        open_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 17, 30, tzinfo=UTC),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert fifteen[-1].close_ts < foreign.close_ts < hourly.close_ts
+    assert hourly.close_ts < NOW
+    assert abs(hourly.open - foreign.close) / foreign.close > Decimal("0.15")
+    assert width_now_from_history(hourly, fifteen, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert width_now_from_history(hourly, fifteen + [foreign], t=NOW) == Decimal("0.1") / Decimal("2")
+
+
+def test_foreign_symbol_history_does_not_make_width() -> None:
+    hist = []
+    for i in range(15):
+        ts = T0 + timedelta(minutes=15 * i)
+        hist.append(
+            Bar(
+                symbol="ETHUSDT",
+                tf="15m",
+                open_ts=ts,
+                close_ts=ts + timedelta(minutes=15),
+                open=Decimal("101"),
+                high=Decimal("102"),
+                low=Decimal("100"),
+                close=Decimal("101"),
+            )
+        )
+    bar = _bar(20, high="100.2", low="100.1")
+    assert sum(1 for b in hist if b.close_ts < bar.close_ts) == 15
+    assert atr(hist) == Decimal("2")
+    assert prior_same_tf(hist, bar, t=NOW) == []
+    assert width_now_from_history(bar, hist, t=NOW) is None
+
+
+def test_btc_history_does_not_width_an_eth_bar() -> None:
+    """Hardcoded `history is BTC` would journal 0.1/2 on ETH. Filter is current.symbol."""
+    hist = [_bar(i) for i in range(15)]
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 20),
+        close_ts=T0 + timedelta(minutes=15 * 21),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert atr(hist) == Decimal("2")
+    assert width_now_from_history(_bar(20, high="100.2", low="100.1"), hist, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert prior_same_tf(hist, eth, t=NOW) == []
+    assert width_now_from_history(eth, hist, t=NOW) is None
+
+
+def test_offset_timezone_sample_counts_by_utc_instant() -> None:
+    """+3 16:30 is 13:30Z. Clock hour 16 vs now 14:00Z would drop a real prior."""
+    plus3 = timezone(timedelta(hours=3))
+    now = datetime(2026, 8, 30, 14, 0, tzinfo=UTC)
+    hist = [_sample(i, "1") for i in range(19)]
+    off = WidthSample(
+        zone_id="z1",
+        ts=datetime(2026, 8, 30, 16, 30, tzinfo=plus3),
+        w_now=Decimal("1"),
+    )
+    assert off.ts.hour == 16
+    assert now.hour == 14
+    assert off.ts < now
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist) is None
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist + [off]) == Decimal("1")
+
+
+def test_offset_timezone_sample_at_now_is_not_a_prior() -> None:
+    plus3 = timezone(timedelta(hours=3))
+    now = datetime(2026, 8, 30, 13, 30, tzinfo=UTC)
+    hist = [_sample(i, "1") for i in range(19)]
+    off = WidthSample(
+        zone_id="z1",
+        ts=datetime(2026, 8, 30, 16, 30, tzinfo=plus3),
+        w_now=Decimal("1"),
+    )
+    assert off.ts == now
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist + [off]) is None
+
+
+def test_offset_now_does_not_see_later_utc_sample() -> None:
+    """+3 16:30 is 13:30Z. Clock 14:00<16:30 would count a 14:00Z sample that is still future."""
+    plus3 = timezone(timedelta(hours=3))
+    now = datetime(2026, 8, 30, 16, 30, tzinfo=plus3)
+    hist = [_sample(i, "1") for i in range(19)]
+    late = WidthSample(
+        zone_id="z1",
+        ts=datetime(2026, 8, 30, 14, 0, tzinfo=UTC),
+        w_now=Decimal("1"),
+    )
+    assert late.ts.hour == 14
+    assert now.hour == 16
+    assert late.ts >= now
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist) is None
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist + [late]) is None
+
+
+def test_plus530_now_does_not_count_a_1200z_sample() -> None:
+    """+5:30 16:30 is 11:00Z. Hardcoded -3 would treat now as 13:30Z and unlock rank on 12:00Z prints."""
+    plus530 = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 8, 30, 16, 30, tzinfo=plus530)
+    hist = [_sample(i, "1") for i in range(19)]
+    late = WidthSample(
+        zone_id="z1",
+        ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        w_now=Decimal("1"),
+    )
+    assert now.astimezone(UTC) == datetime(2026, 8, 30, 11, 0, tzinfo=UTC)
+    assert now.hour == 16
+    assert late.ts.hour == 12
+    assert late.ts >= now
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist) is None
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist + [late]) is None
+
+
+def test_plus530_sample_is_a_prior_at_utc_noon() -> None:
+    """+5:30 16:30 sample is 11:00Z. Hardcoded -3 would place it at 13:30Z and drop the 20th prior."""
+    plus530 = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    hist = [
+        WidthSample(
+            zone_id="z1",
+            ts=datetime(2026, 8, 30, 8, 0, tzinfo=UTC) + timedelta(minutes=i),
+            w_now=Decimal("1"),
+        )
+        for i in range(19)
+    ]
+    off = WidthSample(
+        zone_id="z1",
+        ts=datetime(2026, 8, 30, 16, 30, tzinfo=plus530),
+        w_now=Decimal("1"),
+    )
+    assert off.ts.hour == 16
+    assert now.hour == 12
+    assert off.ts.astimezone(UTC) == datetime(2026, 8, 30, 11, 0, tzinfo=UTC)
+    assert off.ts < now
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist) is None
+    assert width_rank(zone_id="z1", now=now, w_now=Decimal("2"), history=hist + [off]) == Decimal("1")
+
+
+def test_naive_width_sample_rejected() -> None:
+    with pytest.raises(TypeError, match="naive"):
+        WidthSample(zone_id="z1", ts=datetime(2026, 8, 30, 12, 0), w_now=Decimal("1"))
+
+
+def test_width_is_none_when_mid_bar_hides_a_real_jump() -> None:
+    """15 at ~101 + mid at 80 during current. `< open_ts` would keep old ATR and journal width."""
+    fifteen = [_bar(i) for i in range(15)]
+    bar = _bar(17, high="100.2", low="100.1", open_="100.15", close="100.15")
+    mid = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 20, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 25, tzinfo=UTC),
+        open=Decimal("80"),
+        high=Decimal("81"),
+        low=Decimal("79"),
+        close=Decimal("80"),
+    )
+    assert bar.open_ts < mid.close_ts < bar.close_ts
+    assert abs(bar.open - fifteen[-1].close) / fifteen[-1].close < Decimal("0.15")
+    assert abs(bar.open - mid.close) / mid.close > Decimal("0.15")
+    assert width_now_from_history(bar, fifteen, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert last_gap_segment(fifteen + [mid], bar, t=NOW) == []
+    assert width_now_from_history(bar, fifteen + [mid], t=NOW) is None

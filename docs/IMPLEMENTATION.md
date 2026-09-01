@@ -194,7 +194,8 @@ ICPR 2024: модели без переобучения разваливаютс
 - Спека: `INVENTION-FIRST-FACT.md`.
 
 ### 6.6a. `cav` + `jury` (график в решении)
-- CAV: REJECT / THROUGH / COMPRESS / DRIFT / NOISE на `zone_id`, только закрытые бары.
+- CAV: REJECT / THROUGH / COMPRESS / DRIFT / NOISE на `zone_id`, только закрытые бары. stagnant / illiquid → NOISE; разрыв котировки режет ATR, не метку.
+- Журнал касания (не голос жюри, не `rho_class_id`): `w_now`, `w_rank` (PIT, n<20 → пусто), `bar_quality`, `session_hour` (UTC). Ширина не открывает размер.
 - Жюри: CAV × ZLG × tape × BTC × card. Вход только ACCORD. SPLIT и VETO → skip, не среднее.
 - PTF: \(\rho\) класса согласия = E[R]·риск% / часы окна. После гейта сортируем классы по \(\rho\).
 - Спека: `INVENTION-JURY.md`.
@@ -322,7 +323,7 @@ ICPR 2024: модели без переобучения разваливаютс
 
 **zone:** `zone_id, symbol, tf, side, lo, hi, method, created_as_of`
 
-**touch:** `zone_id, ts, trade_px, trade_qty, btc_regime, tape_eaten, prs_y, gesture, outcome{bounce,break,die,pending}`
+**touch:** `zone_id, ts, trade_px, trade_qty, btc_regime, tape_eaten, prs_y, gesture, outcome{bounce,break,die,pending}, cav_label, jury, rho_class_id, w_now, w_rank, bar_quality, session_hour`
 
 **claim:** `card_id, idx, text, type, value, as_of, known_at, verdict, load_bearing, horizon, first_fact`
 
