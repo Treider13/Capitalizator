@@ -238,6 +238,8 @@
 Не 24/7 сделки. Не бот, который сам собирает стратегию.  
 Сейчас это закон на бумаге. На проводе — красная фаза 0.
 
+Что именно писать 24/7, чтобы не забыть новости, стакан и наши фишки (и не подставить заглушку вместо пустого поля): [`SHADOW-LEARN-24-7.md`](SHADOW-LEARN-24-7.md).
+
 ---
 
-Связанное: [`FIRST-IN-WORLD.md`](FIRST-IN-WORLD.md) · [`PHASES-ALL.md`](PHASES-ALL.md) · [`TEAM-DESK.md`](TEAM-DESK.md) · [`INVENTION-FIRST-FACT.md`](INVENTION-FIRST-FACT.md) · [`ALGORITHMS-35PCT-MONTH.md`](ALGORITHMS-35PCT-MONTH.md) · `ops/STATUS.md`
+Связанное: [`FIRST-IN-WORLD.md`](FIRST-IN-WORLD.md) · [`PHASES-ALL.md`](PHASES-ALL.md) · [`TEAM-DESK.md`](TEAM-DESK.md) · [`INVENTION-FIRST-FACT.md`](INVENTION-FIRST-FACT.md) · [`SHADOW-LEARN-24-7.md`](SHADOW-LEARN-24-7.md) · [`ALGORITHMS-35PCT-MONTH.md`](ALGORITHMS-35PCT-MONTH.md) · `ops/STATUS.md`
