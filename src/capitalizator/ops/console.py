@@ -20,6 +20,11 @@ from capitalizator.ops.contour import status as contour_status
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.phase import trading_mode
+from capitalizator.ops.product import (
+    hello_recorded,
+    read_user_mode,
+    set_user_mode,
+)
 from capitalizator.ops.vault import (
     Vault,
     init_vault,
@@ -80,8 +85,14 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         report_day = report_day or "нет даты"
     mode = trading_mode()
     contour = contour_status(vault)
+    user = read_user_mode(vault)
+    hello_ok = hello_recorded(vault)
+    banner = "" if hello_ok else "нет testnet hello — send закрыт"
     snap = {
         "trading_mode": mode,
+        "user_mode": user,
+        "hello_ok": hello_ok,
+        "hello_banner": banner,
         "contour": contour["contour"],
         "hours24": contour["hours24"],
         "hours24_span_s": contour["hours24_span_s"],
@@ -125,6 +136,9 @@ def _page(snap: dict[str, Any]) -> str:
         )
     chain = "целая" if snap["hash_chain_ok"] else "сломана"
     mode = html.escape(str(snap["trading_mode"]))
+    user_mode = html.escape(str(snap.get("user_mode") or "off"))
+    hello_banner = html.escape(str(snap.get("hello_banner") or ""))
+    hello_ok = bool(snap.get("hello_ok"))
     report = html.escape(str(snap["report"]))
     contour = html.escape(str(snap["contour"]))
     hours24 = bool(snap["hours24"])
@@ -219,9 +233,21 @@ def _page(snap: dict[str, Any]) -> str:
   </header>
   <main>
     <section class="card">
-      <h2>Режим</h2>
+      <h2>Режим yaml</h2>
       <div class="num">{mode}</div>
       <p><span class="pill">торги с консоли нельзя</span></p>
+    </section>
+    <section class="card">
+      <h2>Режим человека</h2>
+      <div class="num">{user_mode}</div>
+      <p><span class="pill {"ok" if hello_ok else "bad"}">{hello_banner or "testnet hello есть"}</span></p>
+      <form method="post" action="/api/mode">
+        <input type="hidden" name="ack" value="1"/>
+        <button type="submit" name="mode" value="off">off</button>
+        <button type="submit" name="mode" value="learn">learn</button>
+        <button type="submit" name="mode" value="demo">demo</button>
+        <button type="submit" name="mode" value="live">live</button>
+      </form>
     </section>
     <section class="card">
       <h2>Контур</h2>
@@ -284,8 +310,17 @@ class ConsoleApp:
     def turn_on(self) -> dict[str, Any]:
         return enable_contour(self.vault)
 
+    def set_mode(
+        self,
+        mode: str,
+        *,
+        ack: bool,
+        learn_n_days: int | None = None,
+    ) -> dict[str, Any]:
+        return set_user_mode(self.vault, mode, ack=ack, learn_n_days=learn_n_days)
 
-def _read_action(handler: BaseHTTPRequestHandler) -> str:
+
+def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     raw_len = handler.headers.get("Content-Length", "0")
     try:
         length = int(raw_len)
@@ -299,10 +334,19 @@ def _read_action(handler: BaseHTTPRequestHandler) -> str:
         payload = json.loads(body.decode() or "{}")
         if not isinstance(payload, dict):
             raise ValueError("json must be an object")
-        return str(payload.get("action") or "")
+        return payload
     parsed = parse_qs(body.decode(), keep_blank_values=True)
-    values = parsed.get("action", [""])
-    return str(values[0])
+    return {key: values[-1] if values else "" for key, values in parsed.items()}
+
+
+def _read_action(handler: BaseHTTPRequestHandler) -> str:
+    payload = _read_body(handler)
+    return str(payload.get("action") or "")
+
+
+def _is_local(handler: BaseHTTPRequestHandler) -> bool:
+    host = handler.client_address[0]
+    return host in {"127.0.0.1", "localhost", "::1"}
 
 
 def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
@@ -351,10 +395,46 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 body = json.dumps(payload, ensure_ascii=False).encode()
                 self._send(409, body, "application/json; charset=utf-8")
 
+        def _set_mode(self, payload: dict[str, Any], *, redirect: bool) -> None:
+            raw_ack = payload.get("ack")
+            ack = raw_ack in {True, "true", "1", 1, "yes"}
+            mode = str(payload.get("mode") or "")
+            raw_n = payload.get("learn_n_days")
+            learn_n = int(raw_n) if raw_n not in {None, ""} else None
+            if mode == "learn" and learn_n is None:
+                learn_n = 14
+            if not ack:
+                self._send(403, b"ack required", "text/plain; charset=utf-8")
+                return
+            try:
+                out = app.set_mode(mode, ack=True, learn_n_days=learn_n)
+            except ValueError as exc:
+                self._send(400, str(exc).encode(), "text/plain; charset=utf-8")
+                return
+            if redirect:
+                self._send(303, b"", "text/plain; charset=utf-8", extra={"Location": "/"})
+                return
+            body = json.dumps(out, ensure_ascii=False).encode()
+            self._send(200, body, "application/json; charset=utf-8")
+
         def do_POST(self) -> None:  # noqa: N802
             sent = False
             try:
                 path = urlparse(self.path).path
+                if path == "/order":
+                    self._reject_write()
+                    return
+                if path in {"/api/mode", "/mode"}:
+                    if not _is_local(self):
+                        self._send(403, b"localhost only", "text/plain; charset=utf-8")
+                        return
+                    try:
+                        payload = _read_body(self)
+                    except (ValueError, json.JSONDecodeError):
+                        self._send(400, b"bad-mode", "text/plain; charset=utf-8")
+                        return
+                    self._set_mode(payload, redirect=path == "/mode")
+                    return
                 if path not in {"/contour", "/api/contour"}:
                     self._reject_write()
                     return
