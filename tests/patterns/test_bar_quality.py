@@ -172,6 +172,14 @@ def test_other_symbol_is_not_prior() -> None:
     assert classify_bar_quality(hist, current, t=T) == LIVE
 
 
+def test_btc_history_does_not_stagnate_an_eth_bar() -> None:
+    """Hardcoded `history is BTC` would STAGNANT an ETH print. Filter is current.symbol."""
+    hist = [_bar(i, close="100") for i in range(4)]
+    current = _bar(4, close="100", symbol="ETHUSDT")
+    assert classify_bar_quality(hist, current, t=T) == LIVE
+    assert classify_bar_quality(hist, _bar(4, close="100"), t=T) == STAGNANT
+
+
 def test_later_bar_is_not_a_prior() -> None:
     hist = [_bar(i, close="100") for i in range(3)] + [_bar(6, close="100")]
     current = _bar(4, close="100")

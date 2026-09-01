@@ -532,6 +532,25 @@ def test_foreign_symbol_history_does_not_make_width() -> None:
     assert width_now_from_history(bar, hist, t=NOW) is None
 
 
+def test_btc_history_does_not_width_an_eth_bar() -> None:
+    """Hardcoded `history is BTC` would journal 0.1/2 on ETH. Filter is current.symbol."""
+    hist = [_bar(i) for i in range(15)]
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=T0 + timedelta(minutes=15 * 20),
+        close_ts=T0 + timedelta(minutes=15 * 21),
+        open=Decimal("100.15"),
+        high=Decimal("100.2"),
+        low=Decimal("100.1"),
+        close=Decimal("100.15"),
+    )
+    assert atr(hist) == Decimal("2")
+    assert width_now_from_history(_bar(20, high="100.2", low="100.1"), hist, t=NOW) == Decimal("0.1") / Decimal("2")
+    assert prior_same_tf(hist, eth, t=NOW) == []
+    assert width_now_from_history(eth, hist, t=NOW) is None
+
+
 def test_offset_timezone_sample_counts_by_utc_instant() -> None:
     """+3 16:30 is 13:30Z. Clock hour 16 vs now 14:00Z would drop a real prior."""
     plus3 = timezone(timedelta(hours=3))

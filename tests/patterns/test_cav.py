@@ -438,6 +438,25 @@ def test_tight_range_close_above_zone_is_not_compress() -> None:
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "NOISE"
 
 
+def test_tight_range_close_below_resistance_is_not_compress() -> None:
+    """Resistance close under the box is not COMPRESS even when range < ATR and the wick still touches."""
+    res = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="resistance",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    bar = _bar(low="99.90", high="100.05", close="99.95")
+    assert bar.low <= res.hi
+    assert bar.high >= res.lo
+    assert bar.close < res.lo
+    assert (bar.high - bar.low) < Decimal("2")
+    assert label(res, bar, t=T, htf_bias="box", closed_bars=_atr15()) == "NOISE"
+
+
 def test_range_equal_to_atr_is_drift_not_compress() -> None:
     """COMPRESS is range < ATR, not <=. Body is 0 here — |close−open| < ATR would fake COMPRESS."""
     bar = _bar(low="100.0", high="102.0", close="100.10")
@@ -1065,6 +1084,30 @@ def test_foreign_symbol_and_tf_do_not_feed_atr() -> None:
     assert prior_same_tf(hourly, bar, t=T) == []
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=eth) == "DRIFT"
     assert label(ZONE, bar, t=T, htf_bias="box", closed_bars=hourly) == "DRIFT"
+
+
+def test_btc_history_does_not_compress_an_eth_zone() -> None:
+    """Hardcoded `history is BTC` would COMPRESS an ETH zone. Filter is current.symbol, not a fixed ticker."""
+    eth_zone = Zone.create(
+        symbol="ETHUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+    )
+    eth = Bar(
+        symbol="ETHUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 16, 15, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+        open=Decimal("100.10"),
+        high=Decimal("100.15"),
+        low=Decimal("100.05"),
+        close=Decimal("100.10"),
+    )
+    assert label(eth_zone, eth, t=T, htf_bias="box", closed_bars=_atr15()) == "DRIFT"
 
 
 def test_future_bar_does_not_create_compress() -> None:
