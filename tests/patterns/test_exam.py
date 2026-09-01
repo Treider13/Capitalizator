@@ -82,6 +82,16 @@ def test_five_zero_pnl_days_have_no_share() -> None:
     assert hostile_exam(rows).pnl_share_best_5_days is None
 
 
+def test_pnl_share_unlocks_on_exactly_five_days() -> None:
+    """Success fixtures use 6 days. `len(by_day) < 6` would still pass those."""
+    rows = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 8, d), pnl=Decimal("1"))
+        for d in range(1, 6)
+    ]
+    assert len({c.day for c in rows}) == 5
+    assert hostile_exam(rows).pnl_share_best_5_days == Decimal("1")
+
+
 def test_pnl_share_needs_five_days_and_positive_total() -> None:
     four = [
         ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 1, d), pnl=Decimal("1"))
