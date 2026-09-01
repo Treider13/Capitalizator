@@ -125,3 +125,4 @@ ICT/SMC — не 1900-е. Это розничная упаковка **2016–20
 - `PHASE-BUILD.md` / `PHASES-ALL.md` / `IMPLEMENTATION.md` §6.3
 - `src/capitalizator/zones/{engine,model,README}.md` — запрет в типе
 - `CENSUS-PRACTICE-REPOS.md`, `WORLD-SEARCH.md` — живого SMC-бота с книгой нет
+- `intelligence-layer.md` — именованные паттерны умирают от толпы; полураспад 82→12 б.п.
