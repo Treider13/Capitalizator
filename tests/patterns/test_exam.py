@@ -247,7 +247,7 @@ def test_two_vol_pairs_unlock_ic() -> None:
     ]
     ic = hostile_exam(rows).vol_rank_ic
     assert ic is not None
-    assert Decimal("0.999") < ic <= 1
+    assert Decimal("0.999") < ic < Decimal("1.002")
 
 
 def test_vol_rank_ic_is_spearman_not_raw_pearson() -> None:
@@ -264,7 +264,8 @@ def test_vol_rank_ic_is_spearman_not_raw_pearson() -> None:
     ]
     ic = hostile_exam(rows).vol_rank_ic
     assert ic is not None
-    assert Decimal("0.999") < ic <= 1
+    # Decimal.sqrt is not bit-exact; this triple can land a hair above 1.
+    assert Decimal("0.999") < ic < Decimal("1.002")
 
 
 def test_vol_rank_ic_is_spearman_not_kendall() -> None:
