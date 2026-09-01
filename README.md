@@ -27,6 +27,7 @@
 Лучшие и самые прибыльные **алгоритмы** (семейства, не боты): [`docs/ALGORITHMS-PROFIT.md`](docs/ALGORITHMS-PROFIT.md).  
 Кто **прямо сейчас** печатает (волты HL, Смартлаб) и каким алгоритмом: [`docs/ALGORITHMS-LIVE.md`](docs/ALGORITHMS-LIVE.md).  
 Откуда «+35–40% за месяц с нуля» (август 2026): [`docs/ALGORITHMS-35PCT-MONTH.md`](docs/ALGORITHMS-35PCT-MONTH.md).  
+Грааль **только после обучения** и ощущение «мы устарели»: [`docs/GRAIL-AFTER-TRAINING.md`](docs/GRAIL-AFTER-TRAINING.md).  
 Кто реально прибыльный на **криптофьючерсах** (не звёзды): [`docs/FUTURES-BOTS-RESULTS.md`](docs/FUTURES-BOTS-RESULTS.md).  
 Перепись **150** топовых ботов/движков против стола (вечер 30.08): [`docs/CENSUS-150.md`](docs/CENSUS-150.md).  
 Мировой поиск (CN/IN/JP/KR, языки, Gitee/GitLab): [`docs/WORLD-SEARCH.md`](docs/WORLD-SEARCH.md) — пустой продукт пуст не только на EN GitHub.  
