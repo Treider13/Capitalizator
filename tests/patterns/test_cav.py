@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
+import pytest
+
 from capitalizator.patterns.bar_quality import prior_same_tf
 from capitalizator.patterns.cav import label
 from capitalizator.zones.model import Bar, Zone
@@ -33,6 +35,12 @@ def _bar(*, low: str, high: str, close: str, close_ts: datetime | None = None) -
         low=Decimal(low),
         close=Decimal(close),
     )
+
+
+def test_naive_t_is_rejected() -> None:
+    bar = _bar(low="99.9", high="100.5", close="100.1")
+    with pytest.raises(TypeError, match="naive"):
+        label(ZONE, bar, t=datetime(2026, 8, 30, 16, 45), htf_bias="box")
 
 
 def test_unclosed_bar_is_noise() -> None:

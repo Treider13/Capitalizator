@@ -58,6 +58,15 @@ def test_residual_is_median_error_over_atr() -> None:
     assert hostile_exam(rows).residual_after_atr == Decimal("0.75")
 
 
+def test_five_zero_pnl_days_have_no_share() -> None:
+    """total=0 is not a share. Returning 0 would look like 'no concentration'."""
+    rows = [
+        ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 7, d), pnl=Decimal("0"))
+        for d in range(1, 6)
+    ]
+    assert hostile_exam(rows).pnl_share_best_5_days is None
+
+
 def test_pnl_share_needs_five_days_and_positive_total() -> None:
     four = [
         ExamCase(pred=Decimal("1"), last=Decimal("1"), actual=Decimal("1"), day=date(2026, 1, d), pnl=Decimal("1"))

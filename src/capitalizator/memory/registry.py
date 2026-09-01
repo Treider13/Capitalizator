@@ -219,6 +219,8 @@ class Registry:
             raise ValueError("w_now must be >= 0")
         if w_rank is not None and (w_rank < 0 or w_rank > 1):
             raise ValueError("w_rank must be in [0, 1]")
+        if w_rank is not None and w_now is None:
+            raise ValueError("w_rank requires w_now")
         return self._patch(w_now=w_now, w_rank=w_rank, touch_id=touch_id)
 
     def fill_bar_quality(self, *, quality: str, touch_id: str | None = None) -> list[Touch]:

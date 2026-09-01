@@ -89,6 +89,18 @@ def test_unknown_quality_rejected() -> None:
     reg = _reg()
     with pytest.raises(ValueError, match="bar_quality"):
         reg.fill_bar_quality(quality="gap")
+    with pytest.raises(ValueError, match="bar_quality"):
+        reg.fill_bar_quality(quality="LIVE")
+
+
+def test_w_rank_requires_w_now() -> None:
+    """A rank without a width cannot exist. Do not journal a hanging percentile."""
+    reg = _reg()
+    with pytest.raises(ValueError, match="w_rank requires w_now"):
+        reg.fill_width(w_now=None, w_rank=Decimal("0.5"))
+    cleared = reg.fill_width(w_now=None, w_rank=None)[0]
+    assert cleared.w_now is None
+    assert cleared.w_rank is None
 
 
 def test_fill_quality_accepts_exactly_quality_labels() -> None:

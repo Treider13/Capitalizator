@@ -219,6 +219,11 @@ def test_negative_w_now_rejected() -> None:
         WidthSample(zone_id="z1", ts=T0, w_now=Decimal("-1"))
 
 
+def test_naive_t_is_rejected() -> None:
+    with pytest.raises(TypeError, match="naive"):
+        width_now_from_history(_bar(0), [], t=datetime(2026, 8, 30, 18, 0))
+
+
 def test_naive_now_is_rejected() -> None:
     hist = [_sample(i, "1") for i in range(20)]
     with pytest.raises(TypeError, match="naive"):

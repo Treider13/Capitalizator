@@ -47,6 +47,33 @@ def _bar(
     )
 
 
+def test_naive_t_is_rejected() -> None:
+    current = _bar(0)
+    naive = datetime(2026, 8, 30, 16, 45)
+    with pytest.raises(TypeError, match="naive"):
+        classify_bar_quality([], current, t=naive)
+    with pytest.raises(TypeError, match="naive"):
+        last_gap_segment([], current, t=naive)
+
+
+def test_zero_close_is_a_gap() -> None:
+    """prev.close=0 cannot divide. Treat as a segment break, do not crash."""
+    a = Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        close_ts=datetime(2026, 8, 30, 12, 15, tzinfo=UTC),
+        open=Decimal("0"),
+        high=Decimal("1"),
+        low=Decimal("0"),
+        close=Decimal("0"),
+    )
+    b = _bar(1, close="100", open_="100")
+    segs = split_on_gaps([a, b])
+    assert len(segs) == 2
+    assert last_gap_segment([a], b, t=T) == []
+
+
 def test_five_same_closes_are_stagnant() -> None:
     hist = [_bar(i, close="100") for i in range(4)]
     current = _bar(4, close="100")
