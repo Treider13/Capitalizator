@@ -27,6 +27,7 @@ from capitalizator.exec.failed_break import FailedBreak
 from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.manage import TradeManager
 from capitalizator.exec.shadow import ShadowWriter
+from capitalizator.exec.spot import SpotAdapter
 from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy, in_mid_range
 from capitalizator.jury.desk import (
     decide,
@@ -118,6 +119,7 @@ class DeskLoop:
         self.btc_veto = BtcVeto()
         self.btc_regime = BtcRegime(self.zones_map)
         self.manager = TradeManager()
+        self.spot = SpotAdapter(knowledge)
         self.shadow_writes: list[dict[str, Any]] = []
 
     def state_for(self, symbol: str) -> SymbolState:
@@ -727,6 +729,8 @@ class DeskLoop:
                 else Decimal(card.volume.rvol),
                 wall_state=None if card is None else card.volume.walls,
                 wall_no_print=wall_no_print,
+                venue="perp" if card is None else card.venue,
+                spot_acked=False if card is None else self.spot.acked(st.symbol),
             )
             intent = self.strategy.propose(snap)
             if intent is not None:

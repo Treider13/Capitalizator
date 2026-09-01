@@ -90,6 +90,8 @@ class BounceSnapshot:
     b_marks_ok: bool = True
     rvol: Decimal | None = None
     wall_state: str | None = None
+    venue: str = "perp"
+    spot_acked: bool = False
 
 
 def price_in_zone(price: Decimal, zone: Zone) -> bool:
@@ -206,6 +208,8 @@ class BounceStrategy:
             return None
         if snap.b_verdict == "hold":
             return None
+        if snap.venue == "spot_proposal" and not snap.spot_acked:
+            return None
         if snap.b_verdict in {"propose", "cut_size"} and not snap.b_marks_ok:
             return None
         if TAKER_OK:
@@ -222,7 +226,8 @@ class BounceStrategy:
             return None
         if not self.halts.allow_entry():
             return None
-        if not self.screener.ok(
+        spot_rail = snap.venue == "spot_proposal" and snap.spot_acked
+        if not spot_rail and not self.screener.ok(
             snap.symbol,
             spread_frac=snap.spread_frac,
             typical_move=snap.typical_move,

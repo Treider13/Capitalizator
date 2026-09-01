@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 
 from capitalizator.card.live import CardLive, VolumeSnapshot
 from capitalizator.news_macro.ingest import NewsRow
+from capitalizator.screener.universe import load_desk_universe
 from capitalizator.types import require_utc
 
 IMMINENT_HOURS = 2
@@ -25,9 +27,12 @@ def from_news(
     fvg_status: str = "filled",
     sweep_status: str = "done",
     venue: str = "perp",
+    universe: Sequence[str] | None = None,
+    spot_acked: bool = False,
 ) -> CardLive:
     when = require_utc(now)
     vol = volume or VolumeSnapshot()
+    names = frozenset(universe) if universe is not None else frozenset(load_desk_universe().symbols)
     hits = [
         row
         for row in calendar
@@ -50,8 +55,11 @@ def from_news(
     ]
     listing = [
         row
-        for row in hits
-        if row.event_class == "LISTING" and symbol not in row.assets
+        for row in calendar
+        if row.known_at <= when
+        and row.event_class == "LISTING"
+        and symbol in row.assets
+        and symbol not in names
     ]
 
     pluses: list[str]
@@ -83,11 +91,19 @@ def from_news(
             "coin_negative",
             "thesis_dead",
         )
-    elif listing and symbol not in {a for row in listing for a in row.assets}:
-        bearing = "hold"
-        pluses = ("listing_seen",)
-        minuses = ("not_in_universe",)
+    elif listing:
         venue = "spot_proposal"
+        pluses = (
+            "listing_seen",
+            "official_calendar",
+            "listing_base_rate_low",
+        )
+        if spot_acked:
+            bearing = "propose"
+            minuses = ("not_in_universe",)
+        else:
+            bearing = "hold"
+            minuses = ("not_in_universe", "no_spot_ack")
     else:
         rvol = Decimal(vol.rvol) if vol.rvol else Decimal("0")
         pluses = (
