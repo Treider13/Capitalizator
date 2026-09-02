@@ -8,6 +8,7 @@ from decimal import Decimal
 import pytest
 from tests.oko.conftest import T0, make_book, make_window, mature_passport, quiet_prints
 
+from capitalizator.oko.footprint import report as footprint_report
 from capitalizator.oko.mirror import (
     MIN_WINDOWS,
     MirrorReport,
@@ -135,3 +136,71 @@ def test_bad_offsets_rejected(clean_window) -> None:
         inject_spoof(clean_window, side="zone", at_s=3, pull_s=3)
     with pytest.raises(ValueError):
         inject_spoof(clean_window, side="left", at_s=1, pull_s=3)
+
+
+def test_iceberg_injection_is_named(clean_window) -> None:
+    from capitalizator.oko.mirror import inject_iceberg
+
+    hit = inject_iceberg(clean_window, side="zone")
+    fp = footprint_report(hit, frame(hit, Passport("BTCUSDT")))
+    assert fp.label == "ICEBERG"
+    assert fp.side == "bid"
+    # The refills are real adds with prints behind them: Shadow must not call them a spoof.
+    assert _shadow(hit).label == "CLEAN"
+    opp = inject_iceberg(clean_window, side="opp")
+    assert footprint_report(opp, frame(opp, Passport("BTCUSDT"))).side == "ask"
+
+
+def test_absorb_injection_is_named_only_with_passport(clean_window) -> None:
+    from capitalizator.oko.mirror import inject_absorb
+
+    with pytest.raises(ValueError, match="mature"):
+        inject_absorb(clean_window, Passport("BTCUSDT"), side="zone")
+    passport = mature_passport()
+    hit = inject_absorb(clean_window, passport, side="zone")
+    fp = footprint_report(hit, frame(hit, passport))
+    assert fp.label == "ABSORB"
+    assert fp.side == "bid"
+    assert _shadow(hit, passport).label == "CLEAN"
+
+
+def test_build_injection_needs_oi_stats(clean_window) -> None:
+    from tests.oko.test_footprint import _oi_passport
+
+    from capitalizator.oko.mirror import inject_build
+
+    with pytest.raises(ValueError, match="OI"):
+        inject_build(clean_window, mature_passport())
+    passport = _oi_passport()
+    hit = inject_build(clean_window, passport)
+    fp = footprint_report(hit, frame(hit, passport))
+    assert fp.label in {"BUILD_LONG", "BUILD_SHORT"}
+    assert fp.oi_z is not None and fp.oi_z >= 2
+    # Injection keeps the original tape (it has prints → direction from them).
+    assert hit.trades == clean_window.trades
+    empty = inject_build(make_window(), passport)
+    assert len(empty.trades) == 1  # one print added so the direction is not a guess
+
+
+def test_run_counts_footprint_kinds_and_passes() -> None:
+    from tests.oko.test_footprint import _oi_passport
+
+    windows = [make_window(trades=quiet_prints()) for _ in range(MIN_WINDOWS)]
+    passport = _oi_passport()
+    rep = run(windows, lambda _s: passport, seed=3, now=T0)
+    assert rep.rate("iceberg") == 1.0
+    assert rep.absorb_n == MIN_WINDOWS and rep.rate("absorb") == 1.0
+    assert rep.build_n == MIN_WINDOWS and rep.rate("build") == 1.0
+    assert rep.passed is True
+    bare = run(windows, lambda s: Passport(s), seed=3, now=T0)
+    assert bare.rate("iceberg") == 1.0
+    assert bare.absorb_n == 0 and bare.build_n == 0
+    assert bare.passed is True
+    weak = MirrorReport.from_dict({**rep.to_dict(), "iceberg_hits": 3})
+    assert weak.passed is False
+    back = MirrorReport.from_dict(rep.to_dict())
+    assert back == rep
+    old = MirrorReport.from_dict(
+        {k: v for k, v in rep.to_dict().items() if not k.startswith(("iceberg", "absorb", "build"))}
+    )
+    assert old.iceberg_hits == 0 and old.passed is False  # an old report is not a pass

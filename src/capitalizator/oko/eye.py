@@ -22,6 +22,8 @@ from decimal import Decimal
 from typing import Any, Protocol
 
 from capitalizator.oko.eyelid import OkoVerdict, blind_verdict, verdict
+from capitalizator.oko.footprint import FootprintReport, combined_fingerprint
+from capitalizator.oko.footprint import report as footprint_report
 from capitalizator.oko.forecast import Sample, class_key, forecast
 from capitalizator.oko.memory import ImmuneMemory
 from capitalizator.oko.mirror import MIN_WINDOWS, MirrorReport
@@ -55,6 +57,15 @@ class OkoWindow:
     t0: datetime
     frame: RetinaFrame
     shadow: ShadowReport
+    footprint: FootprintReport
+
+    @property
+    def fingerprint(self) -> tuple[int, ...]:
+        return combined_fingerprint(self.shadow.fingerprint, self.footprint)
+
+    @property
+    def fingerprint_text(self) -> str:
+        return "-".join(str(v) for v in self.fingerprint)
 
 
 class OkoEye:
@@ -93,13 +104,16 @@ class OkoEye:
         passport = self.passport_for(raw.symbol)
         fr = frame(raw, passport)
         sh = report(raw, fr)
+        fp = footprint_report(raw, fr)
         observe_passport(raw, passport, fr)
         bucket = self.recent.setdefault(raw.symbol, deque(maxlen=RECENT_WINDOWS))
         bucket.append(raw)
         self._since_mirror += 1
         if self._since_mirror >= MIRROR_EVERY and self.window_count() >= MIN_WINDOWS:
             self.run_mirror(now=now)
-        return OkoWindow(symbol=raw.symbol, touch_id=touch_id, t0=raw.t0, frame=fr, shadow=sh)
+        return OkoWindow(
+            symbol=raw.symbol, touch_id=touch_id, t0=raw.t0, frame=fr, shadow=sh, footprint=fp
+        )
 
     def window_count(self) -> int:
         return sum(len(rows) for rows in self.recent.values())
@@ -124,6 +138,7 @@ class OkoEye:
         self,
         *,
         idea: str,
+        zone_side: str,
         window: OkoWindow | None,
         cav: str | None,
         zlg: str | None,
@@ -135,18 +150,26 @@ class OkoEye:
         if not name:
             raise ValueError("judge needs a window or a symbol")
         weather = self.weather_report(name)
-        key = class_key(idea=idea, cav=cav, zlg=zlg, regime=weather.regime)
+        footprint = None if window is None else window.footprint.label
+        key = class_key(idea=idea, cav=cav, zlg=zlg, regime=weather.regime, footprint=footprint)
         fc = forecast(samples, symbol=name, key=key)
         if window is None:
             return blind_verdict(weather=weather, forecast=fc)
-        rec = self.memory_for(name).recognise(window.shadow.fingerprint, idea=idea)
+        rec = self.memory_for(name).recognise(window.fingerprint, idea=idea)
+        passport = self.passport_for(name)
+        oi_after = window.frame.oi_after
+        funding = window.frame.funding
         return verdict(
             idea=idea,
+            zone_side=zone_side,
             shadow=window.shadow,
+            footprint=window.footprint,
             weather=weather,
             forecast=fc,
             recognition=rec,
             mirror_ok=self.mirror_ok,
+            oi_peak=None if oi_after is None else passport.oi_peak(oi_after),
+            funding_top5=None if funding is None else passport.funding_top5(funding),
         )
 
     def learn(

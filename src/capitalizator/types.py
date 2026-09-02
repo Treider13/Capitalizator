@@ -17,6 +17,7 @@ StreamName = Literal[
     "gap",
     "resync",
     "snapshot",
+    "liquidation",
 ]
 ExchangeName = Literal["bybit", "mexc"]
 

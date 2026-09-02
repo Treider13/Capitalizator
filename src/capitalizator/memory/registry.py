@@ -100,6 +100,10 @@ class Touch:
     oko_n_class: int | None = None
     oko_size_mult: str | None = None
     oko_fingerprint: str | None = None
+    oko_footprint: str | None = None
+    oko_footprint_side: str | None = None
+    oko_oi_z: str | None = None
+    oko_liq_rel: str | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.ts)
@@ -382,13 +386,20 @@ class Registry:
         fingerprint: str,
         book_trust: str | None,
         tape_trust: str | None,
+        footprint: str = "NONE",
+        footprint_side: str | None = None,
         touch_id: str | None = None,
     ) -> list[Touch]:
-        """Shadow facts at the 8s clock. Voice comes later, with CAV. Not a hash link."""
+        """Shadow + Footprint facts at the 8s clock. Voice comes later, with CAV."""
+        from capitalizator.oko.footprint import FOOTPRINT_LABELS
         from capitalizator.oko.shadow import SHADOW_LABELS
 
         if label not in SHADOW_LABELS:
             raise ValueError(f"unknown oko label: {label!r}")
+        if footprint not in FOOTPRINT_LABELS:
+            raise ValueError(f"unknown oko footprint: {footprint!r}")
+        if footprint_side not in (None, "bid", "ask"):
+            raise ValueError("footprint_side must be bid|ask|None")
         if not fingerprint:
             raise ValueError("oko fingerprint must be non-empty")
         return self._patch(
@@ -396,6 +407,8 @@ class Registry:
             oko_fingerprint=fingerprint,
             oko_book_trust=book_trust,
             oko_tape_trust=tape_trust,
+            oko_footprint=footprint,
+            oko_footprint_side=footprint_side,
             touch_id=touch_id,
         )
 
@@ -416,10 +429,15 @@ class Registry:
         n_class: int,
         size_mult: str,
         fingerprint: str,
+        footprint: str = "NONE",
+        footprint_side: str | None = None,
+        oi_z: str | None = None,
+        liq_rel: str | None = None,
         touch_id: str | None = None,
     ) -> list[Touch]:
         """ОКО verdict. voice is a jury input: written once, like CAV / ZLG."""
         from capitalizator.jury.desk import VOICES
+        from capitalizator.oko.footprint import FOOTPRINT_LABELS
         from capitalizator.oko.shadow import SHADOW_LABELS
         from capitalizator.oko.weather import REGIMES
 
@@ -429,6 +447,10 @@ class Registry:
             raise ValueError(f"unknown oko label: {label!r}")
         if regime not in REGIMES:
             raise ValueError(f"unknown oko regime: {regime!r}")
+        if footprint not in FOOTPRINT_LABELS:
+            raise ValueError(f"unknown oko footprint: {footprint!r}")
+        if footprint_side not in (None, "bid", "ask"):
+            raise ValueError("footprint_side must be bid|ask|None")
         if n_class < 0:
             raise ValueError("n_class must be >= 0")
         if Decimal(size_mult) < 0 or Decimal(size_mult) > 1:
@@ -453,6 +475,10 @@ class Registry:
             oko_n_class=n_class,
             oko_size_mult=size_mult,
             oko_fingerprint=fingerprint,
+            oko_footprint=footprint,
+            oko_footprint_side=footprint_side,
+            oko_oi_z=oi_z,
+            oko_liq_rel=liq_rel,
         )
         ids = {row.touch_id for row in changed}
         return [row for row in self.touches if row.touch_id in ids]

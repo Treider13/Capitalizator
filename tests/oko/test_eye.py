@@ -63,22 +63,38 @@ def test_mirror_runs_after_five_windows_and_every_five() -> None:
 
 def test_judge_blind_and_with_window() -> None:
     eye = OkoEye(working_tf="15m")
-    key = class_key(idea="bounce", cav="REJECT", zlg="DEFEND", regime="UNKNOWN")
-    samples = [Sample(symbol="BTCUSDT", class_key=key, outcome="bounce") for _ in range(25)]
+    # A blind touch has no Footprint: its class carries '?', not NONE.
+    blind_key = class_key(idea="bounce", cav="REJECT", zlg="DEFEND", regime="UNKNOWN")
+    blind_samples = [
+        Sample(symbol="BTCUSDT", class_key=blind_key, outcome="bounce") for _ in range(25)
+    ]
     blind = eye.judge(
-        idea="bounce", window=None, cav="REJECT", zlg="DEFEND", samples=samples, symbol="BTCUSDT"
+        idea="bounce",
+        zone_side="support",
+        window=None,
+        cav="REJECT",
+        zlg="DEFEND",
+        samples=blind_samples,
+        symbol="BTCUSDT",
     )
     assert blind.voice == 0
     assert blind.label == "UNKNOWN"
+    assert blind.footprint == "NONE" and blind.footprint_side is None
     assert blind.pred_set == frozenset({"bounce"})  # forecast written, not voted
+    key = class_key(idea="bounce", cav="REJECT", zlg="DEFEND", regime="UNKNOWN", footprint="NONE")
+    samples = [Sample(symbol="BTCUSDT", class_key=key, outcome="bounce") for _ in range(25)]
     win = eye.observe_window(make_window(trades=quiet_prints()), touch_id="t", now=T0)
-    seen = eye.judge(idea="bounce", window=win, cav="REJECT", zlg="DEFEND", samples=samples)
+    assert win.footprint.label == "NONE"
+    assert len(win.fingerprint) == 13
+    seen = eye.judge(
+        idea="bounce", zone_side="support", window=win, cav="REJECT", zlg="DEFEND", samples=samples
+    )
     # Mirror not run yet (one window) caps +1 to 0; the forecast alone is not enough.
     assert seen.voice == 0
     assert "mirror not passed" in seen.reason
     assert seen.regime == "UNKNOWN"
     with pytest.raises(ValueError):
-        eye.judge(idea="bounce", window=None, cav=None, zlg=None, samples=[])
+        eye.judge(idea="bounce", zone_side="support", window=None, cav=None, zlg=None, samples=[])
 
 
 def test_plus_one_needs_weather_mirror_and_decisive_forecast() -> None:
@@ -88,14 +104,16 @@ def test_plus_one_needs_weather_mirror_and_decisive_forecast() -> None:
         eye.on_bar_close(bar)
     regime = eye.weather_report("BTCUSDT").regime
     assert regime in {"RANGE", "TREND"}
-    key = class_key(idea="bounce", cav="REJECT", zlg="DEFEND", regime=regime)
+    key = class_key(idea="bounce", cav="REJECT", zlg="DEFEND", regime=regime, footprint="NONE")
     samples = [Sample(symbol="BTCUSDT", class_key=key, outcome="bounce") for _ in range(25)]
     win = None
     for i in range(MIN_WINDOWS):
         win = eye.observe_window(make_window(trades=quiet_prints()), touch_id=f"t{i}", now=T0)
     assert eye.mirror_ok is True
     assert win is not None
-    v = eye.judge(idea="bounce", window=win, cav="REJECT", zlg="DEFEND", samples=samples)
+    v = eye.judge(
+        idea="bounce", zone_side="support", window=win, cav="REJECT", zlg="DEFEND", samples=samples
+    )
     assert v.voice == 1
     assert v.regime == regime
 
@@ -104,10 +122,10 @@ def test_learn_feeds_memory_and_die_is_skipped() -> None:
     eye = OkoEye(working_tf="15m")
     win = eye.observe_window(make_window(trades=quiet_prints()), touch_id="t", now=T0)
     assert eye.learn(
-        symbol="BTCUSDT", fingerprint=win.shadow.fingerprint, idea="bounce", outcome="break", ts=T0
+        symbol="BTCUSDT", fingerprint=win.fingerprint, idea="bounce", outcome="break", ts=T0
     )
     assert not eye.learn(
-        symbol="BTCUSDT", fingerprint=win.shadow.fingerprint, idea="bounce", outcome="die", ts=T0
+        symbol="BTCUSDT", fingerprint=win.fingerprint, idea="bounce", outcome="die", ts=T0
     )
     assert eye.memory_for("BTCUSDT").n == 1
 
@@ -120,9 +138,7 @@ def test_save_and_load_roundtrip_dict_store() -> None:
     for i in range(MIN_WINDOWS):
         win = eye.observe_window(make_window(trades=quiet_prints()), touch_id=f"t{i}", now=T0)
     assert win is not None
-    eye.learn(
-        symbol="BTCUSDT", fingerprint=win.shadow.fingerprint, idea="bounce", outcome="break", ts=T0
-    )
+    eye.learn(symbol="BTCUSDT", fingerprint=win.fingerprint, idea="bounce", outcome="break", ts=T0)
     store = DictStore()
     eye.save(store)
     assert set(store.rows) == {

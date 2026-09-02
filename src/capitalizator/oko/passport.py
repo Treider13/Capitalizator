@@ -21,7 +21,11 @@ WINDOW = 400
 MAD_TO_SIGMA = Decimal("1.4826")
 EPS = Decimal("1e-9")
 
-FIELDS = ("depth", "spread_ticks", "print_qty", "prints_per_s", "range_ticks")
+CORE_FIELDS = ("depth", "spread_ticks", "print_qty", "prints_per_s", "range_ticks")
+# Footprint stats (INVENTION-OKO §След). Mature on their own; they never gate `mature`
+# — a symbol without an OI feed must still get its Shadow judged.
+EXTRA_FIELDS = ("oi_delta_frac", "oi_level", "funding")
+FIELDS = CORE_FIELDS + EXTRA_FIELDS
 
 
 class RobustStat:
@@ -102,17 +106,47 @@ class Passport:
         self.print_qty = RobustStat()
         self.prints_per_s = RobustStat()
         self.range_ticks = RobustStat()
+        self.oi_delta_frac = RobustStat()
+        self.oi_level = RobustStat()
+        self.funding = RobustStat()
 
     def stats(self) -> dict[str, RobustStat]:
         return {name: getattr(self, name) for name in FIELDS}
 
+    def core_stats(self) -> dict[str, RobustStat]:
+        return {name: getattr(self, name) for name in CORE_FIELDS}
+
     @property
     def n(self) -> int:
-        return min(stat.n for stat in self.stats().values())
+        return min(stat.n for stat in self.core_stats().values())
 
     @property
     def mature(self) -> bool:
-        return all(stat.mature for stat in self.stats().values())
+        return all(stat.mature for stat in self.core_stats().values())
+
+    def observe_oi(self, *, delta_frac: Decimal, level: Decimal) -> None:
+        """ΔOI / OI over the window (signed) and the OI level at the window end."""
+        if level <= 0:
+            raise ValueError("oi level must be > 0")
+        self.oi_delta_frac.add(delta_frac)
+        self.oi_level.add(level)
+
+    def observe_funding(self, rate: Decimal) -> None:
+        self.funding.add(rate)
+
+    def oi_peak(self, level: Decimal) -> bool | None:
+        """OI at or above every level in the window. None before 30 observations."""
+        if not self.oi_level.mature:
+            return None
+        return level >= max(self.oi_level.values)
+
+    def funding_top5(self, rate: Decimal) -> bool | None:
+        """Funding at or above the 95th percentile of history. None before 30."""
+        if not self.funding.mature:
+            return None
+        ordered = sorted(self.funding.values)
+        idx = max(0, min(len(ordered) - 1, int(len(ordered) * 0.95)))
+        return rate >= ordered[idx]
 
     def observe(
         self,

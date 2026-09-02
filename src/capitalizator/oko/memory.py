@@ -1,7 +1,8 @@
 """Immune Memory — ОКО remembers the shape of the trap, not the price.
 
-Every resolved touch leaves an antigen: the Shadow fingerprint, the idea, and
-whether the outcome went *against* the idea (trap). A new window is matched
+Every resolved touch leaves an antigen: the Shadow + Footprint fingerprint
+(10 + 3 ints), the idea, and whether the outcome went *against* the idea
+(trap). A new window is matched
 to antigens within Hamming distance ≤ 1 of the same idea family. If ≥20 such
 episodes exist and the Wilson 95% lower bound of the trap rate is above 0.5,
 the pattern is *recognised* — the Eyelid vetoes. Below 20 the memory is an
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from capitalizator.oko.shadow import FINGERPRINT_LEN
+from capitalizator.oko.footprint import FINGERPRINT_LEN
 from capitalizator.types import require_utc
 
 N_MIN = 20

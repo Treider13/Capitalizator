@@ -16,7 +16,7 @@ from capitalizator.oko.memory import (
 )
 
 TS = datetime(2026, 8, 31, 14, 10, tzinfo=UTC)
-FP = (0, 3, 0, 0, 3, 1, 4, 1, 0, 0)
+FP = (0, 3, 0, 0, 3, 1, 4, 1, 0, 0, 0, 0, 3)
 
 
 def test_trap_is_relative_to_the_idea() -> None:

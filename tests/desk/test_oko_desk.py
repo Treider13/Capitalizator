@@ -115,7 +115,9 @@ def test_silent_bid_wall_under_the_print_is_spoof_and_veto(tmp_path: Path) -> No
     assert journal["oko_label"] == "SPOOF"
     assert "spoof on zone side" in journal["oko_reason"]
     assert journal["oko_size_mult"] == "0"
-    assert journal["oko_fingerprint"] and journal["oko_fingerprint"].count("-") == 9
+    assert (
+        journal["oko_fingerprint"] and journal["oko_fingerprint"].count("-") == 12
+    )  # 10 Shadow + 3 Footprint
     assert journal["jury"] == "VETO"
     assert journal["zlg_label"] == "DEFEND"  # the book *looked* defended; ОКО saw the pull
 
@@ -226,3 +228,103 @@ def test_two_desks_same_tape_same_oko_journal(tmp_path: Path) -> None:
         return {k: v for k, v in row.items() if k.startswith("oko_") or k == "jury"}
 
     assert run("a") == run("b")
+
+
+def _oi(ts: datetime, oi: str) -> MarketEvent:
+    return MarketEvent(
+        stream="oi",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=ts,
+        recv_ts=ts,
+        payload={"oi": oi},
+    )
+
+
+def _liq(ts: datetime, *, qty: str, position: str) -> MarketEvent:
+    return MarketEvent(
+        stream="liquidation",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=ts,
+        recv_ts=ts,
+        payload={"px": "100.3", "qty": qty, "position": position},
+    )
+
+
+def test_oi_funding_liquidation_feeds_reach_the_footprint(tmp_path: Path) -> None:
+    """OI before the print and inside 8s → ΔOI is a fact in the journal; liquidations too."""
+    desk = _desk(tmp_path)
+    desk.on_event(_oi(WINDOW - timedelta(seconds=30), "1000000"))
+    desk.on_event(
+        MarketEvent(
+            stream="funding",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW - timedelta(seconds=20),
+            recv_ts=WINDOW - timedelta(seconds=20),
+            payload={"funding": "0.0001"},
+        )
+    )
+    desk.on_event(_snapshot(WINDOW))
+    desk.on_event(_trade(WINDOW), [ZONE])
+    desk.on_event(_oi(WINDOW + timedelta(seconds=4), "1010000"))
+    desk.on_event(_liq(WINDOW + timedelta(seconds=3), qty="2", position="long"))
+    desk.on_event(
+        _liq(WINDOW + timedelta(seconds=30), qty="50", position="short")
+    )  # after the clock
+    desk.on_event(_diff(WINDOW + timedelta(seconds=2), seq=2, bid="30"))
+    desk.tick(WINDOW + timedelta(seconds=8))
+    st = desk.state_for("BTCUSDT")
+    assert st.oko_window is not None
+    fr = st.oko_window.frame
+    assert (fr.oi_before, fr.oi_after) == (Decimal("1000000"), Decimal("1010000"))
+    assert fr.oi_delta_frac == Decimal("0.01")
+    assert fr.oi_z is None  # first OI window: the stat is not mature → no BUILD label, honestly
+    assert fr.liq_long_qty == Decimal("2") and fr.liq_short_qty == Decimal("0")
+    assert fr.funding == Decimal("0.0001")
+    assert st.oko_window.footprint.label == "NONE"
+    assert desk.oko.passport_for("BTCUSDT").oi_delta_frac.n == 1
+    assert desk.oko.passport_for("BTCUSDT").funding.n == 1
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    journal = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    assert journal is not None
+    assert journal["oko_footprint"] == "NONE"
+    assert journal["oko_footprint_side"] is None
+    assert journal["oko_oi_z"] is None
+    assert journal["oko_liq_rel"] is None
+    assert journal["oko_fingerprint"].count("-") == 12
+
+
+def test_bad_feed_rows_are_dropped_not_stored(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    desk.on_event(_oi(WINDOW, "0"))
+    desk.on_event(_oi(WINDOW, "abc"))
+    desk.on_event(_liq(WINDOW, qty="0", position="long"))
+    desk.on_event(
+        MarketEvent(
+            stream="liquidation",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW,
+            recv_ts=WINDOW,
+            payload={"px": "1", "qty": "1", "position": "buy"},
+        )
+    )
+    st = desk.state_for("BTCUSDT")
+    assert st.oi == [] and st.liquidations == []
+    desk.on_event(_oi(WINDOW, "5"))
+    desk.on_event(_oi(WINDOW + timedelta(hours=3), "6"))
+    assert [lv for _, lv in st.oi] == [Decimal("6")]  # 2h retention
+
+
+def test_liquidation_stream_orders_with_prints(tmp_path: Path) -> None:
+    from capitalizator.desk.loop import _ordered_events
+
+    liq = _liq(WINDOW, qty="1", position="long")
+    bar = {"kind": "bar_close", "bar": _bar(WINDOW)}
+    order = _ordered_events([bar, _trade(WINDOW), liq, _snapshot(WINDOW)])
+    kinds = [e.stream if isinstance(e, MarketEvent) else "bar_close" for e in order]
+    assert kinds[0] == "snapshot"
+    assert kinds[-1] == "bar_close"
+    assert set(kinds[1:3]) == {"trades", "liquidation"}

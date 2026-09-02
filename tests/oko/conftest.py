@@ -78,6 +78,9 @@ def make_window(
     adds: Sequence[BookAdd] = (),
     walls: Sequence[WallEvent] = (),
     t0: datetime = T0,
+    oi_path: Sequence[tuple[datetime, Decimal]] = (),
+    liquidations: Sequence[MarketEvent] = (),
+    funding: Decimal | None = None,
 ) -> RawWindow:
     pre = book_pre if book_pre is not None else make_book()
     if path is None:
@@ -94,6 +97,9 @@ def make_window(
         trades=tuple(trades),
         adds=tuple(adds),
         wall_events=tuple(walls),
+        oi_path=tuple(oi_path),
+        liquidations=tuple(liquidations),
+        funding=funding,
     )
 
 

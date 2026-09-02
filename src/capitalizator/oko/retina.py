@@ -43,9 +43,24 @@ class RawWindow:
     trades: tuple[MarketEvent, ...]
     adds: tuple[BookAdd, ...]
     wall_events: tuple[WallEvent, ...]
+    # Footprint inputs (INVENTION-OKO §След). Empty = the feed was not there, not zero.
+    oi_path: tuple[tuple[datetime, Decimal], ...] = ()
+    liquidations: tuple[MarketEvent, ...] = ()
+    funding: Decimal | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.t0)
+        prev_oi = None
+        for ts, level in self.oi_path:
+            when = require_utc(ts)
+            if prev_oi is not None and when < prev_oi:
+                raise ValueError("oi_path must be time-ordered")
+            prev_oi = when
+            if level <= 0:
+                raise ValueError("oi level must be > 0")
+        for row in self.liquidations:
+            if row.stream != "liquidation":
+                raise ValueError("liquidations must be stream=liquidation")
         if self.window_s <= 0:
             raise ValueError("window_s must be > 0")
         if self.tick_size <= 0:
@@ -97,6 +112,26 @@ class RawWindow:
         inside = [book for ts, book in self.book_path if self.t0 <= ts <= self.t_end]
         return inside[-1] if inside else self.book_pre
 
+    def oi_before_after(self) -> tuple[Decimal, Decimal] | None:
+        """Last OI at/before t0 and last OI inside (t0, t_end]. None if either is missing."""
+        before = [level for ts, level in self.oi_path if require_utc(ts) <= self.t0]
+        after = [
+            level for ts, level in self.oi_path if self.t0 < require_utc(ts) <= self.t_end
+        ]
+        if not before or not after:
+            return None
+        return before[-1], after[-1]
+
+    def liquidations_in_window(self) -> list[MarketEvent]:
+        out: list[MarketEvent] = []
+        for row in self.liquidations:
+            if row.symbol != self.symbol:
+                continue
+            ts = require_utc(row.exchange_ts)
+            if self.t0 <= ts <= self.t_end:
+                out.append(row)
+        return out
+
 
 @dataclass(frozen=True)
 class RetinaFrame:
@@ -125,6 +160,16 @@ class RetinaFrame:
     rate_rel: Decimal | None
     max_print_rel: Decimal | None
     range_rel: Decimal | None
+    # Footprint facts. None = feed absent or Passport stat immature.
+    taker_volume_rel: Decimal | None = None
+    oi_before: Decimal | None = None
+    oi_after: Decimal | None = None
+    oi_delta_frac: Decimal | None = None
+    oi_z: Decimal | None = None
+    liq_long_qty: Decimal = Decimal("0")
+    liq_short_qty: Decimal = Decimal("0")
+    liq_rel: Decimal | None = None
+    funding: Decimal | None = None
 
 
 def frame(raw: RawWindow, passport: Passport) -> RetinaFrame:
@@ -182,6 +227,36 @@ def frame(raw: RawWindow, passport: Passport) -> RetinaFrame:
     mid_move = _mid_move_ticks(pre, end, raw.tick_size)
 
     mature = passport.mature
+    taker_volume_rel: Decimal | None = None
+    if mature:
+        med_qty = passport.print_qty.median()
+        med_rate = passport.prints_per_s.median()
+        if med_qty is not None and med_rate is not None:
+            norm = med_qty * med_rate * Decimal(raw.window_s)
+            taker_volume_rel = total / norm if norm > 0 else None
+    oi_before = oi_after = oi_delta_frac = oi_z = None
+    oi_pair = raw.oi_before_after()
+    if oi_pair is not None:
+        oi_before, oi_after = oi_pair
+        oi_delta_frac = (oi_after - oi_before) / oi_before
+        oi_z = passport.oi_delta_frac.z(oi_delta_frac)
+    liq_long = Decimal("0")
+    liq_short = Decimal("0")
+    for row in raw.liquidations_in_window():
+        qty = Decimal(str(row.payload["qty"]))
+        if qty <= 0:
+            raise ValueError("liquidation qty must be > 0")
+        if row.payload.get("position") == "long":
+            liq_long += qty
+        elif row.payload.get("position") == "short":
+            liq_short += qty
+        else:
+            raise ValueError("liquidation needs position=long|short")
+    liq_rel: Decimal | None = None
+    if mature:
+        med_qty = passport.print_qty.median()
+        if med_qty is not None and med_qty > 0:
+            liq_rel = (liq_long + liq_short) / med_qty
     return RetinaFrame(
         n_prints=len(prints),
         spread_ticks_pre=spread_ticks,
@@ -212,11 +287,23 @@ def frame(raw: RawWindow, passport: Passport) -> RetinaFrame:
         range_rel=(
             passport.range_ticks.rel(range_ticks) if mature and range_ticks is not None else None
         ),
+        taker_volume_rel=taker_volume_rel,
+        oi_before=oi_before,
+        oi_after=oi_after,
+        oi_delta_frac=oi_delta_frac,
+        oi_z=oi_z,
+        liq_long_qty=liq_long,
+        liq_short_qty=liq_short,
+        liq_rel=liq_rel,
+        funding=raw.funding,
     )
 
 
 def observe_passport(raw: RawWindow, passport: Passport, frame_: RetinaFrame) -> None:
-    """Append this window's raw facts. Call *after* frame() — PIT."""
+    """Append this window's raw facts. Call *after* frame() — PIT.
+
+    OI and funding stats learn only when the feed was present in this window.
+    """
     passport.observe(
         depth=frame_.depth_side_pre,
         spread_ticks=frame_.spread_ticks_pre,
@@ -224,6 +311,10 @@ def observe_passport(raw: RawWindow, passport: Passport, frame_: RetinaFrame) ->
         prints_per_s=frame_.prints_per_s,
         range_ticks=frame_.range_ticks,
     )
+    if frame_.oi_delta_frac is not None and frame_.oi_after is not None:
+        passport.observe_oi(delta_frac=frame_.oi_delta_frac, level=frame_.oi_after)
+    if frame_.funding is not None:
+        passport.observe_funding(frame_.funding)
 
 
 def _mid_move_ticks(pre: Book, end: Book, tick: Decimal) -> Decimal | None:

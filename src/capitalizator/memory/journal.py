@@ -74,6 +74,10 @@ JOURNAL_KEYS = (
     "oko_n_class",
     "oko_size_mult",
     "oko_fingerprint",
+    "oko_footprint",
+    "oko_footprint_side",
+    "oko_oi_z",
+    "oko_liq_rel",
 )
 
 KNOWLEDGE_TABLES = (

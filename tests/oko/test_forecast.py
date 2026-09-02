@@ -23,11 +23,13 @@ def _rows(outcomes: list[str], *, symbol: str = "BTCUSDT", key: str = KEY) -> li
 
 
 def test_class_key_marks_missing_labels() -> None:
-    assert KEY == "bounce × REJECT × DEFEND × RANGE"
+    assert KEY == "bounce × REJECT × DEFEND × RANGE × ?"
     assert (
         class_key(idea="breakout", cav=None, zlg="RETREAT", regime=None)
-        == "breakout × ? × RETREAT × ?"
+        == "breakout × ? × RETREAT × ? × ?"
     )
+    full = class_key(idea="bounce", cav="REJECT", zlg="DEFEND", regime="RANGE", footprint="ABSORB")
+    assert full == "bounce × REJECT × DEFEND × RANGE × ABSORB"
     with pytest.raises(ValueError):
         class_key(idea="scalp", cav=None, zlg=None, regime=None)
 

@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 from capitalizator.oko.eyelid import OkoVerdict, blind_verdict, oko_opens_size, verdict
+from capitalizator.oko.footprint import FootprintReport
 from capitalizator.oko.forecast import OUTCOMES, ForecastReport
 from capitalizator.oko.memory import Recognition
 from capitalizator.oko.shadow import FINGERPRINT_LEN, ShadowReport
@@ -37,6 +38,28 @@ def shadow(
         book_trust=book_trust,
         tape_trust=tape_trust,
         fingerprint=FP,
+        evidence={},
+    )
+
+
+def footprint(label: str = "NONE", side: str | None = None) -> FootprintReport:
+    from capitalizator.oko.footprint import FOOTPRINT_LABELS
+
+    return FootprintReport(
+        label=label,  # type: ignore[arg-type]
+        side=side,  # type: ignore[arg-type]
+        oi_delta_frac=None,
+        oi_z=None,
+        iceberg_ratio=None,
+        iceberg_refills=0,
+        taker_volume_rel=None,
+        liq_rel=None,
+        liq_dominant=None,
+        fingerprint=(
+            FOOTPRINT_LABELS.index(label),
+            0 if side is None else (1 if side == "bid" else 2),
+            3,
+        ),
         evidence={},
     )
 
@@ -84,7 +107,9 @@ def recognition(recognised: bool = False) -> Recognition:
 def _v(**kw) -> OkoVerdict:
     args = dict(
         idea="bounce",
+        zone_side="support",
         shadow=shadow(),
+        footprint=footprint(),
         weather=weather(),
         forecast=forecast(),
         recognition=recognition(),
@@ -230,3 +255,54 @@ def test_blind_verdict_is_zero_with_the_forecast_written() -> None:
 
 def test_two_runs_same_verdict() -> None:
     assert _v(forecast=forecast("bounce")) == _v(forecast=forecast("bounce"))
+
+
+def test_footprint_against_the_idea_is_minus_one_and_with_it_is_not_plus_one() -> None:
+    """A whale building on the ask under our long bounce → −1. On the bid → still 0."""
+    against = _v(footprint=footprint("ICEBERG", "ask"))
+    assert against.voice == -1
+    assert "footprint iceberg on ask vs idea" in against.reason
+    assert against.footprint == "ICEBERG" and against.footprint_side == "ask"
+    with_us = _v(footprint=footprint("ABSORB", "bid"))
+    assert with_us.voice == 0  # never +1 by itself
+    build = _v(footprint=footprint("BUILD_SHORT", "ask"))
+    assert build.voice == -1
+    # Breakout of support needs the ask builder: bid builder is against it.
+    brk = _v(idea="breakout", footprint=footprint("BUILD_LONG", "bid"))
+    assert brk.voice == -1
+    brk_ok = _v(idea="breakout", footprint=footprint("BUILD_SHORT", "ask"))
+    assert brk_ok.voice == 0
+    # Resistance bounce (short) wants the ask side.
+    res = _v(zone_side="resistance", footprint=footprint("ABSORB", "bid"))
+    assert res.voice == -1
+
+
+def test_sweep_and_unwind_do_not_vote() -> None:
+    assert _v(footprint=footprint("SWEEP", "ask")).voice == 0
+    assert _v(footprint=footprint("UNWIND", None)).voice == 0
+    assert _v(footprint=footprint("SWEEP", "ask"), forecast=forecast("bounce")).voice == 1
+
+
+def test_footprint_against_splits_with_forecast_for() -> None:
+    v = _v(footprint=footprint("ICEBERG", "ask"), forecast=forecast("bounce"))
+    assert v.voice == 0
+    assert "inner split" in v.reason
+
+
+def test_fragility_veto_only_for_new_longs_and_only_with_all_three_flags() -> None:
+    thin = shadow(label="THIN", book_trust=0.5)
+    v = _v(shadow=thin, oi_peak=True, funding_top5=True)
+    assert v.voice == "VETO"
+    assert "fragility" in v.reason
+    assert _v(shadow=thin, oi_peak=True, funding_top5=None).voice != "VETO"
+    assert _v(shadow=thin, oi_peak=False, funding_top5=True).voice != "VETO"
+    assert _v(shadow=shadow(), oi_peak=True, funding_top5=True).voice != "VETO"
+    # A short (resistance bounce) is not "a new long": 3.15.5 is written for longs only.
+    short = _v(zone_side="resistance", shadow=thin, oi_peak=True, funding_top5=True)
+    assert short.voice != "VETO"
+
+
+def test_combined_fingerprint_is_thirteen() -> None:
+    v = _v(footprint=footprint("ABSORB", "bid"))
+    assert len(v.fingerprint) == 13
+    assert v.fingerprint[10:] == (5, 1, 3)

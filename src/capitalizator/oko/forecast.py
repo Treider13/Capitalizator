@@ -68,11 +68,22 @@ class ForecastReport:
         return "|".join(sorted(self.pred_set))
 
 
-def class_key(*, idea: str, cav: str | None, zlg: str | None, regime: str | None) -> str:
-    """Forecast class. Missing labels are written as '?', never guessed."""
+def class_key(
+    *,
+    idea: str,
+    cav: str | None,
+    zlg: str | None,
+    regime: str | None,
+    footprint: str | None = None,
+) -> str:
+    """Forecast class. Missing labels are written as '?', never guessed.
+
+    footprint (INVENTION-OKO §След) is the sixth axis; a row from before the
+    organ existed carries '?' and stays in the symbol / global levels.
+    """
     if idea not in {"bounce", "breakout", "failed_break"}:
         raise ValueError("idea must be bounce|breakout|failed_break")
-    return f"{idea} × {cav or '?'} × {zlg or '?'} × {regime or '?'}"
+    return f"{idea} × {cav or '?'} × {zlg or '?'} × {regime or '?'} × {footprint or '?'}"
 
 
 def forecast(

@@ -151,3 +151,46 @@ def test_prints_outside_window_and_other_streams_are_ignored() -> None:
     fr = frame(make_window(trades=[late, early, inside]), Passport("BTCUSDT"))
     assert fr.n_prints == 1
     assert fr.max_print_qty == Decimal("1")
+
+
+def test_oi_liquidation_and_funding_facts() -> None:
+    from capitalizator.types import MarketEvent
+
+    liq = MarketEvent(
+        stream="liquidation",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=T0 + timedelta(seconds=2),
+        recv_ts=T0 + timedelta(seconds=2),
+        payload={"px": "100.3", "qty": "2", "position": "short"},
+    )
+    raw = make_window(
+        trades=quiet_prints(),
+        oi_path=(
+            (T0 - timedelta(seconds=5), Decimal("1000")),
+            (T0, Decimal("1001")),
+            (T0 + timedelta(seconds=3), Decimal("1005")),
+            (T0 + timedelta(seconds=WINDOW_S + 1), Decimal("2000")),
+        ),
+        liquidations=[liq],
+        funding=Decimal("0.0003"),
+    )
+    fr = frame(raw, Passport("BTCUSDT"))
+    assert (fr.oi_before, fr.oi_after) == (Decimal("1001"), Decimal("1005"))
+    assert fr.oi_delta_frac == Decimal("4") / Decimal("1001")
+    assert fr.oi_z is None  # stat immature
+    assert fr.liq_short_qty == Decimal("2") and fr.liq_long_qty == Decimal("0")
+    assert fr.liq_rel is None and fr.taker_volume_rel is None
+    assert fr.funding == Decimal("0.0003")
+    mature = frame(raw, mature_passport())
+    assert mature.liq_rel == Decimal("4")
+    assert mature.taker_volume_rel == Decimal("2.6") / Decimal("2")
+    passport = Passport("BTCUSDT")
+    observe_passport(raw, passport, fr)
+    assert passport.oi_delta_frac.n == 1 and passport.oi_level.n == 1 and passport.funding.n == 1
+    none = frame(make_window(), Passport("BTCUSDT"))
+    assert none.oi_delta_frac is None and none.funding is None
+    with pytest.raises(ValueError, match="oi"):
+        make_window(oi_path=((T0, Decimal("0")),))
+    with pytest.raises(ValueError, match="time-ordered"):
+        make_window(oi_path=((T0 + timedelta(seconds=1), Decimal("1")), (T0, Decimal("1"))))

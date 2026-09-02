@@ -90,6 +90,9 @@ from capitalizator.zones.model import Bar, Zone
 
 State = Literal["IDLE", "ARM_ZLG", "LABEL_ZLG", "JURY"]
 _IDEAS = frozenset({"bounce", "breakout", "failed_break"})
+# ОКО Footprint feeds kept per symbol. OI/funding tick every few seconds; a touch
+# window needs the last value before the print and the last inside 8s.
+_FEED_KEEP = timedelta(hours=2)
 
 
 @dataclass
@@ -105,6 +108,9 @@ class SymbolState:
     last_touch: Touch | None = None
     book_history: list[tuple[datetime, Book]] = field(default_factory=list)
     oko_window: OkoWindow | None = None
+    oi: list[tuple[datetime, Decimal]] = field(default_factory=list)
+    funding: list[tuple[datetime, Decimal]] = field(default_factory=list)
+    liquidations: list[MarketEvent] = field(default_factory=list)
 
 
 @dataclass
@@ -355,8 +361,11 @@ class DeskLoop:
             self._apply_book_event(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"funding", "oi", "mark"}:
-            # Recorder emits these. There is no OI-peak / funding-rank atom on the desk.
-            # Do not pretend a journal row was written.
+            # Kept for ОКО Footprint (INVENTION-OKO §След). No journal row is written here.
+            self._keep_feed(st, event)
+            return [{"event": event.stream, "symbol": event.symbol}]
+        if event.stream == "liquidation":
+            self._keep_feed(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"gap", "resync"}:
             st.book = Book(tick_size=str(self.tick_size))
@@ -525,6 +534,39 @@ class DeskLoop:
             persist_day(self.knowledge, day)
         return events
 
+    def _keep_feed(self, st: SymbolState, event: MarketEvent) -> None:
+        """OI / funding / liquidation rows for the Footprint. Bad numbers are dropped."""
+        when = require_utc(event.exchange_ts)
+        keep_from = when - _FEED_KEEP
+        if event.stream == "oi":
+            try:
+                level = Decimal(str(event.payload["oi"]))
+            except (KeyError, ArithmeticError):
+                return
+            if level <= 0:
+                return
+            st.oi.append((when, level))
+            st.oi = [row for row in st.oi if row[0] >= keep_from]
+        elif event.stream == "funding":
+            try:
+                rate = Decimal(str(event.payload["funding"]))
+            except (KeyError, ArithmeticError):
+                return
+            st.funding.append((when, rate))
+            st.funding = [row for row in st.funding if row[0] >= keep_from]
+        elif event.stream == "liquidation":
+            if event.payload.get("position") not in {"long", "short"}:
+                return
+            try:
+                if Decimal(str(event.payload["qty"])) <= 0:
+                    return
+            except (KeyError, ArithmeticError):
+                return
+            st.liquidations.append(event)
+            st.liquidations = [
+                row for row in st.liquidations if require_utc(row.exchange_ts) >= keep_from
+            ]
+
     def _oko_learn(self, symbol: str, touch: Touch) -> bool:
         """Immune memory: fingerprint × idea × outcome. die teaches nothing."""
         if touch.outcome == "pending" or not touch.oko_fingerprint or not touch.idea:
@@ -573,6 +615,11 @@ class DeskLoop:
             ),
             adds=tuple(a for a in st.adds if touch.ts <= a.ts <= t_end),
             wall_events=tuple(e for e in walls if since <= e.ts <= t_end),
+            oi_path=tuple(sorted((ts, lv) for ts, lv in st.oi if ts <= t_end)),
+            liquidations=tuple(
+                row for row in st.liquidations if touch.ts <= require_utc(row.exchange_ts) <= t_end
+            ),
+            funding=next((rate for ts, rate in reversed(st.funding) if ts <= t_end), None),
         )
 
     def _oko_samples(self) -> list[OkoSample]:
@@ -690,9 +737,11 @@ class DeskLoop:
         st.oko_window = window
         self.registry.fill_oko_window(
             label=window.shadow.label,
-            fingerprint=window.shadow.fingerprint_text,
+            fingerprint=window.fingerprint_text,
             book_trust=_f(window.shadow.book_trust),
             tape_trust=_f(window.shadow.tape_trust),
+            footprint=window.footprint.label,
+            footprint_side=window.footprint.side,
             touch_id=touch.touch_id,
         )
         self.oko.save(self.knowledge, symbols=(st.symbol,))
@@ -882,6 +931,8 @@ class DeskLoop:
                 "oko_book_trust": touch.oko_book_trust,
                 "oko_tape_trust": touch.oko_tape_trust,
                 "oko_fingerprint": touch.oko_fingerprint,
+                "oko_footprint": touch.oko_footprint,
+                "oko_footprint_side": touch.oko_footprint_side,
             }
         )
         self.knowledge.put_journal_touch(
@@ -1004,6 +1055,7 @@ class DeskLoop:
         # ОКО judges after CAV/ZLG are facts and before the jury is stamped.
         oko = self.oko.judge(
             idea=idea,
+            zone_side=zone.side,
             window=st.oko_window,
             cav=live.cav_label,
             zlg=live.gesture,
@@ -1025,6 +1077,10 @@ class DeskLoop:
             n_class=oko.n_class,
             size_mult=str(oko.size_mult),
             fingerprint="-".join(str(v) for v in oko.fingerprint),
+            footprint=oko.footprint,
+            footprint_side=oko.footprint_side,
+            oi_z=_f(oko.oi_z),
+            liq_rel=_f(oko.liq_rel),
             touch_id=touch.touch_id,
         )
         self.oko.save(self.knowledge, symbols=(st.symbol,))
@@ -1207,6 +1263,10 @@ class DeskLoop:
                 "oko_n_class": row.oko_n_class,
                 "oko_size_mult": row.oko_size_mult,
                 "oko_fingerprint": row.oko_fingerprint or None,
+                "oko_footprint": row.oko_footprint,
+                "oko_footprint_side": row.oko_footprint_side,
+                "oko_oi_z": row.oko_oi_z,
+                "oko_liq_rel": row.oko_liq_rel,
             }
         )
         missing = [key for key in JOURNAL_KEYS if key not in journal]
@@ -1528,6 +1588,9 @@ _STREAM_RANK = {
     "mark": 5,
     "gap": 6,
     "resync": 7,
+    # Same rank as prints: order between a print and a liquidation at one ts is
+    # not a law. bar_close dicts stay at 9, after every print (unchanged).
+    "liquidation": 8,
     "trades": 8,
 }
 

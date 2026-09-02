@@ -114,3 +114,25 @@ def test_passport_rejects_negative_and_bad_payload() -> None:
         Passport.from_dict({"symbol": "X", "depth": ["abc"]})
     with pytest.raises(ValueError):
         Passport("")
+
+
+def test_oi_and_funding_stats_do_not_gate_maturity() -> None:
+    from tests.oko.conftest import mature_passport
+
+    passport = mature_passport()
+    assert passport.mature is True
+    assert passport.oi_delta_frac.n == 0
+    assert passport.oi_peak(Decimal("1")) is None
+    assert passport.funding_top5(Decimal("0.0001")) is None
+    for i in range(MATURE_N):
+        passport.observe_oi(delta_frac=Decimal("0.001"), level=Decimal(1000 + i))
+        passport.observe_funding(Decimal(i) / 10000)
+    assert passport.oi_peak(Decimal("1029")) is True
+    assert passport.oi_peak(Decimal("1028")) is False
+    assert passport.funding_top5(Decimal("0.0029")) is True
+    assert passport.funding_top5(Decimal("0.0027")) is False
+    with pytest.raises(ValueError):
+        passport.observe_oi(delta_frac=Decimal("0"), level=Decimal("0"))
+    back = Passport.from_dict(passport.to_dict())
+    assert back.oi_level.n == MATURE_N and back.funding.n == MATURE_N
+    assert back.oi_peak(Decimal("1029")) is True

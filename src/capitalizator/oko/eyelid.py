@@ -5,11 +5,14 @@ VETO (the eye shuts, the trade is dead whatever the other five say):
   book_trust < 0.35            fake wall / layering on the book we would lean on
   immune Memory recognised     ≥20 look-alike windows, Wilson LB of trap rate > 0.5
   cp_prob ≥ 0.7                the regime broke inside the last bars
+  fragility (3.15.5)           OI peak ∧ funding top-5% ∧ thin book → no new long
 
 Otherwise the inner opinions follow the jury's own law — Accord-or-Silence:
   Forecast decisive for the idea → +1, against → −1
   VOL_EXPANSION on a bounce idea → −1
+  Footprint building against the idea (ABSORB / ICEBERG / BUILD_*) → −1
   disagreement inside ОКО → 0
+The Footprint never gives +1 by itself: it widens the Forecast class key.
 Caps: +1 is not allowed when Weather is UNKNOWN/TRANSITION, Shadow is UNKNOWN,
 tape_trust < 0.5, or the Mirror has not passed. −1 is always allowed.
 size_mult ≤ 1 always: ×0.5 per weak trust / transition, floor 0.25, 0 on VETO.
@@ -21,10 +24,12 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from capitalizator.jury.desk import Voice
+from capitalizator.oko.footprint import FootprintReport, combined_fingerprint, needed_side
 from capitalizator.oko.forecast import ForecastReport
 from capitalizator.oko.memory import Recognition, needed_outcome
 from capitalizator.oko.shadow import ShadowLabel, ShadowReport
 from capitalizator.oko.weather import Regime, WeatherReport
+from capitalizator.whales.fragility import forbid_new_long
 
 TRUST_VETO = 0.35
 CP_VETO = 0.7
@@ -53,6 +58,10 @@ class OkoVerdict:
     pred_set: frozenset[str]
     n_class: int
     fingerprint: tuple[int, ...]
+    footprint: str = "NONE"
+    footprint_side: str | None = None
+    oi_z: float | None = None
+    liq_rel: float | None = None
 
     def __post_init__(self) -> None:
         if self.voice not in (-1, 0, 1, "VETO"):
@@ -79,22 +88,32 @@ def oko_opens_size(_verdict: OkoVerdict | None = None) -> bool:
 def verdict(
     *,
     idea: str,
+    zone_side: str,
     shadow: ShadowReport,
+    footprint: FootprintReport,
     weather: WeatherReport,
     forecast: ForecastReport,
     recognition: Recognition,
     mirror_ok: bool,
+    oi_peak: bool | None = None,
+    funding_top5: bool | None = None,
 ) -> OkoVerdict:
     need = needed_outcome(idea)
+    want_side = needed_side(idea=idea, zone_side=zone_side)
+    idea_is_long = want_side == "bid"
     reasons: list[str] = []
 
     veto = _veto_reason(shadow, weather, recognition)
+    if veto is None and idea_is_long:
+        if forbid_new_long(oi_peak=oi_peak, funding_top5=funding_top5, thin_book=shadow.thin):
+            veto = "fragility: oi peak, funding top-5%, thin book"
     if veto is not None:
         return _pack(
             voice="VETO",
             size=ZERO,
             reason=veto,
             shadow=shadow,
+            footprint=footprint,
             weather=weather,
             forecast=forecast,
         )
@@ -110,6 +129,9 @@ def verdict(
     if weather.regime == "VOL_EXPANSION" and need == "bounce":
         opinions.append(-1)
         reasons.append("vol expansion vs bounce")
+    if footprint.votes and footprint.side != want_side:
+        opinions.append(-1)
+        reasons.append(f"footprint {footprint.label.lower()} on {footprint.side} vs idea")
 
     voice: Voice
     if 1 in opinions and -1 in opinions:
@@ -146,6 +168,7 @@ def verdict(
         size=size,
         reason="; ".join(reasons),
         shadow=shadow,
+        footprint=footprint,
         weather=weather,
         forecast=forecast,
     )
@@ -212,6 +235,7 @@ def _pack(
     size: Decimal,
     reason: str,
     shadow: ShadowReport,
+    footprint: FootprintReport,
     weather: WeatherReport,
     forecast: ForecastReport,
 ) -> OkoVerdict:
@@ -229,5 +253,9 @@ def _pack(
         p_die=forecast.p["die"],
         pred_set=forecast.pred_set,
         n_class=forecast.n_class,
-        fingerprint=shadow.fingerprint,
+        fingerprint=combined_fingerprint(shadow.fingerprint, footprint),
+        footprint=footprint.label,
+        footprint_side=footprint.side,
+        oi_z=None if footprint.oi_z is None else float(footprint.oi_z),
+        liq_rel=None if footprint.liq_rel is None else float(footprint.liq_rel),
     )

@@ -10,6 +10,13 @@ Shadow must label the injected window as injected. Detection rate per kind
 over ≥5 windows must be ≥ 0.8 for `passed`. Cascade needs a mature Passport;
 until then its rate is None and does not block the pass.
 
+Footprint (§След) is attacked the same way:
+  iceberg   the best zone-side price loses a slice, refills, loses, refills,
+            while prints hit it for 2.5× the most it ever showed
+  absorb    twelve one-way prints at 3.6× the normal window volume into a book
+            whose best and depth do not move (mature Passport)
+  build     OI jumps 2.5 robust σ above its usual window change (mature OI stat)
+
 random.Random(seed) chooses side and offsets. Same windows + seed → same report.
 `clean_alarms` counts un-injected windows Shadow did not call CLEAN — a note,
 not a false-alarm rate: a real window may really be manipulated.
@@ -26,7 +33,9 @@ from typing import Any
 
 from capitalizator.book.reconstruct import Book, _canon
 from capitalizator.book.wall_watch import WallEvent
-from capitalizator.oko.passport import Passport
+from capitalizator.oko.footprint import FootprintReport
+from capitalizator.oko.footprint import report as footprint_report
+from capitalizator.oko.passport import MAD_TO_SIGMA, Passport
 from capitalizator.oko.retina import RawWindow, frame
 from capitalizator.oko.shadow import ShadowReport, report
 from capitalizator.types import MarketEvent, require_utc
@@ -42,6 +51,11 @@ CASCADE_RATE_MULT = Decimal("8")
 CASCADE_DEPTH_LEFT = Decimal("0.2")
 CASCADE_RANGE_MULT = Decimal("4")
 OFFSETS_S = ((1, 3), (1, 4), (2, 5), (2, 6))
+ICEBERG_EXEC_MULT = Decimal("2.5")
+ICEBERG_SLICE = Decimal("0.5")
+ABSORB_PRINTS = 12
+ABSORB_VOLUME_MULT = Decimal("3.6")
+BUILD_Z = Decimal("2.5")
 
 
 @dataclass(frozen=True)
@@ -54,28 +68,43 @@ class MirrorReport:
     clean_alarms: int
     seed: int
     ran_at: str
+    iceberg_hits: int = 0
+    absorb_n: int = 0
+    absorb_hits: int = 0
+    build_n: int = 0
+    build_hits: int = 0
 
     def rate(self, kind: str) -> float | None:
-        if kind == "spoof":
-            return self.spoof_hits / self.n_windows if self.n_windows else None
-        if kind == "layering":
-            return self.layering_hits / self.n_windows if self.n_windows else None
-        if kind == "cascade":
-            return self.cascade_hits / self.cascade_n if self.cascade_n else None
+        per_window = {
+            "spoof": self.spoof_hits,
+            "layering": self.layering_hits,
+            "iceberg": self.iceberg_hits,
+        }
+        gated = {
+            "cascade": (self.cascade_hits, self.cascade_n),
+            "absorb": (self.absorb_hits, self.absorb_n),
+            "build": (self.build_hits, self.build_n),
+        }
+        if kind in per_window:
+            return per_window[kind] / self.n_windows if self.n_windows else None
+        if kind in gated:
+            hits, n = gated[kind]
+            return hits / n if n else None
         raise ValueError(f"unknown kind: {kind!r}")
 
     @property
     def passed(self) -> bool:
         if self.n_windows < MIN_WINDOWS:
             return False
-        spoof = self.rate("spoof")
-        layering = self.rate("layering")
-        cascade = self.rate("cascade")
-        if spoof is None or layering is None:
-            return False
-        if spoof < PASS_RATE or layering < PASS_RATE:
-            return False
-        return cascade is None or cascade >= PASS_RATE
+        for kind in ("spoof", "layering", "iceberg"):
+            rate = self.rate(kind)
+            if rate is None or rate < PASS_RATE:
+                return False
+        for kind in ("cascade", "absorb", "build"):
+            rate = self.rate(kind)
+            if rate is not None and rate < PASS_RATE:
+                return False
+        return True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +113,11 @@ class MirrorReport:
             "layering_hits": self.layering_hits,
             "cascade_n": self.cascade_n,
             "cascade_hits": self.cascade_hits,
+            "iceberg_hits": self.iceberg_hits,
+            "absorb_n": self.absorb_n,
+            "absorb_hits": self.absorb_hits,
+            "build_n": self.build_n,
+            "build_hits": self.build_hits,
             "clean_alarms": self.clean_alarms,
             "seed": self.seed,
             "ran_at": self.ran_at,
@@ -101,6 +135,11 @@ class MirrorReport:
             clean_alarms=int(raw["clean_alarms"]),
             seed=int(raw["seed"]),
             ran_at=str(raw["ran_at"]),
+            iceberg_hits=int(raw.get("iceberg_hits", 0)),
+            absorb_n=int(raw.get("absorb_n", 0)),
+            absorb_hits=int(raw.get("absorb_hits", 0)),
+            build_n=int(raw.get("build_n", 0)),
+            build_hits=int(raw.get("build_hits", 0)),
         )
 
 
@@ -113,6 +152,7 @@ def run(
 ) -> MirrorReport:
     rng = random.Random(seed)
     n = spoof_hits = layering_hits = cascade_n = cascade_hits = clean_alarms = 0
+    iceberg_hits = absorb_n = absorb_hits = build_n = build_hits = 0
     for raw in windows:
         passport = passport_for(raw.symbol)
         n += 1
@@ -131,6 +171,19 @@ def run(
             cascade_n += 1
             if _shadow(inject_cascade(raw, passport), passport).label == "CASCADE":
                 cascade_hits += 1
+        iced = _footprint(inject_iceberg(raw, side=side), passport)
+        if iced.label == "ICEBERG" and iced.side == _book_side(raw, side):
+            iceberg_hits += 1
+        if passport.mature:
+            absorb_n += 1
+            absorbed = _footprint(inject_absorb(raw, passport, side=side), passport)
+            if absorbed.label == "ABSORB" and absorbed.side == _book_side(raw, side):
+                absorb_hits += 1
+        if passport.oi_delta_frac.mature and passport.oi_level.mature:
+            build_n += 1
+            built = _footprint(inject_build(raw, passport), passport)
+            if built.label in {"BUILD_LONG", "BUILD_SHORT"}:
+                build_hits += 1
     return MirrorReport(
         n_windows=n,
         spoof_hits=spoof_hits,
@@ -140,11 +193,158 @@ def run(
         clean_alarms=clean_alarms,
         seed=seed,
         ran_at=require_utc(now).isoformat(),
+        iceberg_hits=iceberg_hits,
+        absorb_n=absorb_n,
+        absorb_hits=absorb_hits,
+        build_n=build_n,
+        build_hits=build_hits,
     )
 
 
 def _shadow(raw: RawWindow, passport: Passport) -> ShadowReport:
     return report(raw, frame(raw, passport))
+
+
+def _footprint(raw: RawWindow, passport: Passport) -> FootprintReport:
+    return footprint_report(raw, frame(raw, passport))
+
+
+def inject_iceberg(raw: RawWindow, *, side: str, mult: Decimal = ICEBERG_EXEC_MULT) -> RawWindow:
+    """Best price on `side` loses half, refills, loses, refills; prints eat mult× its size."""
+    book_side = _book_side(raw, side)
+    px = _anchor_px(raw, book_side)
+    shown = raw.book_pre.level(book_side, str(px))
+    if shown <= 0:
+        shown = raw.tick_size
+    slice_ = shown * ICEBERG_SLICE
+    taker = "sell" if book_side == "bid" else "buy"
+    total = shown * mult
+    n_prints = 5
+    prints = [
+        MarketEvent(
+            stream="trades",
+            exchange=raw.trades[0].exchange if raw.trades else "bybit",
+            symbol=raw.symbol,
+            exchange_ts=raw.t0 + timedelta(milliseconds=500 + 1000 * i),
+            recv_ts=raw.t0 + timedelta(milliseconds=500 + 1000 * i),
+            payload={"px": _canon(px), "qty": _canon(total / n_prints), "side": taker},
+        )
+        for i in range(n_prints)
+    ]
+    base = raw.book_pre
+    low = base.with_level(book_side, px, shown - slice_)
+    high = base.with_level(book_side, px, shown)
+    path = (
+        (raw.t0 + timedelta(seconds=1), low),
+        (raw.t0 + timedelta(seconds=2), high),
+        (raw.t0 + timedelta(seconds=3), low),
+        (raw.t0 + timedelta(seconds=4), high),
+        (raw.t_end - timedelta(microseconds=1), high),
+    )
+    adds = (
+        *raw.adds,
+        BookAdd(ts=raw.t0 + timedelta(seconds=2), side=book_side, px=px, qty=slice_),  # type: ignore[arg-type]
+        BookAdd(ts=raw.t0 + timedelta(seconds=4), side=book_side, px=px, qty=slice_),  # type: ignore[arg-type]
+    )
+    return _replace(raw, book_path=path, trades=_merged(raw.trades, prints), adds=adds)
+
+
+def inject_absorb(raw: RawWindow, passport: Passport, *, side: str) -> RawWindow:
+    """One-way takers into `side` at 3.6× normal volume; best and depth do not move."""
+    if not passport.mature:
+        raise ValueError("absorb injection needs a mature passport")
+    med_qty = passport.print_qty.median()
+    med_rate = passport.prints_per_s.median()
+    assert med_qty is not None and med_rate is not None
+    norm = med_qty * med_rate * Decimal(raw.window_s)
+    if norm <= 0:
+        norm = med_qty
+    book_side = _book_side(raw, side)
+    px = _anchor_px(raw, book_side)
+    taker = "sell" if book_side == "bid" else "buy"
+    qty = norm * ABSORB_VOLUME_MULT / ABSORB_PRINTS
+    prints = [
+        MarketEvent(
+            stream="trades",
+            exchange=raw.trades[0].exchange if raw.trades else "bybit",
+            symbol=raw.symbol,
+            exchange_ts=raw.t0 + timedelta(milliseconds=300 + 600 * i),
+            recv_ts=raw.t0 + timedelta(milliseconds=300 + 600 * i),
+            payload={"px": _canon(px), "qty": _canon(qty), "side": taker},
+        )
+        for i in range(ABSORB_PRINTS)
+    ]
+    still = raw.book_pre.snapshot_copy()
+    path = (
+        (raw.t0 + timedelta(seconds=1), still),
+        (raw.t_end - timedelta(microseconds=1), still.snapshot_copy()),
+    )
+    # Only the injected prints: the original tape could carry the other side.
+    return _replace(raw, book_path=path, trades=tuple(prints), adds=())
+
+
+def inject_build(raw: RawWindow, passport: Passport, *, z: Decimal = BUILD_Z) -> RawWindow:
+    """OI jumps z robust σ above its usual window change; direction from one print if needed."""
+    if not (passport.oi_delta_frac.mature and passport.oi_level.mature):
+        raise ValueError("build injection needs mature OI stats")
+    med = passport.oi_delta_frac.median()
+    mad = passport.oi_delta_frac.mad()
+    level = passport.oi_level.median()
+    assert med is not None and mad is not None and level is not None
+    scale = mad * MAD_TO_SIGMA
+    if scale <= 0:
+        scale = Decimal("1e-6")
+    delta = med + z * scale
+    before = level
+    after = before * (Decimal("1") + delta)
+    oi_path = ((raw.t0 - timedelta(seconds=1), before), (raw.t0 + timedelta(seconds=4), after))
+    trades = raw.trades
+    if not raw.prints():
+        med_qty = passport.print_qty.median() or raw.tick_size
+        px = _anchor_px(raw, raw.opp_side)
+        trades = _merged(
+            raw.trades,
+            [
+                MarketEvent(
+                    stream="trades",
+                    exchange="bybit",
+                    symbol=raw.symbol,
+                    exchange_ts=raw.t0 + timedelta(seconds=3),
+                    recv_ts=raw.t0 + timedelta(seconds=3),
+                    payload={
+                        "px": _canon(px),
+                        "qty": _canon(med_qty),
+                        "side": "buy" if raw.opp_side == "ask" else "sell",
+                    },
+                )
+            ],
+        )
+    return _replace(raw, oi_path=oi_path, trades=trades)
+
+
+def _merged(base: tuple[MarketEvent, ...], extra: list[MarketEvent]) -> tuple[MarketEvent, ...]:
+    return tuple(sorted((*base, *extra), key=lambda t: t.exchange_ts))
+
+
+def _replace(raw: RawWindow, **changes: Any) -> RawWindow:
+    fields = dict(
+        symbol=raw.symbol,
+        zone=raw.zone,
+        t0=raw.t0,
+        window_s=raw.window_s,
+        tick_size=raw.tick_size,
+        delta_ticks=raw.delta_ticks,
+        book_pre=raw.book_pre,
+        book_path=raw.book_path,
+        trades=raw.trades,
+        adds=raw.adds,
+        wall_events=raw.wall_events,
+        oi_path=raw.oi_path,
+        liquidations=raw.liquidations,
+        funding=raw.funding,
+    )
+    fields.update(changes)
+    return RawWindow(**fields)
 
 
 def inject_spoof(
@@ -230,20 +430,7 @@ def inject_cascade(
     end_ts = max(last_ts, raw.t_end - timedelta(microseconds=1))
     path = tuple((ts, b) for ts, b in raw.book_path if require_utc(ts) < end_ts)
     path = (*path, (end_ts, collapsed))
-    trades = tuple(sorted((*raw.trades, *prints), key=lambda t: t.exchange_ts))
-    return RawWindow(
-        symbol=raw.symbol,
-        zone=raw.zone,
-        t0=raw.t0,
-        window_s=raw.window_s,
-        tick_size=raw.tick_size,
-        delta_ticks=raw.delta_ticks,
-        book_pre=raw.book_pre,
-        book_path=path,
-        trades=trades,
-        adds=raw.adds,
-        wall_events=raw.wall_events,
-    )
+    return _replace(raw, book_path=path, trades=_merged(raw.trades, prints))
 
 
 def _inject_walls(
@@ -300,19 +487,7 @@ def _inject_walls(
             )
         )
     events.sort(key=lambda e: e.ts)
-    return RawWindow(
-        symbol=raw.symbol,
-        zone=raw.zone,
-        t0=raw.t0,
-        window_s=raw.window_s,
-        tick_size=raw.tick_size,
-        delta_ticks=raw.delta_ticks,
-        book_pre=raw.book_pre,
-        book_path=tuple(path),
-        trades=raw.trades,
-        adds=adds,
-        wall_events=tuple(events),
-    )
+    return _replace(raw, book_path=tuple(path), adds=adds, wall_events=tuple(events))
 
 
 def _book_side(raw: RawWindow, side: str) -> str:
