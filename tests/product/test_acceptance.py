@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -16,7 +15,7 @@ import pytest
 from capitalizator.book.reconstruct import Book
 from capitalizator.btc.veto import BtcVeto
 from capitalizator.card.live import CardLive
-from capitalizator.desk.loop import BtcBus, DeskLoop
+from capitalizator.desk.loop import DeskLoop
 from capitalizator.desk.pictures import picture_for
 from capitalizator.exec.demo_adapter import DemoAdapter
 from capitalizator.exec.episodes import EpisodeLog
@@ -550,9 +549,10 @@ def test_24_failed_break_gets_new_card_id(tmp_path: Path) -> None:
     events = desk.on_bar_close(_bar(close, low="99.5", close="100.4"))
     row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
     assert row is not None
-    assert row["idea"] == "failed_break"
+    assert row["idea"] == "spring"
     assert row["picture"] == "Г"
     assert row["card_id"] == card.card_id
+    assert picture_for("spring") == "Г"
     assert picture_for("failed_break") == "Г"
     assert picture_for("bounce") == "A"
     assert picture_for("breakout") == "B"

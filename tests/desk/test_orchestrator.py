@@ -32,7 +32,9 @@ ZONE = Zone.create(
     method="prior_day_hl",
     created_as_of=CREATED,
 )
-# failed_break of support is a short. 3R from 65000 / 65010.8 needs hi ≤ 64967.6.
+# A wick through support with a close back inside is a SPRING: traded with the
+# zone (buy), stop behind the wick (64998 − 0.8), 2R default target. The old
+# reading (short against the held level, tag failed_break_bounce) was inverted.
 TARGET = Zone.create(
     symbol="BTCUSDT",
     tf="15m",
@@ -177,22 +179,28 @@ def test_play_100_trades_runs_full_chain(tmp_path: Path) -> None:
     assert desk.shadow_writes[-1]["payload"]["touch_id"] == row.touch_id
 
     jury_ev = next(e for e in out if e.get("event") == "jury")
-    if journal["jury"] == "ACCORD":
+    # No branching on the result: the fixture MUST reach ACCORD and send.
+    assert journal["jury"] == "ACCORD"
+    if True:
         assert journal["shadow_would"] is True
         assert jury_ev["sent"] is True
         pending = desk.knowledge.pending_intents()
         assert pending
         payload = pending[0]["payload"]
         assert payload["symbol"] == "BTCUSDT"
-        assert payload["side"] == "sell"
-        assert payload["tag"] == "failed_break_bounce"
-        assert payload["stop"] == "65010.8"
-        assert payload["tp"] == "64950"
-        assert journal["shadow_side"] == "sell"
-        assert journal["shadow_tag"] == "failed_break_bounce"
-        assert row.idea == "failed_break"
+        assert payload["side"] == "buy"
+        assert payload["tag"] == "spring"
+        assert payload["stop"] == "64997.2"  # wick 64998 − 8 ticks, below the band stop
+        assert Decimal(payload["tp"]) == Decimal("65005.6")  # 2R default: no resistance above
+        assert journal["shadow_side"] == "buy"
+        assert journal["shadow_tag"] == "spring"
+        assert journal["idea_side"] == "buy"
+        assert journal["fade_side"] == "sell"
+        assert journal["fade_tag"] == "fade_spring"
+        assert journal["wick_extreme"] == "64998"
+        assert row.idea == "spring"
         assert row.shadow_would is True
-        assert row.shadow_side == "sell"
+        assert row.shadow_side == "buy"
         assert row.session_hour is not None
         assert row.n_cav == journal["n_cav"]
         assert row.n_zlg == journal["n_zlg"]

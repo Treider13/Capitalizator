@@ -455,10 +455,11 @@ class Registry:
             voices_for_bounce,
             voices_for_breakout,
             voices_for_failed_break,
+            voices_for_spring,
         )
 
-        if idea not in {"bounce", "breakout", "failed_break"}:
-            raise ValueError("idea must be bounce|breakout|failed_break")
+        if idea not in {"bounce", "spring", "breakout", "failed_break"}:
+            raise ValueError("idea must be bounce|spring|breakout|failed_break")
         self._require_touch_id_if_many(touch_id, what="stamp_jury")
         changed: list[Touch] = []
         next_rows: list[Touch] = []
@@ -471,6 +472,7 @@ class Registry:
                 continue
             voice_fn = {
                 "bounce": voices_for_bounce,
+                "spring": voices_for_spring,
                 "breakout": voices_for_breakout,
                 "failed_break": voices_for_failed_break,
             }[idea]

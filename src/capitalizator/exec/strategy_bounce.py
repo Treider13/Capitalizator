@@ -25,6 +25,7 @@ from capitalizator.jury.desk import (
     voices_for_bounce,
     voices_for_breakout,
     voices_for_failed_break,
+    voices_for_spring,
 )
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
@@ -46,7 +47,13 @@ SETUP_TAG = "bounce"
 MIN_R = Decimal("1.5")
 DEFAULT_R = Decimal("2")
 BREAK_MIN_R = Decimal("3")
+# Ideas that trade *through* the zone (side flips, 3R from a real zone, no default
+# multiple). `failed_break` here is the LEGACY fade-of-a-spring short. The desk
+# never emits it any more: the same bar is `spring`, traded WITH the zone (D-01).
+# Legacy stays for isolated callers; with require_jury (the desk) it is refused.
 _BREAK_IDEAS = frozenset({"breakout", "failed_break"})
+_LEGACY_FADE = "failed_break"
+_IDEAS = frozenset({"bounce", "spring", "breakout", _LEGACY_FADE})
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,8 @@ class BounceSnapshot:
     wall_state: str | None = None
     venue: str = "perp"
     spot_acked: bool = False
+    # Spring: extreme of the wick that traded through the zone (bar.low / bar.high).
+    wick_extreme: Decimal | None = None
 
 
 def price_in_zone(price: Decimal, zone: Zone) -> bool:
@@ -137,6 +146,30 @@ def stop_behind(zone: Zone, tick: Decimal, away_ticks: int, *, side: str) -> Dec
         raise ValueError("side must be buy|sell")
     buf = tick * away_ticks
     stop = zone.lo - buf if side == "buy" else zone.hi + buf
+    if stop <= 0:
+        raise ValueError("stop would be <= 0")
+    return stop
+
+
+def stop_behind_wick(
+    zone: Zone,
+    wick_extreme: Decimal,
+    tick: Decimal,
+    away_ticks: int,
+    *,
+    side: str,
+) -> Decimal:
+    """Spring stop: behind the wick that already traded through the zone.
+
+    The wick low (long) / high (short) is the level the market rejected; a stop
+    inside it would sit where the sweep already printed.
+    """
+    band = stop_behind(zone, tick, away_ticks, side=side)
+    buf = tick * away_ticks
+    if side == "buy":
+        stop = min(band, wick_extreme - buf)
+    else:
+        stop = max(band, wick_extreme + buf)
     if stop <= 0:
         raise ValueError("stop would be <= 0")
     return stop
@@ -297,9 +330,13 @@ class BounceStrategy:
         # F1 isolated tests: check_tape / check_wall record only.
         # Desk require_jury: 2.10.1 — eaten or silent wall is not a bounce.
         _ = (self.check_tape, self.check_wall)
-        idea = snap.idea if snap.idea in {"bounce", "breakout", "failed_break"} else "bounce"
+        idea = snap.idea if snap.idea in _IDEAS else "bounce"
+        if idea == _LEGACY_FADE and self.require_jury:
+            # Desk law: a wick through + close inside is a held level (spring).
+            # Fading it is a shadow challenger, never a sent order.
+            return None
         if (
-            idea == "bounce"
+            idea in {"bounce", "spring"}
             and self.require_jury
             and (
                 snap.tape_eaten is True
@@ -348,6 +385,7 @@ class BounceStrategy:
         if self.require_jury or snap.jury is not None or snap.cav_label or snap.zlg_label:
             voice_fn = {
                 "bounce": voices_for_bounce,
+                "spring": voices_for_spring,
                 "breakout": voices_for_breakout,
                 "failed_break": voices_for_failed_break,
             }[idea]
@@ -389,7 +427,20 @@ class BounceStrategy:
                     return None
         try:
             stop = stop_behind(zone, snap.tick, self.registry.bounce_away_ticks, side=side)
+            if idea == "spring" and snap.wick_extreme is not None:
+                # The spring's invalidation is the wick that already traded, not the band.
+                stop = stop_behind_wick(
+                    zone,
+                    snap.wick_extreme,
+                    snap.tick,
+                    self.registry.bounce_away_ticks,
+                    side=side,
+                )
         except ValueError:
+            return None
+        if side == "buy" and snap.price <= stop:
+            return None
+        if side == "sell" and snap.price >= stop:
             return None
         tp = take_profit(side, snap.price, stop, snap.next_target, idea=idea)
         if tp is None:
@@ -398,7 +449,7 @@ class BounceStrategy:
             return None
         if idea == "bounce":
             tag = SETUP_TAG
-        elif idea == "failed_break":
+        elif idea == _LEGACY_FADE:
             tag = "failed_break_bounce"
         else:
             tag = idea

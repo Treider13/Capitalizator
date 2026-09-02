@@ -33,9 +33,13 @@ from capitalizator.champion.shadow_day import (
 from capitalizator.desk.bars import TF_MINUTES, BarBuilder
 from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.desk.session_name import session_name
-from capitalizator.exec.failed_break import FailedBreak, sweep_wick
+from capitalizator.exec.failed_break import sweep_wick
 from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.fvg_mark import fvg_present
+from capitalizator.exec.ideas import classify as classify_idea
+from capitalizator.exec.ideas import opposite as opposite_side
+from capitalizator.exec.ideas import shadow_tag as idea_shadow_tag
+from capitalizator.exec.ideas import side_for
 from capitalizator.exec.manage import TradeManager
 from capitalizator.exec.shadow import ShadowWriter
 from capitalizator.exec.spot import SpotAdapter
@@ -53,6 +57,7 @@ from capitalizator.jury.desk import (
     voices_for_bounce,
     voices_for_breakout,
     voices_for_failed_break,
+    voices_for_spring,
 )
 from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
@@ -932,23 +937,17 @@ class DeskLoop:
             cav = "NOISE"
         self.registry.fill_cav(cav_label=cav, touch_id=touch.touch_id)
         live = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
-        idea = "bounce"
-        tag = FailedBreak.tag(zone=zone, bar=bar)
-        if tag:
-            idea = "failed_break"
-        elif live.cav_label == "THROUGH":
-            idea = "breakout"
+        # exec/ideas: THROUGH → breakout; wick through + close inside → spring
+        # (the held level, traded WITH the zone); else bounce. No side inversion.
+        idea = classify_idea(zone=zone, bar=bar, cav_label=live.cav_label)
+        wick_extreme = bar.low if zone.side == "support" else bar.high
         if live.btc_regime is None and self.btc.regime:
             # Published bus only. Alt H4 is not BTC; BTC already wrote the bus
             # on this close (on_bar_close publishes before jury).
             self.registry.fill_btc(regime=self.btc.regime, touch_id=touch.touch_id)
         n_cav = self.registry.count_label("cav", live.cav_label, st.symbol)
         n_zlg = self.registry.count_label("zlg", live.gesture, st.symbol)
-        idea_side = "buy" if zone.side == "support" else "sell"
-        if idea == "failed_break":
-            idea_side = "sell" if zone.side == "support" else "buy"
-        if idea == "breakout":
-            idea_side = "sell" if zone.side == "support" else "buy"
+        idea_side = side_for(idea, zone.side)
         # 2.9.3: long vs BTC support break; short vs BTC resistance break.
         break_against = False
         if st.symbol != "BTCUSDT":
@@ -1007,6 +1006,7 @@ class DeskLoop:
         row = next(t for t in self.registry.touches if t.touch_id == row.touch_id)
         voice_fn = {
             "bounce": voices_for_bounce,
+            "spring": voices_for_spring,
             "breakout": voices_for_breakout,
             "failed_break": voices_for_failed_break,
         }[idea]
@@ -1063,12 +1063,10 @@ class DeskLoop:
         if idea == "breakout" and not breakout_enabled() and skip is None:
             skip = "breakout_off"
         shadow_side = idea_side if shadow_would else None
-        if shadow_would:
-            shadow_tag = "bounce" if idea == "bounce" else (
-                "failed_break_bounce" if idea == "failed_break" else "breakout"
-            )
-        else:
-            shadow_tag = None
+        shadow_tag = idea_shadow_tag(idea) if shadow_would else None
+        # Challenger reading of the same spring bar: the old short against it.
+        # Shadow-only; the paper engine scores both so data, not a comment, decides.
+        fade_side = opposite_side(idea_side) if idea == "spring" else None
         self.registry._patch(
             touch_id=row.touch_id,
             overwrite=True,
@@ -1189,6 +1187,10 @@ class DeskLoop:
             "tape_eaten_qty": eaten_qty,
             "had_compress": compress_before,
             "zone_side": zone.side,
+            "idea_side": idea_side,
+            "wick_extreme": str(wick_extreme),
+            "fade_side": fade_side,
+            "fade_tag": "fade_spring" if fade_side else None,
         }
         payload_row = {**journal, **extra}
         payload_row["challenger_would"] = challenger_on(payload_row)
@@ -1237,6 +1239,7 @@ class DeskLoop:
                     unlock_today=self.unlocks.team_today(st.symbol, closed_at),
                     unlock_tomorrow=self.unlocks.team_tomorrow(st.symbol, closed_at),
                     idea=idea,
+                    wick_extreme=wick_extreme,
                     jury=jury,
                     cav_label=row.cav_label,
                     zlg_label=row.gesture,

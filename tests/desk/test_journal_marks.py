@@ -85,7 +85,8 @@ def test_failed_break_journals_sweep_wick(tmp_path) -> None:
     events = desk.on_bar_close(_bar())
     row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
     assert row is not None
-    assert row["idea"] == "failed_break"
+    assert row["idea"] == "spring"  # wick through + close inside = held level
+    assert row["idea_side"] == "buy"
     assert row["sweep_wick"] is True
     assert row["fvg_present"] is None
 

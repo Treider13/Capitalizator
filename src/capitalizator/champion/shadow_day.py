@@ -49,7 +49,7 @@ def row_day_utc(row: Mapping[str, Any]) -> str | None:
 
 def idea_of(row: Mapping[str, Any]) -> str:
     tag = str(row.get("shadow_tag") or row.get("idea") or "bounce")
-    if tag == "failed_break_bounce":
+    if tag in {"failed_break_bounce", "spring", "failed_break"}:
         return "bounce"
     if tag in {"bounce", "breakout"}:
         return tag
@@ -57,7 +57,11 @@ def idea_of(row: Mapping[str, Any]) -> str:
 
 
 def idea_r(idea: str, outcome: str | None) -> Decimal | None:
-    """Would-have-taken R. Inverse of skip saved-R. Pending is unknown."""
+    """Legacy tag-based R. Kept for rows without `shadow_side` / `zone_side`.
+
+    Audit: for the old `failed_break_bounce` short this returned +1 exactly when
+    the short lost (price bounced). Prefer `side_r` when the row carries sides.
+    """
     if outcome in PENDING:
         return None
     if outcome == "die":
@@ -73,6 +77,37 @@ def idea_r(idea: str, outcome: str | None) -> Decimal | None:
         if outcome == "bounce":
             return -R_UNIT
     return Decimal("0")
+
+
+def side_r(*, side: str, zone_side: str, outcome: str | None) -> Decimal | None:
+    """R by the side actually taken. `bounce` = price left the zone away from it
+    (up for support), `break` = working close through it.
+
+    buy @ support: bounce +1 / break −1.   sell @ support: bounce −1 / break +1.
+    sell @ resistance: bounce +1 / break −1.   buy @ resistance: bounce −1 / break +1.
+    """
+    if outcome in PENDING:
+        return None
+    if outcome == "die":
+        return Decimal("0")
+    if side not in {"buy", "sell"} or zone_side not in {"support", "resistance"}:
+        raise ValueError("side_r needs side buy|sell and zone_side support|resistance")
+    with_zone = (side == "buy") == (zone_side == "support")
+    if outcome == "bounce":
+        return R_UNIT if with_zone else -R_UNIT
+    if outcome == "break":
+        return -R_UNIT if with_zone else R_UNIT
+    return Decimal("0")
+
+
+def row_r(row: Mapping[str, Any], *, side_key: str = "shadow_side") -> Decimal | None:
+    """Side-aware when the journal has sides; legacy tag rule otherwise."""
+    outcome = None if row.get("outcome") is None else str(row.get("outcome"))
+    side = row.get(side_key)
+    zone_side = row.get("zone_side")
+    if side in {"buy", "sell"} and zone_side in {"support", "resistance"}:
+        return side_r(side=str(side), zone_side=str(zone_side), outcome=outcome)
+    return idea_r(idea_of(row), outcome)
 
 
 def _effective_htf(row: Mapping[str, Any]) -> str | None:
@@ -117,7 +152,7 @@ def summarize(rows: list[Mapping[str, Any]], *, day: str) -> ShadowDay:
     would = [row for row in day_rows if _truthy(row.get("shadow_would"))]
     scored: list[Decimal] = []
     for row in would:
-        got = idea_r(idea_of(row), None if row.get("outcome") is None else str(row.get("outcome")))
+        got = row_r(row)
         if got is not None:
             scored.append(got)
     chall = [row for row in day_rows if challenger_on(row)]
