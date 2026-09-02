@@ -237,6 +237,69 @@ def test_btc_htf_close_writes_regime_bus(tmp_path: Path) -> None:
     assert desk.btc.regime == "trend"
 
 
+def test_stale_eaten_touch_is_not_this_bar_btc_break(tmp_path: Path) -> None:
+    """Close beyond + last week's eaten is not 2.9.2. Eaten must sit in this bar."""
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.registry._zones[ZONE.zone_id] = ZONE
+    desk.registry.touches.append(
+        replace(
+            Touch.create(
+                zone_id=ZONE.zone_id,
+                ts=CREATED + timedelta(hours=1),
+                trade_px=Decimal("100.5"),
+                trade_qty=Decimal("1"),
+            ),
+            outcome="break",
+            tape_eaten=True,
+        )
+    )
+    desk.on_bar_close(
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=WINDOW - timedelta(minutes=15),
+            close_ts=WINDOW,
+            open=Decimal("100.5"),
+            high=Decimal("101"),
+            low=Decimal("98"),
+            close=Decimal("99"),
+        )
+    )
+    assert desk.btc.broke_support is False
+
+
+def test_eaten_touch_in_bar_and_close_beyond_is_btc_break(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.registry._zones[ZONE.zone_id] = ZONE
+    desk.registry.touches.append(
+        replace(
+            Touch.create(
+                zone_id=ZONE.zone_id,
+                ts=WINDOW - timedelta(minutes=5),
+                trade_px=Decimal("100.5"),
+                trade_qty=Decimal("1"),
+            ),
+            outcome="pending",
+            tape_eaten=True,
+        )
+    )
+    desk.on_bar_close(
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=WINDOW - timedelta(minutes=15),
+            close_ts=WINDOW,
+            open=Decimal("100.5"),
+            high=Decimal("101"),
+            low=Decimal("98"),
+            close=Decimal("99"),
+        )
+    )
+    assert desk.btc.broke_support is True
+
+
 def test_desk_btc_same_side_uses_bus_labels() -> None:
     """BtcBus gets trend|box|news. long/short on the bus would be a lie."""
     text = Path(__file__).resolve().parents[2].joinpath(

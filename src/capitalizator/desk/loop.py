@@ -337,8 +337,11 @@ class DeskLoop:
         for zone in self.registry._zones.values():
             if zone.symbol != "BTCUSDT":
                 continue
+            # 2.9.2: eaten is the 8s touch in *this* bar. A stale print is not this close.
             eaten = any(
-                touch.zone_id == zone.zone_id and touch.tape_eaten
+                touch.zone_id == zone.zone_id
+                and touch.tape_eaten
+                and bar.open_ts <= touch.ts < bar.close_ts
                 for touch in self.registry.touches
             )
             if not Break.detect(zone=zone, bar=bar, tape_eaten=eaten, t=closed_at):
