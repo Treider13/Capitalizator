@@ -92,6 +92,30 @@ def test_buffers_are_bounded_by_time_window(tmp_path: Path) -> None:
     assert all(e.ts >= evs[-1].exchange_ts - wall.max_age for e in wall.events)
 
 
+def test_resync_with_levels_rebuilds_the_book_instead_of_wiping(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    assert desk.state_for("BTCUSDT").book.ready
+    out = desk.on_event(
+        MarketEvent(
+            stream="resync",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0,
+            recv_ts=T0,
+            seq=500,
+            payload={"update_id": 500, "bids": [["99990", "2"]], "asks": [["100010", "2"]]},
+        )
+    )
+    assert out == [{"event": "resync", "symbol": "BTCUSDT", "book_dirty": False}]
+    book = desk.state_for("BTCUSDT").book
+    assert book.ready and book.best() == (Decimal("99990"), Decimal("100010")) and book.seq == 500
+    bare = desk.on_event(
+        MarketEvent(stream="gap", exchange="bybit", symbol="BTCUSDT", exchange_ts=T0, recv_ts=T0,
+                    payload={})
+    )
+    assert bare[0]["book_dirty"] is True and not desk.state_for("BTCUSDT").book.ready
+
+
 def test_meta_writes_are_batched_not_per_print(tmp_path: Path) -> None:
     desk = _desk(tmp_path)
     kn = desk.knowledge

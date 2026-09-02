@@ -509,6 +509,22 @@ class DeskLoop:
                     pass
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"gap", "resync"}:
+            if event.stream == "resync" and event.payload.get("bids") and event.seq is not None:
+                # The recorder resynced from REST and shipped the levels: rebuild, do not wipe.
+                st.book = Book(tick_size=str(self.tick_for(st.symbol)))
+                self._apply_book_event(
+                    st,
+                    MarketEvent(
+                        stream="snapshot",
+                        exchange=event.exchange,
+                        symbol=event.symbol,
+                        exchange_ts=event.exchange_ts,
+                        recv_ts=event.recv_ts,
+                        seq=event.seq,
+                        payload={"bids": event.payload["bids"], "asks": event.payload["asks"]},
+                    ),
+                )
+                return [{"event": "resync", "symbol": event.symbol, "book_dirty": False}]
             st.book = Book(tick_size=str(self.tick_for(st.symbol)))
             return [{"event": event.stream, "symbol": event.symbol, "book_dirty": True}]
         raise ValueError(f"unknown stream: {event.stream!r}")
