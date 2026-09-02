@@ -45,6 +45,7 @@ from capitalizator.exec.strategy_bounce import (
     price_in_zone,
 )
 from capitalizator.exec.tvh import NO_TVH, tvh_ok
+from capitalizator.instruments import InstrumentRegistry, InstrumentUnknown
 from capitalizator.jury.desk import (
     decide,
     voices_for_bounce,
@@ -117,20 +118,28 @@ class DeskLoop:
         *,
         knowledge: Knowledge,
         user_mode: str = DEFAULT_MODE,
-        tick_size: Decimal = Decimal("0.1"),
+        tick_size: Decimal | None = None,
         calendar: tuple[NewsRow, ...] = (),
         btc: BtcBus | None = None,
         unlocks: Unlocks | None = None,
+        instruments: InstrumentRegistry | None = None,
     ) -> None:
         self.knowledge = knowledge
         self.user_mode = user_mode
-        self.tick_size = tick_size
+        # tick_size given explicitly = legacy single-tick mode (fixtures / tests).
+        # None = strict: a symbol missing from the instrument registry is refused.
+        self.legacy_tick = tick_size
+        self.tick_size = tick_size if tick_size is not None else Decimal("0.1")
+        self.instruments = instruments if instruments is not None else InstrumentRegistry.offline()
+        self.refused_symbols: dict[str, str] = {}
         self.calendar = calendar
         self.btc = btc if btc is not None else BtcBus()
         self.unlocks = unlocks if unlocks is not None else Unlocks.load()
         self.config = load_registry()
         self.symbols: dict[str, SymbolState] = {}
-        self.registry = Registry(tick_size=tick_size, config=self.config)
+        self.registry = Registry(
+            tick_size=self.tick_size, config=self.config, tick_for=self.tick_for
+        )
         self.shadow = ShadowWriter()
         self.session = SessionWindow()
         self.risk = RiskEngine()
@@ -148,7 +157,7 @@ class DeskLoop:
             check_wall=True,
             macro=self.macro,
         )
-        self.zlg = ZLG(tick_size=tick_size, config=self.config)
+        self.zlg = ZLG(tick_size=self.tick_size, config=self.config)
         self.tape = TapeClassifier()
         self.zones_map = ZoneMap(self.config)
         self.first_minute = FirstMinute()
@@ -178,10 +187,27 @@ class DeskLoop:
         self.prs: dict[str, PRS] = {}
         self._width_history: list[WidthSample] = []
 
+    def tick_for(self, symbol: str) -> Decimal:
+        """Instrument tick. Legacy mode falls back to the constructor tick."""
+        if self.instruments.has(symbol):
+            return self.instruments.tick(symbol)
+        if self.legacy_tick is not None:
+            return self.legacy_tick
+        raise InstrumentUnknown(symbol)
+
+    def instrument_ok(self, symbol: str) -> bool:
+        """False (and remembered for the UI) when no instrument facts exist."""
+        try:
+            self.tick_for(symbol)
+        except InstrumentUnknown:
+            self.refused_symbols[symbol] = "instrument_unknown"
+            return False
+        return True
+
     def state_for(self, symbol: str) -> SymbolState:
         if symbol not in self.symbols:
             self.symbols[symbol] = SymbolState(
-                symbol=symbol, book=Book(tick_size=str(self.tick_size))
+                symbol=symbol, book=Book(tick_size=str(self.tick_for(symbol)))
             )
         return self.symbols[symbol]
 
@@ -256,7 +282,7 @@ class DeskLoop:
 
     def _prs_for(self, symbol: str) -> PRS:
         if symbol not in self.prs:
-            self.prs[symbol] = PRS(tick_size=self.tick_size, config=self.config)
+            self.prs[symbol] = PRS(tick_size=self.tick_for(symbol), config=self.config)
         return self.prs[symbol]
 
     def on_book(self, symbol: str, book: Book) -> None:
@@ -284,13 +310,13 @@ class DeskLoop:
             return
         if event.stream == "book_diff":
             if seq is None:
-                st.book = Book(tick_size=str(self.tick_size))
+                st.book = Book(tick_size=str(self.tick_for(st.symbol)))
                 return
             before = _level_sizes(st.book) if st.book.ready else {}
             try:
                 st.book.apply_diff(bids, asks, seq=int(seq))
             except (BookDirty, SeqFault):
-                st.book = Book(tick_size=str(self.tick_size))
+                st.book = Book(tick_size=str(self.tick_for(st.symbol)))
                 return
             _record_adds(st, event.exchange_ts, before)
             self._remember_book(st, event.exchange_ts)
@@ -337,8 +363,12 @@ class DeskLoop:
                 bar = event.get("bar")
                 if not isinstance(bar, Bar):
                     raise ValueError("bar_close needs a Bar")
+                if not self.instrument_ok(bar.symbol):
+                    return [_refused(bar.symbol)]
                 return self.on_bar_close(bar)
             raise ValueError(f"unknown desk event: {kind!r}")
+        if not self.instrument_ok(event.symbol):
+            return [_refused(event.symbol)]
         if event.stream == "trades":
             return self.on_trade(event, zones or [])
         st = self.state_for(event.symbol)
@@ -350,7 +380,7 @@ class DeskLoop:
             # Do not pretend a journal row was written.
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"gap", "resync"}:
-            st.book = Book(tick_size=str(self.tick_size))
+            st.book = Book(tick_size=str(self.tick_for(st.symbol)))
             return [{"event": event.stream, "symbol": event.symbol, "book_dirty": True}]
         raise ValueError(f"unknown stream: {event.stream!r}")
 
@@ -538,6 +568,7 @@ class DeskLoop:
             mid=mid,
             opp_best=opp_best,
             book_ready=book.ready,
+            tick=self.tick_for(st.symbol),
         )
         self.registry.fill_gesture(gesture=result.gesture, touch_id=touch.touch_id)
         self.registry._patch(
@@ -794,7 +825,7 @@ class DeskLoop:
         if in_mid_range(
             bar.close,
             known_zones,
-            tick=self.tick_size,
+            tick=self.tick_for(st.symbol),
             band_ticks=self.config.mid_band_ticks,
         ):
             cav = "NOISE"
@@ -915,7 +946,7 @@ class DeskLoop:
         mid = in_mid_range(
             row.trade_px,
             known_zones,
-            tick=self.tick_size,
+            tick=self.tick_for(st.symbol),
             band_ticks=self.config.mid_band_ticks,
         )
         has_tvh = tvh_ok(
@@ -1046,7 +1077,7 @@ class DeskLoop:
                         trades=st.trades,
                         zone=zone,
                         t0=row.ts,
-                        tick_size=self.tick_size,
+                        tick_size=self.tick_for(st.symbol),
                         config=self.config,
                     )
                 )
@@ -1098,7 +1129,7 @@ class DeskLoop:
                     now=closed_at,
                     symbol=st.symbol,
                     price=row.trade_px,
-                    tick=self.tick_size,
+                    tick=self.tick_for(st.symbol),
                     trading_mode=self.user_mode,
                     zone=zone,
                     zones=known_zones,
@@ -1321,6 +1352,9 @@ class DeskLoop:
                 out.extend(self.on_event(event, list(extras) or None))
                 continue
             advance(event.exchange_ts)
+            if not self.instrument_ok(event.symbol):
+                out.append(_refused(event.symbol))
+                continue
             if event.stream == "trades":
                 built = zones_for_trade(self, event, extras)
                 self.persist_zones(built)
@@ -1330,6 +1364,11 @@ class DeskLoop:
         if now is not None:
             advance(require_utc(now))
         return out
+
+
+def _refused(symbol: str) -> dict[str, Any]:
+    """No tick/lot facts for this symbol: refuse loudly instead of assuming 0.1."""
+    return {"event": "refused", "symbol": symbol, "reason": "instrument_unknown"}
 
 
 def _close_symbols(symbols: dict[str, SymbolState]) -> list[str]:

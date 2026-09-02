@@ -94,7 +94,7 @@ def zones_for_trade(
     card: CardLive | None = None,
 ) -> list[Zone]:
     """Prior-day / swing zones. POC comes from the live B card, not a VWAP stand-in."""
-    engine = ZoneEngine(tick_size=desk.tick_size, config=desk.config)
+    engine = ZoneEngine(tick_size=desk.tick_for(event.symbol), config=desk.config)
     tf = desk.config.working_tf
     st = desk.state_for(event.symbol)
     work = [b for b in st.bars if b.tf == tf]

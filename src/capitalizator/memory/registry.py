@@ -9,7 +9,7 @@ Does not open size.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -112,7 +112,13 @@ class Touch:
 
 
 class Registry:
-    def __init__(self, *, tick_size: Decimal, config: RegistryConfig | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        tick_size: Decimal,
+        config: RegistryConfig | None = None,
+        tick_for: Callable[[str], Decimal] | None = None,
+    ) -> None:
         if tick_size <= 0:
             raise ValueError("tick_size must be > 0")
         self.tick_size = tick_size
@@ -120,6 +126,13 @@ class Registry:
         self.touches: list[Touch] = []
         self._zones: dict[str, Zone] = {}
         self.chain = HashChain()
+        # Per-symbol tick (instruments-info). None keeps the legacy single tick.
+        self._tick_for = tick_for
+
+    def tick(self, symbol: str) -> Decimal:
+        if self._tick_for is None:
+            return self.tick_size
+        return self._tick_for(symbol)
 
     def zone(self, zone_id: str) -> Zone:
         return self._zones[zone_id]
@@ -133,7 +146,7 @@ class Registry:
         if px <= 0 or qty <= 0:
             raise ValueError("trade px/qty must be > 0")
         opened: list[Touch] = []
-        pad = self.tick_size * self.config.epsilon_ticks
+        pad = self.tick(trade.symbol) * self.config.epsilon_ticks
         pending_zones = {t.zone_id for t in self.touches if t.outcome == "pending"}
         for zone in zones:
             self._zones[zone.zone_id] = zone
@@ -221,7 +234,7 @@ class Registry:
                 return replace(touch, outcome="break")
             if zone.side == "resistance" and bar.close > zone.hi:
                 return replace(touch, outcome="break")
-        away = self.tick_size * self.config.bounce_away_ticks
+        away = self.tick(zone.symbol) * self.config.bounce_away_ticks
         if zone.side == "support" and last_px >= zone.hi + away:
             return replace(touch, outcome="bounce")
         if zone.side == "resistance" and last_px <= zone.lo - away:
@@ -267,7 +280,7 @@ class Registry:
                 trades=trades,
                 zone=zone,
                 t0=touch.ts,
-                tick_size=self.tick_size,
+                tick_size=self.tick(zone.symbol),
                 config=self.config,
             )
             prints = clf.prints_in_window(
