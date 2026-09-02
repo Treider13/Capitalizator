@@ -1,6 +1,6 @@
 """24/7 champion shadow R from the journal. Empty is None, not a fake zero.
 
-Challenger is a second class on the same touch: HTF with the exit,
+Challenger is a second class on the same touch: known HTF (CAV clock),
 had COMPRESS, then THROUGH or eaten+RETREAT. It never opens size.
 Does not import signer. Does not promote.
 """
