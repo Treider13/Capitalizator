@@ -195,6 +195,38 @@ def test_b_veto_flattens_the_live_twin_and_queues_venue_flatten(tmp_path: Path) 
     assert desk.account.open == {}
 
 
+def test_venue_equity_is_not_double_counted_and_twin_exit_flattens_venue(tmp_path: Path) -> None:
+    desk = _desk(tmp_path, "live", SUP, "100000.1")
+    desk.knowledge.set_meta("exchange_state", json.dumps({
+        "at": WINDOW.isoformat(), "equity": "80000", "positions": [], "mismatches": []}))
+    desk.tick(WINDOW - timedelta(seconds=1))
+    assert desk.account.equity == Decimal("80000") and desk.account.equity_source == "exchange:live"
+    # the first wallet reading re-baselines the halts: 80 000 vs paper 100 000 is not a −20% day
+    assert not desk.account.halts.halted and desk.account.halts.day_start == Decimal("80000")
+    ev = _arm_and_close(desk, SUP, "100000.1")
+    assert ev["sent"] is True, desk.knowledge.get_journal_touch(ev["touch_id"]).get("send_skip")
+    row = desk.knowledge.get_journal_touch(ev["touch_id"])
+    twin = desk.paper.positions[row["paper_ids"]["demo"]]
+    t = WINDOW + timedelta(minutes=6)
+    desk.on_trade(_trade(t, "100000.1"), [SUP])
+    desk.on_trade(_trade(t + timedelta(minutes=1), str(twin.stop - 1)), [SUP])
+    assert twin.state == "closed" and twin.exit_reason == "stop"
+    # paper loss is NOT subtracted again: the venue wallet already carries it
+    assert desk.account.equity == Decimal("80000")
+    assert desk.account.open == {}
+    # and the venue is told to follow the desk's exit (cancel entries + close leftovers)
+    flat = [c for c in desk.knowledge.oms_rows() if c["kind"] == "flatten"]
+    assert flat and flat[0]["payload"]["reason"] == "twin_stop" and flat[0]["symbol"] == "BTCUSDT"
+    # paper account (no venue) still moves on paper P&L
+    desk2 = _desk(tmp_path / "paper", "demo", SUP, "100000.1")
+    ev2 = _arm_and_close(desk2, SUP, "100000.1")
+    row2 = desk2.knowledge.get_journal_touch(ev2["touch_id"])
+    twin2 = desk2.paper.positions[row2["paper_ids"]["demo"]]
+    desk2.on_trade(_trade(t, "100000.1"), [SUP])
+    desk2.on_trade(_trade(t + timedelta(minutes=1), str(twin2.stop - 1)), [SUP])
+    assert desk2.account.equity < desk2.risk_config.paper_equity
+
+
 def test_refuted_class_is_not_sent_but_still_shadowed(tmp_path: Path) -> None:
     desk = _desk(tmp_path, "demo", SUP, "100000.1")
     # 40 filled shadow losers of the exact class this touch will produce (spring × REJECT × DEFEND)

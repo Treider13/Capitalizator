@@ -435,6 +435,22 @@ def test_legacy_no_key_loop_watches_the_desk_heartbeat(tmp_path: Path) -> None:
     kn.close()
 
 
+def test_identical_intents_on_two_days_get_distinct_order_link_ids(tmp_path: Path) -> None:
+    """Without the queue id both intents hashed alike → venue 'duplicate' → fake 'sent'."""
+    kn = open_knowledge(init_vault(tmp_path / "v"))
+    s = FakeSession()
+    gw = _gw(s)
+    same = {k: v for k, v in _intent().items() if k != "touch_id"}
+    kn.enqueue_intent(same, created_ts=NOW.isoformat())
+    kn.enqueue_intent(same, created_ts=(NOW + timedelta(days=1)).isoformat())
+    drain_validated(kn, gw.send, user_mode="demo", now=NOW)
+    placed = [c[1]["orderLinkId"] for c in s.calls if c[0] == "place_order"]
+    assert len(placed) == 2 and placed[0] != placed[1]
+    assert len(s.orders) == 2
+    assert not any(r["kind"] == "send_duplicate" for r in gw.log)
+    kn.close()
+
+
 def test_publish_exchange_state_reports_missing_stop(tmp_path: Path) -> None:
     kn = open_knowledge(init_vault(tmp_path / "v"))
     s = FakeSession()

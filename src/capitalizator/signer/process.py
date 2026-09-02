@@ -98,7 +98,9 @@ def drain_once(
     out: list[dict[str, Any]] = []
     for row in knowledge.pending_intents():
         try:
-            result = send(row["payload"])
+            # The queue row id is the intent's identity: two intents with identical
+            # content (same zone on two days) must not share an orderLinkId.
+            result = send({**row["payload"], "intent_id": row["id"]})
         except Exception as exc:
             knowledge.mark_intent(row["id"], "failed")
             out.append({"id": row["id"], "status": "failed", "error": str(exc)})
@@ -192,7 +194,7 @@ def drain_validated(
     def checked(payload: dict[str, Any]) -> dict[str, Any]:
         signed = validate_queue_payload(payload, universe=universe)
         # Keep the desk fields the gateway needs (idempotency, staleness, leverage).
-        for key in ("valid_until", "lev", "touch_id", "risk_config_id", "tag"):
+        for key in ("valid_until", "lev", "touch_id", "intent_id", "risk_config_id", "tag"):
             if key in payload and key not in signed:
                 signed[key] = payload[key]
         return send(signed)

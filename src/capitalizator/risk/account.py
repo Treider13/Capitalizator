@@ -125,10 +125,20 @@ class Account:
     def set_equity(self, equity: Decimal, *, source: str, now: datetime) -> None:
         if equity <= 0:
             raise ValueError("equity must be > 0")
+        assert self.halts is not None
+        if source != self.equity_source:
+            # Source switch (paper → venue wallet, testnet → live): the old baselines
+            # belong to another number. Comparing the first wallet reading with the
+            # paper equity tripped a false day halt (found by test). Re-baseline.
+            self.halts.day_start = equity
+            self.halts.week_start = equity
+            self.halts.peak = equity
+            if self.halts.halted and self.halts.reason in {"day", "week", "peak"}:
+                self.halts.halted = False
+                self.halts.reason = ""
         self.equity = equity
         self.equity_source = source
         self.equity_at = require_utc(now)
-        assert self.halts is not None
         self.halts.update(equity)
         self._persist()
 

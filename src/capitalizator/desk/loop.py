@@ -1934,14 +1934,18 @@ class DeskLoop:
                 if day:
                     persist_day(self.knowledge, day)
         if pos.source == "demo":
-            if pos.entry_px is not None:
+            when = pos.closed_at or datetime.now(tz=UTC)
+            if pos.entry_px is not None and not self.account.equity_source.startswith("exchange"):
+                # Paper P&L moves the account only while the account IS paper. With a
+                # venue wallet as the source the realized P&L is already in that number.
                 self.account.apply_pnl(
-                    pnl=pos.realized,
-                    fees=pos.fees,
-                    funding=pos.funding,
-                    now=pos.closed_at or datetime.now(tz=UTC),
-                    source="paper",
+                    pnl=pos.realized, fees=pos.fees, funding=pos.funding, now=when, source="paper"
                 )
+            # (3) The twin is the desk's decision; the venue must follow it. flatten on
+            # the venue = cancel resting entries + close whatever position is left, so a
+            # stop/TP/time/expiry/veto here never leaves an orphan order or position.
+            if pos.exit_reason not in {"soft", "b_veto"}:  # those already queued flatten
+                self._oms(pos, "flatten", when, reason=f"twin_{pos.exit_reason}")
             self.account.on_flat(pos.symbol)
 
     # --- sizing + EV gate (D-06, D-11, D-12, D-16, D-38) -----------------------
