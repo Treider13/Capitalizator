@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from capitalizator.jury.desk import Voices, decide, rho_class_id, voices_for_bounce
+from capitalizator.jury.desk import (
+    Voices,
+    decide,
+    oko_voice,
+    rho_class_id,
+    voices_for_bounce,
+    voices_for_breakout,
+    voices_for_failed_break,
+)
 
 
 def test_veto_wins() -> None:
@@ -133,6 +141,86 @@ def test_btc_break_against_is_veto() -> None:
         btc_break_against=True,
     )
     assert decide(voices) == "VETO"
+
+
+def test_oko_defaults_to_absent_zero() -> None:
+    """Five-voice callers keep their label: ОКО absent is 0, not a vote."""
+    voices = Voices(cav=1, zlg=1, tape=1, btc=1, card=1)
+    assert voices.oko == 0
+    assert decide(voices) == "ACCORD"
+
+
+def test_oko_veto_kills_a_full_accord() -> None:
+    voices = Voices(cav=1, zlg=1, tape=1, btc=1, card=1, oko="VETO")
+    assert decide(voices) == "VETO"
+
+
+def test_oko_minus_one_splits() -> None:
+    voices = Voices(cav=1, zlg=1, tape=1, btc=1, card=1, oko=-1)
+    assert decide(voices) == "SPLIT"
+
+
+def test_oko_plus_one_does_not_open_accord_alone() -> None:
+    """CAV and ZLG both mute is still SILENCE. The eye confirms, it does not lead."""
+    voices = Voices(cav=0, zlg=0, tape=0, btc=0, card=0, oko=1)
+    assert decide(voices) == "SILENCE"
+    with_chart = Voices(cav=1, zlg=1, tape=0, btc=0, card=0, oko=1)
+    assert decide(with_chart) == "ACCORD"
+
+
+def test_oko_voice_rejects_unknown_values() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="oko"):
+        Voices(cav=1, zlg=1, tape=1, btc=1, card=1, oko=2)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="cav"):
+        Voices(cav="yes", zlg=1, tape=1, btc=1, card=1)  # type: ignore[arg-type]
+
+
+def test_voices_for_bounce_carries_oko() -> None:
+    voices = voices_for_bounce(
+        cav="REJECT",
+        n_cav=20,
+        zlg="DEFEND",
+        n_zlg=20,
+        tape_eaten=False,
+        btc_regime="box",
+        oko="VETO",
+    )
+    assert voices.oko == "VETO"
+    assert decide(voices) == "VETO"
+    against = voices_for_breakout(
+        cav="THROUGH",
+        n_cav=20,
+        zlg="RETREAT",
+        n_zlg=20,
+        tape_eaten=True,
+        btc_regime="box",
+        oko=-1,
+    )
+    assert decide(against) == "SPLIT"
+    failed = voices_for_failed_break(
+        cav="REJECT",
+        n_cav=20,
+        zlg="DEFEND",
+        n_zlg=20,
+        tape_eaten=False,
+        btc_regime="box",
+        oko=1,
+    )
+    assert failed.oko == 1
+
+
+def test_oko_voice_parser_from_registry_forms() -> None:
+    assert oko_voice(None) == 0
+    assert oko_voice("VETO") == "VETO"
+    assert oko_voice(-1) == -1
+    assert oko_voice("1") == 1
+    assert oko_voice("-1") == -1
+    assert oko_voice("0") == 0
+    assert oko_voice("maybe") == 0
+    assert oko_voice(True) == 0
+    assert oko_voice(2) == 0
 
 
 def test_class_id_matches_spec_example() -> None:
