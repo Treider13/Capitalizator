@@ -42,6 +42,7 @@ from capitalizator.exec.ideas import opposite as opposite_side
 from capitalizator.exec.ideas import shadow_tag as idea_shadow_tag
 from capitalizator.exec.ideas import side_for
 from capitalizator.exec.manage import TradeManager
+from capitalizator.exec.paper import PaperEngine, PaperPosition
 from capitalizator.exec.shadow import ShadowWriter
 from capitalizator.exec.spot import SpotAdapter
 from capitalizator.exec.strategy_bounce import (
@@ -50,6 +51,9 @@ from capitalizator.exec.strategy_bounce import (
     in_mid_range,
     opposing_target,
     price_in_zone,
+    stop_behind,
+    stop_behind_wick,
+    take_profit,
 )
 from capitalizator.exec.tvh import NO_TVH, tvh_ok
 from capitalizator.instruments import Instrument, InstrumentRegistry, InstrumentUnknown
@@ -184,6 +188,12 @@ class DeskLoop:
         self.btc_regime = BtcRegime(self.zones_map)
         self.manager = TradeManager()
         self.spot = SpotAdapter(knowledge)
+        # W3: every shadow / fade / demo idea is executed on paper against the tape.
+        self.paper = PaperEngine(
+            funding_rate=lambda s: self.funding.get(s),
+            on_close=self._on_paper_close,
+            max_hold=timedelta(hours=self.config.touch_pending_timeout_h),
+        )
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
         if knowledge.available():
@@ -443,12 +453,20 @@ class DeskLoop:
                     st.trades.clear()
                     st.book_pre = None
                 action = self.manager.on_refute(load_bearing=True, verdict="REFUTED")
+                flattened = 0
+                if symbol and symbol in self.last_price:
+                    when = event.get("now")
+                    when = require_utc(when) if isinstance(when, datetime) else datetime.now(tz=UTC)
+                    flattened = len(
+                        self.paper.flatten(symbol, self.last_price[symbol], when, reason="flatten")
+                    )
                 return [
                     {
                         "event": "flatten",
                         "symbol": symbol,
                         "state": "IDLE",
                         "action": None if action is None else action.action,
+                        "paper_flattened": flattened,
                     }
                 ]
             if kind == "bar_close":
@@ -561,6 +579,7 @@ class DeskLoop:
         if st.bar_builder is not None:
             st.bar_builder.on_trade(trade)
         self._trim_trades(st, trade.exchange_ts)
+        self.paper.on_print(trade)
         try:
             px = Decimal(str(trade.payload["px"]))
             if px > 0:
@@ -595,6 +614,7 @@ class DeskLoop:
     def tick(self, now: datetime, *, force_flush: bool = True) -> list[dict[str, Any]]:
         when = require_utc(now)
         self.account.roll(when)
+        self.paper.on_clock(when)
         self.flush_ui(when, force=force_flush)
         out: list[dict[str, Any]] = []
         # Settling pending touches walks every touch; once per second of clock is
@@ -1267,6 +1287,25 @@ class DeskLoop:
             "challenger_would": payload_row["challenger_would"],
         }
         self.shadow_writes.append(self.shadow.write(payload))
+        # W3: shadow and fade ideas trade on paper 24/7, whatever the user mode.
+        paper_ids: dict[str, str] = {}
+        if shadow_would:
+            pid = self._submit_paper(
+                row, zone, known_zones, idea=idea, side=idea_side, wick_extreme=wick_extreme,
+                now=closed_at, source="shadow", tag=idea_shadow_tag(idea),
+            )
+            if pid:
+                paper_ids["shadow"] = pid
+        if fade_side is not None and has_tvh:
+            pid = self._submit_paper(
+                row, zone, known_zones, idea="fade_spring", side=fade_side,
+                wick_extreme=wick_extreme, now=closed_at, source="fade", tag="fade_spring",
+            )
+            if pid:
+                paper_ids["fade"] = pid
+        if paper_ids:
+            payload_row["paper_ids"] = paper_ids
+            self.knowledge.put_journal_touch(row.touch_id, payload_row)
         sent = False
         if (
             shadow_would
@@ -1347,6 +1386,31 @@ class DeskLoop:
                             created_ts=row.ts.isoformat(),
                         )
                         self.account.on_open(sized, now=closed_at, intent_id=intent_id)
+                        # Demo accounting runs on paper until exchange fills replace it.
+                        demo_pid = f"{row.touch_id}:demo"
+                        assert sized.qty is not None
+                        self.paper.submit(
+                            paper_id=demo_pid,
+                            touch_id=row.touch_id,
+                            symbol=st.symbol,
+                            side=sized.side,
+                            limit_px=sized.entry,
+                            qty=sized.qty,
+                            stop=sized.stop,
+                            tp=sized.tp,
+                            tick=self.tick_for(st.symbol),
+                            now=closed_at,
+                            valid_for=timedelta(
+                                minutes=TF_MINUTES.get(self.config.working_tf, 15)
+                                * self.INTENT_TTL_BARS
+                            ),
+                            source="demo",
+                            tag=sized.tag,
+                            funding_interval_min=self._instrument_for(st.symbol).funding_interval_min,
+                        )
+                        payload_row.setdefault("paper_ids", {})["demo"] = demo_pid
+                        payload_row["intent_id"] = intent_id
+                        self.knowledge.put_journal_touch(row.touch_id, payload_row)
                         sent = True
         st.state = "IDLE"
         st.last_touch = None
@@ -1362,6 +1426,114 @@ class DeskLoop:
         if b_action is not None:
             out_event["action"] = b_action
         return [out_event]
+
+    # --- paper (W3) ----------------------------------------------------------------
+    def _submit_paper(
+        self,
+        row: Touch,
+        zone: Zone,
+        known_zones: tuple[Zone, ...],
+        *,
+        idea: str,
+        side: str,
+        wick_extreme: Decimal,
+        now: datetime,
+        source: str,
+        tag: str,
+    ) -> str | None:
+        """Same geometry as the live strategy, sized from the account, no EV gate:
+        the shadow measures what the edge is worth *after* costs, it does not filter."""
+        inst = self._instrument_for(row_symbol := zone.symbol)
+        tick = inst.tick
+        away = self.config.bounce_away_ticks
+        try:
+            if idea == "spring":
+                stop = stop_behind_wick(zone, wick_extreme, tick, away, side=side)
+            else:
+                stop = stop_behind(zone, tick, away, side=side)
+        except ValueError:
+            return None
+        if (side == "buy" and row.trade_px <= stop) or (side == "sell" and row.trade_px >= stop):
+            return None
+        target = opposing_target(known_zones, side=side, entry=row.trade_px, symbol=row_symbol)
+        tp = take_profit(side, row.trade_px, stop, target, idea="bounce")
+        if tp is None:
+            r = abs(row.trade_px - stop)
+            tp = row.trade_px + 2 * r if side == "buy" else row.trade_px - 2 * r
+        cfg = self.risk_config
+        lev = min(cfg.max_lev, inst.max_lev)
+        decision = size_position(
+            equity=self.account.equity,
+            entry=row.trade_px,
+            stop=stop,
+            lev=lev,
+            target_risk=cfg.target_risk_pct,
+            deposit_share=cfg.deposit_share_per_trade,
+            qty_step=inst.qty_step,
+            min_qty=inst.min_qty,
+            min_notional=inst.min_notional,
+            max_lev=cfg.max_lev,
+        )
+        qty = decision.qty if decision.action == "accept" else inst.min_qty
+        pid = f"{row.touch_id}:{source}"
+        if pid in self.paper.positions:
+            return pid
+        self.paper.submit(
+            paper_id=pid,
+            touch_id=row.touch_id,
+            symbol=row_symbol,
+            side=side,  # type: ignore[arg-type]
+            limit_px=row.trade_px,
+            qty=qty,
+            stop=stop,
+            tp=tp,
+            tick=tick,
+            now=now,
+            valid_for=timedelta(
+                minutes=TF_MINUTES.get(self.config.working_tf, 15) * self.INTENT_TTL_BARS
+            ),
+            source=source,  # type: ignore[arg-type]
+            tag=tag,
+            funding_interval_min=inst.funding_interval_min,
+        )
+        return pid
+
+    def _on_paper_close(self, pos: PaperPosition) -> None:
+        """Persist the closed paper trade, mirror it into the journal, move the demo account."""
+        payload = pos.to_payload()
+        if self.knowledge.available():
+            self.knowledge.put_paper_trade(payload)
+            row = self.knowledge.get_journal_touch(pos.touch_id)
+            if row is not None:
+                paper = row.get("paper") if isinstance(row.get("paper"), dict) else {}
+                paper[pos.source] = {
+                    "paper_id": pos.paper_id,
+                    "filled": pos.entry_px is not None,
+                    "exit_reason": pos.exit_reason,
+                    "r_net": payload["r_net"],
+                    "r_gross": payload["r_gross"],
+                    "mae_r": payload["mae_r"],
+                    "mfe_r": payload["mfe_r"],
+                    "pnl_net": str(pos.pnl_net()),
+                    "fees": str(pos.fees),
+                    "funding": str(pos.funding),
+                    "hold_s": payload["hold_s"],
+                }
+                row["paper"] = paper
+                day = row_day_utc(row)
+                self.knowledge.put_journal_touch(pos.touch_id, row)
+                if day:
+                    persist_day(self.knowledge, day)
+        if pos.source == "demo":
+            if pos.entry_px is not None:
+                self.account.apply_pnl(
+                    pnl=pos.realized,
+                    fees=pos.fees,
+                    funding=pos.funding,
+                    now=pos.closed_at or datetime.now(tz=UTC),
+                    source="paper",
+                )
+            self.account.on_flat(pos.symbol)
 
     # --- sizing + EV gate (D-06, D-11, D-12, D-16, D-38) -----------------------
     INTENT_TTL_BARS = 2

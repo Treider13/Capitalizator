@@ -1,0 +1,417 @@
+"""Paper execution engine: the 24/7 shadow trades the real tape (W3, §5.6).
+
+Before this, "shadow R" was ±1 from a tag (`bounce` = price wiggled 8 ticks).
+Now every shadow idea, every fade challenger and every demo intent becomes a
+paper order that lives against the prints:
+
+  pending  → filled when the tape trades THROUGH the limit (conservative queue:
+             a buy needs a print strictly below the limit, or at the limit with a
+             seller as taker). `NaiveQueueFill` (touch = fill) is recorded next to
+             it as the optimistic bound.
+  open     → MAE / MFE tracked per print; +1R closes half at the limit (law 1.6.3);
+             stop is a market exit at stop − slippage; TP a limit exit at tp;
+             funding charged at each settlement boundary; time-stop at max_hold.
+  closed   → pnl, fees (maker entry/TP, taker stop), funding, R_net = pnl_net /
+             risk_usdt, MAE/MFE in R, hold time. Written to `paper_trades` and
+             mirrored into the journal row. Demo-source trades move the Account.
+
+No order leaves this module. It is deterministic on the tape (tests replay).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import Any, Literal
+
+from capitalizator.exec.fees import FeeTable
+from capitalizator.types import MarketEvent, require_utc
+
+Side = Literal["buy", "sell"]
+Source = Literal["shadow", "fade", "demo", "challenger"]
+State = Literal["pending", "open", "closed"]
+HALF = Decimal("0.5")
+
+
+@dataclass
+class PaperPosition:
+    paper_id: str
+    touch_id: str
+    symbol: str
+    side: Side
+    limit_px: Decimal
+    qty: Decimal
+    stop: Decimal
+    tp: Decimal | None
+    tick: Decimal
+    created_at: datetime
+    valid_until: datetime
+    max_hold: timedelta
+    source: Source
+    tag: str
+    risk_usdt: Decimal
+    funding_interval_min: int = 480
+    state: State = "pending"
+    filled_at: datetime | None = None
+    entry_px: Decimal | None = None
+    naive_fill_at: datetime | None = None
+    qty_open: Decimal = Decimal("0")
+    half_taken: bool = False
+    half_px: Decimal | None = None
+    half_at: datetime | None = None
+    realized: Decimal = Decimal("0")
+    fees: Decimal = Decimal("0")
+    funding: Decimal = Decimal("0")
+    mae_px: Decimal | None = None  # worst price seen against us
+    mfe_px: Decimal | None = None  # best price seen for us
+    stop_moves: list[tuple[str, str]] = field(default_factory=list)
+    exit_reason: str | None = None
+    exit_px: Decimal | None = None
+    closed_at: datetime | None = None
+    last_funding_slot: int | None = None
+    prints_seen: int = 0
+
+    # --- geometry -----------------------------------------------------------
+    @property
+    def r_px(self) -> Decimal:
+        return abs(self.limit_px - self.stop)
+
+    def _favorable(self, px: Decimal) -> Decimal:
+        assert self.entry_px is not None
+        return (px - self.entry_px) if self.side == "buy" else (self.entry_px - px)
+
+    def r_now(self, px: Decimal) -> Decimal | None:
+        if self.entry_px is None or self.r_px == 0:
+            return None
+        return self._favorable(px) / self.r_px
+
+    def to_payload(self) -> dict[str, Any]:
+        def s(v: object) -> Any:
+            if isinstance(v, Decimal):
+                return str(v)
+            if isinstance(v, datetime):
+                return v.isoformat()
+            if isinstance(v, timedelta):
+                return v.total_seconds()
+            return v
+
+        out = {k: s(v) for k, v in self.__dict__.items() if k != "stop_moves"}
+        out["stop_moves"] = list(self.stop_moves)
+        out["r_net"] = s(self.r_net())
+        out["r_gross"] = s(self.r_gross())
+        out["mae_r"] = s(self.mae_r())
+        out["mfe_r"] = s(self.mfe_r())
+        out["hold_s"] = (
+            (self.closed_at - self.filled_at).total_seconds()
+            if self.closed_at and self.filled_at
+            else None
+        )
+        return out
+
+    # --- results ------------------------------------------------------------
+    def pnl_net(self) -> Decimal:
+        return self.realized - self.fees - self.funding
+
+    def r_gross(self) -> Decimal | None:
+        """None until closed; None forever if never filled (unfilled ≠ 0 R)."""
+        if self.state != "closed" or self.risk_usdt == 0 or self.entry_px is None:
+            return None
+        return self.realized / self.risk_usdt
+
+    def r_net(self) -> Decimal | None:
+        if self.state != "closed" or self.risk_usdt == 0 or self.entry_px is None:
+            return None
+        return self.pnl_net() / self.risk_usdt
+
+    def mae_r(self) -> Decimal | None:
+        if self.mae_px is None or self.entry_px is None or self.r_px == 0:
+            return None
+        return -self._favorable(self.mae_px) / self.r_px
+
+    def mfe_r(self) -> Decimal | None:
+        if self.mfe_px is None or self.entry_px is None or self.r_px == 0:
+            return None
+        return self._favorable(self.mfe_px) / self.r_px
+
+
+class PaperEngine:
+    def __init__(
+        self,
+        *,
+        fees: FeeTable | None = None,
+        slippage_ticks: int = 1,
+        max_hold: timedelta = timedelta(hours=6),
+        funding_rate: Callable[[str], Decimal | None] | None = None,
+        on_close: Callable[[PaperPosition], None] | None = None,
+    ) -> None:
+        self.fees = fees or FeeTable()
+        self.slippage_ticks = slippage_ticks
+        self.max_hold = max_hold
+        self._funding_rate = funding_rate or (lambda _s: None)
+        self._on_close = on_close
+        self.positions: dict[str, PaperPosition] = {}
+        self.closed: list[PaperPosition] = []
+        self.n_submitted = 0
+
+    # --- submit ---------------------------------------------------------------
+    def submit(
+        self,
+        *,
+        paper_id: str,
+        touch_id: str,
+        symbol: str,
+        side: Side,
+        limit_px: Decimal,
+        qty: Decimal,
+        stop: Decimal,
+        tp: Decimal | None,
+        tick: Decimal,
+        now: datetime,
+        valid_for: timedelta,
+        source: Source,
+        tag: str,
+        funding_interval_min: int = 480,
+        max_hold: timedelta | None = None,
+    ) -> PaperPosition:
+        if qty <= 0 or limit_px <= 0 or stop <= 0 or tick <= 0:
+            raise ValueError("qty/limit/stop/tick must be > 0")
+        if side == "buy" and stop >= limit_px:
+            raise ValueError("buy stop must be below limit")
+        if side == "sell" and stop <= limit_px:
+            raise ValueError("sell stop must be above limit")
+        if paper_id in self.positions:
+            raise ValueError(f"duplicate paper_id {paper_id}")
+        when = require_utc(now)
+        pos = PaperPosition(
+            paper_id=paper_id,
+            touch_id=touch_id,
+            symbol=symbol,
+            side=side,
+            limit_px=limit_px,
+            qty=qty,
+            stop=stop,
+            tp=tp,
+            tick=tick,
+            created_at=when,
+            valid_until=when + valid_for,
+            max_hold=max_hold if max_hold is not None else self.max_hold,
+            source=source,
+            tag=tag,
+            risk_usdt=qty * abs(limit_px - stop),
+            funding_interval_min=funding_interval_min,
+        )
+        self.positions[paper_id] = pos
+        self.n_submitted += 1
+        return pos
+
+    # --- tape -----------------------------------------------------------------
+    def on_print(self, trade: MarketEvent) -> list[PaperPosition]:
+        """Feed one print. Returns positions that changed state."""
+        if trade.stream != "trades":
+            return []
+        try:
+            px = Decimal(str(trade.payload["px"]))
+        except (KeyError, ArithmeticError):
+            return []
+        taker = str(trade.payload.get("side") or "").lower()
+        when = require_utc(trade.exchange_ts)
+        changed: list[PaperPosition] = []
+        for pos in list(self.positions.values()):
+            if pos.symbol != trade.symbol:
+                continue
+            pos.prints_seen += 1
+            if pos.state == "pending":
+                if when > pos.valid_until:
+                    self._close_unfilled(pos, when, "expired")
+                    changed.append(pos)
+                    continue
+                if pos.naive_fill_at is None and self._touches(pos, px):
+                    pos.naive_fill_at = when
+                if self._fills(pos, px, taker):
+                    self._fill(pos, when)
+                    changed.append(pos)
+                    # the same print cannot also stop us out
+                    continue
+            if pos.state == "open":
+                self._track(pos, px)
+                self._funding_tick(pos, when)
+                if self._stop_hit(pos, px):
+                    self._exit(pos, when, self._stop_fill_px(pos), "stop", role="taker")
+                    changed.append(pos)
+                    continue
+                if not pos.half_taken and pos.r_now(px) is not None and pos.r_now(px) >= 1:
+                    self._take_half(pos, when)
+                    changed.append(pos)
+                if pos.tp is not None and self._tp_hit(pos, px):
+                    self._exit(pos, when, pos.tp, "tp", role="maker")
+                    changed.append(pos)
+                    continue
+                if pos.filled_at is not None and when - pos.filled_at >= pos.max_hold:
+                    self._exit(pos, when, px, "time", role="taker")
+                    changed.append(pos)
+        return changed
+
+    def on_clock(self, now: datetime) -> list[PaperPosition]:
+        """Expire stale pending orders without a print (quiet symbol)."""
+        when = require_utc(now)
+        changed: list[PaperPosition] = []
+        for pos in list(self.positions.values()):
+            if pos.state == "pending" and when > pos.valid_until:
+                self._close_unfilled(pos, when, "expired")
+                changed.append(pos)
+        return changed
+
+    def set_stop(self, paper_id: str, new_stop: Decimal, *, reason: str) -> bool:
+        """Trail hook (W4). Monotone: a long stop only rises, a short stop only falls."""
+        pos = self.positions.get(paper_id)
+        if pos is None or pos.state != "open":
+            return False
+        if pos.side == "buy" and new_stop <= pos.stop:
+            return False
+        if pos.side == "sell" and new_stop >= pos.stop:
+            return False
+        pos.stop_moves.append((str(pos.stop), str(new_stop)))
+        pos.stop = new_stop
+        return True
+
+    def flatten(
+        self, symbol: str, px: Decimal, now: datetime, *, reason: str = "flatten"
+    ) -> list[PaperPosition]:
+        out: list[PaperPosition] = []
+        for pos in list(self.positions.values()):
+            if pos.symbol != symbol:
+                continue
+            if pos.state == "pending":
+                self._close_unfilled(pos, now, reason)
+            elif pos.state == "open":
+                self._exit(pos, require_utc(now), px, reason, role="taker")
+            out.append(pos)
+        return out
+
+    def open_for(self, symbol: str, *, source: Source | None = None) -> list[PaperPosition]:
+        return [
+            p
+            for p in self.positions.values()
+            if p.symbol == symbol and (source is None or p.source == source)
+        ]
+
+    # --- internals --------------------------------------------------------------
+    @staticmethod
+    def _touches(pos: PaperPosition, px: Decimal) -> bool:
+        return px <= pos.limit_px if pos.side == "buy" else px >= pos.limit_px
+
+    @staticmethod
+    def _fills(pos: PaperPosition, px: Decimal, taker: str) -> bool:
+        """Conservative queue: trade through the limit, or at it against us."""
+        if pos.side == "buy":
+            return px < pos.limit_px or (px == pos.limit_px and taker == "sell")
+        return px > pos.limit_px or (px == pos.limit_px and taker == "buy")
+
+    @staticmethod
+    def _stop_hit(pos: PaperPosition, px: Decimal) -> bool:
+        return px <= pos.stop if pos.side == "buy" else px >= pos.stop
+
+    @staticmethod
+    def _tp_hit(pos: PaperPosition, px: Decimal) -> bool:
+        assert pos.tp is not None
+        return px >= pos.tp if pos.side == "buy" else px <= pos.tp
+
+    def _stop_fill_px(self, pos: PaperPosition) -> Decimal:
+        slip = pos.tick * self.slippage_ticks
+        return pos.stop - slip if pos.side == "buy" else pos.stop + slip
+
+    def _fill(self, pos: PaperPosition, when: datetime) -> None:
+        pos.state = "open"
+        pos.filled_at = when
+        pos.entry_px = pos.limit_px
+        pos.qty_open = pos.qty
+        pos.fees += pos.qty * pos.limit_px * self.fees.rate("maker")
+        pos.mae_px = pos.limit_px
+        pos.mfe_px = pos.limit_px
+        pos.last_funding_slot = self._slot(when, pos.funding_interval_min)
+
+    def _track(self, pos: PaperPosition, px: Decimal) -> None:
+        if pos.mae_px is None or pos._favorable(px) < pos._favorable(pos.mae_px):
+            pos.mae_px = px
+        if pos.mfe_px is None or pos._favorable(px) > pos._favorable(pos.mfe_px):
+            pos.mfe_px = px
+
+    @staticmethod
+    def _slot(when: datetime, interval_min: int) -> int:
+        return int(when.timestamp() // (interval_min * 60))
+
+    def _funding_tick(self, pos: PaperPosition, when: datetime) -> None:
+        """Charge funding at every settlement boundary crossed while open."""
+        slot = self._slot(when, pos.funding_interval_min)
+        if pos.last_funding_slot is None or slot <= pos.last_funding_slot:
+            return
+        rate = self._funding_rate(pos.symbol)
+        assert pos.entry_px is not None
+        if rate is not None:
+            crossings = slot - pos.last_funding_slot
+            notional = pos.qty_open * pos.entry_px
+            # long pays a positive rate, short receives it
+            sign = Decimal("1") if pos.side == "buy" else Decimal("-1")
+            pos.funding += sign * rate * notional * crossings
+        pos.last_funding_slot = slot
+
+    def _take_half(self, pos: PaperPosition, when: datetime) -> None:
+        assert pos.entry_px is not None
+        px = pos.entry_px + pos.r_px if pos.side == "buy" else pos.entry_px - pos.r_px
+        part = pos.qty_open * HALF
+        pos.realized += pos._favorable(px) * part
+        pos.fees += part * px * self.fees.rate("maker")
+        pos.qty_open -= part
+        pos.half_taken = True
+        pos.half_px = px
+        pos.half_at = when
+
+    def _exit(
+        self, pos: PaperPosition, when: datetime, px: Decimal, reason: str, *, role: str
+    ) -> None:
+        pos.realized += pos._favorable(px) * pos.qty_open
+        pos.fees += pos.qty_open * px * self.fees.rate(role)  # type: ignore[arg-type]
+        pos.qty_open = Decimal("0")
+        pos.exit_px = px
+        pos.exit_reason = reason
+        pos.closed_at = when
+        pos.state = "closed"
+        self._retire(pos)
+
+    def _close_unfilled(self, pos: PaperPosition, when: datetime, reason: str) -> None:
+        pos.exit_reason = reason
+        pos.closed_at = require_utc(when)
+        pos.state = "closed"
+        self._retire(pos)
+
+    def _retire(self, pos: PaperPosition) -> None:
+        del self.positions[pos.paper_id]
+        self.closed.append(pos)
+        if len(self.closed) > 5000:
+            del self.closed[: len(self.closed) - 5000]
+        if self._on_close is not None:
+            self._on_close(pos)
+
+    def stats(self, rows: Iterable[PaperPosition] | None = None) -> dict[str, Any]:
+        """Filled-and-closed trades only. Unfilled orders are counted, not scored."""
+        pool = list(rows) if rows is not None else self.closed
+        filled = [p for p in pool if p.entry_px is not None]
+        unfilled = len(pool) - len(filled)
+        rs = [p.r_net() for p in filled if p.r_net() is not None]
+        wins = [r for r in rs if r > 0]
+        losses = [r for r in rs if r <= 0]
+        gross_win = sum(wins, Decimal("0"))
+        gross_loss = -sum(losses, Decimal("0"))
+        return {
+            "n": len(filled),
+            "n_unfilled": unfilled,
+            "winrate": None if not rs else Decimal(len(wins)) / Decimal(len(rs)),
+            "avg_r_net": None if not rs else sum(rs, Decimal("0")) / Decimal(len(rs)),
+            "sum_r_net": None if not rs else sum(rs, Decimal("0")),
+            "profit_factor": None if gross_loss == 0 else gross_win / gross_loss,
+            "pnl_net": sum((p.pnl_net() for p in filled), Decimal("0")),
+            "fees": sum((p.fees for p in filled), Decimal("0")),
+            "funding": sum((p.funding for p in filled), Decimal("0")),
+        }

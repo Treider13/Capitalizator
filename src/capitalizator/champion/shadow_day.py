@@ -7,6 +7,7 @@ Does not import signer. Does not promote.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,6 +29,27 @@ class ShadowDay:
     r_shadow: Decimal | None
     n_challenger: int
     r_challenger: Decimal | None
+    # W3 paper engine: net R after fees/funding on the real tape (filled trades only).
+    n_paper: int = 0
+    r_paper_net: Decimal | None = None
+    n_fade: int = 0
+    r_fade_net: Decimal | None = None
+
+
+def paper_r(row: Mapping[str, Any], source: str) -> Decimal | None:
+    paper = row.get("paper")
+    if not isinstance(paper, dict):
+        return None
+    leg = paper.get(source)
+    if not isinstance(leg, dict) or not leg.get("filled"):
+        return None
+    raw = leg.get("r_net")
+    if raw in (None, ""):
+        return None
+    try:
+        return Decimal(str(raw))
+    except ArithmeticError:
+        return None
 
 
 def _truthy(value: object) -> bool:
@@ -161,6 +183,8 @@ def summarize(rows: list[Mapping[str, Any]], *, day: str) -> ShadowDay:
         got = idea_r("breakout", None if row.get("outcome") is None else str(row.get("outcome")))
         if got is not None:
             chall_scored.append(got)
+    paper_scored = [r for r in (paper_r(row, "shadow") for row in would) if r is not None]
+    fade_scored = [r for r in (paper_r(row, "fade") for row in day_rows) if r is not None]
     return ShadowDay(
         day=day,
         n_would=len(would),
@@ -168,6 +192,10 @@ def summarize(rows: list[Mapping[str, Any]], *, day: str) -> ShadowDay:
         r_shadow=None if not scored else sum(scored, Decimal("0")),
         n_challenger=len(chall),
         r_challenger=None if not chall_scored else sum(chall_scored, Decimal("0")),
+        n_paper=len(paper_scored),
+        r_paper_net=None if not paper_scored else sum(paper_scored, Decimal("0")),
+        n_fade=len(fade_scored),
+        r_fade_net=None if not fade_scored else sum(fade_scored, Decimal("0")),
     )
 
 
@@ -184,5 +212,18 @@ def persist_day(knowledge: Knowledge, day: str) -> ShadowDay:
         r_demo=prev.get("r_demo"),
         r_live=prev.get("r_live"),
         r_challenger=chall_txt,
+    )
+    # Paper (net of costs) lives next to the legacy ±1: the console shows both.
+    knowledge.set_meta(
+        f"paper_day:{day}",
+        json.dumps(
+            {
+                "n_paper": snap.n_paper,
+                "r_paper_net": None if snap.r_paper_net is None else format(snap.r_paper_net, "f"),
+                "n_fade": snap.n_fade,
+                "r_fade_net": None if snap.r_fade_net is None else format(snap.r_fade_net, "f"),
+            },
+            sort_keys=True,
+        ),
     )
     return snap

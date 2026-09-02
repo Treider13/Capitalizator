@@ -105,6 +105,16 @@ CREATE TABLE IF NOT EXISTS saved_r (
   setup_id TEXT PRIMARY KEY,
   payload TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS paper_trades (
+  paper_id TEXT PRIMARY KEY,
+  touch_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  closed_at TEXT,
+  payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS paper_trades_touch ON paper_trades(touch_id);
+CREATE INDEX IF NOT EXISTS paper_trades_closed ON paper_trades(closed_at);
 """
 
 EPISODE_MODES = frozenset({"shadow", "demo", "micro", "live"})
@@ -783,6 +793,62 @@ class Knowledge:
         rows = self._cx.execute(f"SELECT payload FROM {table}").fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
+            raw = json.loads(str(row["payload"]))
+            if isinstance(raw, dict):
+                out.append(raw)
+        return out
+
+    def put_paper_trade(self, payload: Mapping[str, Any]) -> None:
+        """Closed paper position (exec/paper.py). Keyed by paper_id; indexed by touch."""
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        body = json.dumps(dict(payload), sort_keys=True, ensure_ascii=False, default=str)
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            self._cx.execute(
+                "INSERT OR REPLACE INTO paper_trades"
+                "(paper_id, touch_id, source, symbol, closed_at, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    str(payload["paper_id"]),
+                    str(payload.get("touch_id") or ""),
+                    str(payload.get("source") or ""),
+                    str(payload.get("symbol") or ""),
+                    None if payload.get("closed_at") is None else str(payload["closed_at"]),
+                    body,
+                ),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+
+    def paper_trades(
+        self,
+        *,
+        source: str | None = None,
+        since: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if self._cx is None:
+            return []
+        sql = "SELECT payload FROM paper_trades"
+        where: list[str] = []
+        args: list[Any] = []
+        if source is not None:
+            where.append("source = ?")
+            args.append(source)
+        if since is not None:
+            where.append("closed_at >= ?")
+            args.append(since)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY closed_at DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(int(limit))
+        out: list[dict[str, Any]] = []
+        for row in self._cx.execute(sql, args).fetchall():
             raw = json.loads(str(row["payload"]))
             if isinstance(raw, dict):
                 out.append(raw)
