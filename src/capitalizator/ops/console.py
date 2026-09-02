@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -134,6 +135,14 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     finally:
         knowledge.close()
     files_n, rows_n = _parquet_counts(vault.tape)
+    from capitalizator.ops.account_view import account_view, queue_view
+
+    knowledge = open_knowledge(vault, create=False)
+    try:
+        money = account_view(knowledge)
+        queue = queue_view(knowledge, limit=50)
+    finally:
+        knowledge.close()
     if report_body is None:
         report_body = daily_map_report(day=report_day or "нет даты", rows=[])
         report_day = report_day or "нет даты"
@@ -146,6 +155,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         banners.append("Демо: нет hello")
     if n_touches < 20:
         banners.append("мало n")
+    banners.extend(money["banners"])
     banner = " — ".join(banners)
     symbols = list(load_desk_universe().symbols)
     snap = {
@@ -186,6 +196,9 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         "last_price": chronos_data.last_prices(vault),
         "session_window": chronos_data.session_window(),
         "last_jury": chronos_data.last_jury(vault),
+        "money": money,
+        "queue_counts": queue["counts"],
+        "banners": banners,
     }
     text = json.dumps(snap, ensure_ascii=False)
     if contains_advice(text):
@@ -243,7 +256,58 @@ def _page(snap: dict[str, Any]) -> str:
     vs = snap.get("shadow_vs_demo_vs_live") or {}
     learn_n = snap.get("learn_n_days")
     learn_txt = "—" if learn_n is None else str(learn_n)
+    money = snap.get("money") or {}
+    acct = money.get("account") or {}
+    exch = money.get("exchange") or {}
+    paper = (money.get("paper") or {}).get("all") or {}
+    banner_items = "".join(
+        f"<li class=\"warn\">{html.escape(str(b))}</li>" for b in (money.get("banners") or [])
+    ) or '<li class="empty">предупреждений нет</li>'
+    positions = exch.get("positions") or acct.get("open") or []
+    pos_html = "".join(
+        "<tr>"
+        f"<td>{html.escape(str(p.get('symbol')))}</td>"
+        f"<td>{html.escape(str(p.get('side')))}</td>"
+        f"<td>{html.escape(str(p.get('size', p.get('qty'))))}</td>"
+        f"<td>{html.escape(str(p.get('avg_price', p.get('entry'))))}</td>"
+        f"<td>{html.escape(str(p.get('stop_loss', p.get('stop'))))}</td>"
+        f"<td>{html.escape(str(p.get('liq_price', '—')))}</td>"
+        f"<td>{html.escape(str(p.get('unrealised_pnl', '—')))}</td>"
+        "</tr>"
+        for p in positions
+    ) or '<tr><td colspan="7" class="empty">позиций нет</td></tr>'
+
+    def _pct(raw: object) -> str:
+        try:
+            return f"{float(str(raw)) * 100:+.2f}%"
+        except (TypeError, ValueError):
+            return "—"
+
+    equity_line = (
+        f"эквити {html.escape(str(acct.get('equity', '—')))} "
+        f"({html.escape(str(acct.get('equity_source', 'нет данных')))}) · "
+        f"биржа: {html.escape(str(exch.get('equity', 'не читалось')))}"
+    )
+    def _e(value: object) -> str:
+        return html.escape(str(value))
+
+    halt_txt = _e(acct.get("halt_reason") or "открыт")
+    queue_txt = _e(json.dumps(snap.get("queue_counts") or {}, ensure_ascii=False))
+    money_block = f"""<h2>Счёт</h2>
+      <p>{equity_line}</p>
+      <p>день {_pct(acct.get("day_pnl_pct"))} · неделя {_pct(acct.get("week_pnl_pct"))}
+      · просадка от пика {_pct(acct.get("drawdown_from_peak"))} · кран: {halt_txt}</p>
+      <p>бумага (все): n={paper.get("n", 0)} winrate={_e(paper.get("winrate"))}
+      ДИ95={_e(paper.get("winrate_ci95"))} avgR={_e(paper.get("avg_r_net"))}
+      PF={_e(paper.get("profit_factor"))} комиссии={_e(paper.get("fees"))}</p>
+      <h2>Позиции</h2>
+      <table><thead><tr><th>символ</th><th>сторона</th><th>размер</th><th>вход</th>
+      <th>стоп (биржа)</th><th>ликвидация</th><th>uPnL</th></tr></thead>
+      <tbody>{pos_html}</tbody></table>
+      <p>очередь интентов: {queue_txt}</p>
+      <h2>Предупреждения</h2><ul>{banner_items}</ul>"""
     service = f"""<div id="service">
+      {money_block}
       <h2>CAV × ZLG × outcome</h2>
       <table><tbody>{cav_html}</tbody></table>
       <h2>Жюри дня</h2><ul>{jury_html}</ul>
@@ -319,6 +383,26 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
             return gates_from_sqlite(knowledge)
         finally:
             knowledge.close()
+    if path in {"/api/account", "/api/queue", "/api/paper", "/api/risk"}:
+        from capitalizator.ops.account_view import account_view, queue_view
+        from capitalizator.risk.config import load_risk_config
+
+        knowledge = open_knowledge(vault, create=False)
+        try:
+            if path == "/api/account":
+                return account_view(knowledge)
+            if path == "/api/queue":
+                return queue_view(knowledge, limit=_int_arg(qs, "limit", 100))
+            if path == "/api/paper":
+                source = (qs.get("source") or [None])[0]
+                return {
+                    "trades": knowledge.paper_trades(
+                        source=source, limit=_int_arg(qs, "limit", 200)
+                    )
+                }
+            return {"risk_config": load_risk_config(knowledge).to_payload()}
+        finally:
+            knowledge.close()
     return None
 
 
@@ -349,6 +433,66 @@ class ConsoleApp:
         learn_n_days: int | None = None,
     ) -> dict[str, Any]:
         return set_user_mode(self.vault, mode, ack=ack, learn_n_days=learn_n_days)
+
+    def set_risk(self, changes: dict[str, Any], *, ack: bool) -> dict[str, Any]:
+        """Operator risk menu (D-12). Validated by RiskConfig; applies to new intents."""
+        from capitalizator.risk.config import load_risk_config, save_risk_config
+
+        if not ack:
+            raise ValueError("ack required")
+        knowledge = open_knowledge(self.vault, create=True)
+        try:
+            current = load_risk_config(knowledge)
+            allowed = set(current.to_payload()) - {"version", "config_id"}
+            bad = set(changes) - allowed
+            if bad:
+                raise ValueError(f"unknown risk keys: {sorted(bad)}")
+            typed = {}
+            for key, value in changes.items():
+                sample = getattr(current, key)
+                if isinstance(sample, bool):
+                    typed[key] = value in {True, "true", "1", 1, "yes"}
+                elif isinstance(sample, int):
+                    typed[key] = int(value)
+                elif isinstance(sample, str):
+                    typed[key] = str(value)
+                else:
+                    from decimal import Decimal
+
+                    typed[key] = Decimal(str(value))
+            nxt = current.with_changes(**typed)
+            save_risk_config(knowledge, nxt, ack=True)
+            return {"risk_config": nxt.to_payload(), "previous_id": current.config_id}
+        finally:
+            knowledge.close()
+
+    def command(
+        self, kind: str, *, symbol: str | None, ack: bool, reason: str = ""
+    ) -> dict[str, Any]:
+        """flatten | release_halts | pause_entries | resume_entries → picked up by the desk tick."""
+        if not ack:
+            raise ValueError("ack required")
+        if kind not in {"flatten", "release_halts", "pause_entries", "resume_entries"}:
+            raise ValueError(f"unknown command: {kind}")
+        if kind == "flatten" and not symbol:
+            raise ValueError("flatten needs a symbol (or ALL)")
+        knowledge = open_knowledge(self.vault, create=True)
+        try:
+            raw = knowledge.meta("desk_commands")
+            queue = json.loads(raw) if raw else []
+            if not isinstance(queue, list):
+                queue = []
+            cmd = {
+                "kind": kind,
+                "symbol": symbol,
+                "reason": reason or "operator",
+                "at": datetime.now(tz=UTC).isoformat(),
+            }
+            queue.append(cmd)
+            knowledge.set_meta("desk_commands", json.dumps(queue))
+            return {"queued": cmd, "pending": len(queue)}
+        finally:
+            knowledge.close()
 
 
 def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -468,6 +612,34 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                         self._send(400, b"bad-mode", "text/plain; charset=utf-8")
                         return
                     self._set_mode(payload, redirect=path == "/mode")
+                    return
+                if path in {"/api/risk", "/api/command"}:
+                    if not _is_local(self):
+                        self._send(403, b"localhost only", "text/plain; charset=utf-8")
+                        return
+                    try:
+                        payload = _read_body(self)
+                    except (ValueError, json.JSONDecodeError):
+                        self._send(400, b"bad-json", "text/plain; charset=utf-8")
+                        return
+                    raw_ack = payload.pop("ack_token", payload.pop("ack", None))
+                    ack = raw_ack in {True, "true", "1", 1, "yes"}
+                    try:
+                        if path == "/api/risk":
+                            out = app.set_risk(payload, ack=ack)
+                        else:
+                            out = app.command(
+                                str(payload.get("kind") or ""),
+                                symbol=payload.get("symbol"),
+                                ack=ack,
+                                reason=str(payload.get("reason") or ""),
+                            )
+                    except ValueError as exc:
+                        code = 403 if "ack" in str(exc) else 400
+                        self._send(code, str(exc).encode(), "text/plain; charset=utf-8")
+                        return
+                    body = json.dumps(out, ensure_ascii=False, default=str).encode()
+                    self._send(200, body, "application/json; charset=utf-8")
                     return
                 if path not in {"/contour", "/api/contour"}:
                     self._reject_write()

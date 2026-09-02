@@ -202,6 +202,7 @@ class DeskLoop:
         self.trail = TrailEngine(mode=self.risk_config.trail_mode)
         self._trails: dict[str, TrailState] = {}
         self._half_sent: set[str] = set()
+        self.entries_paused = False
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
         if knowledge.available():
@@ -660,11 +661,16 @@ class DeskLoop:
         when = require_utc(now)
         self.account.roll(when)
         self.paper.on_clock(when)
+        out: list[dict[str, Any]] = []
         if self.knowledge.available():
             # Gateway watchdog reads this: a silent desk cancels entry orders (§7 / Н-4).
             self._ui_put("desk_heartbeat", when.isoformat())
+            if self.refused_symbols:
+                self._ui_put("refused_symbols", json.dumps(self.refused_symbols, sort_keys=True))
+            if force_flush:
+                out.extend(self._consume_commands(when))
+                self._reload_risk_config()
         self.flush_ui(when, force=force_flush)
-        out: list[dict[str, Any]] = []
         # Settling pending touches walks every touch; once per second of clock is
         # enough (outcomes are 15m closes / 8-tick moves / 6h timeouts).
         if (
@@ -672,7 +678,7 @@ class DeskLoop:
             or self._last_settle is None
             or (when - self._last_settle).total_seconds() >= 1.0
         ):
-            out = self._settle_shadows(when)
+            out.extend(self._settle_shadows(when))
             self._last_settle = when
         window = timedelta(seconds=self.config.zlg_window_s)
         for st in self.symbols.values():
@@ -1478,6 +1484,60 @@ class DeskLoop:
             out_event["action"] = b_action
         return [out_event]
 
+    # --- operator commands / config hot reload (D-37, D-12) -------------------------
+    def _consume_commands(self, now: datetime) -> list[dict[str, Any]]:
+        raw = self.knowledge.meta("desk_commands")
+        if not raw:
+            return []
+        try:
+            queue = json.loads(raw)
+        except json.JSONDecodeError:
+            queue = []
+        self.knowledge.set_meta("desk_commands", "[]")
+        out: list[dict[str, Any]] = []
+        for cmd in queue if isinstance(queue, list) else []:
+            kind = str(cmd.get("kind") or "")
+            symbol = cmd.get("symbol")
+            if kind == "flatten":
+                targets = list(self.symbols) if symbol in {None, "ALL"} else [str(symbol)]
+                for sym in targets:
+                    out.extend(
+                        self.on_event(
+                            {
+                                "kind": "flatten",
+                                "symbol": sym,
+                                "now": now,
+                                "reason": cmd.get("reason"),
+                            }
+                        )
+                    )
+            elif kind == "release_halts":
+                assert self.account.halts is not None
+                self.account.halts.release(ack=True)
+                self.account._persist()
+                out.append({"event": "release_halts"})
+            elif kind == "pause_entries":
+                self.entries_paused = True
+                out.append({"event": "pause_entries"})
+            elif kind == "resume_entries":
+                self.entries_paused = False
+                out.append({"event": "resume_entries"})
+        return out
+
+    def _reload_risk_config(self) -> None:
+        """Operator saved a new RiskConfig: apply to new intents only (open ideas keep theirs)."""
+        cfg = load_risk_config(self.knowledge)
+        if cfg.config_id == self.risk_config.config_id:
+            return
+        self.risk_config = cfg
+        self.account.config = cfg
+        self.account.risk.max_open = cfg.max_open_positions
+        assert self.account.halts is not None
+        self.account.halts.day_limit = cfg.day_halt
+        self.account.halts.week_limit = cfg.week_halt
+        self.account.halts.peak_limit = cfg.peak_kill
+        self.trail = TrailEngine(mode=cfg.trail_mode)
+
     # --- paper (W3) ----------------------------------------------------------------
     def _submit_paper(
         self,
@@ -1714,6 +1774,9 @@ class DeskLoop:
         cfg = self.risk_config
         inst = self._instrument_for(symbol)
         info: dict[str, Any] = {"send_skip": None}
+        if self.entries_paused:
+            info["send_skip"] = "paused_by_operator"
+            return None, info
         ok, why = self.account.allow_entry(symbol)
         if not ok:
             info["send_skip"] = why

@@ -95,14 +95,19 @@ class Account:
         day = when.date().isoformat()
         week = f"{when.isocalendar().year}-W{when.isocalendar().week:02d}"
         assert self.halts is not None
+        changed = False
         if self._day != day:
             if self._day is not None:
                 self.halts.new_day(self.equity)
             self._day = day
+            changed = True
         if self._week != week:
             if self._week is not None:
                 self.halts.new_week(self.equity)
             self._week = week
+            changed = True
+        if changed:
+            self._persist()
 
     def budget(self, now: datetime) -> PersistentBudget:
         key = session_key(now)
