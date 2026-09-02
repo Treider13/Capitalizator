@@ -16,6 +16,7 @@ from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.product import mark_hello
 from capitalizator.ops.vault import init_vault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
+from capitalizator.risk.session import in_desk_window
 from capitalizator.types import MarketEvent
 from capitalizator.zones.model import Bar, Zone
 
@@ -439,9 +440,49 @@ def test_desk_btc_same_side_uses_bus_labels() -> None:
     text = Path(__file__).resolve().parents[2].joinpath(
         "src", "capitalizator", "desk", "loop.py"
     ).read_text(encoding="utf-8")
-    assert 'self.btc.regime == "box"' in text
+    assert 'btc_same_side = self.btc.regime == "box"' in text
+    assert "st.symbol == \"BTCUSDT\" or self.btc.regime" not in text
     assert '{"long", "box"}' not in text
     assert '{"short", "box"}' not in text
+
+
+def test_send_uses_bar_close_clock_not_touch_print(tmp_path: Path) -> None:
+    """Touch 19:20 MSK is inside; jury at 19:35 MSK is outside. Send follows close."""
+    touch_ts = datetime(2026, 8, 31, 16, 20, tzinfo=UTC)
+    close_ts = datetime(2026, 8, 31, 16, 35, tzinfo=UTC)
+    assert in_desk_window(touch_ts) is True
+    assert in_desk_window(close_ts) is False
+    vault = init_vault(tmp_path / "desk")
+    mark_hello(vault, ok=True)
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="demo", tick_size=TICK)
+    desk.registry._zones[ZONE.zone_id] = ZONE
+    for i in range(20):
+        touch = replace(
+            Touch.create(
+                zone_id=ZONE.zone_id,
+                ts=CREATED + timedelta(seconds=i + 1),
+                trade_px=Decimal("100.5"),
+                trade_qty=Decimal("1"),
+            ),
+            outcome="bounce",
+            cav_label="REJECT",
+            gesture="DEFEND",
+            tape_eaten=False,
+            btc_regime="box",
+        )
+        desk.registry.touches.append(touch)
+    desk.on_book("BTCUSDT", _book())
+    desk.on_trade(_trade(touch_ts), [ZONE])
+    live = desk.state_for("BTCUSDT").last_touch
+    assert live is not None
+    desk.registry._patch(
+        touch_id=live.touch_id, overwrite=True, bearing_verdict="VERIFIED"
+    )
+    desk.tick(touch_ts + timedelta(seconds=8))
+    events = desk.on_bar_close(_bar(close_ts))
+    assert events
+    assert events[0]["sent"] is False
+    assert desk.knowledge.pending_intents() == []
 
 
 def test_working_bar_inside_zlg_window_waits_for_label(tmp_path: Path) -> None:

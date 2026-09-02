@@ -520,7 +520,8 @@ class DeskLoop:
                 else self.btc.broke_resistance
             )
         # BtcRegime writes trend|box|news. long/short never land on the bus.
-        btc_same_side = st.symbol == "BTCUSDT" or self.btc.regime == "box"
+        # BTCUSDT is not "same side" without a box label — that was a rubber stamp.
+        btc_same_side = self.btc.regime == "box"
         cpi_window = cpi_day(closed_at, self.calendar)
         wall_since, wall_until = self._wall_bounds(touch)
         wall_events = self.walls[st.symbol].events if st.symbol in self.walls else ()
@@ -724,66 +725,63 @@ class DeskLoop:
             and skip is None
             and self.user_mode in {"demo", "live"}
             and self.hello_ok()
-            and in_desk_window(row.ts)
-            and self.session.allows(row.ts, self.calendar)[0]
+            and book.ready
+            and in_desk_window(closed_at)
+            and self.session.allows(closed_at, self.calendar)[0]
         ):
-            spread_frac = Decimal("0")
-            if book.ready:
-                spr = book.spread()
-                bid, ask = book.best()
-                if spr is not None and bid is not None and ask is not None:
-                    mid_px = (bid + ask) / 2
-                    if mid_px > 0:
-                        spread_frac = spr / mid_px
-            snap = BounceSnapshot(
-                now=row.ts,
-                symbol=st.symbol,
-                price=row.trade_px,
-                tick=self.tick_size,
-                trading_mode=self.user_mode,
-                zone=zone,
-                zones=known_zones,
-                next_target=opposing_target(
-                    known_zones,
-                    side=idea_side,
-                    entry=row.trade_px,
+            spr = book.spread()
+            bid, ask = book.best()
+            mid_px = (bid + ask) / 2 if bid is not None and ask is not None else None
+            if spr is not None and mid_px is not None and mid_px > 0:
+                snap = BounceSnapshot(
+                    now=closed_at,
                     symbol=st.symbol,
-                ),
-                spread_frac=spread_frac,
-                calendar=self.calendar,
-                unlock_today=self.unlocks.team_today(st.symbol, row.ts),
-                unlock_tomorrow=self.unlocks.team_tomorrow(st.symbol, row.ts),
-                idea=idea,
-                jury=jury,
-                cav_label=row.cav_label,
-                zlg_label=row.gesture,
-                n_cav=n_cav,
-                n_zlg=n_zlg,
-                tape_eaten=row.tape_eaten,
-                wall_no_print=silent_wall,
-                prs_y=row.prs_y,
-                btc_regime=row.btc_regime,
-                btc_broke=break_against,
-                btc_zone_side="support" if idea_side == "buy" else "resistance",
-                btc_same_side=btc_same_side,
-                gesture_n=n_zlg,
-                trades_in_window=row.trades_in_window,
-                first_minute=(
-                    self.first_minute.blocks(closed_at, bar.close_ts)
-                    if idea == "breakout"
-                    else False
-                ),
-                close_beyond=row.cav_label == "THROUGH",
-                allow_break=breakout_enabled(),
-                card_bearing_verdict=row.bearing_verdict,
-            )
-            intent = self.strategy.propose(snap)
-            if intent is not None:
-                self.knowledge.enqueue_intent(
-                    intent.model_dump(mode="json"),
-                    created_ts=row.ts.isoformat(),
+                    price=row.trade_px,
+                    tick=self.tick_size,
+                    trading_mode=self.user_mode,
+                    zone=zone,
+                    zones=known_zones,
+                    next_target=opposing_target(
+                        known_zones,
+                        side=idea_side,
+                        entry=row.trade_px,
+                        symbol=st.symbol,
+                    ),
+                    spread_frac=spr / mid_px,
+                    calendar=self.calendar,
+                    unlock_today=self.unlocks.team_today(st.symbol, closed_at),
+                    unlock_tomorrow=self.unlocks.team_tomorrow(st.symbol, closed_at),
+                    idea=idea,
+                    jury=jury,
+                    cav_label=row.cav_label,
+                    zlg_label=row.gesture,
+                    n_cav=n_cav,
+                    n_zlg=n_zlg,
+                    tape_eaten=row.tape_eaten,
+                    wall_no_print=silent_wall,
+                    prs_y=row.prs_y,
+                    btc_regime=row.btc_regime,
+                    btc_broke=break_against,
+                    btc_zone_side="support" if idea_side == "buy" else "resistance",
+                    btc_same_side=btc_same_side,
+                    gesture_n=n_zlg,
+                    trades_in_window=row.trades_in_window,
+                    first_minute=(
+                        self.first_minute.blocks(closed_at, bar.close_ts)
+                        if idea == "breakout"
+                        else False
+                    ),
+                    close_beyond=row.cav_label == "THROUGH",
+                    allow_break=breakout_enabled(),
+                    card_bearing_verdict=row.bearing_verdict,
                 )
-                sent = True
+                intent = self.strategy.propose(snap)
+                if intent is not None:
+                    self.knowledge.enqueue_intent(
+                        intent.model_dump(mode="json"),
+                        created_ts=row.ts.isoformat(),
+                    )
+                    sent = True
         st.state = "IDLE"
         st.last_touch = None
         return [{"event": "jury", "touch_id": row.touch_id, "jury": jury, "sent": sent}]
