@@ -372,6 +372,53 @@ def test_btc_touch_stamps_bus_news_not_local_h4(tmp_path: Path) -> None:
     assert row.btc_regime == "news"
 
 
+def test_alt_touch_does_not_paint_btc_from_own_htf(tmp_path: Path) -> None:
+    """ETH H4 is not the BTC bus. Empty bus stays None on the alt touch."""
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    day = datetime(2026, 8, 30, tzinfo=UTC)
+    for hour, high, low, close in (
+        (0, "10", "8", "9"),
+        (4, "11", "8", "10"),
+        (8, "20", "12", "19"),
+    ):
+        desk.on_bar_close(
+            Bar(
+                symbol="ETHUSDT",
+                tf="4h",
+                open_ts=day.replace(hour=hour),
+                close_ts=day.replace(hour=hour + 4),
+                open=Decimal(close),
+                high=Decimal(high),
+                low=Decimal(low),
+                close=Decimal(close),
+            )
+        )
+    assert desk.btc.regime is None
+    desk.on_book("ETHUSDT", _book())
+    desk.on_trade(_trade(WINDOW, "ETHUSDT"), [ETH_ZONE])
+    desk.tick(WINDOW + timedelta(seconds=8))
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15), "ETHUSDT"))
+    assert events
+    row = next(t for t in desk.registry.touches if t.touch_id == events[0]["touch_id"])
+    assert row.btc_regime is None
+
+
+def test_alt_touch_copies_published_btc_bus(tmp_path: Path) -> None:
+    """play() closes BTC first so the alt jury sees the bus, not ETH candles."""
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    _h4_trend(desk, datetime(2026, 8, 30, tzinfo=UTC))
+    assert desk.btc.regime == "trend"
+    desk.on_book("ETHUSDT", _book())
+    desk.on_trade(_trade(WINDOW, "ETHUSDT"), [ETH_ZONE])
+    desk.tick(WINDOW + timedelta(seconds=8))
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15), "ETHUSDT"))
+    assert events
+    row = next(t for t in desk.registry.touches if t.touch_id == events[0]["touch_id"])
+    assert row.btc_regime == "trend"
+
+
 def test_stale_eaten_touch_is_not_this_bar_btc_break(tmp_path: Path) -> None:
     """Close beyond + last week's eaten is not 2.9.2. Eaten must sit in this bar."""
     vault = init_vault(tmp_path / "desk")
