@@ -93,6 +93,7 @@ def test_failed_break_journals_sweep_wick(tmp_path) -> None:
 def test_unknown_tape_skips_no_tvh(tmp_path) -> None:
     desk = _desk(tmp_path)
     desk.on_trade(_trade(), [ZONE])
+    desk.tick(WINDOW + timedelta(seconds=8))
     events = desk.on_bar_close(_bar(low="100.2", close="100.6"))
     row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
     assert row is not None
