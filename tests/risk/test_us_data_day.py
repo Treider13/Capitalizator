@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from capitalizator.news_macro.ingest import NewsIngest, NewsRow
-from capitalizator.risk.session import SessionWindow, load_time_config
+from capitalizator.risk.session import SessionWindow, load_time_config, us_data_known_at
 
 MACRO = Path(__file__).resolve().parents[2] / "infra" / "calendars" / "macro.csv"
 TIME_YAML = Path(__file__).resolve().parents[2] / "infra" / "time.yaml"
@@ -102,6 +102,12 @@ def test_pce_morning_is_closed() -> None:
     ok, reason = win.allows(datetime(2026, 9, 30, 12, 0, tzinfo=UTC), news.rows)
     assert ok is False
     assert reason == "us_data_day"
+
+
+def test_quiet_day_has_no_us_data_known_at() -> None:
+    news = NewsIngest.from_csv(MACRO)
+    assert us_data_known_at(datetime(2026, 9, 2, 14, 10, tzinfo=UTC), news.rows) is None
+    assert us_data_known_at(datetime(2026, 9, 11, 14, 10, tzinfo=UTC), news.rows) is not None
 
 
 def test_time_yaml_is_phase_build_window() -> None:

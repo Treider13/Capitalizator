@@ -10,6 +10,7 @@ from pathlib import Path
 from capitalizator.book.reconstruct import Book
 from capitalizator.desk.loop import DeskLoop, _close_symbols
 from capitalizator.memory.registry import Touch
+from capitalizator.news_macro.ingest import NewsIngest, default_macro_path
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.product import mark_hello
 from capitalizator.ops.vault import init_vault
@@ -235,6 +236,49 @@ def test_btc_htf_close_writes_regime_bus(tmp_path: Path) -> None:
             )
         )
     assert desk.btc.regime == "trend"
+
+
+def _h4_trend(desk: DeskLoop, day: datetime) -> None:
+    for hour, high, low, close in ((0, "10", "8", "9"), (4, "11", "8", "10"), (8, "20", "12", "19")):
+        desk.on_bar_close(
+            Bar(
+                symbol="BTCUSDT",
+                tf="4h",
+                open_ts=day.replace(hour=hour),
+                close_ts=day.replace(hour=hour + 4),
+                open=Decimal(close),
+                high=Decimal(high),
+                low=Decimal(low),
+                close=Decimal(close),
+            )
+        )
+
+
+def test_loaded_calendar_is_not_news_on_a_quiet_day(tmp_path: Path) -> None:
+    """known_at of next month's CPI is not this bar's news. HTF still speaks."""
+    vault = init_vault(tmp_path / "desk")
+    cal = tuple(NewsIngest.from_csv(default_macro_path()).rows)
+    desk = DeskLoop(
+        knowledge=open_knowledge(vault),
+        user_mode="off",
+        tick_size=TICK,
+        calendar=cal,
+    )
+    _h4_trend(desk, datetime(2026, 9, 2, tzinfo=UTC))
+    assert desk.btc.regime == "trend"
+
+
+def test_us_data_day_marks_btc_news(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    cal = tuple(NewsIngest.from_csv(default_macro_path()).rows)
+    desk = DeskLoop(
+        knowledge=open_knowledge(vault),
+        user_mode="off",
+        tick_size=TICK,
+        calendar=cal,
+    )
+    _h4_trend(desk, datetime(2026, 9, 11, tzinfo=UTC))
+    assert desk.btc.regime == "news"
 
 
 def test_stale_eaten_touch_is_not_this_bar_btc_break(tmp_path: Path) -> None:

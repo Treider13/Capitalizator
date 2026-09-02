@@ -56,7 +56,7 @@ from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import RiskEngine
-from capitalizator.risk.session import SessionWindow, in_desk_window
+from capitalizator.risk.session import SessionWindow, in_desk_window, us_data_known_at
 from capitalizator.tape.classify import TapeClassifier
 from capitalizator.tape.ofi import OFI
 from capitalizator.types import MarketEvent, require_utc
@@ -317,11 +317,7 @@ class DeskLoop:
     def _publish_btc_bus(self, st: SymbolState, bar: Bar) -> None:
         """BTC symbol loop writes the alt bus. Unknown HTF stays None."""
         closed_at = bar.close_ts + timedelta(microseconds=1)
-        news_at = None
-        for row in self.calendar:
-            if row.known_at <= closed_at:
-                news_at = row.known_at
-                break
+        news_at = us_data_known_at(closed_at, self.calendar)
         label = self.btc_regime.classify(
             closed_at,
             symbol="BTCUSDT",
