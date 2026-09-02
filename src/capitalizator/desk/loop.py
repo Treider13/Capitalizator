@@ -680,6 +680,12 @@ class DeskLoop:
             touch = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
             st.last_touch = touch
         card = self._card_for(st.symbol, now)
+        # ОКО reads the window before the B gate: a B veto is a fact about the
+        # calendar, not about the book. The Passport must still learn this window
+        # and the journal must carry the Shadow / Footprint facts.
+        self._oko_observe(st, touch, now)
+        touch = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
+        st.last_touch = touch
         gated = self._b_gate(st, touch, zone, card)
         if gated is not None:
             return gated
@@ -713,7 +719,6 @@ class DeskLoop:
                 book_pre=book, trades=st.trades, touch_id=touch.touch_id
             )
         self._stamp_touch_interval(st, touch)
-        self._oko_observe(st, touch, now)
         st.state = "LABEL_ZLG"
         out = [{"event": "zlg", "touch_id": touch.touch_id, "gesture": result.gesture}]
         work = [
@@ -1188,6 +1193,11 @@ class DeskLoop:
             session_name=session_name(row.ts),
         )
         row = next(t for t in self.registry.touches if t.touch_id == row.touch_id)
+        # A fast touch can resolve before its jury bar closes. _settle_shadows learns
+        # only rows that already carry `idea` (stamped just above), so this is the
+        # single place such a row is learned — never twice.
+        if row.outcome != "pending" and self._oko_learn(st.symbol, row):
+            self.oko.save(self.knowledge, symbols=(st.symbol,))
         journal = empty_journal()
         journal.update(
             {

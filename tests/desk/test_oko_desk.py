@@ -328,3 +328,60 @@ def test_liquidation_stream_orders_with_prints(tmp_path: Path) -> None:
     assert kinds[0] == "snapshot"
     assert kinds[-1] == "bar_close"
     assert set(kinds[1:3]) == {"trades", "liquidation"}
+
+
+def test_touch_resolved_before_its_jury_is_still_learned_once(tmp_path: Path) -> None:
+    """Audit fact: a bounce inside 30s left memory.n == 0 forever. Learn at the jury, once."""
+    desk = _desk(tmp_path)
+    _touch_then_wall(desk, wall="45")
+    desk.tick(WINDOW + timedelta(seconds=8))
+    desk.on_event(_trade(WINDOW + timedelta(seconds=30), px="102.0", side="buy"), [])
+    out = desk.tick(WINDOW + timedelta(seconds=31))
+    assert any(e.get("event") == "shadow_outcome" for e in out)
+    assert desk.oko.memory_for("BTCUSDT").n == 0  # idea not stamped yet → settle cannot learn
+    desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    assert desk.oko.memory_for("BTCUSDT").n == 1
+    # Later settles do not learn it again.
+    desk.tick(WINDOW + timedelta(minutes=20))
+    assert desk.oko.memory_for("BTCUSDT").n == 1
+    raw = desk.knowledge.meta("oko:memory:BTCUSDT")
+    assert raw is not None and raw.count('"trap"') == 1
+
+
+def test_touch_resolved_after_its_jury_is_learned_once(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    _touch_then_wall(desk, wall="45")
+    desk.tick(WINDOW + timedelta(seconds=8))
+    desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    assert desk.oko.memory_for("BTCUSDT").n == 0
+    desk.on_event(_trade(WINDOW + timedelta(minutes=20), px="102.0", side="buy"), [])
+    desk.tick(WINDOW + timedelta(minutes=20))
+    assert desk.oko.memory_for("BTCUSDT").n == 1
+    desk.tick(WINDOW + timedelta(minutes=25))
+    assert desk.oko.memory_for("BTCUSDT").n == 1
+
+
+def test_b_veto_does_not_blind_oko(tmp_path: Path) -> None:
+    """Audit fact: with a B veto the window was never observed (label None, passport 0)."""
+    from capitalizator.card.live import CardLive
+
+    desk = _desk(tmp_path)
+    veto = CardLive(
+        symbol="BTCUSDT",
+        bearing_verdict="veto",
+        known_at=WINDOW,
+        pluses=("calendar_FOMC", "known_at_set", "window_marked"),
+        minuses=("fomc_inside_2h", "first_print_unplayed"),
+    )
+    desk.knowledge.put_card_live("BTCUSDT", veto.to_payload())
+    _touch_then_wall(desk, wall="45")
+    events = desk.tick(WINDOW + timedelta(seconds=8))
+    assert events[-1]["jury"] == "VETO"
+    assert events[-1].get("gesture") is None  # B still stops ZLG
+    journal = desk.knowledge.get_journal_touch(events[-1]["touch_id"])
+    assert journal is not None
+    assert journal["oko_label"] == "SPOOF"
+    assert journal["oko_book_trust"] == "0.0000"
+    assert journal["oko_footprint"] == "NONE"
+    assert journal["oko_voice"] is None  # no ОКО verdict: B closed first
+    assert desk.oko.passport_for("BTCUSDT").depth.n == 1
