@@ -452,7 +452,7 @@ class DeskLoop:
         tag = FailedBreak.tag(zone=zone, bar=bar)
         if tag:
             idea = "failed_break"
-        elif cav == "THROUGH":
+        elif live.cav_label == "THROUGH":
             idea = "breakout"
         if live.btc_regime is None and st.symbol != "BTCUSDT":
             if self.btc.regime:
@@ -464,8 +464,9 @@ class DeskLoop:
             )
         n_cav = sum(
             1
-            for row in self.registry.touches
-            if row.cav_label == cav and self.registry.zone(row.zone_id).symbol == st.symbol
+            for hist in self.registry.touches
+            if hist.cav_label == live.cav_label
+            and self.registry.zone(hist.zone_id).symbol == st.symbol
         )
         n_zlg = sum(
             1
@@ -580,6 +581,16 @@ class DeskLoop:
             shadow_would=shadow_would,
             shadow_side=shadow_side,
             shadow_tag=shadow_tag,
+            first_fact=first.first_fact,
+            n_cav=n_cav,
+            n_zlg=n_zlg,
+            card_id=card_id,
+            htf_h4=h4,
+            htf_d1=d1,
+            cav_tf=zone.tf,
+            btc_break_against=break_against,
+            btc_state=row.btc_regime,
+            session_name=session_name(row.ts),
         )
         row = next(t for t in self.registry.touches if t.touch_id == row.touch_id)
         journal = empty_journal()
@@ -589,7 +600,7 @@ class DeskLoop:
                 "touch_ts": row.ts.isoformat(),
                 "trade_px": str(row.trade_px),
                 "trade_qty": str(row.trade_qty),
-                "session_name": session_name(row.ts),
+                "session_name": row.session_name or session_name(row.ts),
                 "session_hour_utc": (
                     row.session_hour
                     if row.session_hour is not None
@@ -607,10 +618,10 @@ class DeskLoop:
                 "rsi_value": row.rsi_value,
                 "fvg_present": row.fvg_present,
                 "sweep_wick": row.sweep_wick,
-                "htf_h4": h4,
-                "htf_d1": d1,
+                "htf_h4": row.htf_h4,
+                "htf_d1": row.htf_d1,
                 "cav_label": row.cav_label,
-                "cav_tf": zone.tf,
+                "cav_tf": row.cav_tf or zone.tf,
                 "bar_quality": row.bar_quality,
                 "w_now": None if row.w_now is None else str(row.w_now),
                 "w_rank": None if row.w_rank is None else str(row.w_rank),
@@ -627,13 +638,13 @@ class DeskLoop:
                 "prs_tau": row.prs_tau,
                 "prs_y": None if row.prs_y is None else str(row.prs_y),
                 "gex_bg": row.gex_bg,
-                "btc_state": row.btc_regime,
-                "btc_break_against": break_against,
-                "card_id": card_id,
+                "btc_state": row.btc_state or row.btc_regime,
+                "btc_break_against": row.btc_break_against,
+                "card_id": row.card_id,
                 "bearing_verdict": row.bearing_verdict,
-                "first_fact": first.first_fact,
-                "n_cav": n_cav,
-                "n_zlg": n_zlg,
+                "first_fact": row.first_fact,
+                "n_cav": row.n_cav,
+                "n_zlg": row.n_zlg,
                 "jury": row.jury,
                 "shadow_would": row.shadow_would,
                 "shadow_side": row.shadow_side,
@@ -729,7 +740,7 @@ class DeskLoop:
                     if idea == "breakout"
                     else False
                 ),
-                close_beyond=cav == "THROUGH",
+                close_beyond=row.cav_label == "THROUGH",
                 allow_break=breakout_enabled(),
                 card_bearing_verdict=row.bearing_verdict,
             )

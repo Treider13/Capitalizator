@@ -194,6 +194,11 @@ def test_play_100_trades_runs_full_chain(tmp_path: Path) -> None:
         assert row.shadow_would is True
         assert row.shadow_side == "sell"
         assert row.session_hour is not None
+        assert row.n_cav == journal["n_cav"]
+        assert row.n_zlg == journal["n_zlg"]
+        assert row.card_id == journal["card_id"]
+        assert row.first_fact == journal["first_fact"]
+        assert row.cav_tf == "15m"
     else:
         assert journal["skip_reason"]
         assert jury_ev["sent"] is False
