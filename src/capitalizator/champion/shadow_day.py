@@ -85,22 +85,18 @@ def _effective_htf(row: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _exit_side(zone_side: object) -> str | None:
-    if zone_side == "support":
-        return "short"
-    if zone_side == "resistance":
-        return "long"
-    return None
-
-
 def challenger_on(row: Mapping[str, Any]) -> bool:
-    """Phase-exit after COMPRESS. Not champion ACCORD. Not first-print bounce."""
+    """Phase-exit after COMPRESS. Not champion ACCORD. Not first-print bounce.
+
+    HTF is the same clock CAV already used: a known trend (not unknown/box).
+    CAV stamps THROUGH/REJECT only when that trend is with the bounce or unset;
+    requiring the opposite side here would make the flag dead on every real row.
+    """
     if not _truthy(row.get("had_compress")):
         return False
     if row.get("bar_quality") != "live":
         return False
-    side = _exit_side(row.get("zone_side"))
-    if side is None or _effective_htf(row) != side:
+    if _effective_htf(row) is None:
         return False
     cav = row.get("cav_label")
     if cav in {None, "NOISE", "DRIFT", "COMPRESS"}:

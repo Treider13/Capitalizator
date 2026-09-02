@@ -89,7 +89,7 @@ def _phase_exit(**fields: object) -> dict[str, object]:
         "had_compress": True,
         "bar_quality": "live",
         "zone_side": "support",
-        "htf_h4": "short",
+        "htf_h4": "long",
         "htf_d1": "unknown",
         "cav_label": "THROUGH",
         "zlg_label": "RETREAT",
@@ -119,7 +119,8 @@ def test_challenger_is_phase_exit_not_champion_filter() -> None:
     assert challenger_on(_phase_exit(had_compress=False)) is False
     assert challenger_on(_phase_exit(cav_label="COMPRESS")) is False
     assert challenger_on(_phase_exit(bar_quality="stagnant")) is False
-    assert challenger_on(_phase_exit(htf_h4="long")) is False
+    assert challenger_on(_phase_exit(htf_h4="unknown", htf_d1="unknown")) is False
+    assert challenger_on(_phase_exit(htf_h4="long")) is True
 
 
 def test_challenger_accepts_eaten_retreat_or_through() -> None:
