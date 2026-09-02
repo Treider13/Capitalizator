@@ -794,7 +794,7 @@ def test_minutes_cli_announces_24_symbol_subscribe(tmp_path: Path, capsys) -> No
     assert payload["live"] is True
     assert payload["n_symbols"] == 24
     assert payload["subscribe"]["op"] == "subscribe"
-    assert len(payload["subscribe"]["args"]) == 24 * 4
+    assert len(payload["subscribe"]["args"]) == 24 * 5  # + allLiquidation (ОКО След)
 
 
 def test_rest_ticker_is_funding_oi_mark() -> None:

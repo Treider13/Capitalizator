@@ -73,6 +73,11 @@ from capitalizator.memory.revive import load_pending
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
 from capitalizator.news_macro.unlocks import Unlocks
+from capitalizator.oko.eye import OkoEye, OkoWindow
+from capitalizator.oko.footprint import FINGERPRINT_LEN as OKO_FINGERPRINT_LEN
+from capitalizator.oko.forecast import Sample as OkoSample
+from capitalizator.oko.forecast import class_key as oko_class_key
+from capitalizator.oko.retina import RawWindow
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.phase import breakout_enabled
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
@@ -104,6 +109,10 @@ from capitalizator.zones.map import ZoneMap
 from capitalizator.zones.model import Bar, Zone
 
 State = Literal["IDLE", "ARM_ZLG", "LABEL_ZLG", "JURY"]
+_IDEAS = frozenset({"bounce", "spring", "breakout", "failed_break"})
+# ОКО Footprint feeds kept per symbol. OI/funding tick every few seconds; a touch
+# window needs the last value before the print and the last inside 8s.
+_FEED_KEEP = timedelta(hours=2)
 
 
 @dataclass
@@ -122,6 +131,10 @@ class SymbolState:
     bars_seeded: int = 0
     trades_dropped: int = 0
     zlg_card: CardLive | None = None
+    oko_window: OkoWindow | None = None
+    oi: list[tuple[datetime, Decimal]] = field(default_factory=list)
+    funding: list[tuple[datetime, Decimal]] = field(default_factory=list)
+    liquidations: list[MarketEvent] = field(default_factory=list)
 
 
 @dataclass
@@ -208,9 +221,11 @@ class DeskLoop:
         self._instruments_seen: str | None = None
         self._calibration: dict[str, ClassStat] = {}
         self._calibration_at: datetime | None = None
+        self.oko = OkoEye(working_tf=self.config.working_tf)
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
         if knowledge.available():
+            self.oko.load(knowledge)
             for symbol, raw in knowledge.last_prices().items():
                 try:
                     px = Decimal(str(raw))
@@ -488,6 +503,7 @@ class DeskLoop:
                     st.adds.clear()
                     st.trades.clear()
                     st.book_pre = None
+                    st.oko_window = None
                 action = self.manager.on_refute(load_bearing=True, verdict="REFUTED")
                 flattened = 0
                 when = event.get("now")
@@ -528,13 +544,18 @@ class DeskLoop:
             self._apply_book_event(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"funding", "oi", "mark"}:
-            # Recorder emits these. Funding feeds the EV gate (expected hold cost);
-            # there is still no OI-peak atom. Do not pretend a journal row was written.
+            # Recorder emits these. Funding feeds the EV gate (expected hold cost).
+            # OI / funding / liquidations are kept per symbol for the ОКО Footprint
+            # (INVENTION-OKO §След). No journal row is written here.
             if event.stream == "funding":
                 try:
                     self.funding[event.symbol] = Decimal(str(event.payload["funding"]))
                 except (KeyError, ArithmeticError):
                     pass
+            self._keep_feed(st, event)
+            return [{"event": event.stream, "symbol": event.symbol}]
+        if event.stream == "liquidation":
+            self._keep_feed(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"gap", "resync"}:
             if event.stream == "resync" and event.payload.get("bids") and event.seq is not None:
@@ -563,6 +584,10 @@ class DeskLoop:
         if st.bar_builder is not None:
             st.bar_builder.seed_closed((bar,))
         self.flush_ui(bar.close_ts, force=True)
+        if bar.tf == self.config.working_tf:
+            # Weather reads only closed working bars. Persist per symbol.
+            self.oko.on_bar_close(bar)
+            self.oko.save(self.knowledge, symbols=(bar.symbol,))
         if bar.symbol == "BTCUSDT":
             self.btc.bars.append(bar)
             self._publish_btc_bus(st, bar)
@@ -742,6 +767,7 @@ class DeskLoop:
             changed = self.registry.resolve_symbol(
                 symbol, now=now, bars=st.bars, last_px=px
             )
+            learned = False
             for touch in changed:
                 events.append(
                     {
@@ -750,6 +776,7 @@ class DeskLoop:
                         "outcome": touch.outcome,
                     }
                 )
+                learned = self._oko_learn(symbol, touch) or learned
                 row = self.knowledge.get_journal_touch(touch.touch_id)
                 if row is None:
                     continue
@@ -758,6 +785,8 @@ class DeskLoop:
                 if day:
                     days.add(day)
                 self.knowledge.put_journal_touch(touch.touch_id, row)
+            if learned:
+                self.oko.save(self.knowledge, symbols=(symbol,))
         for day in days:
             persist_day(self.knowledge, day)
         # Resolved touches older than a day leave memory; their label counts stay.
@@ -767,6 +796,143 @@ class DeskLoop:
                 self._ui_put(f"label_count:{kind}:{label}:{symbol}", str(n))
             self.flush_ui(now, force=True)
         return events
+
+    def _keep_feed(self, st: SymbolState, event: MarketEvent) -> None:
+        """OI / funding / liquidation rows for the Footprint. Bad numbers are dropped."""
+        when = require_utc(event.exchange_ts)
+        keep_from = when - _FEED_KEEP
+        if event.stream == "oi":
+            try:
+                level = Decimal(str(event.payload["oi"]))
+            except (KeyError, ArithmeticError):
+                return
+            if level <= 0:
+                return
+            st.oi.append((when, level))
+            st.oi = [row for row in st.oi if row[0] >= keep_from]
+        elif event.stream == "funding":
+            try:
+                rate = Decimal(str(event.payload["funding"]))
+            except (KeyError, ArithmeticError):
+                return
+            st.funding.append((when, rate))
+            st.funding = [row for row in st.funding if row[0] >= keep_from]
+        elif event.stream == "liquidation":
+            if event.payload.get("position") not in {"long", "short"}:
+                return
+            try:
+                if Decimal(str(event.payload["qty"])) <= 0:
+                    return
+            except (KeyError, ArithmeticError):
+                return
+            st.liquidations.append(event)
+            st.liquidations = [
+                row for row in st.liquidations if require_utc(row.exchange_ts) >= keep_from
+            ]
+
+    def _oko_learn(self, symbol: str, touch: Touch) -> bool:
+        """Immune memory: fingerprint × idea × outcome. die teaches nothing."""
+        if touch.outcome == "pending" or not touch.oko_fingerprint or not touch.idea:
+            return False
+        try:
+            fingerprint = tuple(int(v) for v in touch.oko_fingerprint.split("-"))
+        except ValueError:
+            return False
+        if len(fingerprint) != OKO_FINGERPRINT_LEN:
+            # Rows stamped before the Footprint organ carry 10 ints. Not learnable.
+            return False
+        # Antigen carries the touch time, not the tick that resolved it: replay-stable.
+        return self.oko.learn(
+            symbol=symbol,
+            fingerprint=fingerprint,
+            idea=touch.idea,
+            outcome=touch.outcome,
+            ts=touch.ts,
+        )
+
+    def _oko_raw_window(self, st: SymbolState, touch: Touch) -> RawWindow | None:
+        """Frozen 8s window for ОКО. None when the book at the print was not ready."""
+        pre = st.book_pre
+        if pre is None or not pre.ready:
+            return None
+        zone = self.registry.zone(touch.zone_id)
+        window_s = self.config.zlg_window_s
+        t_end = touch.ts + timedelta(seconds=window_s)
+        path = tuple(
+            (ts, copy)
+            for ts, copy in st.book_history
+            if copy.ready and touch.ts <= ts <= t_end
+        )
+        since = touch.ts - timedelta(seconds=window_s)
+        walls = self.walls[st.symbol].events if st.symbol in self.walls else []
+        return RawWindow(
+            symbol=st.symbol,
+            zone=zone,
+            t0=touch.ts,
+            window_s=window_s,
+            tick_size=self.tick_size,
+            delta_ticks=self.config.prs_delta_ticks,
+            book_pre=pre,
+            book_path=path,
+            trades=tuple(
+                t
+                for t in st.trades
+                if t.stream == "trades" and touch.ts <= require_utc(t.exchange_ts) <= t_end
+            ),
+            adds=tuple(a for a in st.adds if touch.ts <= a.ts <= t_end),
+            wall_events=tuple(e for e in walls if since <= e.ts <= t_end),
+            oi_path=tuple(sorted((ts, lv) for ts, lv in st.oi if ts <= t_end)),
+            liquidations=tuple(
+                row for row in st.liquidations if touch.ts <= require_utc(row.exchange_ts) <= t_end
+            ),
+            funding=next((rate for ts, rate in reversed(st.funding) if ts <= t_end), None),
+        )
+
+    def _oko_samples(self) -> list[OkoSample]:
+        """Resolved touches as Forecast samples. Journal first, then unsaved rows."""
+        out: list[OkoSample] = []
+        seen: set[str] = set()
+        for row in self.knowledge.journal_rows():
+            touch_id = str(row.get("touch_id") or "")
+            outcome = row.get("outcome")
+            idea = row.get("idea")
+            symbol = row.get("symbol")
+            if not touch_id or idea not in _IDEAS or not symbol:
+                continue
+            if outcome not in {"bounce", "break", "die"}:
+                continue
+            seen.add(touch_id)
+            out.append(
+                OkoSample(
+                    symbol=str(symbol),
+                    class_key=oko_class_key(
+                        idea=str(idea),
+                        cav=row.get("cav_label"),
+                        zlg=row.get("zlg_label"),
+                        regime=row.get("oko_regime"),
+                    ),
+                    outcome=str(outcome),
+                )
+            )
+        for touch in self.registry.touches:
+            if touch.touch_id in seen or touch.outcome == "pending" or touch.idea not in _IDEAS:
+                continue
+            zone = self.registry._zones.get(touch.zone_id)
+            if zone is None:
+                continue
+            out.append(
+                OkoSample(
+                    symbol=zone.symbol,
+                    class_key=oko_class_key(
+                        idea=touch.idea,
+                        cav=touch.cav_label,
+                        zlg=touch.gesture,
+                        regime=touch.oko_regime,
+                    ),
+                    outcome=touch.outcome,
+                )
+            )
+        return out
 
     def _label_zlg(self, st: SymbolState, now: datetime) -> list[dict[str, Any]]:
         touch = st.last_touch
@@ -785,6 +951,12 @@ class DeskLoop:
         # The card read on the 8s clock is remembered: if none is fresh at the bar
         # close, the verdict that was current when the touch armed still applies.
         st.zlg_card = self._card_for(st.symbol, now)
+        # ОКО reads the frozen window on the same 8s clock (Retina + Shadow + Footprint).
+        # A B verdict is a fact about the calendar, not about the book: the Passport
+        # learns every window and the journal carries the facts either way.
+        self._oko_observe(st, touch, now)
+        touch = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
+        st.last_touch = touch
         book = st.book_pre or st.book
         bid, ask = book.best() if book.ready else (None, None)
         mid = ((bid + ask) / 2) if bid is not None and ask is not None else touch.trade_px
@@ -828,6 +1000,25 @@ class DeskLoop:
             # First closed working bar after the print, not the latest leftover.
             out.extend(self._eval_cav_and_jury(st, work[0]))
         return out
+
+    def _oko_observe(self, st: SymbolState, touch: Touch, now: datetime) -> None:
+        """Retina + Shadow on the frozen 8s window. Same clock as ZLG / OFI / PRS."""
+        st.oko_window = None
+        raw = self._oko_raw_window(st, touch)
+        if raw is None:
+            return
+        window = self.oko.observe_window(raw, touch_id=touch.touch_id, now=now)
+        st.oko_window = window
+        self.registry.fill_oko_window(
+            label=window.shadow.label,
+            fingerprint=window.fingerprint_text,
+            book_trust=_f(window.shadow.book_trust),
+            tape_trust=_f(window.shadow.tape_trust),
+            footprint=window.footprint.label,
+            footprint_side=window.footprint.side,
+            touch_id=touch.touch_id,
+        )
+        self.oko.save(self.knowledge, symbols=(st.symbol,))
 
     def _card_for(self, symbol: str, now: datetime) -> CardLive | None:
         raw = self.knowledge.get_card_live(symbol)
@@ -1032,6 +1223,13 @@ class DeskLoop:
                 "shadow_would": False,
                 "challenger_would": False,
                 "challenger_tag": None,
+                # B gate closes before the ОКО verdict; the window facts stay.
+                "oko_label": touch.oko_label,
+                "oko_book_trust": touch.oko_book_trust,
+                "oko_tape_trust": touch.oko_tape_trust,
+                "oko_fingerprint": touch.oko_fingerprint,
+                "oko_footprint": touch.oko_footprint,
+                "oko_footprint_side": touch.oko_footprint_side,
             }
         )
         self.knowledge.put_journal_touch(
@@ -1141,6 +1339,39 @@ class DeskLoop:
             live = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
         card_wall_pulled = bool(card is not None and card.volume.walls == "pulled")
         wall_no_print = silent_wall or card_wall_pulled
+        # ОКО judges after CAV/ZLG are facts and before the jury is stamped.
+        oko = self.oko.judge(
+            idea=idea,
+            zone_side=zone.side,
+            window=st.oko_window,
+            cav=live.cav_label,
+            zlg=live.gesture,
+            samples=self._oko_samples(),
+            symbol=st.symbol,
+        )
+        self.registry.fill_oko(
+            voice=oko.voice,
+            label=oko.label,
+            regime=oko.regime,
+            reason=oko.reason,
+            book_trust=_f(oko.book_trust),
+            tape_trust=_f(oko.tape_trust),
+            cp_prob=_f(oko.cp_prob),
+            p_bounce=_f(oko.p_bounce) or "0",
+            p_break=_f(oko.p_break) or "0",
+            p_die=_f(oko.p_die) or "0",
+            pred_set=oko.set_text,
+            n_class=oko.n_class,
+            size_mult=str(oko.size_mult),
+            fingerprint="-".join(str(v) for v in oko.fingerprint),
+            footprint=oko.footprint,
+            footprint_side=oko.footprint_side,
+            oi_z=_f(oko.oi_z),
+            liq_rel=_f(oko.liq_rel),
+            touch_id=touch.touch_id,
+        )
+        self.oko.save(self.knowledge, symbols=(st.symbol,))
+        live = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
         stamped = self.registry.stamp_jury(
             idea=idea,
             n_cav=n_cav,
@@ -1152,6 +1383,7 @@ class DeskLoop:
             cpi_window=cpi_window,
             trades_in_window=live.trades_in_window,
             btc_same_side=btc_same_side,
+            oko_voice=oko.voice,
         )
         row = stamped[0] if stamped else live
         first = resolve_first_fact(row.gesture, n_zlg)
@@ -1176,6 +1408,7 @@ class DeskLoop:
             trades_in_window=row.trades_in_window,
             btc_same_side=btc_same_side,
             cpi_window=cpi_window,
+            oko=oko.voice,
         )
         jury = decide(voices)
         picture = picture_for(idea)
@@ -1251,6 +1484,11 @@ class DeskLoop:
             session_name=session_name(row.ts),
         )
         row = next(t for t in self.registry.touches if t.touch_id == row.touch_id)
+        # A fast touch can resolve before its jury bar closes. _settle_shadows learns
+        # only rows that already carry `idea` (stamped just above), so this is the
+        # single place such a row is learned — never twice.
+        if row.outcome != "pending" and self._oko_learn(st.symbol, row):
+            self.oko.save(self.knowledge, symbols=(st.symbol,))
         journal = empty_journal()
         journal.update(
             {
@@ -1312,6 +1550,24 @@ class DeskLoop:
                 "skip_reason": row.skip_reason,
                 "outcome": row.outcome,
                 "rho_class_id": row.rho_class_id,
+                "oko_voice": row.oko_voice,
+                "oko_label": row.oko_label,
+                "oko_regime": row.oko_regime,
+                "oko_reason": row.oko_reason,
+                "oko_book_trust": row.oko_book_trust,
+                "oko_tape_trust": row.oko_tape_trust,
+                "oko_cp_prob": row.oko_cp_prob,
+                "oko_p_bounce": row.oko_p_bounce,
+                "oko_p_break": row.oko_p_break,
+                "oko_p_die": row.oko_p_die,
+                "oko_set": row.oko_set,
+                "oko_n_class": row.oko_n_class,
+                "oko_size_mult": row.oko_size_mult,
+                "oko_fingerprint": row.oko_fingerprint or None,
+                "oko_footprint": row.oko_footprint,
+                "oko_footprint_side": row.oko_footprint_side,
+                "oko_oi_z": row.oko_oi_z,
+                "oko_liq_rel": row.oko_liq_rel,
             }
         )
         missing = [key for key in JOURNAL_KEYS if key not in journal]
@@ -1482,6 +1738,8 @@ class DeskLoop:
                     wall_state=None if card is None else card.volume.walls,
                     venue="perp" if card is None else card.venue,
                     spot_acked=False if card is None else self.spot.acked(st.symbol),
+                    oko_voice=oko.voice,
+                    oko_size_mult=oko.size_mult,
                 )
                 self.strategy.budget = self.account.budget(closed_at)
                 intent = self.strategy.propose(snap)
@@ -2248,6 +2506,9 @@ _STREAM_RANK = {
     "mark": 5,
     "gap": 6,
     "resync": 7,
+    # Same rank as prints: order between a print and a liquidation at one ts is
+    # not a law. bar_close dicts stay at 9, after every print (unchanged).
+    "liquidation": 8,
     "trades": 8,
 }
 
@@ -2307,6 +2568,11 @@ def _record_adds(
             if delta > 0:
                 hit: Literal["bid", "ask"] = "bid" if side == "bid" else "ask"
                 st.adds.append(BookAdd(ts=ts, side=hit, px=px, qty=delta))
+
+
+def _f(value: float | None) -> str | None:
+    """Journal text for an ОКО probability / trust. None stays None."""
+    return None if value is None else f"{value:.4f}"
 
 
 def _levels(rows: object) -> tuple[tuple[str, str], ...]:

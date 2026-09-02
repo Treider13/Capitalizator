@@ -30,6 +30,11 @@ def funding_topic(symbol: str) -> str:
     return f"tickers.{symbol}"
 
 
+def liquidation_topic(symbol: str) -> str:
+    """https://bybit-exchange.github.io/docs/v5/websocket/public/all-liquidation (500ms)."""
+    return f"allLiquidation.{symbol}"
+
+
 def subscribe_payload(symbol: str, stream: str) -> dict[str, Any]:
     if stream == "trades":
         args = [trade_topic(symbol)]
@@ -37,6 +42,8 @@ def subscribe_payload(symbol: str, stream: str) -> dict[str, Any]:
         args = [book_topic(symbol)]
     elif stream in {"funding", "oi", "ticker"}:
         args = [funding_topic(symbol)]
+    elif stream == "liquidation":
+        args = [liquidation_topic(symbol)]
     else:
         raise ValueError(f"unknown stream {stream!r}")
     return {"op": "subscribe", "args": args}

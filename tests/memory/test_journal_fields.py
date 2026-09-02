@@ -445,7 +445,15 @@ def test_midnight_utc_session_hour_is_zero() -> None:
 
 
 def test_journal_is_invisible_to_jury_and_hash() -> None:
-    assert list(desk.Voices.__dataclass_fields__) == ["cav", "zlg", "tape", "btc", "card"]
+    """Six voices (INVENTION-OKO). Journal-only oko_* fields never reach the jury."""
+    assert list(desk.Voices.__dataclass_fields__) == [
+        "cav",
+        "zlg",
+        "tape",
+        "btc",
+        "card",
+        "oko",
+    ]
     src = inspect.getsource(desk)
     assert "w_now" not in src
     assert "w_rank" not in src
@@ -455,6 +463,16 @@ def test_journal_is_invisible_to_jury_and_hash() -> None:
     assert "fvg_present" not in src
     assert "sweep_wick" not in src
     assert "no_tvh" not in src
+    for journal_only in (
+        "oko_label",
+        "oko_regime",
+        "oko_book_trust",
+        "oko_tape_trust",
+        "oko_cp_prob",
+        "oko_size_mult",
+        "oko_fingerprint",
+    ):
+        assert journal_only not in src
     payload_src = inspect.getsource(touch_payload)
     assert "w_now" not in payload_src
     assert "session_hour" not in payload_src

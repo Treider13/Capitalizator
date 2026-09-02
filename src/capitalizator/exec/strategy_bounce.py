@@ -22,6 +22,7 @@ from capitalizator.exec.breakout_close import BreakoutClose
 from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.smart_stop import initial_stop
 from capitalizator.jury.desk import (
+    Voice,
     decide,
     voices_for_bounce,
     voices_for_breakout,
@@ -113,6 +114,15 @@ class BounceSnapshot:
     # "structural" keeps the legacy band/wick stop (isolated F1 tests); the desk
     # passes RiskConfig.stop_mode (default hybrid).
     stop_mode: str = "structural"
+    # ОКО (INVENTION-OKO): sixth voice and its size cut. Default = eye absent.
+    oko_voice: Voice = 0
+    oko_size_mult: Decimal = Decimal("1")
+
+    def __post_init__(self) -> None:
+        if self.oko_voice not in (-1, 0, 1, "VETO"):
+            raise ValueError("oko_voice must be -1|0|1|VETO")
+        if self.oko_size_mult < 0 or self.oko_size_mult > 1:
+            raise ValueError("oko_size_mult must be in [0, 1]; ОКО never opens size")
 
 
 def price_in_zone(price: Decimal, zone: Zone) -> bool:
@@ -389,6 +399,8 @@ class BounceStrategy:
                 first_minute=snap.first_minute,
             ):
                 return None
+        if snap.oko_voice == "VETO":
+            return None
         if self.require_jury or snap.jury is not None or snap.cav_label or snap.zlg_label:
             voice_fn = {
                 "bounce": voices_for_bounce,
@@ -408,6 +420,7 @@ class BounceStrategy:
                 btc_break_against=snap.btc_broke,
                 btc_same_side=snap.btc_same_side,
                 trades_in_window=snap.trades_in_window,
+                oko=snap.oko_voice,
             )
             label = decide(voices)
             if snap.jury is not None and snap.jury != "ACCORD":
@@ -480,6 +493,9 @@ class BounceStrategy:
             size = macro.size_mult
         if snap.b_verdict == "cut_size" and size > Decimal("0.5"):
             size = Decimal("0.5")
+        # ОКО only cuts (INVENTION-OKO §5): min, never max.
+        if snap.oko_size_mult < size:
+            size = snap.oko_size_mult
         # Combined B+calendar multiplier lives on size_mult only.
         # Signer does qty * size_mult; stuffing the cut into qty would double-cut.
         intent = Intent(

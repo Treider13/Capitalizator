@@ -85,6 +85,25 @@ class Touch:
     btc_state: str | None = None
     btc_break_against: bool | None = None
     bearing_verdict: str | None = None
+    # ОКО (INVENTION-OKO). oko_voice is a jury input; the rest is journal.
+    oko_voice: int | str | None = None
+    oko_label: str | None = None
+    oko_regime: str | None = None
+    oko_reason: str | None = None
+    oko_book_trust: str | None = None
+    oko_tape_trust: str | None = None
+    oko_cp_prob: str | None = None
+    oko_p_bounce: str | None = None
+    oko_p_break: str | None = None
+    oko_p_die: str | None = None
+    oko_set: str | None = None
+    oko_n_class: int | None = None
+    oko_size_mult: str | None = None
+    oko_fingerprint: str | None = None
+    oko_footprint: str | None = None
+    oko_footprint_side: str | None = None
+    oko_oi_z: str | None = None
+    oko_liq_rel: str | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.ts)
@@ -419,6 +438,110 @@ class Registry:
             require_touch_id=False,
         )
 
+    def fill_oko_window(
+        self,
+        *,
+        label: str,
+        fingerprint: str,
+        book_trust: str | None,
+        tape_trust: str | None,
+        footprint: str = "NONE",
+        footprint_side: str | None = None,
+        touch_id: str | None = None,
+    ) -> list[Touch]:
+        """Shadow + Footprint facts at the 8s clock. Voice comes later, with CAV."""
+        from capitalizator.oko.footprint import FOOTPRINT_LABELS
+        from capitalizator.oko.shadow import SHADOW_LABELS
+
+        if label not in SHADOW_LABELS:
+            raise ValueError(f"unknown oko label: {label!r}")
+        if footprint not in FOOTPRINT_LABELS:
+            raise ValueError(f"unknown oko footprint: {footprint!r}")
+        if footprint_side not in (None, "bid", "ask"):
+            raise ValueError("footprint_side must be bid|ask|None")
+        if not fingerprint:
+            raise ValueError("oko fingerprint must be non-empty")
+        return self._patch(
+            oko_label=label,
+            oko_fingerprint=fingerprint,
+            oko_book_trust=book_trust,
+            oko_tape_trust=tape_trust,
+            oko_footprint=footprint,
+            oko_footprint_side=footprint_side,
+            touch_id=touch_id,
+        )
+
+    def fill_oko(
+        self,
+        *,
+        voice: int | str,
+        label: str,
+        regime: str,
+        reason: str,
+        book_trust: str | None,
+        tape_trust: str | None,
+        cp_prob: str | None,
+        p_bounce: str,
+        p_break: str,
+        p_die: str,
+        pred_set: str,
+        n_class: int,
+        size_mult: str,
+        fingerprint: str,
+        footprint: str = "NONE",
+        footprint_side: str | None = None,
+        oi_z: str | None = None,
+        liq_rel: str | None = None,
+        touch_id: str | None = None,
+    ) -> list[Touch]:
+        """ОКО verdict. voice is a jury input: written once, like CAV / ZLG."""
+        from capitalizator.jury.desk import VOICES
+        from capitalizator.oko.footprint import FOOTPRINT_LABELS
+        from capitalizator.oko.shadow import SHADOW_LABELS
+        from capitalizator.oko.weather import REGIMES
+
+        if voice not in VOICES:
+            raise ValueError(f"oko voice must be -1|0|1|VETO, got {voice!r}")
+        if label not in SHADOW_LABELS:
+            raise ValueError(f"unknown oko label: {label!r}")
+        if regime not in REGIMES:
+            raise ValueError(f"unknown oko regime: {regime!r}")
+        if footprint not in FOOTPRINT_LABELS:
+            raise ValueError(f"unknown oko footprint: {footprint!r}")
+        if footprint_side not in (None, "bid", "ask"):
+            raise ValueError("footprint_side must be bid|ask|None")
+        if n_class < 0:
+            raise ValueError("n_class must be >= 0")
+        if Decimal(size_mult) < 0 or Decimal(size_mult) > 1:
+            raise ValueError("oko size_mult must be in [0, 1]")
+        changed = self._patch(oko_voice=voice, touch_id=touch_id)
+        if not changed:
+            return []
+        self._patch(
+            touch_id=touch_id,
+            overwrite=True,
+            require_touch_id=False,
+            oko_label=label,
+            oko_regime=regime,
+            oko_reason=reason,
+            oko_book_trust=book_trust,
+            oko_tape_trust=tape_trust,
+            oko_cp_prob=cp_prob,
+            oko_p_bounce=p_bounce,
+            oko_p_break=p_break,
+            oko_p_die=p_die,
+            oko_set=pred_set,
+            oko_n_class=n_class,
+            oko_size_mult=size_mult,
+            oko_fingerprint=fingerprint,
+            oko_footprint=footprint,
+            oko_footprint_side=footprint_side,
+            oko_oi_z=oi_z,
+            oko_liq_rel=liq_rel,
+        )
+        ids = {row.touch_id for row in changed}
+        return [row for row in self.touches if row.touch_id in ids]
+
     def fill_session_hour(self, *, touch_id: str | None = None) -> list[Touch]:
         changed: list[Touch] = []
         next_rows: list[Touch] = []
@@ -447,8 +570,13 @@ class Registry:
         cpi_window: bool = False,
         trades_in_window: int | None = None,
         btc_same_side: bool = False,
+        oko_voice: int | str | None = None,
     ) -> list[Touch]:
-        """Write jury + rho_class_id from already filled labels. Does not open size."""
+        """Write jury + rho_class_id from already filled labels. Does not open size.
+
+        oko_voice=None reads the row's own oko_voice (fill_oko). A row without
+        ОКО is judged with oko=0 — the eye absent, not a rubber-stamp +1.
+        """
         from capitalizator.jury.desk import (
             decide,
             rho_class_id,
@@ -457,6 +585,7 @@ class Registry:
             voices_for_failed_break,
             voices_for_spring,
         )
+        from capitalizator.jury.desk import oko_voice as to_voice
 
         if idea not in {"bounce", "spring", "breakout", "failed_break"}:
             raise ValueError("idea must be bounce|spring|breakout|failed_break")
@@ -491,6 +620,7 @@ class Registry:
                 if trades_in_window is not None
                 else touch.trades_in_window,
                 btc_same_side=btc_same_side,
+                oko=to_voice(oko_voice if oko_voice is not None else touch.oko_voice),
             )
             label = decide(voices)
             class_id = None

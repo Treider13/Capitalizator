@@ -20,7 +20,53 @@ from capitalizator.recorder.ws_book import BybitBookWs
 from capitalizator.types import MarketEvent, require_utc
 
 Opener = Callable[[str, str, int], Iterable[dict[str, Any]]]
-LIVE_STREAMS = ("trades", "book", "funding", "oi")
+LIVE_STREAMS = ("trades", "book", "funding", "oi", "liquidation")
+
+
+def liquidation_events(frame: dict[str, Any], *, recv_ts: datetime) -> list[MarketEvent]:
+    """allLiquidation.{symbol}: data is a list of {T, s, S, v, p}.
+
+    Official: S is the *position* side — `Buy` means a long was liquidated.
+    We keep that as payload.position = long|short and do not re-label it as a taker.
+    p is the bankruptcy price. A row without T/s/S/v/p is an error, not a zero.
+    """
+    if is_control_frame(frame):
+        return []
+    data = frame.get("data")
+    if isinstance(data, dict):
+        rows = [data]
+    elif isinstance(data, list):
+        rows = [row for row in data if isinstance(row, dict)]
+    else:
+        return []
+    when = require_utc(recv_ts)
+    out: list[MarketEvent] = []
+    for row in rows:
+        missing = [k for k in ("T", "s", "S", "v", "p") if k not in row]
+        if missing:
+            raise ValueError(f"liquidation row missing {missing}")
+        side = str(row["S"]).lower()
+        if side not in {"buy", "sell"}:
+            raise ValueError(f"unknown liquidation side: {row['S']!r}")
+        qty = str(row["v"])
+        px = str(row["p"])
+        if float(qty) <= 0 or float(px) <= 0:
+            raise ValueError("liquidation v/p must be > 0")
+        out.append(
+            MarketEvent(
+                stream="liquidation",
+                exchange="bybit",
+                symbol=str(row["s"]),
+                exchange_ts=datetime.fromtimestamp(int(row["T"]) / 1000, tz=UTC),
+                recv_ts=when,
+                payload={
+                    "px": px,
+                    "qty": qty,
+                    "position": "long" if side == "buy" else "short",
+                },
+            )
+        )
+    return out
 
 
 def ticker_events(frame: dict[str, Any], *, recv_ts: datetime) -> list[MarketEvent]:
@@ -160,6 +206,8 @@ def run_live(
             stream in {"funding", "oi", "ticker"} or topic.startswith("tickers.")
         ):
             batch = ticker_events(frame, recv_ts=now)
+        if not batch and (stream == "liquidation" or topic.startswith("allLiquidation.")):
+            batch = liquidation_events(frame, recv_ts=now)
         for event in batch:
             sink.write(event)
             accepted += 1
