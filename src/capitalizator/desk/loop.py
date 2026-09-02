@@ -33,6 +33,7 @@ from capitalizator.champion.shadow_day import (
 from capitalizator.desk.bars import TF_MINUTES, BarBuilder
 from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.desk.session_name import session_name
+from capitalizator.exec.ev_gate import evaluate as ev_evaluate
 from capitalizator.exec.failed_break import sweep_wick
 from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.fvg_mark import fvg_present
@@ -51,7 +52,7 @@ from capitalizator.exec.strategy_bounce import (
     price_in_zone,
 )
 from capitalizator.exec.tvh import NO_TVH, tvh_ok
-from capitalizator.instruments import InstrumentRegistry, InstrumentUnknown
+from capitalizator.instruments import Instrument, InstrumentRegistry, InstrumentUnknown
 from capitalizator.jury.desk import (
     decide,
     voices_for_bounce,
@@ -75,14 +76,16 @@ from capitalizator.patterns.width import WidthSample, width_now_from_history, wi
 from capitalizator.prs.score import PRS
 from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
-from capitalizator.risk.halts import Halts
-from capitalizator.risk.schema import RiskEngine
+from capitalizator.risk.account import Account
+from capitalizator.risk.config import load_risk_config
+from capitalizator.risk.schema import Intent
 from capitalizator.risk.session import (
     SessionWindow,
     cpi_day,
     in_desk_window,
     us_data_known_at,
 )
+from capitalizator.risk.sizing import size_position
 from capitalizator.tape.classify import TapeClassifier
 from capitalizator.tape.ofi import OFI
 from capitalizator.types import MarketEvent, require_utc
@@ -153,8 +156,13 @@ class DeskLoop:
         )
         self.shadow = ShadowWriter()
         self.session = SessionWindow()
-        self.risk = RiskEngine()
-        self.halts = Halts(start_equity=Decimal("100000"))
+        # D-09/D-10/D-13: one Account owns equity, open ideas, halts and the
+        # per-session budget; RiskEngine/Halts are its members, not orphans.
+        self.risk_config = load_risk_config(knowledge)
+        self.account = Account.load(knowledge, self.risk_config)
+        self.risk = self.account.risk
+        self.halts = self.account.halts
+        self.funding: dict[str, Decimal] = {}
         self.macro = MacroRules(enabled=True)
         self.strategy = BounceStrategy(
             risk=self.risk,
@@ -460,8 +468,13 @@ class DeskLoop:
             self._apply_book_event(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"funding", "oi", "mark"}:
-            # Recorder emits these. There is no OI-peak / funding-rank atom on the desk.
-            # Do not pretend a journal row was written.
+            # Recorder emits these. Funding feeds the EV gate (expected hold cost);
+            # there is still no OI-peak atom. Do not pretend a journal row was written.
+            if event.stream == "funding":
+                try:
+                    self.funding[event.symbol] = Decimal(str(event.payload["funding"]))
+                except (KeyError, ArithmeticError):
+                    pass
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"gap", "resync"}:
             st.book = Book(tick_size=str(self.tick_for(st.symbol)))
@@ -581,6 +594,7 @@ class DeskLoop:
 
     def tick(self, now: datetime, *, force_flush: bool = True) -> list[dict[str, Any]]:
         when = require_utc(now)
+        self.account.roll(when)
         self.flush_ui(when, force=force_flush)
         out: list[dict[str, Any]] = []
         # Settling pending touches walks every touch; once per second of clock is
@@ -1321,13 +1335,19 @@ class DeskLoop:
                     venue="perp" if card is None else card.venue,
                     spot_acked=False if card is None else self.spot.acked(st.symbol),
                 )
+                self.strategy.budget = self.account.budget(closed_at)
                 intent = self.strategy.propose(snap)
                 if intent is not None:
-                    self.knowledge.enqueue_intent(
-                        intent.model_dump(mode="json"),
-                        created_ts=row.ts.isoformat(),
-                    )
-                    sent = True
+                    sized, gate_info = self._size_and_gate(intent, st.symbol, closed_at)
+                    payload_row.update(gate_info)
+                    self.knowledge.put_journal_touch(row.touch_id, payload_row)
+                    if sized is not None:
+                        intent_id = self.knowledge.enqueue_intent(
+                            sized.model_dump(mode="json"),
+                            created_ts=row.ts.isoformat(),
+                        )
+                        self.account.on_open(sized, now=closed_at, intent_id=intent_id)
+                        sent = True
         st.state = "IDLE"
         st.last_touch = None
         st.zlg_card = None
@@ -1342,6 +1362,101 @@ class DeskLoop:
         if b_action is not None:
             out_event["action"] = b_action
         return [out_event]
+
+    # --- sizing + EV gate (D-06, D-11, D-12, D-16, D-38) -----------------------
+    INTENT_TTL_BARS = 2
+
+    def _instrument_for(self, symbol: str) -> Instrument:
+        if self.instruments.has(symbol):
+            return self.instruments.get(symbol)
+        # Legacy single-tick fixtures: lot facts are the test fixture's, marked so.
+        return Instrument.fixture(symbol, tick=self.tick_for(symbol))
+
+    def _size_and_gate(
+        self, intent: Intent, symbol: str, now: datetime
+    ) -> tuple[Intent | None, dict[str, Any]]:
+        """Concrete qty from the account and a fee/funding EV check. Never 0.001."""
+        cfg = self.risk_config
+        inst = self._instrument_for(symbol)
+        info: dict[str, Any] = {"send_skip": None}
+        ok, why = self.account.allow_entry(symbol)
+        if not ok:
+            info["send_skip"] = why
+            return None, info
+        lev = min(cfg.max_lev, inst.max_lev)
+        decision = size_position(
+            equity=self.account.equity,
+            entry=intent.entry,
+            stop=intent.stop,
+            lev=lev,
+            target_risk=cfg.target_risk_pct,
+            deposit_share=cfg.deposit_share_per_trade,
+            qty_step=inst.qty_step,
+            min_qty=inst.min_qty,
+            min_notional=inst.min_notional,
+            max_lev=cfg.max_lev,
+        )
+        info["sizing"] = {
+            "action": decision.action,
+            "reason": decision.reason,
+            "qty": str(decision.qty),
+            "lev": str(decision.lev),
+            "margin": str(decision.margin),
+            "risk_usdt": str(decision.risk_usdt),
+            "risk_frac": str(decision.risk_frac),
+            "binding": decision.binding,
+            "equity": str(self.account.equity),
+            "equity_source": self.account.equity_source,
+            "config_id": cfg.config_id,
+        }
+        if decision.action != "accept":
+            info["send_skip"] = f"size:{decision.binding}"
+            return None, info
+        qty = inst.round_qty(decision.qty * intent.size_mult)
+        qok, qwhy = inst.qty_ok(qty, intent.entry)
+        if not qok:
+            info["send_skip"] = f"size_mult:{qwhy}"
+            return None, info
+        ev = ev_evaluate(
+            qty=qty,
+            entry=intent.entry,
+            stop=intent.stop,
+            tick=inst.tick,
+            role="maker",
+            funding_rate=self.funding.get(symbol),
+            funding_interval_min=inst.funding_interval_min,
+            fee_multiple_min=cfg.fee_multiple_min,
+        )
+        info["ev"] = {
+            "ok": ev.ok,
+            "reason": ev.reason,
+            "r_gross": str(ev.r_gross),
+            "fees": str(ev.fees),
+            "funding": str(ev.funding),
+            "slippage": str(ev.slippage),
+            "fee_multiple": None if ev.fee_multiple is None else str(ev.fee_multiple),
+            "r_net_1r": str(ev.r_net_1r),
+            "r_net_2r": str(ev.r_net_2r),
+            "r_net_3r": str(ev.r_net_3r),
+            "breakeven_winrate": (
+                None if ev.breakeven_winrate is None else str(ev.breakeven_winrate)
+            ),
+        }
+        if not ev.ok:
+            info["send_skip"] = "ev:fee_gt_r"
+            return None, info
+        ttl = timedelta(minutes=TF_MINUTES.get(self.config.working_tf, 15) * self.INTENT_TTL_BARS)
+        sized = intent.model_copy(
+            update={
+                "qty": qty,
+                "size_mult": Decimal("1"),  # cut already applied to qty; signer must not double-cut
+                "lev": lev,
+                "risk_config_id": cfg.config_id,
+                "valid_until": (now + ttl).isoformat(),
+            }
+        )
+        info["size_mult_applied"] = str(intent.size_mult)
+        return sized, info
 
     def _stamp_journal_atoms(
         self,

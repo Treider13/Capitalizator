@@ -51,6 +51,12 @@ class Intent(BaseModel):
     tag: str
     qty: Decimal | None = None
     size_mult: Decimal = Field(default=Decimal("1"))
+    # D-16: leverage is part of the trade, not an ambient constant.
+    lev: Decimal | None = None
+    # Which operator risk config sized this intent (risk/config.py).
+    risk_config_id: str | None = None
+    # D-38: the gateway refuses an intent after this exchange time (stale price).
+    valid_until: str | None = None
 
     @field_validator("symbol")
     @classmethod
@@ -80,10 +86,22 @@ class Position(Intent):
 
 
 class RiskEngine:
-    """Validates intents. One open idea. Does not place orders. No averaging."""
+    """Validates intents. One open idea per symbol, `max_open` in total.
+    Does not place orders. No averaging (a second open on the same symbol raises)."""
 
-    def __init__(self) -> None:
-        self._open_position: Position | None = None
+    def __init__(self, *, max_open: int = 1) -> None:
+        if max_open < 1:
+            raise ValueError("max_open must be >= 1")
+        self.max_open = max_open
+        self._open: dict[str, Position] = {}
+
+    @property
+    def _open_position(self) -> Position | None:
+        """Legacy single-position view (spec 1.5.3)."""
+        return next(iter(self._open.values()), None)
+
+    def open_positions(self) -> list[Position]:
+        return list(self._open.values())
 
     def validate(self, intent: Intent | dict[str, Any]) -> Intent:
         if isinstance(intent, dict):
@@ -91,15 +109,23 @@ class RiskEngine:
             return Intent.model_validate(intent)
         return intent
 
-    def allow_entry(self) -> bool:
-        return self._open_position is None
+    def allow_entry(self, symbol: str | None = None) -> bool:
+        if symbol is not None and symbol in self._open:
+            return False
+        return len(self._open) < self.max_open
 
     def on_open(self, intent: Intent | dict[str, Any]) -> Position:
         parsed = self.validate(intent)
-        if self._open_position is not None:
+        if parsed.symbol in self._open:
+            raise ValueError("already in a position")  # add-to is not a field here
+        if len(self._open) >= self.max_open:
             raise ValueError("already in a position")
-        self._open_position = Position.model_validate(parsed.model_dump())
-        return self._open_position
+        pos = Position.model_validate(parsed.model_dump())
+        self._open[parsed.symbol] = pos
+        return pos
 
-    def on_flat(self) -> None:
-        self._open_position = None
+    def on_flat(self, symbol: str | None = None) -> None:
+        if symbol is None:
+            self._open.clear()
+            return
+        self._open.pop(symbol, None)

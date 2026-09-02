@@ -31,13 +31,21 @@ def unsigned_from_intent(
     payload: dict[str, Any],
     *,
     trading_mode: str = "testnet",
+    allow_default_qty: bool = True,
 ) -> UnsignedIntent:
-    """Map desk Intent dump onto the signer schema. Stop is mandatory."""
+    """Map desk Intent dump onto the signer schema. Stop is mandatory.
+
+    `allow_default_qty=False` (the live drain) refuses an unsized intent: the
+    desk sizes every intent from equity (D-11); "0.001 anyway" is a fixture, not
+    a position.
+    """
     stop = payload.get("stop_px", payload.get("stop"))
     if stop is None:
         raise ValueError("stop must be reduce-only and present")
     qty = payload.get("qty")
     if qty is None:
+        if not allow_default_qty:
+            raise ValueError("intent not sized: qty missing (desk sizing did not run)")
         qty = "0.001"
     raw_mult = payload["size_mult"] if "size_mult" in payload else "1"
     if raw_mult is None:
@@ -68,7 +76,7 @@ def validate_queue_payload(
     universe: Universe | None = None,
 ) -> dict[str, Any]:
     """Desk 24-symbol universe. week0 stays the isolated Signer() default."""
-    raw = unsigned_from_intent(payload)
+    raw = unsigned_from_intent(payload, allow_default_qty=False)
     order = Signer(universe=universe or load_desk_universe()).validate(raw)
     return order.model_dump(mode="json")
 
