@@ -8,6 +8,17 @@ us_data_classes: [CPI, FOMC, NFP, PCE]
 fomc_blackout_et:
   start: "14:00"
   end: "15:00"
+# Per-class no-entry windows around the release itself (minutes before / after).
+# Release times are the official schedules: BLS CPI/NFP 08:30 ET
+# (https://www.bls.gov/schedule/news_release/cpi.htm), BEA PCE 08:30 ET
+# (https://www.bea.gov/news/schedule/), FOMC statement 14:00 ET + press conference
+# 14:30 ET (https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm).
+# The legacy fomc_blackout_et above is FOMC-only; CPI at 14:00 ET was a mismatch (D-22).
+event_windows:
+  CPI:  {pre_min: 30, post_min: 60}
+  NFP:  {pre_min: 30, post_min: 60}
+  PCE:  {pre_min: 30, post_min: 60}
+  FOMC: {pre_min: 30, post_min: 90}
 pre_event_hours: 24
 pre_event_size_mult: 0.5
 first_minute_s: 60

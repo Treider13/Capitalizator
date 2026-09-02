@@ -67,6 +67,11 @@ class CardLive:
     minuses: tuple[str, ...] = ()
     card_id: str = ""
     venue: Literal["perp", "spot_proposal"] = "perp"
+    # D-20: `fib_zone` is the LONG reading (retrace from the swing high). A short
+    # at resistance needs the retrace from the swing low, else price at the high
+    # is always `forbidden_0_05` and no short can ever pass context_ok.
+    fib_zone_short: FibZone = "none"
+    fib_level_short: str | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.known_at)
@@ -80,31 +85,37 @@ class CardLive:
         if not self.card_id:
             object.__setattr__(self, "card_id", uuid4().hex)
 
-    def mark_green(self) -> dict[str, bool | None]:
+    def fib_for(self, side: str = "buy") -> FibZone:
+        """Long reads the retrace from the high; short from the low (D-20)."""
+        if side == "sell":
+            return self.fib_zone_short
+        return self.fib_zone
+
+    def mark_green(self, side: str = "buy") -> dict[str, bool | None]:
         """Required greens: fib / sweep / fvg / jury_b. GEX None does not vote.
 
         RSI (`rsi_htf`) and SMC (`ob_status` / `bos_status`) are informational
         and never appear here.
         """
         return {
-            "fib": self.fib_zone in {"OTE", "in_05_1"},
+            "fib": self.fib_for(side) in {"OTE", "in_05_1"},
             "sweep": self.sweep_status == "done",
             "gex": gex_is_green(self.gex_bg),
             "fvg": self.fvg_status == "filled",
             "jury_b": self.jury_b_n == 0 or self.jury_b_for >= 3,
         }
 
-    def green_count(self) -> int:
-        return sum(1 for ok in self.mark_green().values() if ok is True)
+    def green_count(self, side: str = "buy") -> int:
+        return sum(1 for ok in self.mark_green(side).values() if ok is True)
 
-    def context_ok(self) -> bool:
-        """True when the four required marks are green. GEX is optional."""
-        if self.fib_zone == "forbidden_0_05" or self.sweep_status == "pending":
+    def context_ok(self, side: str = "buy") -> bool:
+        """True when the four required marks are green for this side. GEX is optional."""
+        if self.fib_for(side) == "forbidden_0_05" or self.sweep_status == "pending":
             return False
-        marks = self.mark_green()
+        marks = self.mark_green(side)
         if any(marks[key] is not True for key in REQUIRED_MARKS):
             return False
-        return self.green_count() >= 4
+        return self.green_count(side) >= 4
 
     def card_voice(self) -> str:
         """Map onto jury card_bearing_verdict."""
@@ -150,6 +161,8 @@ class CardLive:
             "minuses": list(self.minuses),
             "card_id": self.card_id,
             "venue": self.venue,
+            "fib_zone_short": self.fib_zone_short,
+            "fib_level_short": self.fib_level_short,
         }
 
     @classmethod
@@ -195,6 +208,8 @@ class CardLive:
             minuses=tuple(str(x) for x in (raw.get("minuses") or ())),
             card_id=str(raw.get("card_id") or ""),
             venue=raw.get("venue") or "perp",  # type: ignore[arg-type]
+            fib_zone_short=raw.get("fib_zone_short") or "none",  # type: ignore[arg-type]
+            fib_level_short=raw.get("fib_level_short"),
         )
 
 
@@ -250,11 +265,22 @@ def touch_line(
     )
 
 
-def fib_zone_at(*, low: Decimal, high: Decimal, price: Decimal) -> tuple[FibZone, str]:
-    """Retrace from high. 0–0.5 forbidden, 0.618–0.786 OTE, else 0.5–1."""
+def fib_zone_at(
+    *,
+    low: Decimal,
+    high: Decimal,
+    price: Decimal,
+    side: str = "buy",
+) -> tuple[FibZone, str]:
+    """Retrace of the last swing. Long: from the high (pullback down into a buy);
+    short: from the low (pullback up into a sell). 0–0.5 forbidden, 0.618–0.786 OTE,
+    else 0.5–1. Same bands, mirrored — D-20."""
     if high <= low:
         return "none", "0"
-    retrace = (high - price) / (high - low)
+    if side == "sell":
+        retrace = (price - low) / (high - low)
+    else:
+        retrace = (high - price) / (high - low)
     level = f"{retrace:.3f}"
     if retrace < 0 or retrace > 1:
         return "none", level

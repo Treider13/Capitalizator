@@ -569,12 +569,18 @@ def test_26_us_cpi_noon_journals_but_does_not_send(tmp_path: Path) -> None:
     desk.on_trade(_trade(noon), [ZONE])
     events = desk.tick(noon + timedelta(seconds=8))
     assert events
+    # D-18: contour B no longer stops labelling — the 8s clock stamps the gesture.
+    assert events[0]["event"] == "zlg"
     assert events[0].get("sent") is not True
-    assert events[0]["jury"] in {"SPLIT", "VETO", "SILENCE"}
-    row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    closed = desk.on_bar_close(_bar(noon + timedelta(minutes=15)))
+    assert closed and closed[0]["event"] == "jury"
+    assert closed[0]["sent"] is False
+    assert closed[0]["jury"] in {"SPLIT", "VETO", "SILENCE"}
+    row = desk.knowledge.get_journal_touch(closed[0]["touch_id"])
     assert row is not None
+    assert row["zlg_label"] is not None and row["cav_label"] is not None
+    assert row["skip_reason"] is not None
     assert desk.knowledge.pending_intents() == []
-    assert desk.on_bar_close(_bar(noon + timedelta(minutes=15))) == []
 
 
 def test_demo_adapter_default_is_not_sent() -> None:

@@ -66,6 +66,21 @@ def _trade(ts: datetime = NOW) -> MarketEvent:
     )
 
 
+def _bar(close_ts: datetime) -> Bar:
+    """First closed working bar after the print: wick below the zone, close inside."""
+    return Bar(
+        symbol="BTCUSDT",
+        tf="15m",
+        open_ts=close_ts - timedelta(minutes=15),
+        close_ts=close_ts,
+        open=Decimal("100.5"),
+        high=Decimal("101"),
+        low=Decimal("99.9"),
+        close=Decimal("100.6"),
+        volume=Decimal("5"),
+    )
+
+
 def test_load_desk_calendar_reads_repo_macro() -> None:
     rows = load_desk_calendar()
     assert rows
@@ -173,9 +188,19 @@ def test_veto_stops_zlg(tmp_path: Path) -> None:
     desk.on_trade(_trade(), [ZONE])
     events = desk.tick(NOW + timedelta(seconds=8))
     assert events
-    assert events[0]["jury"] == "VETO"
-    assert events[0].get("gesture") is None
+    # D-18: veto no longer stops ZLG — the gesture is stamped for the shadow.
+    assert events[0]["event"] == "zlg"
+    assert events[0]["gesture"] is not None
+    assert desk.state_for("BTCUSDT").state == "LABEL_ZLG"
+    closed = desk.on_bar_close(_bar(NOW + timedelta(minutes=15)))
+    assert closed[0]["jury"] == "VETO"
+    assert closed[0]["sent"] is False
+    assert closed[0]["skip_reason"] == "b_veto"
+    assert closed[0]["action"] == "flatten"  # 3.14.3 kept: veto flattens an open idea
     assert desk.state_for("BTCUSDT").last_touch is None
+    row = desk.knowledge.get_journal_touch(closed[0]["touch_id"])
+    assert row["shadow_would"] is False and row["b_gate"] == "b_veto"
+    assert row["zlg_label"] is not None and row["cav_label"] is not None
 
 
 def test_hold_early_return_skips_cav(tmp_path: Path) -> None:
@@ -194,12 +219,18 @@ def test_hold_early_return_skips_cav(tmp_path: Path) -> None:
     )
     desk.registry._zones[ZONE.zone_id] = ZONE
     desk.on_trade(_trade(), [ZONE])
-    # hold must stop at ZLG clock, not wait for the bar.
+    # D-18: hold no longer short-circuits the labels; it is a skip reason.
     events = desk.tick(NOW + timedelta(seconds=8))
-    assert events[0]["jury"] == "SILENCE"
-    live = next(t for t in desk.registry.touches if t.touch_id == events[0]["touch_id"])
-    assert live.cav_label is None
-    assert live.gesture is None
+    assert events[0]["event"] == "zlg"
+    closed = desk.on_bar_close(_bar(NOW + timedelta(minutes=15)))
+    # No book → gesture SILENCE → ZLG voice VETO (existing law); B adds the skip reason.
+    assert closed[0]["jury"] == "VETO"
+    assert closed[0]["sent"] is False
+    assert closed[0]["skip_reason"] == "b_hold"
+    row = desk.knowledge.get_journal_touch(closed[0]["touch_id"])
+    assert row["zlg_label"] is not None
+    assert row["cav_label"] is not None
+    assert row["shadow_would"] is False
 
 
 def test_journal_keeps_b_card_id_and_smc(tmp_path: Path) -> None:
@@ -219,12 +250,17 @@ def test_journal_keeps_b_card_id_and_smc(tmp_path: Path) -> None:
     desk.registry._zones[ZONE.zone_id] = ZONE
     desk.on_trade(_trade(), [ZONE])
     events = desk.tick(NOW + timedelta(seconds=8))
-    assert events[0]["jury"] == "SPLIT"
-    row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    assert events[0]["event"] == "zlg"
+    closed = desk.on_bar_close(_bar(NOW + timedelta(minutes=15)))
+    assert closed[0]["sent"] is False
+    assert closed[0]["skip_reason"] == "b_marks"  # fib none → red marks, journalled not dropped
+    row = desk.knowledge.get_journal_touch(closed[0]["touch_id"])
     assert row is not None
     assert row["card_id"] == card.card_id
     assert row["ob_status"] == "bull"
     assert row["bos_status"] == "bull"
+    assert row["b_gate"] == "b_marks"
+    assert row["cav_label"] is not None
 
 
 def test_get_card_live_bad_json_is_none(tmp_path: Path) -> None:

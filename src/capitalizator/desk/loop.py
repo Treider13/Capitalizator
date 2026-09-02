@@ -110,6 +110,7 @@ class SymbolState:
     bar_builder: BarBuilder | None = None
     bars_seeded: int = 0
     trades_dropped: int = 0
+    zlg_card: CardLive | None = None
 
 
 @dataclass
@@ -478,6 +479,11 @@ class DeskLoop:
             self._publish_btc_bus(st, bar)
         if bar.tf in {self.config.htf, self.config.htf_d1}:
             self.publish_card(bar.symbol, bar.close_ts)
+        elif bar.tf == self.config.working_tf and self.calendar:
+            # D-21: TTL is 60s, so publishing only on 4h/1d closes left the card
+            # stale 239 minutes out of 240. A working close refreshes a stale card
+            # (a fresh one — e.g. just written by contour B — is kept).
+            self._card_for(bar.symbol, bar.close_ts)
         if st.last_touch is None:
             return []
         if bar.tf != self.config.working_tf:
@@ -655,10 +661,12 @@ class DeskLoop:
             self.registry.fill_btc(regime=self.btc.regime, touch_id=touch.touch_id)
             touch = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
             st.last_touch = touch
-        card = self._card_for(st.symbol, now)
-        gated = self._b_gate(st, touch, zone, card)
-        if gated is not None:
-            return gated
+        # D-18: contour B never stops labelling. ZLG / tape / PRS / CAV are stamped
+        # on every touch (the 24/7 shadow learns from all of them); the B verdict
+        # only decides skip_reason / shadow_would / send in _eval_cav_and_jury.
+        # The card read on the 8s clock is remembered: if none is fresh at the bar
+        # close, the verdict that was current when the touch armed still applies.
+        st.zlg_card = self._card_for(st.symbol, now)
         book = st.book_pre or st.book
         bid, ask = book.best() if book.ready else (None, None)
         mid = ((bid + ask) / 2) if bid is not None and ask is not None else touch.trade_px
@@ -716,6 +724,25 @@ class DeskLoop:
             return None
         return self.publish_card(symbol, now)
 
+    @staticmethod
+    def _b_gate_kind(card: CardLive | None, *, zone_side: str = "support") -> str | None:
+        """B verdict as a skip reason: b_veto | b_hold | b_marks | None (allowed).
+
+        Marks are read for the touch's side (fib retrace from the high for a long,
+        from the low for a short — D-20). Never stops labelling.
+        """
+        if card is None:
+            return None
+        if card.bearing_verdict == "veto":
+            return "b_veto"
+        if card.bearing_verdict == "hold":
+            return "b_hold"
+        if card.bearing_verdict in {"propose", "cut_size"} and not card.context_ok(
+            side="buy" if zone_side == "support" else "sell"
+        ):
+            return "b_marks"
+        return None
+
     def _b_gate(
         self,
         st: SymbolState,
@@ -723,7 +750,11 @@ class DeskLoop:
         zone: Zone,
         card: CardLive | None,
     ) -> list[dict[str, Any]] | None:
-        """veto / hold / red marks stop ZLG and CAV. Same law as observe()."""
+        """LEGACY (pre D-18): veto / hold / red marks stopped ZLG and CAV.
+
+        The desk no longer calls this — it starved the 24/7 shadow of labels.
+        Kept for `ops/contour.observe` parity and old tests; not deleted.
+        """
         if card is None:
             return None
         if card.bearing_verdict == "veto":
@@ -906,9 +937,9 @@ class DeskLoop:
             return []
         zone = self.registry.zone(touch.zone_id)
         card = self._card_for(st.symbol, bar.close_ts)
-        gated = self._b_gate(st, touch, zone, card)
-        if gated is not None:
-            return gated
+        if card is None and st.zlg_card is not None:
+            card = st.zlg_card
+        b_gate = self._b_gate_kind(card, zone_side=zone.side)
         if bar.close_ts < touch.ts:
             return []
         # Atom requires close_ts < t. Plan: CAV only on a closed bar (close_ts ≤ now).
@@ -1052,6 +1083,9 @@ class DeskLoop:
             tape_eaten=row.tape_eaten,
         )
         shadow_would = jury == "ACCORD"
+        # Challenger reading that ignores the ICT context marks (fib/FVG/sweep):
+        # same jury, same TVH, only b_marks lifted. Data decides if marks help.
+        shadow_would_no_marks = shadow_would and has_tvh and b_gate in {None, "b_marks"}
         skip: str | None
         if not has_tvh:
             shadow_would = False
@@ -1060,6 +1094,11 @@ class DeskLoop:
             skip = None
         else:
             skip = first.tag if first.tag == "shadow_gesture" else jury
+        if b_gate is not None:
+            # B is part of the strategy: the shadow respects veto / hold / marks and
+            # the operator sees the B reason first (TVH is journalled separately).
+            shadow_would = False
+            skip = b_gate
         if idea == "breakout" and not breakout_enabled() and skip is None:
             skip = "breakout_off"
         shadow_side = idea_side if shadow_would else None
@@ -1191,10 +1230,18 @@ class DeskLoop:
             "wick_extreme": str(wick_extreme),
             "fade_side": fade_side,
             "fade_tag": "fade_spring" if fade_side else None,
+            "b_gate": b_gate,
+            "has_tvh": has_tvh,
+            "shadow_would_no_marks": shadow_would_no_marks,
         }
         payload_row = {**journal, **extra}
         payload_row["challenger_would"] = challenger_on(payload_row)
         payload_row["challenger_tag"] = challenger_tag(payload_row)
+        b_action = None
+        if b_gate == "b_veto":
+            # 3.14.3 law kept: a veto on a load-bearing claim flattens an open idea.
+            act = self.manager.on_refute(load_bearing=True, verdict="veto")
+            b_action = None if act is None else act.action
         self.knowledge.put_journal_touch(row.touch_id, payload_row)
         day = row_day_utc(payload_row)
         if day:
@@ -1264,7 +1311,7 @@ class DeskLoop:
                     card_bearing_verdict=row.bearing_verdict,
                     b_verdict=None if card is None else card.bearing_verdict,
                     macro_multiplier=Decimal("1") if card is None else card.macro_multiplier,
-                    b_marks_ok=True if card is None else card.context_ok(),
+                    b_marks_ok=True if card is None else card.context_ok(side=idea_side),
                     rvol=(
                         None
                         if card is None or not card.volume.rvol
@@ -1283,15 +1330,18 @@ class DeskLoop:
                     sent = True
         st.state = "IDLE"
         st.last_touch = None
-        return [
-            {
-                "event": "jury",
-                "touch_id": row.touch_id,
-                "jury": jury,
-                "sent": sent,
-                "touch_line": line,
-            }
-        ]
+        st.zlg_card = None
+        out_event: dict[str, Any] = {
+            "event": "jury",
+            "touch_id": row.touch_id,
+            "jury": jury,
+            "sent": sent,
+            "skip_reason": skip,
+            "touch_line": line,
+        }
+        if b_action is not None:
+            out_event["action"] = b_action
+        return [out_event]
 
     def _stamp_journal_atoms(
         self,

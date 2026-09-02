@@ -28,6 +28,7 @@ TIME_KEYS = frozenset(
         "us_tz",
         "us_data_classes",
         "fomc_blackout_et",
+        "event_windows",
         "pre_event_hours",
         "pre_event_size_mult",
         "first_minute_s",
