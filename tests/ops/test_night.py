@@ -36,6 +36,7 @@ def test_night_writes_report_and_pending_card(tmp_path: Path) -> None:
     overlay = knowledge.get_overlay("2026-08-31:shadow")
     assert overlay is not None
     assert overlay["r_shadow"] is None
+    assert overlay["r_challenger"] is None
     assert out["fragility"] is False
     assert out["n_shadow"] == 0
     assert out["r_shadow"] is None

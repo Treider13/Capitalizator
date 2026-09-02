@@ -60,6 +60,54 @@ def test_tick_outside_session_writes_shadow_r(tmp_path: Path) -> None:
     assert desk.knowledge.pending_intents() == []
 
 
+def test_restart_reloads_pending_and_scores(tmp_path: Path) -> None:
+    knowledge = open_knowledge(init_vault(tmp_path / "desk"))
+    knowledge.put_zone(
+        ZONE.zone_id,
+        {
+            "zone_id": ZONE.zone_id,
+            "symbol": ZONE.symbol,
+            "tf": ZONE.tf,
+            "side": ZONE.side,
+            "lo": str(ZONE.lo),
+            "hi": str(ZONE.hi),
+            "method": ZONE.method,
+            "created_as_of": ZONE.created_as_of.isoformat(),
+        },
+    )
+    touch = Touch.create(
+        zone_id=ZONE.zone_id,
+        ts=PRINT,
+        trade_px=Decimal("100.5"),
+        trade_qty=Decimal("1"),
+    )
+    knowledge.put_journal_touch(
+        touch.touch_id,
+        {
+            "touch_id": touch.touch_id,
+            "zone_id": ZONE.zone_id,
+            "touch_ts": PRINT.isoformat(),
+            "trade_px": "100.5",
+            "trade_qty": "1",
+            "shadow_would": True,
+            "shadow_tag": "bounce",
+            "outcome": "pending",
+        },
+    )
+    knowledge.put_last_price("BTCUSDT", "102")
+    desk = DeskLoop(knowledge=knowledge, tick_size=TICK)
+    assert any(row.touch_id == touch.touch_id for row in desk.registry.touches)
+    events = desk.tick(PRINT + timedelta(minutes=20))
+    assert any(row.get("event") == "shadow_outcome" for row in events)
+    row = desk.knowledge.get_journal_touch(touch.touch_id)
+    assert row is not None
+    assert row["outcome"] == "bounce"
+    overlay = desk.knowledge.get_overlay("2026-08-31:shadow")
+    assert overlay is not None
+    assert overlay["r_shadow"] == "1"
+    assert desk.knowledge.pending_intents() == []
+
+
 def test_tick_reads_last_price_from_knowledge(tmp_path: Path) -> None:
     """Restart keeps last_px. Night tick can still close a bounce."""
     knowledge = open_knowledge(init_vault(tmp_path / "desk"))

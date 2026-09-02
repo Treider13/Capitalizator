@@ -53,6 +53,7 @@ from capitalizator.jury.desk import (
 )
 from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
+from capitalizator.memory.revive import load_pending
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
 from capitalizator.news_macro.unlocks import Unlocks
@@ -61,6 +62,7 @@ from capitalizator.ops.phase import breakout_enabled
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
 from capitalizator.patterns.bar_quality import classify_bar_quality
 from capitalizator.patterns.cav import label as cav_label
+from capitalizator.patterns.cav import prior_compress
 from capitalizator.patterns.width import WidthSample, width_now_from_history, width_rank
 from capitalizator.prs.score import PRS
 from capitalizator.recorder.gap import SeqFault
@@ -164,6 +166,13 @@ class DeskLoop:
                     continue
                 if px > 0:
                     self.last_price[symbol] = px
+            zones, pending = load_pending(knowledge)
+            for zone in zones:
+                self.registry._zones[zone.zone_id] = zone
+            have = {touch.touch_id for touch in self.registry.touches}
+            self.registry.touches.extend(
+                touch for touch in pending if touch.touch_id not in have
+            )
         self.open_card_id: dict[str, str] = {}
         self.walls: dict[str, WallWatch] = {}
         self.prs: dict[str, PRS] = {}
@@ -776,6 +785,9 @@ class DeskLoop:
         elif h4 not in {"unknown", "box"} and h4 != bounce_side:
             htf = h4
         cav = cav_label(zone, bar, t=closed_at, htf_bias=htf, closed_bars=st.bars)
+        compress_before = prior_compress(
+            zone, bar, t=closed_at, htf_bias=htf, closed_bars=st.bars
+        )
         known_zones = tuple(
             z for z in self.registry._zones.values() if z.symbol == st.symbol
         ) or (zone,)
@@ -1051,6 +1063,8 @@ class DeskLoop:
             "ob_status": None if card is None else card.ob_status,
             "bos_status": None if card is None else card.bos_status,
             "tape_eaten_qty": eaten_qty,
+            "had_compress": compress_before,
+            "zone_side": zone.side,
         }
         payload_row = {**journal, **extra}
         payload_row["challenger_would"] = challenger_on(payload_row)

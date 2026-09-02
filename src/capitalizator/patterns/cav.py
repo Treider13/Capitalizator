@@ -83,3 +83,21 @@ def label(
     if zone.lo <= bar.close <= zone.hi:
         return "DRIFT"
     return "NOISE"
+
+
+def prior_compress(
+    zone: Zone,
+    bar: Bar,
+    *,
+    t: datetime,
+    htf_bias: HtfBias,
+    closed_bars: Sequence[Bar] = (),
+) -> bool:
+    """True if an earlier closed bar on this zone was COMPRESS. Not this bar."""
+    when = require_utc(t)
+    for prev in closed_bars:
+        if prev.close_ts >= bar.close_ts or prev.close_ts >= when:
+            continue
+        if label(zone, prev, t=when, htf_bias=htf_bias, closed_bars=closed_bars) == "COMPRESS":
+            return True
+    return False

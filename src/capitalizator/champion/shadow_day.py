@@ -1,6 +1,7 @@
 """24/7 champion shadow R from the journal. Empty is None, not a fake zero.
 
-Challenger is a second flag on the same touch. It never opens size.
+Challenger is a second class on the same touch: HTF with the exit,
+had COMPRESS, then THROUGH or eaten+RETREAT. It never opens size.
 Does not import signer. Does not promote.
 """
 
@@ -16,6 +17,7 @@ from capitalizator.ops.knowledge import Knowledge
 
 R_UNIT = Decimal("1")
 PENDING = frozenset({None, "", "pending"})
+_UNSET_HTF = frozenset({None, "", "unknown", "box"})
 
 
 @dataclass(frozen=True)
@@ -73,42 +75,59 @@ def idea_r(idea: str, outcome: str | None) -> Decimal | None:
     return Decimal("0")
 
 
+def _effective_htf(row: Mapping[str, Any]) -> str | None:
+    d1 = row.get("htf_d1")
+    h4 = row.get("htf_h4")
+    if d1 not in _UNSET_HTF:
+        return str(d1)
+    if h4 not in _UNSET_HTF:
+        return str(h4)
+    return None
+
+
+def _exit_side(zone_side: object) -> str | None:
+    if zone_side == "support":
+        return "short"
+    if zone_side == "resistance":
+        return "long"
+    return None
+
+
 def challenger_on(row: Mapping[str, Any]) -> bool:
-    """A plus phase-exit. COMPRESS/DRIFT/NOISE/stagnant = not yet."""
-    if not _truthy(row.get("shadow_would")):
+    """Phase-exit after COMPRESS. Not champion ACCORD. Not first-print bounce."""
+    if not _truthy(row.get("had_compress")):
         return False
     if row.get("bar_quality") != "live":
         return False
+    side = _exit_side(row.get("zone_side"))
+    if side is None or _effective_htf(row) != side:
+        return False
     cav = row.get("cav_label")
-    zlg = row.get("zlg_label")
-    eaten = row.get("tape_eaten")
-    idea = idea_of(row)
     if cav in {None, "NOISE", "DRIFT", "COMPRESS"}:
         return False
-    if idea == "bounce":
-        return cav == "REJECT" and zlg == "DEFEND" and eaten is False
-    if idea == "breakout":
-        return cav == "THROUGH" and zlg == "RETREAT" and eaten is True
-    return False
+    through = cav == "THROUGH"
+    poured = row.get("zlg_label") == "RETREAT" and row.get("tape_eaten") is True
+    return through or poured
 
 
 def challenger_tag(row: Mapping[str, Any]) -> str | None:
     if not challenger_on(row):
         return None
-    return f"phase_exit_{idea_of(row)}"
+    return "phase_exit_breakout"
 
 
 def summarize(rows: list[Mapping[str, Any]], *, day: str) -> ShadowDay:
-    would = [row for row in rows if _truthy(row.get("shadow_would")) and row_day_utc(row) == day]
+    day_rows = [row for row in rows if row_day_utc(row) == day]
+    would = [row for row in day_rows if _truthy(row.get("shadow_would"))]
     scored: list[Decimal] = []
     for row in would:
         got = idea_r(idea_of(row), None if row.get("outcome") is None else str(row.get("outcome")))
         if got is not None:
             scored.append(got)
-    chall = [row for row in would if challenger_on(row)]
+    chall = [row for row in day_rows if challenger_on(row)]
     chall_scored: list[Decimal] = []
     for row in chall:
-        got = idea_r(idea_of(row), None if row.get("outcome") is None else str(row.get("outcome")))
+        got = idea_r("breakout", None if row.get("outcome") is None else str(row.get("outcome")))
         if got is not None:
             chall_scored.append(got)
     return ShadowDay(
@@ -127,10 +146,12 @@ def persist_day(knowledge: Knowledge, day: str) -> ShadowDay:
     setup = f"{day}:shadow"
     prev = knowledge.get_overlay(setup) or {}
     r_txt = None if snap.r_shadow is None else format(snap.r_shadow, "f")
+    chall_txt = None if snap.r_challenger is None else format(snap.r_challenger, "f")
     knowledge.put_overlay(
         setup,
         r_shadow=r_txt,
         r_demo=prev.get("r_demo"),
         r_live=prev.get("r_live"),
+        r_challenger=chall_txt,
     )
     return snap
