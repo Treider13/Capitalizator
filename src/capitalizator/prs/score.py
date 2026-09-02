@@ -45,7 +45,8 @@ class PRS:
         self.config = config or load_registry()
         self.x_ewma: Decimal | None = None
         self.xs: deque[Decimal] = deque(maxlen=W)
-        self.log: list[PRSResult] = []
+        # Bounded: the robust-z window is W events; older results live in the journal.
+        self.log: deque[PRSResult] = deque(maxlen=W)
 
     def compute(
         self,

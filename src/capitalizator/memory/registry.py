@@ -128,6 +128,52 @@ class Registry:
         self.chain = HashChain()
         # Per-symbol tick (instruments-info). None keeps the legacy single tick.
         self._tick_for = tick_for
+        # (kind, label, symbol) → n for touches archived out of memory. Journal
+        # rows are the record; these keep n_cav / n_zlg exact after archiving.
+        self.archived: dict[tuple[str, str, str], int] = {}
+        self.n_archived = 0
+
+    def archive_resolved(self, *, now: datetime, max_age: timedelta) -> list[Touch]:
+        """Move resolved touches older than max_age out of memory, keeping label counts."""
+        cutoff = require_utc(now) - max_age
+        keep: list[Touch] = []
+        gone: list[Touch] = []
+        for touch in self.touches:
+            if touch.outcome == "pending" or touch.ts >= cutoff:
+                keep.append(touch)
+                continue
+            zone = self._zones.get(touch.zone_id)
+            symbol = zone.symbol if zone is not None else ""
+            if touch.cav_label:
+                key = ("cav", touch.cav_label, symbol)
+                self.archived[key] = self.archived.get(key, 0) + 1
+            if touch.gesture:
+                key = ("zlg", touch.gesture, symbol)
+                self.archived[key] = self.archived.get(key, 0) + 1
+            gone.append(touch)
+        if gone:
+            self.touches = keep
+            self.n_archived += len(gone)
+        return gone
+
+    def archived_count(self, kind: str, label: str | None, symbol: str) -> int:
+        if not label:
+            return 0
+        return self.archived.get((kind, label, symbol), 0)
+
+    def count_label(self, kind: str, label: str | None, symbol: str) -> int:
+        """In-memory touches with this label for the symbol plus archived ones."""
+        if not label:
+            return 0
+        attr = "cav_label" if kind == "cav" else "gesture"
+        live = 0
+        for touch in self.touches:
+            if getattr(touch, attr) != label:
+                continue
+            zone = self._zones.get(touch.zone_id)
+            if zone is not None and zone.symbol == symbol:
+                live += 1
+        return live + self.archived_count(kind, label, symbol)
 
     def tick(self, symbol: str) -> Decimal:
         if self._tick_for is None:

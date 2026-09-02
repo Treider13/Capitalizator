@@ -6,6 +6,7 @@ when user_mode is demo|live and jury is ACCORD. Shadow always writes.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -29,6 +30,7 @@ from capitalizator.champion.shadow_day import (
     persist_day,
     row_day_utc,
 )
+from capitalizator.desk.bars import TF_MINUTES, BarBuilder
 from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.desk.session_name import session_name
 from capitalizator.exec.failed_break import FailedBreak, sweep_wick
@@ -100,6 +102,9 @@ class SymbolState:
     bars: list[Bar] = field(default_factory=list)
     last_touch: Touch | None = None
     book_history: list[tuple[datetime, Book]] = field(default_factory=list)
+    bar_builder: BarBuilder | None = None
+    bars_seeded: int = 0
+    trades_dropped: int = 0
 
 
 @dataclass
@@ -175,6 +180,10 @@ class DeskLoop:
                     continue
                 if px > 0:
                     self.last_price[symbol] = px
+            for key, raw in knowledge.meta_prefix("label_count:").items():
+                parts = key.split(":", 3)
+                if len(parts) == 4 and raw.isdigit():
+                    self.registry.archived[(parts[1], parts[2], parts[3])] = int(raw)
             zones, pending = load_pending(knowledge)
             for zone in zones:
                 self.registry._zones[zone.zone_id] = zone
@@ -186,6 +195,11 @@ class DeskLoop:
         self.walls: dict[str, WallWatch] = {}
         self.prs: dict[str, PRS] = {}
         self._width_history: list[WidthSample] = []
+        self._ui_pending: dict[str, str] = {}
+        self._ui_last_flush: datetime | None = None
+        self.zone_cache: dict[str, tuple[tuple[Any, ...], tuple[Zone, ...]]] = {}
+        self._persisted_zone_ids: dict[str, frozenset[str]] = {}
+        self._last_settle: datetime | None = None
 
     def tick_for(self, symbol: str) -> Decimal:
         """Instrument tick. Legacy mode falls back to the constructor tick."""
@@ -207,9 +221,56 @@ class DeskLoop:
     def state_for(self, symbol: str) -> SymbolState:
         if symbol not in self.symbols:
             self.symbols[symbol] = SymbolState(
-                symbol=symbol, book=Book(tick_size=str(self.tick_for(symbol)))
+                symbol=symbol,
+                book=Book(tick_size=str(self.tick_for(symbol))),
+                bar_builder=BarBuilder(
+                    symbol=symbol,
+                    tfs=(self.config.working_tf, self.config.htf, self.config.htf_d1),
+                ),
             )
         return self.symbols[symbol]
+
+    # --- bounded buffers -------------------------------------------------
+    def _trade_keep_window(self) -> timedelta:
+        """Prints needed after a touch: the working bar that closes it plus the 8s window."""
+        minutes = TF_MINUTES.get(self.config.working_tf, 15)
+        return timedelta(minutes=minutes + 5, seconds=2 * self.config.zlg_window_s)
+
+    def _trim_trades(self, st: SymbolState, now: datetime) -> None:
+        keep_from = now - self._trade_keep_window()
+        if st.last_touch is not None and st.state != "IDLE":
+            keep_from = min(keep_from, st.last_touch.ts - timedelta(seconds=1))
+        drop = 0
+        for trade in st.trades:
+            if trade.exchange_ts >= keep_from:
+                break
+            drop += 1
+        if drop:
+            del st.trades[:drop]
+            st.trades_dropped += drop
+
+    # --- batched UI meta writes -------------------------------------------
+    UI_FLUSH_S = 0.5
+    ARCHIVE_AFTER = timedelta(hours=24)
+
+    def _ui_put(self, key: str, value: str) -> None:
+        self._ui_pending[key] = value
+
+    def flush_ui(self, now: datetime, *, force: bool = False) -> int:
+        """Write last_price / book snapshots in one transaction, at most every 0.5s."""
+        if not self._ui_pending or not self.knowledge.available():
+            return 0
+        if (
+            not force
+            and self._ui_last_flush is not None
+            and (now - self._ui_last_flush).total_seconds() < self.UI_FLUSH_S
+        ):
+            return 0
+        n = len(self._ui_pending)
+        self.knowledge.set_meta_many(self._ui_pending)
+        self._ui_pending = {}
+        self._ui_last_flush = now
+        return n
 
     def hello_ok(self) -> bool:
         return self.knowledge.meta(META_HELLO) == "1"
@@ -221,6 +282,18 @@ class DeskLoop:
     def persist_zones(self, zones: Sequence[Zone]) -> None:
         if not self.knowledge.available() or not zones:
             return
+        # Same map as last time for these symbols → nothing to write (was one
+        # full `zone` table read + one transaction per print).
+        by_symbol: dict[str, set[str]] = {}
+        for z in zones:
+            by_symbol.setdefault(z.symbol, set()).add(z.zone_id)
+        if all(
+            self._persisted_zone_ids.get(sym) == frozenset(ids)
+            for sym, ids in by_symbol.items()
+        ):
+            return
+        for sym, ids in by_symbol.items():
+            self._persisted_zone_ids[sym] = frozenset(ids)
         vote = self.config.working_tf
         symbols = {z.symbol for z in zones}
         drop_ids: list[str] = []
@@ -270,10 +343,15 @@ class DeskLoop:
                 reverse=True,
             )[:20]
             asks = sorted((str(px), str(sz)) for px, sz in st.book.levels("ask").items())[:20]
-            self.knowledge.put_book_levels(
-                st.symbol,
-                {"symbol": st.symbol, "bids": bids, "asks": asks, "ts": when.isoformat()},
+            self._ui_put(
+                f"book:{st.symbol}",
+                json.dumps(
+                    {"symbol": st.symbol, "bids": bids, "asks": asks, "ts": when.isoformat()},
+                    sort_keys=True,
+                    ensure_ascii=False,
+                ),
             )
+            self.flush_ui(when)
 
     def _wall_for(self, symbol: str) -> WallWatch:
         if symbol not in self.walls:
@@ -387,6 +465,9 @@ class DeskLoop:
     def on_bar_close(self, bar: Bar) -> list[dict[str, Any]]:
         st = self.state_for(bar.symbol)
         st.bars.append(bar)
+        if st.bar_builder is not None:
+            st.bar_builder.seed_closed((bar,))
+        self.flush_ui(bar.close_ts, force=True)
         if bar.symbol == "BTCUSDT":
             self.btc.bars.append(bar)
             self._publish_btc_bus(st, bar)
@@ -453,12 +534,16 @@ class DeskLoop:
         require_utc(trade.exchange_ts)
         st = self.state_for(trade.symbol)
         st.trades.append(trade)
+        if st.bar_builder is not None:
+            st.bar_builder.on_trade(trade)
+        self._trim_trades(st, trade.exchange_ts)
         try:
             px = Decimal(str(trade.payload["px"]))
             if px > 0:
                 self.last_price[trade.symbol] = px
                 if self.knowledge.available():
-                    self.knowledge.put_last_price(trade.symbol, str(px))
+                    self._ui_put(f"last_price:{trade.symbol}", str(px))
+                    self.flush_ui(trade.exchange_ts)
         except (KeyError, ArithmeticError):
             pass
         if zones:
@@ -483,9 +568,19 @@ class DeskLoop:
         st.armed_at = trade.exchange_ts
         return [{"event": "armed", "touch_id": touch.touch_id, "symbol": trade.symbol}]
 
-    def tick(self, now: datetime) -> list[dict[str, Any]]:
+    def tick(self, now: datetime, *, force_flush: bool = True) -> list[dict[str, Any]]:
         when = require_utc(now)
-        out = self._settle_shadows(when)
+        self.flush_ui(when, force=force_flush)
+        out: list[dict[str, Any]] = []
+        # Settling pending touches walks every touch; once per second of clock is
+        # enough (outcomes are 15m closes / 8-tick moves / 6h timeouts).
+        if (
+            force_flush
+            or self._last_settle is None
+            or (when - self._last_settle).total_seconds() >= 1.0
+        ):
+            out = self._settle_shadows(when)
+            self._last_settle = when
         window = timedelta(seconds=self.config.zlg_window_s)
         for st in self.symbols.values():
             if st.state != "ARM_ZLG" or st.armed_at is None or st.last_touch is None:
@@ -536,6 +631,12 @@ class DeskLoop:
                 self.knowledge.put_journal_touch(touch.touch_id, row)
         for day in days:
             persist_day(self.knowledge, day)
+        # Resolved touches older than a day leave memory; their label counts stay.
+        gone = self.registry.archive_resolved(now=now, max_age=self.ARCHIVE_AFTER)
+        if gone and self.knowledge.available():
+            for (kind, label, symbol), n in self.registry.archived.items():
+                self._ui_put(f"label_count:{kind}:{label}:{symbol}", str(n))
+            self.flush_ui(now, force=True)
         return events
 
     def _label_zlg(self, st: SymbolState, now: datetime) -> list[dict[str, Any]]:
@@ -841,16 +942,8 @@ class DeskLoop:
             # Published bus only. Alt H4 is not BTC; BTC already wrote the bus
             # on this close (on_bar_close publishes before jury).
             self.registry.fill_btc(regime=self.btc.regime, touch_id=touch.touch_id)
-        n_cav = sum(
-            1
-            for hist in self.registry.touches
-            if hist.cav_label == live.cav_label and self._same_symbol(hist, st.symbol)
-        )
-        n_zlg = sum(
-            1
-            for row in self.registry.touches
-            if row.gesture == live.gesture and self._same_symbol(row, st.symbol)
-        )
+        n_cav = self.registry.count_label("cav", live.cav_label, st.symbol)
+        n_zlg = self.registry.count_label("zlg", live.gesture, st.symbol)
         idea_side = "buy" if zone.side == "support" else "sell"
         if idea == "failed_break":
             idea_side = "sell" if zone.side == "support" else "buy"
@@ -1338,7 +1431,7 @@ class DeskLoop:
         def advance(when: datetime) -> None:
             # Plan: LABEL_ZLG (8s) then CAV on a closed bar, then JURY.
             # Catch-up `--once` lands both clocks in one now= — tick first.
-            out.extend(self.tick(when))
+            out.extend(self.tick(when, force_flush=False))
             for symbol in _close_symbols(self.symbols):
                 out.extend(close_due_bars(self, symbol, when))
 

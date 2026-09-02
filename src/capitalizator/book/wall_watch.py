@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
@@ -80,13 +80,38 @@ def last_wall_kind(
 
 
 class WallWatch:
-    def __init__(self, symbol: str, *, min_size: Decimal) -> None:
+    # Wall events are read in a ±zlg_window_s (8s) window around a touch and the
+    # journal stamps the last kind in that window. One hour is a generous bound.
+    MAX_AGE = timedelta(hours=1)
+
+    def __init__(
+        self,
+        symbol: str,
+        *,
+        min_size: Decimal,
+        max_age: timedelta | None = None,
+    ) -> None:
         if min_size <= 0:
             raise ValueError("min_size must be > 0")
         self.symbol = symbol
         self.min_size = min_size
         self._walls: dict[tuple[WallSide, Decimal], _Tracked] = {}
         self.events: list[WallEvent] = []
+        self.max_age = max_age if max_age is not None else self.MAX_AGE
+        self.trimmed = 0
+
+    def trim(self, now: datetime) -> int:
+        """Drop events older than max_age. Bounded memory for a 24/7 desk."""
+        cutoff = require_utc(now) - self.max_age
+        drop = 0
+        for event in self.events:
+            if event.ts >= cutoff:
+                break
+            drop += 1
+        if drop:
+            del self.events[:drop]
+            self.trimmed += drop
+        return drop
 
     def on_book_and_trade(
         self,
@@ -102,6 +127,7 @@ class WallWatch:
             self._on_trade(trade)
         out = self._on_book(book, when)
         self.events.extend(out)
+        self.trim(when)
         return out
 
     def _on_trade(self, trade: MarketEvent) -> None:

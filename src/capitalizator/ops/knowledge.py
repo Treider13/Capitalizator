@@ -253,6 +253,26 @@ class Knowledge:
             self._cx.rollback()
             raise
 
+    def set_meta_many(self, rows: Mapping[str, str]) -> None:
+        """One BEGIN IMMEDIATE for a batch of meta keys (UI snapshots, counters)."""
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        if not rows:
+            return
+        for key, value in rows.items():
+            if not key or contains_advice(key) or contains_advice(value):
+                raise ValueError("meta must not advise")
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            self._cx.executemany(
+                "INSERT OR REPLACE INTO meta(k, v) VALUES (?, ?)",
+                list(rows.items()),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+
     def counts(self) -> dict[str, int]:
         if self._cx is None:
             return dict(EMPTY_COUNTS)
