@@ -469,7 +469,8 @@ def test_p6_cut_size_applies_macro() -> None:
         )
     )
     assert intent is not None
-    assert intent.qty == Decimal("0.5")
+    assert intent.qty is None
+    assert intent.size_mult == Decimal("0.5")
 
 
 def test_b_never_imports_signer() -> None:

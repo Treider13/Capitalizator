@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import html
+from datetime import UTC, datetime
 from typing import Any
 
-from capitalizator.card.live import CardLive, touch_line
+from capitalizator.card.live import CardLive, card_is_fresh, touch_line
 from capitalizator.ops.daily_map_report import contains_advice
 from capitalizator.ops.knowledge import Knowledge
 
@@ -30,12 +31,22 @@ def touch_screen(
     n_cav: int = 0,
     n_zlg: int = 0,
     skip: str | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Structured page + text. English tokens only."""
-    line = touch_line(symbol=symbol, card=card, jury=jury)
+    line = touch_line(symbol=symbol, card=card, jury=jury, now=now)
+    if card is None:
+        verdict = "no card"
+        macro = "-"
+    elif now is not None and not card_is_fresh(card, symbol=symbol, now=now):
+        verdict = "stale"
+        macro = str(card.macro_multiplier)
+    else:
+        verdict = card.bearing_verdict
+        macro = str(card.macro_multiplier)
     b = {
-        "verdict": card.bearing_verdict if card else "hold",
-        "macro": str(card.macro_multiplier) if card else "1",
+        "verdict": verdict,
+        "macro": macro,
         "fib": (
             f"{card.fib_level}({card.fib_zone})"
             if card and card.fib_level
@@ -87,7 +98,12 @@ def touch_screen(
     return {"symbol": symbol, "line": line, "b": b, "a": a, "text": text}
 
 
-def from_journal(row: dict[str, Any], card: CardLive | None) -> dict[str, Any]:
+def from_journal(
+    row: dict[str, Any],
+    card: CardLive | None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     symbol = str(row.get("symbol") or (card.symbol if card else "BTCUSDT"))
     return touch_screen(
         symbol=symbol,
@@ -100,6 +116,7 @@ def from_journal(row: dict[str, Any], card: CardLive | None) -> dict[str, Any]:
         n_cav=int(row.get("n_cav") or 0),
         n_zlg=int(row.get("n_zlg") or 0),
         skip=None if row.get("skip_reason") is None else str(row.get("skip_reason")),
+        now=now,
     )
 
 
@@ -114,7 +131,7 @@ def latest(knowledge: Knowledge) -> dict[str, Any] | None:
         raw = knowledge.get_card_live(symbol)
         if raw is not None:
             card = CardLive.from_payload(raw)
-    return from_journal(row, card)
+    return from_journal(row, card, now=datetime.now(tz=UTC))
 
 
 def render_html(screen: dict[str, Any] | None) -> str:

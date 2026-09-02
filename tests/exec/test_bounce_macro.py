@@ -93,6 +93,15 @@ def test_quiet_session_intent_size_mult_is_one() -> None:
     assert got.size_mult == Decimal("1")
 
 
+def test_b_macro_multiplier_lands_on_size_mult() -> None:
+    got = _strategy().propose(
+        _snap(now=SESSION, b_verdict="cut_size", macro_multiplier=Decimal("0.3"))
+    )
+    assert isinstance(got, Intent)
+    assert got.qty is None
+    assert got.size_mult == Decimal("0.3")
+
+
 def test_macro_off_does_not_cut_pre_cpi() -> None:
     got = _strategy(macro=MacroRules(enabled=False)).propose(_snap(now=PRE_CPI))
     assert isinstance(got, Intent)

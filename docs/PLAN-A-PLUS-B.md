@@ -17,7 +17,16 @@
 
 LLM в A не ходит. Ключ видит только `signer`.
 
-**Стык.** B пишет в knowledge/SQLite на пару: `bearing_verdict`, `macro_multiplier`, B-метки (`fib_zone`, `rsi_htf`, `gex_bg`, `fvg_status`, `sweep_status`, `market_regime`, `jury_b`). A **обязан** исполнить `veto` (skip/flatten, не спорит) и умножить qty на макро. Быстрый пропуск входа A делает сам: зона × 8 с книги × CAV × BTC × Accord-or-Silence.
+**Стык.** B пишет в knowledge/SQLite на пару: `bearing_verdict`, `macro_multiplier`, B-метки (`fib_zone`, `rsi_htf`, `gex_bg`, `fvg_status`, `sweep_status`, `market_regime`, `jury_b`). A **обязан** исполнить `veto` (skip/flatten, не спорит) и умножить qty на макро (`Intent.size_mult`). Быстрый пропуск входа A делает сам: зона × 8 с книги × CAV × BTC × Accord-or-Silence.
+
+**Зелёный контекст** (`CardLive.context_ok()`). Четыре обязательные метки:
+
+- `fib_zone ∈ {OTE, in_05_1}`
+- `sweep_status == "done"`
+- `fvg_status == "filled"`
+- `jury_b >= 3/7` (или `jury_b_n == 0` — голоса B ещё нет)
+
+GEX опционален: `None` не голосует и не ломает зелёный. RSI (`rsi_htf`) и SMC (`ob_status` / `bos_status`) — только информационные поля, не голосуют.
 
 B **не считает** ZLG, CAV, tape eaten, PRS. Это только A. Объёмы в B — сессионный профиль (POC/VAH/VAL) и контекст, не жест книги.
 
@@ -96,8 +105,8 @@ TradingAgents — только B, ≥60 с, карантин без ключей
 2. `observe_if_on` / `propose` читает карточку **сначала**:
    - `veto` → skip; открытая позиция → `TradeManager.on_refute` → flatten. Роли 1–3 можно не гонять для входа.
    - `hold` → ничего.
-   - красные B-метки (Fib в 0–0.5, sweep pending, `jury_b` «за» < 3 из 7) → `SPLIT`, ZLG/CAV для **входа** не запускаем (журнал тени всё равно можно посчитать отдельно, чтобы таблица росла).
-   - `propose` / `cut_size` + зелёный контекст (≥4 из 5 меток) → полная цепочка A: tape, ZLG, CAV, BTC, жюри файла.
+   - красные B-метки (Fib вне `{OTE, in_05_1}`, sweep не `done`, FVG не `filled`, `jury_b` «за» < 3 из 7 при `jury_b_n > 0`) → `SPLIT`, ZLG/CAV для **входа** не запускаем (журнал тени всё равно можно посчитать отдельно, чтобы таблица росла).
+   - `propose` / `cut_size` + зелёный контекст (четыре обязательные метки; GEX не решает) → полная цепочка A: tape, ZLG, CAV, BTC, жюри файла.
 3. A `ACCORD` + B `propose` → risk, qty × 1.0.
 4. A `ACCORD` + B `cut_size` → risk, qty × макро (0.5 / 0.3).
 5. A `SPLIT` при любом `propose` → входа нет. Последнее слово A на **быстрый** пропуск.
@@ -108,11 +117,11 @@ TradingAgents — только B, ≥60 с, карантин без ключей
 |---|---|---|---|
 | `veto` | любые | любые | VETO skip/flatten |
 | `hold` | любые | любые | HOLD |
-| `propose` | ≥4/5 зелёных | ACCORD | вход, макро 1.0 |
-| `propose` | ≥4/5 | SPLIT | ждём |
-| `propose` | <4 зелёных | ACCORD | SPLIT (контекст) |
-| `cut_size` | ≥4 | ACCORD | вход, макро 0.5/0.3 |
-| `cut_size` | <4 | ACCORD | SPLIT |
+| `propose` | 4 обязательные зелёные (GEX не решает) | ACCORD | вход, макро 1.0 |
+| `propose` | 4 обязательные | SPLIT | ждём |
+| `propose` | красный контекст | ACCORD | SPLIT (контекст) |
+| `cut_size` | 4 обязательные | ACCORD | вход, макро 0.5/0.3 |
+| `cut_size` | красный контекст | ACCORD | SPLIT |
 
 ---
 

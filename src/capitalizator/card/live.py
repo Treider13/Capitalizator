@@ -22,6 +22,9 @@ FvgStatus = Literal["filled", "open", "none"]
 Regime = Literal["trend", "range", "none"]
 SmcStatus = Literal["bull", "bear"]
 
+# Canon greens: fib_zone ∈ {OTE, in_05_1}, sweep_status == "done",
+# fvg_status == "filled", jury_b >= 3/7 (or jury_b_n == 0).
+# GEX is optional and does not decide. RSI and SMC are display-only.
 MARK_KEYS = ("fib", "sweep", "gex", "fvg", "jury_b")
 REQUIRED_MARKS = ("fib", "sweep", "fvg", "jury_b")
 
@@ -78,7 +81,11 @@ class CardLive:
             object.__setattr__(self, "card_id", uuid4().hex)
 
     def mark_green(self) -> dict[str, bool | None]:
-        """None-marks are red. GEX None is optional (skipped, does not vote)."""
+        """Required greens: fib / sweep / fvg / jury_b. GEX None does not vote.
+
+        RSI (`rsi_htf`) and SMC (`ob_status` / `bos_status`) are informational
+        and never appear here.
+        """
         return {
             "fib": self.fib_zone in {"OTE", "in_05_1"},
             "sweep": self.sweep_status == "done",
@@ -91,6 +98,7 @@ class CardLive:
         return sum(1 for ok in self.mark_green().values() if ok is True)
 
     def context_ok(self) -> bool:
+        """True when the four required marks are green. GEX is optional."""
         if self.fib_zone == "forbidden_0_05" or self.sweep_status == "pending":
             return False
         marks = self.mark_green()
@@ -207,9 +215,24 @@ def card_is_fresh(
     return 0 <= age <= limit
 
 
-def touch_line(*, symbol: str, card: CardLive | None, jury: str | None) -> str:
-    """Operator line. English tokens only — no advice verbs."""
-    b = card.bearing_verdict if card is not None else "hold"
+def touch_line(
+    *,
+    symbol: str,
+    card: CardLive | None,
+    jury: str | None,
+    now: datetime | None = None,
+) -> str:
+    """Operator line. English tokens only — no advice verbs.
+
+    Missing card → `no card`. Stale card (when `now` is given) → `stale`.
+    Never paint a missing/stale card as `hold`.
+    """
+    if card is None:
+        b = "no card"
+    elif now is not None and not card_is_fresh(card, symbol=symbol, now=now):
+        b = "stale"
+    else:
+        b = card.bearing_verdict
     a = jury or "none"
     rsi = card.rsi_htf if card and card.rsi_htf else "-"
     fib = "-"

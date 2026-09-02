@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from capitalizator.card.live import CardLive, VolumeSnapshot
@@ -63,6 +63,21 @@ def test_p7_screen_has_b_and_a() -> None:
 def test_p7_empty_screen_is_honest() -> None:
     page = render_touch(None)
     assert "касаний нет" in page
+
+
+def test_p7_missing_card_says_no_card() -> None:
+    screen = touch_screen(symbol="ETHUSDT", card=None, jury=None)
+    assert screen["b"]["verdict"] == "no card"
+    assert "B:no card" in screen["line"]
+    assert "B:hold" not in screen["line"]
+
+
+def test_p7_stale_card_says_stale() -> None:
+    stale = _card()
+    later = NOW + timedelta(seconds=61)
+    screen = touch_screen(symbol="BTCUSDT", card=stale, jury="ACCORD", now=later)
+    assert screen["b"]["verdict"] == "stale"
+    assert "B:stale" in screen["line"]
 
 
 def test_p7_console_snapshot_includes_touch(tmp_path: Path) -> None:

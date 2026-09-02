@@ -407,7 +407,8 @@ class BounceStrategy:
             size = macro.size_mult
         if snap.b_verdict == "cut_size" and size > Decimal("0.5"):
             size = Decimal("0.5")
-        qty = None if size == Decimal("1") else size
+        # Combined B+calendar multiplier lives on size_mult only.
+        # Signer does qty * size_mult; stuffing the cut into qty would double-cut.
         intent = Intent(
             symbol=snap.symbol,
             side=side,
@@ -415,8 +416,8 @@ class BounceStrategy:
             stop=stop,
             tp=tp,
             tag=tag,
-            qty=qty,
-            size_mult=macro.size_mult,
+            qty=None,
+            size_mult=size,
         )
         self.budget.on_intent()
         return intent

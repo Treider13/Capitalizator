@@ -3,7 +3,8 @@
 Empty tables are honest. Does not read keys. Does not open size.
 Open with create=False never writes: missing file stays missing; a 0-byte
 desk.sqlite is not a db (SQLite would init it). Readonly bind via mode=ro.
-Writes take BEGIN IMMEDIATE. Snapshot uses sqlite3 backup API, not a raw file copy.
+Writes take BEGIN IMMEDIATE. Writable opens set PRAGMA journal_mode=WAL.
+Snapshot uses sqlite3 backup API, not a raw file copy.
 Episode and report rows are bound into the hash chain in the same transaction.
 verify_tables() replays those links; a silent UPDATE of episodes fails pack.
 """
@@ -199,6 +200,7 @@ class Knowledge:
         self._cx.row_factory = sqlite3.Row
         self._cx.execute("PRAGMA foreign_keys = ON")
         if create:
+            self._cx.execute("PRAGMA journal_mode = WAL")
             self._cx.executescript(SCHEMA)
             self._cx.execute("INSERT OR IGNORE INTO meta(k, v) VALUES ('schema', '1')")
             self._cx.execute("PRAGMA secure_delete = ON")
@@ -535,7 +537,10 @@ class Knowledge:
         ).fetchone()
         if row is None:
             return None
-        raw = json.loads(str(row["payload"]))
+        try:
+            raw = json.loads(str(row["payload"]))
+        except json.JSONDecodeError:
+            return None
         return raw if isinstance(raw, dict) else None
 
     def put_journal_touch(self, touch_id: str, payload: Mapping[str, Any]) -> None:
