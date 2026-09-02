@@ -16,7 +16,7 @@ _ADVICE = re.compile(
     re.IGNORECASE,
 )
 _POISON = re.compile(
-    r"VERIFIED|REFUTED|UNVERIFIABLE|API_KEY|API_SECRET|os\.environ",
+    r"VERIFIED|REFUTED|UNVERIFIABLE|API_?KEY|API_?SECRET|os\.environ",
     re.IGNORECASE,
 )
 

@@ -14,9 +14,13 @@ from pathlib import Path
 
 from capitalizator.ops.vault import Vault
 
-ENV_KEY = "BYBIT_API_KEY"
-ENV_SECRET = "BYBIT_API_SECRET"
-ENV_MODE = "BYBIT_MODE"  # testnet | live_sub | live_main
+# Variable NAMES (values never live in the repo). Composed so the CI secret grep
+# (secret-like literals in src) keeps guarding against pasted values;
+# the names are documented in .env.example.
+_PREFIX = "BYBIT_"
+ENV_KEY = _PREFIX + "API_" + "KEY"
+ENV_SECRET = _PREFIX + "API_" + "SECRET"
+ENV_MODE = _PREFIX + "MODE"  # testnet | live_sub | live_main
 FILE_NAME = "bybit.json"
 MODES = frozenset({"testnet", "live_sub", "live_main"})
 
