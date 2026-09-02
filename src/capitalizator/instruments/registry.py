@@ -204,6 +204,41 @@ class InstrumentRegistry:
     def symbols(self) -> list[str]:
         return sorted(self._rows)
 
+    def merge_snapshot(self, raw: Mapping[str, Any]) -> int:
+        """Rows in `to_snapshot()` form (e.g. published by the signer) override ours."""
+        rows = raw.get("instruments") or {}
+        stamp = raw.get("fetched_at")
+        fetched = None
+        if stamp:
+            try:
+                fetched = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            except ValueError:
+                fetched = None
+        n = 0
+        for symbol, body in rows.items():
+            if not isinstance(body, Mapping):
+                continue
+            try:
+                inst = Instrument(
+                    symbol=str(symbol),
+                    tick=Decimal(str(body["tick"])),
+                    qty_step=Decimal(str(body["qty_step"])),
+                    min_qty=Decimal(str(body["min_qty"])),
+                    min_notional=Decimal(str(body.get("min_notional", "0"))),
+                    max_lev=Decimal(str(body.get("max_lev", "1"))),
+                    funding_interval_min=int(body.get("funding_interval_min", 480)),
+                    status=str(body.get("status", "Trading")),
+                    source=str(body.get("source") or raw.get("source") or "snapshot"),
+                    fetched_at=fetched,
+                )
+            except (KeyError, ValueError, ArithmeticError):
+                continue
+            self._rows[inst.symbol] = inst
+            n += 1
+        if n and fetched is not None:
+            self.last_refresh = fetched
+        return n
+
     def to_snapshot(self) -> dict[str, Any]:
         stamp = self.last_refresh or max(
             (r.fetched_at for r in self._rows.values() if r.fetched_at), default=None

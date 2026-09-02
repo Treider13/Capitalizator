@@ -170,6 +170,7 @@ class DeskLoop:
         self.risk = self.account.risk
         self.halts = self.account.halts
         self.funding: dict[str, Decimal] = {}
+        self._funding_hist: dict[str, list[Decimal]] = {}
         self.macro = MacroRules(enabled=True)
         self.strategy = BounceStrategy(
             risk=self.risk,
@@ -203,6 +204,7 @@ class DeskLoop:
         self._trails: dict[str, TrailState] = {}
         self._half_sent: set[str] = set()
         self.entries_paused = False
+        self._instruments_seen: str | None = None
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
         if knowledge.available():
@@ -233,6 +235,8 @@ class DeskLoop:
         self.zone_cache: dict[str, tuple[tuple[Any, ...], tuple[Zone, ...]]] = {}
         self._persisted_zone_ids: dict[str, frozenset[str]] = {}
         self._last_settle: datetime | None = None
+        if knowledge.available():
+            self._reload_instruments()
 
     def tick_for(self, symbol: str) -> Decimal:
         """Instrument tick. Legacy mode falls back to the constructor tick."""
@@ -690,6 +694,8 @@ class DeskLoop:
             if force_flush:
                 out.extend(self._consume_commands(when))
                 self._reload_risk_config()
+                self._reload_instruments()
+                out.extend(self._sync_exchange_state(when))
         self.flush_ui(when, force=force_flush)
         # Settling pending touches walks every touch; once per second of clock is
         # enough (outcomes are 15m closes / 8-tick moves / 6h timeouts).
@@ -1355,9 +1361,16 @@ class DeskLoop:
         payload_row["challenger_tag"] = challenger_tag(payload_row)
         b_action = None
         if b_gate == "b_veto":
-            # 3.14.3 law kept: a veto on a load-bearing claim flattens an open idea.
+            # 3.14.3 law kept: a veto on a load-bearing claim flattens an open idea —
+            # the demo/live twin on paper AND the venue position via the OMS queue.
             act = self.manager.on_refute(load_bearing=True, verdict="veto")
             b_action = None if act is None else act.action
+            twins = self.paper.open_for(st.symbol, source="demo")
+            if twins:
+                px = self.last_price.get(st.symbol, row.trade_px)
+                for twin in twins:
+                    self._oms(twin, "flatten", closed_at, reason="b_veto")
+                self.paper.flatten(st.symbol, px, closed_at, reason="b_veto")
         self.knowledge.put_journal_touch(row.touch_id, payload_row)
         day = row_day_utc(payload_row)
         if day:
@@ -1420,6 +1433,9 @@ class DeskLoop:
                     calendar=self.calendar,
                     unlock_today=self.unlocks.team_today(st.symbol, closed_at),
                     unlock_tomorrow=self.unlocks.team_tomorrow(st.symbol, closed_at),
+                    # instruments-info status: anything but Trading is not a market we enter
+                    delisted=not self._instrument_for(st.symbol).trading,
+                    funding_extreme=self._funding_extreme(st.symbol),
                     idea=idea,
                     wick_extreme=wick_extreme,
                     atr=self._atr_for(st),
@@ -1556,6 +1572,92 @@ class DeskLoop:
                 out.append({"event": "resume_entries"})
         return out
 
+    # --- exchange truth → account (live/demo) --------------------------------------
+    EXCHANGE_STATE_MAX_AGE_S = 300.0
+    VENUE_FLAT_GRACE_S = 90.0
+
+    def _sync_exchange_state(self, now: datetime) -> list[dict[str, Any]]:
+        """In demo/live the signer publishes wallet equity and venue positions (REST truth).
+
+        * equity → Account.set_equity (sizing and halts run on real equity, not paper);
+        * an intent the venue refused (`failed`) frees its open idea at once;
+        * a filled twin whose venue position is gone (stop/TP/liquidation on the venue)
+          is closed here so the account, the one-position rule and the journal agree.
+        Shadow/fade twins are untouched: they never went to the venue.
+        """
+        if self.user_mode not in {"demo", "live"}:
+            return []
+        out: list[dict[str, Any]] = []
+        # 1) intents the signer marked failed → free the idea
+        for symbol, idea in list(self.account.open.items()):
+            if idea.intent_id is None:
+                continue
+            status = self.knowledge.intent_status(idea.intent_id)
+            if status in {"failed", "skipped"}:
+                px = self.last_price.get(symbol, idea.entry)
+                self.paper.flatten(symbol, px, now, reason=f"intent_{status}")
+                if symbol in self.account.open:  # twin may not have existed
+                    self.account.on_flat(symbol)
+                out.append({"event": "idea_freed", "symbol": symbol, "reason": f"intent_{status}"})
+        raw = self.knowledge.meta("exchange_state")
+        if not raw:
+            return out
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError:
+            return out
+        at = state.get("at")
+        try:
+            state_at = datetime.fromisoformat(str(at).replace("Z", "+00:00")) if at else None
+        except ValueError:
+            state_at = None
+        if state_at is None or (now - state_at).total_seconds() > self.EXCHANGE_STATE_MAX_AGE_S:
+            return out
+        # 2) equity from the wallet
+        equity = state.get("equity")
+        if equity not in (None, ""):
+            try:
+                eq = Decimal(str(equity))
+            except ArithmeticError:
+                eq = None
+            if eq is not None and eq > 0 and (
+                self.account.equity != eq or not self.account.equity_source.startswith("exchange")
+            ):
+                self.account.set_equity(eq, source=f"exchange:{self.user_mode}", now=now)
+                out.append({"event": "equity", "equity": str(eq), "source": self.user_mode})
+        # 3) venue flat while our filled twin is open → the venue closed it
+        venue_open = {str(p.get("symbol")) for p in state.get("positions") or [] if p.get("symbol")}
+        for symbol in list(self.account.open):
+            if symbol in venue_open:
+                continue
+            twins = [p for p in self.paper.open_for(symbol, source="demo") if p.state == "open"]
+            for twin in twins:
+                if twin.filled_at is None:
+                    continue
+                if (state_at - twin.filled_at).total_seconds() < self.VENUE_FLAT_GRACE_S:
+                    continue
+                px = self.last_price.get(symbol, twin.entry_px or twin.limit_px)
+                self.paper.flatten(symbol, px, now, reason="venue_flat")
+                out.append({"event": "venue_flat", "symbol": symbol})
+        return out
+
+    def _reload_instruments(self) -> None:
+        """Signer refreshed instruments-info from the venue → registry rows (D-04)."""
+        raw = self.knowledge.meta("instruments_snapshot")
+        if not raw or raw == self._instruments_seen:
+            return
+        self._instruments_seen = raw
+        try:
+            snap = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        n = self.instruments.merge_snapshot(snap)
+        for symbol in list(self.refused_symbols):
+            if self.instruments.has(symbol):
+                del self.refused_symbols[symbol]
+        if n and self.knowledge.available():
+            self._ui_put("instruments_loaded", str(n))
+
     def _reload_risk_config(self) -> None:
         """Operator saved a new RiskConfig: apply to new intents only (open ideas keep theirs)."""
         cfg = load_risk_config(self.knowledge)
@@ -1676,6 +1778,27 @@ class DeskLoop:
             },
             created_ts=now.isoformat(),
         )
+
+    # Bybit linear funding clamp is ±0.375%/8h (instruments-info upperFundingRate on
+    # BTCUSDT in the docs example). "Extreme" = the 95th percentile of THIS symbol's
+    # own observed |rate| once ≥ 20 prints exist; before that no rate is extreme
+    # (unknown is not a veto). Provenance: data, self-calibrating.
+    FUNDING_MIN_N = 20
+
+    def _funding_extreme(self, symbol: str) -> bool:
+        rate = self.funding.get(symbol)
+        if rate is None:
+            return False
+        hist = self._funding_hist.setdefault(symbol, [])
+        if not hist or hist[-1] != rate:
+            hist.append(rate)
+            if len(hist) > 2000:
+                del hist[: len(hist) - 2000]
+        if len(hist) < self.FUNDING_MIN_N:
+            return False
+        xs = sorted(abs(x) for x in hist)
+        p95 = xs[min(len(xs) - 1, int(0.95 * (len(xs) - 1)))]
+        return abs(rate) > p95
 
     def _atr_for(self, st: SymbolState) -> Decimal | None:
         work = [b for b in st.bars if b.tf == self.config.working_tf]

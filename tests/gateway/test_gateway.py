@@ -369,6 +369,72 @@ def test_drain_validated_keeps_gateway_fields(tmp_path: Path) -> None:
     kn.close()
 
 
+def test_gateway_loop_publishes_instruments_for_the_desk(tmp_path: Path) -> None:
+    from capitalizator.signer.process import publish_instruments
+
+    vault = init_vault(tmp_path / "v")
+    kn = open_knowledge(vault)
+
+    class WithInstruments(FakeSession):
+        def get_instruments_info(self, **kw):
+            self._rec("get_instruments_info", kw)
+            return {"retCode": 0, "result": {"list": [
+                {"symbol": "DOGEUSDT", "status": "Trading",
+                 "priceFilter": {"tickSize": "0.00001"},
+                 "lotSizeFilter": {"qtyStep": "1", "minOrderQty": "1", "minNotionalValue": "5"},
+                 "leverageFilter": {"maxLeverage": "75"}, "fundingInterval": 480},
+                {"symbol": "BROKEN"},
+            ], "nextPageCursor": ""}}
+
+    n = publish_instruments(kn, _gw(WithInstruments()), now=NOW)
+    assert n == 1
+    snap = json.loads(kn.meta("instruments_snapshot"))
+    assert snap["instruments"]["DOGEUSDT"]["tick"] == "0.00001" and snap["fetched_at"] == NOW.isoformat()
+    # the loop publishes on its first pass and survives a venue error
+    set_user_mode(vault, "off", ack=True)
+    bad = FakeSession()
+    bad.fail_next = "get_instruments_info"
+    n2 = {"n": 0}
+
+    def stop() -> bool:
+        n2["n"] += 1
+        return n2["n"] > 1
+
+    serve_gateway_loop(knowledge=kn, vault=vault, gateway=_gw(bad), tracker=PositionTracker(), feed=None,
+                       should_stop=stop, idle_s=0, now=NOW)
+    assert "boom" in kn.meta("instruments_error")
+    kn.close()
+
+
+def test_legacy_no_key_loop_watches_the_desk_heartbeat(tmp_path: Path) -> None:
+    """Н-4: the old DeadMan beat itself. The no-key loop now reads the desk heartbeat."""
+    from capitalizator.signer.process import serve_loop
+
+    vault = init_vault(tmp_path / "v")
+    kn = open_knowledge(vault)
+    set_user_mode(vault, "demo", ack=True)
+    kn.enqueue_intent(_intent(), created_ts=NOW.isoformat())
+    cancels: list[int] = []
+    sent: list[dict] = []
+    kn.set_meta("desk_heartbeat", (NOW - timedelta(seconds=120)).isoformat())  # desk silent
+    ticks = {"n": 0}
+
+    def stop() -> bool:
+        ticks["n"] += 1
+        return ticks["n"] > 1
+
+    serve_loop(knowledge=kn, vault=vault, send=lambda p: (sent.append(p), {"status": "sent"})[1],
+               cancel_all=lambda: cancels.append(1), should_stop=stop, idle_s=0, now=NOW)
+    assert cancels == [1] and sent == [] and kn.pending_intents()
+    assert json.loads(kn.meta("entries_blocked")) == ["desk"]
+    kn.set_meta("desk_heartbeat", NOW.isoformat())
+    ticks["n"] = 0
+    serve_loop(knowledge=kn, vault=vault, send=lambda p: (sent.append(p), {"status": "sent"})[1],
+               cancel_all=lambda: cancels.append(1), should_stop=stop, idle_s=0, now=NOW)
+    assert sent and kn.pending_intents() == [] and json.loads(kn.meta("entries_blocked")) == []
+    kn.close()
+
+
 def test_publish_exchange_state_reports_missing_stop(tmp_path: Path) -> None:
     kn = open_knowledge(init_vault(tmp_path / "v"))
     s = FakeSession()

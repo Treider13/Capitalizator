@@ -146,19 +146,32 @@ def serve_loop(
     now: datetime | None = None,
     sleep: Callable[[float], None] = _sleep,
 ) -> None:
-    """Stay up: drain intent_queue, beat dead-man 30s, reconcile 60s. Key in `send`."""
+    """No-key loop: drain intent_queue through `send`, watch the DESK heartbeat.
+
+    The old DeadMan beat and ticked itself in one iteration and could never fire
+    (Н-4). The Watchdog reads the desk heartbeat the desk writes every tick; a
+    silent desk calls `cancel_all` once per episode and blocks the drain.
+    """
+    from capitalizator.gateway.watchdog import Watchdog
     from capitalizator.ops.product import read_user_mode
 
-    dead, recon = make_watchdogs(cancel_all=cancel_all)
+    dead = Watchdog(dead_man_s=HEARTBEAT_S, cancel_entries=lambda _reason: cancel_all())
+    _legacy_dead, recon = make_watchdogs(cancel_all=cancel_all)
     last_recon: datetime | None = None
     while not should_stop():
         when = now if now is not None else datetime.now(tz=UTC)
         require_utc(when)
         mode = read_user_mode(vault)
-        dead.beat(when)
-        if mode in {"demo", "live"}:
+        hb = knowledge.meta("desk_heartbeat")
+        if hb:
+            try:
+                dead.beat("desk", datetime.fromisoformat(hb))
+            except ValueError:
+                pass
+        stale = dead.check(when)
+        knowledge.set_meta("entries_blocked", json.dumps(sorted(stale)))
+        if mode in {"demo", "live"} and not stale:
             drain_validated(knowledge, send, user_mode=mode, now=when)
-        dead.tick(when)
         if last_recon is None or (when - last_recon).total_seconds() >= RECONCILE_S:
             recon.tick({})
             last_recon = when
@@ -264,6 +277,26 @@ def publish_exchange_state(
     return snap
 
 
+INSTRUMENTS_REFRESH_S = 3600
+
+
+def publish_instruments(knowledge: Knowledge, gateway: Any, *, now: datetime) -> int:
+    """instruments-info from the venue → meta for the desk's InstrumentRegistry (D-04)."""
+    from capitalizator.instruments import InstrumentRegistry, instrument_from_bybit
+
+    rows = gateway.instruments()
+    reg = InstrumentRegistry()
+    for row in rows:
+        try:
+            reg.put(instrument_from_bybit(row, fetched_at=now))
+        except ValueError:
+            continue
+    reg.last_refresh = now
+    snap = reg.to_snapshot()
+    knowledge.set_meta("instruments_snapshot", json.dumps(snap, sort_keys=True, default=str))
+    return len(snap["instruments"])
+
+
 def serve_gateway_loop(
     *,
     knowledge: Knowledge,
@@ -292,12 +325,23 @@ def serve_gateway_loop(
     )
     recon_every = reconcile_s or RECONCILE_S
     last_recon: datetime | None = None
+    last_instruments: datetime | None = None
     if feed is not None:
         feed.start()
     while not should_stop():
         when = now if now is not None else datetime.now(tz=UTC)
         require_utc(when)
         mode = read_user_mode(vault)
+        due = (
+            last_instruments is None
+            or (when - last_instruments).total_seconds() >= INSTRUMENTS_REFRESH_S
+        )
+        if due:
+            try:
+                publish_instruments(knowledge, gateway, now=when)
+            except Exception as exc:  # venue/network: keep the last snapshot, say why
+                knowledge.set_meta("instruments_error", str(exc))
+            last_instruments = when
         if feed is not None:
             feed.drain(now=when)
             if feed.last_frame_at is not None:

@@ -117,6 +117,36 @@ def test_gap_in_book_is_counted_and_resynced_via_rest(tmp_path: Path) -> None:
     assert resync.seq == 500 and resync.payload["bids"] == [["60000.0", "1"]]
 
 
+def test_subscriptions_are_chunked_by_ten_symbols(tmp_path: Path) -> None:
+    """pybit sends one request per call and does not batch; Bybit rejects `args size >10`."""
+
+    class CountingWs(FakeWs):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[tuple[str, list]] = []
+
+        def trade_stream(self, symbol, callback):
+            self.calls.append(("trades", list(symbol)))
+            self.subs["trades"] = (symbol, callback)
+
+        def orderbook_stream(self, depth, symbol, callback):
+            self.calls.append(("book", list(symbol)))
+            self.subs["book"] = (depth, symbol, callback)
+
+        def ticker_stream(self, symbol, callback):
+            self.calls.append(("ticker", list(symbol)))
+            self.subs["ticker"] = (symbol, callback)
+
+    ws = CountingWs()
+    symbols = [f"S{i}USDT" for i in range(24)]
+    rec = LiveRecorder(symbols=symbols, data_root=tmp_path, ws_factory=lambda: ws)
+    rec.start()
+    per_stream = [c for c in ws.calls if c[0] == "trades"]
+    assert len(per_stream) == 3 and [len(c[1]) for c in per_stream] == [10, 10, 4]
+    assert all(len(c[1]) <= 10 for c in ws.calls)
+    assert sorted(s for c in per_stream for s in c[1]) == sorted(symbols)
+
+
 def test_run_loop_stops_flushes_and_exits_socket(tmp_path: Path) -> None:
     ws = FakeWs()
     rec = LiveRecorder(symbols=["BTCUSDT"], data_root=tmp_path / "tape", ws_factory=lambda: ws)

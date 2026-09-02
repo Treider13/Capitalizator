@@ -8,7 +8,11 @@ Now:
   * pybit `WebSocket(channel_type="linear")` with ping 20s and auto-restart
     (https://bybit-exchange.github.io/docs/v5/ws/connect: ping every 20s);
   * `publicTrade.<sym>`, `orderbook.50.<sym>`, `tickers.<sym>` for the desk
-    universe (docs: ≤10 args per subscribe — pybit batches);
+    universe. Bybit docs (ws/connect, "Public channel - Args limits"): one
+    connection's args may not exceed 21 000 characters; spot takes ≤10 args per
+    request, futures "no args limit for now". pybit sends one request per call
+    and does NOT batch, and `args size >10` rejections are reported in the wild
+    (tiagosiebler/bybit-api#174), so we subscribe in chunks of 10 ourselves;
   * every frame gets its own `recv_ts` on arrival (callback thread), then is
     parked in a queue; the main thread normalises with the existing
     TradesNormalizer / BybitBookWs (gap → REST snapshot via RestSnapshot) /
@@ -42,6 +46,7 @@ from capitalizator.types import MarketEvent
 Frame = Mapping[str, Any]
 WsFactory = Callable[[], Any]
 BOOK_DEPTH = 50  # docs: linear orderbook depth ∈ {1, 50, 200, 1000}
+SUBSCRIBE_CHUNK = 10  # docs: spot ≤10 args/request; observed `args size >10` rejections
 
 
 def make_public_ws(*, testnet: bool = False) -> Any:
@@ -99,9 +104,10 @@ class LiveRecorder:
         self.started_at = datetime.now(tz=UTC)
         self.ws = self.ws_factory()
         syms = list(self.symbols)
-        self.ws.trade_stream(syms, self._cb("trades"))
-        self.ws.orderbook_stream(BOOK_DEPTH, syms, self._cb("book"))
-        self.ws.ticker_stream(syms, self._cb("ticker"))
+        for chunk in (syms[i : i + SUBSCRIBE_CHUNK] for i in range(0, len(syms), SUBSCRIBE_CHUNK)):
+            self.ws.trade_stream(chunk, self._cb("trades"))
+            self.ws.orderbook_stream(BOOK_DEPTH, chunk, self._cb("book"))
+            self.ws.ticker_stream(chunk, self._cb("ticker"))
 
     def _cb(self, stream: str) -> Callable[[Frame], None]:
         def handle(frame: Frame) -> None:

@@ -889,6 +889,14 @@ class Knowledge:
             for r in rows
         ]
 
+    def intent_status(self, intent_id: int) -> str | None:
+        if self._cx is None:
+            return None
+        row = self._cx.execute(
+            "SELECT status FROM intent_queue WHERE id = ?", (int(intent_id),)
+        ).fetchone()
+        return None if row is None else str(row["status"])
+
     def intent_rows(self, *, limit: int = 100) -> list[dict[str, Any]]:
         """Every intent with its status — the UI must show failed/rejected, not hide them."""
         if self._cx is None:
