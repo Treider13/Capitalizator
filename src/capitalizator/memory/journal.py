@@ -59,6 +59,21 @@ JOURNAL_KEYS = (
     "skip_reason",
     "outcome",
     "rho_class_id",
+    # ОКО — INVENTION-OKO §6. oko_voice is the sixth jury input.
+    "oko_voice",
+    "oko_label",
+    "oko_regime",
+    "oko_reason",
+    "oko_book_trust",
+    "oko_tape_trust",
+    "oko_cp_prob",
+    "oko_p_bounce",
+    "oko_p_break",
+    "oko_p_die",
+    "oko_set",
+    "oko_n_class",
+    "oko_size_mult",
+    "oko_fingerprint",
 )
 
 KNOWLEDGE_TABLES = (

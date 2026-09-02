@@ -1,8 +1,11 @@
-"""WJD — five voices, Accord-or-Silence. Not an ensemble average.
+"""WJD — six voices, Accord-or-Silence. Not an ensemble average.
 
 INVENTION-JURY / PHASE-BUILD glossary:
 any VETO → VETO; CAV and ZLG both 0 → SILENCE; opposite signs → SPLIT;
 only +1 and 0 with at least one +1 → ACCORD.
+INVENTION-OKO: the sixth voice `oko` is the manipulation / regime eye. Its VETO
+kills the trade like any other; its +1 never opens ACCORD alone (CAV and ZLG
+both 0 is still SILENCE); its −1 splits like any other. Default 0 = ОКО absent.
 Does not open size. Weights do not open size. F1 bounce idea only.
 """
 
@@ -12,6 +15,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 Voice = Literal[-1, 0, 1, "VETO"]
+VOICES = (-1, 0, 1, "VETO")
 JuryLabel = Literal["ACCORD", "SPLIT", "VETO", "SILENCE"]
 CAV_LABELS = frozenset({"REJECT", "THROUGH", "COMPRESS", "DRIFT", "NOISE"})
 ZLG_LABELS = frozenset({"DEFEND", "RETREAT", "IMPROVE", "FADE", "SILENCE"})
@@ -25,13 +29,39 @@ class Voices:
     tape: Voice
     btc: Voice
     card: Voice
+    oko: Voice = 0
+
+    def __post_init__(self) -> None:
+        for name in ("cav", "zlg", "tape", "btc", "card", "oko"):
+            if getattr(self, name) not in VOICES:
+                raise ValueError(f"{name} voice must be -1|0|1|VETO")
+
+
+def oko_voice(value: object) -> Voice:
+    """Registry / journal form → Voice. None and unknown text are 0 (ОКО silent)."""
+    if value is None:
+        return 0
+    if value == "VETO":
+        return "VETO"
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int) and value in (-1, 0, 1):
+        return value  # type: ignore[return-value]
+    if isinstance(value, str):
+        try:
+            number = int(value)
+        except ValueError:
+            return 0
+        if number in (-1, 0, 1):
+            return number  # type: ignore[return-value]
+    return 0
 
 
 def decide(voices: Voices, *, risk_ok: bool = True) -> JuryLabel:
     """Accord-or-Silence. Disagreeing signs are never averaged."""
     if not risk_ok:
         return "VETO"
-    votes = (voices.cav, voices.zlg, voices.tape, voices.btc, voices.card)
+    votes = (voices.cav, voices.zlg, voices.tape, voices.btc, voices.card, voices.oko)
     if any(v == "VETO" for v in votes):
         return "VETO"
     if voices.cav == 0 and voices.zlg == 0:
@@ -60,6 +90,7 @@ def voices_for_breakout(
     btc_break_against: bool = False,
     cpi_window: bool = False,
     btc_same_side: bool = False,
+    oko: Voice = 0,
 ) -> Voices:
     """Breakout idea: THROUGH + eaten + RETREAT with us. First-minute is desk-side."""
     if n_cav < 0 or n_zlg < 0:
@@ -74,6 +105,7 @@ def voices_for_breakout(
         tape=_tape_breakout(tape_eaten, trades_in_window, wall_no_print),
         btc=_btc_bounce(btc_regime, btc_break_against, btc_same_side),
         card=_card_voice(card_bearing_verdict, cpi_window),
+        oko=oko,
     )
 
 
@@ -91,6 +123,7 @@ def voices_for_failed_break(
     btc_break_against: bool = False,
     cpi_window: bool = False,
     btc_same_side: bool = False,
+    oko: Voice = 0,
 ) -> Voices:
     """Failed break → opposite bounce. New card_id is a desk concern."""
     return voices_for_bounce(
@@ -106,6 +139,7 @@ def voices_for_failed_break(
         btc_break_against=btc_break_against,
         cpi_window=cpi_window,
         btc_same_side=btc_same_side,
+        oko=oko,
     )
 
 
@@ -123,6 +157,7 @@ def voices_for_bounce(
     btc_break_against: bool = False,
     cpi_window: bool = False,
     btc_same_side: bool = False,
+    oko: Voice = 0,
 ) -> Voices:
     """Map journal labels onto bounce-idea voices. Breakout mapping is not here."""
     if n_cav < 0 or n_zlg < 0:
@@ -137,6 +172,7 @@ def voices_for_bounce(
         tape=_tape_bounce(tape_eaten, trades_in_window, wall_no_print),
         btc=_btc_bounce(btc_regime, btc_break_against, btc_same_side),
         card=_card_voice(card_bearing_verdict, cpi_window),
+        oko=oko,
     )
 
 
