@@ -58,6 +58,7 @@ from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
 from capitalizator.news_macro.unlocks import Unlocks
 from capitalizator.oko.eye import OkoEye, OkoWindow
+from capitalizator.oko.footprint import FINGERPRINT_LEN as OKO_FINGERPRINT_LEN
 from capitalizator.oko.forecast import Sample as OkoSample
 from capitalizator.oko.forecast import class_key as oko_class_key
 from capitalizator.oko.retina import RawWindow
@@ -574,6 +575,9 @@ class DeskLoop:
         try:
             fingerprint = tuple(int(v) for v in touch.oko_fingerprint.split("-"))
         except ValueError:
+            return False
+        if len(fingerprint) != OKO_FINGERPRINT_LEN:
+            # Rows stamped before the Footprint organ carry 10 ints. Not learnable.
             return False
         # Antigen carries the touch time, not the tick that resolved it: replay-stable.
         return self.oko.learn(

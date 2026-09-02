@@ -202,9 +202,10 @@ ICPR 2024: модели без переобучения разваливаютс
 - Спека: `INVENTION-JURY.md`.
 
 ### 6.6b. `oko` (шестой голос)
-- На 8 с: Сетчатка (безразмерные признаки по Паспорту символа, n≥30) и Тень (SPOOF / LAYERING / CASCADE / THIN / CLEAN / UNKNOWN, `book_trust`, `tape_trust`, отпечаток).
+- На 8 с, до B-гейта: Сетчатка (безразмерные признаки по Паспорту символа, n≥30), Тень (SPOOF / LAYERING / CASCADE / THIN / CLEAN / UNKNOWN, `book_trust`, `tape_trust`) и След (BUILD_LONG/SHORT по ΔOI, UNWIND, ICEBERG, ABSORB, SWEEP; ликвидации как улика). Отпечаток 10+3.
 - На закрытом баре: Погода (BOCPD режим), Прогноз (трёхуровневая усадка κ=20 + LOO-конформный набор α=0.2), Память (Wilson LB ловушек, n≥20) → Веко → `oko_voice`.
-- Вето: каскад, `book_trust<0.35`, распознанная ловушка, `cp_prob≥0.7`. +1 только при пройденном Зеркале. `size_mult ≤ 1`, в `propose` — минимум.
+- Вето: каскад, `book_trust<0.35`, распознанная ловушка, `cp_prob≥0.7`, хрупкость 3.15.5 для новых лонгов. След против идеи → −1, за — не +1 (только через класс Прогноза). +1 только при пройденном Зеркале. `size_mult ≤ 1`, в `propose` — минимум.
+- Рекордер: `allLiquidation.{symbol}` → `stream=liquidation` (`position=long|short`). Стол держит OI / фандинг / ликвидации 2 ч на символ.
 - Персист: `meta oko:passport|weather|memory:SYMBOL`, `oko:mirror`. Хеш-цепь не пишет.
 - Спека: `INVENTION-OKO.md`.
 
