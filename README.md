@@ -20,6 +20,7 @@
 Пассивное восстановление стакана (не Sharpe > 3): [`docs/PASSIVE-RESILIENCE.md`](docs/PASSIVE-RESILIENCE.md).  
 Изобретение: жест книги и первый факт: [`docs/INVENTION-FIRST-FACT.md`](docs/INVENTION-FIRST-FACT.md).  
 Жюри графика и книги, % за час сессии: [`docs/INVENTION-JURY.md`](docs/INVENTION-JURY.md).  
+ОКО — шестой голос жюри с вето: манипуляции, режим, конформное «не знаю»: [`docs/INVENTION-OKO.md`](docs/INVENTION-OKO.md).  
 ICT + «поток заказов» vs наши атомы: [`docs/COMPARE-ICT-FLOW.md`](docs/COMPARE-ICT-FLOW.md).  
 ×6–×9 за 6 месяцев «стабильно и с низким риском»: [`docs/VERDICT-x6-LOWRISK.md`](docs/VERDICT-x6-LOWRISK.md) — **нет**.
 

@@ -510,7 +510,7 @@ class DeskLoop:
                         "outcome": touch.outcome,
                     }
                 )
-                learned = self._oko_learn(symbol, touch, now) or learned
+                learned = self._oko_learn(symbol, touch) or learned
                 row = self.knowledge.get_journal_touch(touch.touch_id)
                 if row is None:
                     continue
@@ -525,7 +525,7 @@ class DeskLoop:
             persist_day(self.knowledge, day)
         return events
 
-    def _oko_learn(self, symbol: str, touch: Touch, now: datetime) -> bool:
+    def _oko_learn(self, symbol: str, touch: Touch) -> bool:
         """Immune memory: fingerprint × idea × outcome. die teaches nothing."""
         if touch.outcome == "pending" or not touch.oko_fingerprint or not touch.idea:
             return False
@@ -533,12 +533,13 @@ class DeskLoop:
             fingerprint = tuple(int(v) for v in touch.oko_fingerprint.split("-"))
         except ValueError:
             return False
+        # Antigen carries the touch time, not the tick that resolved it: replay-stable.
         return self.oko.learn(
             symbol=symbol,
             fingerprint=fingerprint,
             idea=touch.idea,
             outcome=touch.outcome,
-            ts=now,
+            ts=touch.ts,
         )
 
     def _oko_raw_window(self, st: SymbolState, touch: Touch) -> RawWindow | None:

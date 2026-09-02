@@ -319,7 +319,7 @@ def _tape_trust(raw: RawWindow, frame: RetinaFrame, prints: list) -> float | Non
     if len(prints) < TAPE_MIN_PRINTS:
         return None
     pairs = Counter(
-        (str(Decimal(str(t.payload["px"]))), str(Decimal(str(t.payload["qty"])))) for t in prints
+        (_dec(Decimal(str(t.payload["px"]))), _dec(Decimal(str(t.payload["qty"])))) for t in prints
     )
     dup_share = 1.0 - len(pairs) / len(prints)
     excess = max(0.0, dup_share - DUP_NORMAL_SHARE)
