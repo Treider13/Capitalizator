@@ -72,6 +72,12 @@ class PaperPosition:
     closed_at: datetime | None = None
     last_funding_slot: int | None = None
     prints_seen: int = 0
+    # W4 trail: venue-side trailing distance (armed on an impulse bar); the stop
+    # then follows the best price at this distance between our bar closes.
+    trailing_distance: Decimal | None = None
+    # Structural level (zone edge / spring wick) for the close-based soft exit.
+    structural: Decimal | None = None
+    stop_components: dict[str, str] = field(default_factory=dict)
 
     # --- geometry -----------------------------------------------------------
     @property
@@ -97,8 +103,11 @@ class PaperPosition:
                 return v.total_seconds()
             return v
 
-        out = {k: s(v) for k, v in self.__dict__.items() if k != "stop_moves"}
+        out = {
+            k: s(v) for k, v in self.__dict__.items() if k not in {"stop_moves", "stop_components"}
+        }
         out["stop_moves"] = list(self.stop_moves)
+        out["stop_components"] = dict(self.stop_components)
         out["r_net"] = s(self.r_net())
         out["r_gross"] = s(self.r_gross())
         out["mae_r"] = s(self.mae_r())
@@ -174,6 +183,8 @@ class PaperEngine:
         tag: str,
         funding_interval_min: int = 480,
         max_hold: timedelta | None = None,
+        structural: Decimal | None = None,
+        stop_components: dict[str, str] | None = None,
     ) -> PaperPosition:
         if qty <= 0 or limit_px <= 0 or stop <= 0 or tick <= 0:
             raise ValueError("qty/limit/stop/tick must be > 0")
@@ -201,6 +212,8 @@ class PaperEngine:
             tag=tag,
             risk_usdt=qty * abs(limit_px - stop),
             funding_interval_min=funding_interval_min,
+            structural=structural,
+            stop_components=dict(stop_components or {}),
         )
         self.positions[paper_id] = pos
         self.n_submitted += 1
@@ -236,6 +249,7 @@ class PaperEngine:
                     continue
             if pos.state == "open":
                 self._track(pos, px)
+                self._follow_trailing(pos)
                 self._funding_tick(pos, when)
                 if self._stop_hit(pos, px):
                     self._exit(pos, when, self._stop_fill_px(pos), "stop", role="taker")
@@ -274,6 +288,36 @@ class PaperEngine:
             return False
         pos.stop_moves.append((str(pos.stop), str(new_stop)))
         pos.stop = new_stop
+        return True
+
+    def arm_trailing(self, paper_id: str, distance: Decimal, *, reason: str) -> bool:
+        """Venue-style trailing stop: follows the best price at `distance`, monotone."""
+        pos = self.positions.get(paper_id)
+        if pos is None or pos.state != "open" or distance <= 0:
+            return False
+        pos.trailing_distance = distance
+        pos.stop_moves.append((str(pos.stop), f"trailing@{distance}"))
+        self._follow_trailing(pos)
+        return True
+
+    def _follow_trailing(self, pos: PaperPosition) -> None:
+        if pos.trailing_distance is None or pos.mfe_px is None:
+            return
+        cand = (
+            pos.mfe_px - pos.trailing_distance
+            if pos.side == "buy"
+            else pos.mfe_px + pos.trailing_distance
+        )
+        if (pos.side == "buy" and cand > pos.stop) or (pos.side == "sell" and cand < pos.stop):
+            pos.stop_moves.append((str(pos.stop), str(cand)))
+            pos.stop = cand
+
+    def soft_exit(self, paper_id: str, px: Decimal, now: datetime) -> bool:
+        """Close-based exit (smart_stop.soft_exit decided): leave at market now."""
+        pos = self.positions.get(paper_id)
+        if pos is None or pos.state != "open":
+            return False
+        self._exit(pos, require_utc(now), px, "soft", role="taker")
         return True
 
     def flatten(

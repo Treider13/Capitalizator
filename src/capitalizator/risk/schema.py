@@ -57,6 +57,9 @@ class Intent(BaseModel):
     risk_config_id: str | None = None
     # D-38: the gateway refuses an intent after this exchange time (stale price).
     valid_until: str | None = None
+    # §6 smart stop: the structural level the stop protects, and how the stop was built.
+    structural: Decimal | None = None
+    stop_components: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("symbol")
     @classmethod

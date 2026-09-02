@@ -231,8 +231,13 @@ def test_play_sends_when_r_covers_fees(tmp_path: Path) -> None:
     assert len(pending) == 1
     payload = pending[0]["payload"]
     assert payload["side"] == "buy" and payload["tag"] == "bounce"  # wick stays inside the wide zone
-    assert Decimal(payload["stop"]) == Decimal("64299.2")  # band stop is further than the wick stop
-    assert Decimal(payload["tp"]) == Decimal("65000") + 2 * (Decimal("65000") - Decimal("64299.2"))
+    # structural = band stop 64299.2 (further than the wick stop); hybrid mode adds
+    # max(k·ATR, 3·spread, tick) below it — the book spread here is 0.2 → 0.6.
+    assert Decimal(payload["structural"]) == Decimal("64299.2")
+    assert Decimal(payload["stop"]) == Decimal("64298.6")
+    assert payload["stop_components"]["mode"] == "hybrid"
+    assert Decimal(payload["stop_components"]["buffer"]) == Decimal("0.6")
+    assert Decimal(payload["tp"]) == Decimal("65000") + 2 * (Decimal("65000") - Decimal("64298.6"))
     assert Decimal(payload["qty"]) > 0 and payload["size_mult"] == "1"
     assert payload["lev"] == "3" and payload["risk_config_id"] == desk.risk_config.config_id
     assert payload["valid_until"] is not None

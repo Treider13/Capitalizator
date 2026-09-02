@@ -20,6 +20,7 @@ from capitalizator.card.draft import CardDraft, load_bearing_ok, require_card
 from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.exec.breakout_close import BreakoutClose
 from capitalizator.exec.first_minute import FirstMinute
+from capitalizator.exec.smart_stop import initial_stop
 from capitalizator.jury.desk import (
     decide,
     voices_for_bounce,
@@ -106,6 +107,12 @@ class BounceSnapshot:
     spot_acked: bool = False
     # Spring: extreme of the wick that traded through the zone (bar.low / bar.high).
     wick_extreme: Decimal | None = None
+    # Smart stop inputs (exec/smart_stop): working-TF ATR, absolute spread, operator mode.
+    atr: Decimal | None = None
+    spread_abs: Decimal | None = None
+    # "structural" keeps the legacy band/wick stop (isolated F1 tests); the desk
+    # passes RiskConfig.stop_mode (default hybrid).
+    stop_mode: str = "structural"
 
 
 def price_in_zone(price: Decimal, zone: Zone) -> bool:
@@ -438,6 +445,21 @@ class BounceStrategy:
                 )
         except ValueError:
             return None
+        structural = stop
+        try:
+            # §6: volatility buffer + cluster avoidance on top of the structural level.
+            smart = initial_stop(
+                side=side,
+                structural=structural,
+                tick=snap.tick,
+                atr=snap.atr,
+                spread=snap.spread_abs,
+                zones=[z for z in snap.zones if z.zone_id != zone.zone_id],
+                mode=snap.stop_mode,
+            )
+            stop = smart.stop
+        except ValueError:
+            return None
         if side == "buy" and snap.price <= stop:
             return None
         if side == "sell" and snap.price >= stop:
@@ -469,6 +491,8 @@ class BounceStrategy:
             tag=tag,
             qty=None,
             size_mult=size,
+            structural=structural,
+            stop_components=dict(smart.components),
         )
         self.budget.on_intent()
         return intent

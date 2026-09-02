@@ -81,7 +81,10 @@ def test_shadow_and_fade_trade_on_paper_in_off_mode(tmp_path: Path) -> None:
     assert shadow.side == "buy" and fade.side == "sell"
     assert shadow.stop < shadow.limit_px < shadow.tp
     assert fade.stop > fade.limit_px > fade.tp
-    assert shadow.stop == Decimal("98999") - Decimal("0.8")  # behind the spring wick
+    # structural = behind the spring wick (98999 − 0.8); hybrid adds the 3·spread buffer
+    assert shadow.structural == Decimal("98999") - Decimal("0.8")
+    assert shadow.stop == shadow.structural - Decimal("0.6")
+    assert shadow.stop_components["mode"] == "hybrid"
     # tape: seller hits our bid → filled; then +1R → half; then tp on the rest
     t = WINDOW + timedelta(minutes=6)
     desk.on_trade(_trade(t, "100000.1", side="sell"), [ZONE])
@@ -134,6 +137,51 @@ def test_demo_intent_is_paper_traded_and_moves_the_account(tmp_path: Path) -> No
     snap = json.loads(desk.knowledge.meta("account"))
     assert Decimal(snap["equity"]) == desk.account.equity
     assert Decimal(snap["day_pnl_pct"]) < 0
+
+
+def test_desk_trails_open_paper_positions_on_bar_close(tmp_path: Path) -> None:
+    """§7 wired: after +1R the structure trail moves the paper stop on every working close;
+    a close through the structural level is a soft exit."""
+    desk = _desk(tmp_path, "off")
+    ev = _arm_and_close(desk)
+    row = desk.knowledge.get_journal_touch(ev["touch_id"])
+    shadow = desk.paper.positions[row["paper_ids"]["shadow"]]
+    t = WINDOW + timedelta(minutes=6)
+    desk.on_trade(_trade(t, "100000.1", side="sell"), [ZONE])
+    assert shadow.state == "open"
+    stop0 = shadow.stop
+    r = shadow.r_px
+    # +1R print → half; then a run of closed bars with a confirmed higher low
+    desk.on_trade(_trade(t + timedelta(minutes=1), str(Decimal("100000.1") + r + 1)), [ZONE])
+    assert shadow.half_taken
+    base = Decimal("100000.1") + r
+    lows = ["0", "40", "80", "20", "-10", "50", "100", "160", "110", "90", "150", "200",
+            "300", "340", "380", "320", "560", "590", "640", "690"]
+    close_ts = WINDOW + timedelta(minutes=20)
+    events = []
+    for i, off in enumerate(lows):
+        lo = base + Decimal(off)
+        bar = Bar(symbol="BTCUSDT", tf="15m", open_ts=close_ts - timedelta(minutes=15),
+                  close_ts=close_ts, open=lo + 30, high=lo + 120, low=lo, close=lo + 100)
+        desk.last_price["BTCUSDT"] = bar.close
+        events += desk.on_bar_close(bar)
+        close_ts += timedelta(minutes=15)
+    trail = [e for e in events if e.get("event") == "trail" and e["paper_id"] == shadow.paper_id]
+    assert trail and trail[0]["action"] == "amend_stop"
+    # the fade challenger (short at the level) was closed by its own soft exit on the rally
+    fade_ev = [e for e in events if e.get("paper_id") == row["paper_ids"]["fade"]]
+    assert fade_ev and fade_ev[0]["action"] == "soft_exit"
+    assert shadow.stop > stop0
+    assert all(Decimal(n) > Decimal(p) for p, n in shadow.stop_moves if not n.startswith("trailing"))
+    assert shadow.paper_id in desk._trails and desk._trails[shadow.paper_id].phase == 2
+    # a working close below the structural level → soft exit at the close (hybrid mode)
+    bad = Bar(symbol="BTCUSDT", tf="15m", open_ts=close_ts - timedelta(minutes=15),
+              close_ts=close_ts, open=Decimal("99500"), high=Decimal("99600"),
+              low=Decimal("98990"), close=Decimal("98995"))
+    out = desk.on_bar_close(bad)
+    assert any(e.get("action") == "soft_exit" for e in out)
+    assert shadow.state == "closed" and shadow.exit_reason == "soft"
+    assert shadow.paper_id not in desk._trails
 
 
 def test_flatten_command_closes_paper_positions(tmp_path: Path) -> None:

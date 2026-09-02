@@ -44,6 +44,7 @@ from capitalizator.exec.ideas import side_for
 from capitalizator.exec.manage import TradeManager
 from capitalizator.exec.paper import PaperEngine, PaperPosition
 from capitalizator.exec.shadow import ShadowWriter
+from capitalizator.exec.smart_stop import initial_stop, soft_exit
 from capitalizator.exec.spot import SpotAdapter
 from capitalizator.exec.strategy_bounce import (
     BounceSnapshot,
@@ -55,6 +56,7 @@ from capitalizator.exec.strategy_bounce import (
     stop_behind_wick,
     take_profit,
 )
+from capitalizator.exec.trail import TrailEngine, TrailState
 from capitalizator.exec.tvh import NO_TVH, tvh_ok
 from capitalizator.instruments import Instrument, InstrumentRegistry, InstrumentUnknown
 from capitalizator.jury.desk import (
@@ -73,6 +75,7 @@ from capitalizator.news_macro.unlocks import Unlocks
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.phase import breakout_enabled
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
+from capitalizator.patterns.bar_quality import atr as atr_of
 from capitalizator.patterns.bar_quality import classify_bar_quality
 from capitalizator.patterns.cav import label as cav_label
 from capitalizator.patterns.cav import prior_compress
@@ -194,6 +197,10 @@ class DeskLoop:
             on_close=self._on_paper_close,
             max_hold=timedelta(hours=self.config.touch_pending_timeout_h),
         )
+        # W4: structure / venue trailing for every open paper position (and, via the
+        # gateway, for live positions). One TrailState per paper_id.
+        self.trail = TrailEngine(mode=self.risk_config.trail_mode)
+        self._trails: dict[str, TrailState] = {}
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
         if knowledge.available():
@@ -515,15 +522,18 @@ class DeskLoop:
             # stale 239 minutes out of 240. A working close refreshes a stale card
             # (a fresh one — e.g. just written by contour B — is kept).
             self._card_for(bar.symbol, bar.close_ts)
+        trail_events: list[dict[str, Any]] = []
+        if bar.tf == self.config.working_tf:
+            trail_events = self._trail_on_bar(st, bar)
         if st.last_touch is None:
-            return []
+            return trail_events
         if bar.tf != self.config.working_tf:
             return []
         # Plan: LABEL_ZLG (8s) then CAV on a closed bar, then JURY.
         # A working bar can close inside the 8s window — wait for the tick.
         if st.state != "LABEL_ZLG":
-            return []
-        return self._eval_cav_and_jury(st, bar)
+            return trail_events
+        return self._eval_cav_and_jury(st, bar) + trail_events
 
     def publish_card(self, symbol: str, now: datetime) -> CardLive:
         """Compute B labels and write claim b_card:SYMBOL. Never sends."""
@@ -1340,6 +1350,9 @@ class DeskLoop:
                     unlock_tomorrow=self.unlocks.team_tomorrow(st.symbol, closed_at),
                     idea=idea,
                     wick_extreme=wick_extreme,
+                    atr=self._atr_for(st),
+                    spread_abs=spr,
+                    stop_mode=self.risk_config.stop_mode,
                     jury=jury,
                     cav_label=row.cav_label,
                     zlg_label=row.gesture,
@@ -1446,11 +1459,23 @@ class DeskLoop:
         inst = self._instrument_for(row_symbol := zone.symbol)
         tick = inst.tick
         away = self.config.bounce_away_ticks
+        st = self.state_for(row_symbol)
         try:
             if idea == "spring":
-                stop = stop_behind_wick(zone, wick_extreme, tick, away, side=side)
+                structural = stop_behind_wick(zone, wick_extreme, tick, away, side=side)
             else:
-                stop = stop_behind(zone, tick, away, side=side)
+                structural = stop_behind(zone, tick, away, side=side)
+            spread = st.book.spread() if st.book.ready else None
+            smart = initial_stop(
+                side=side,
+                structural=structural,
+                tick=tick,
+                atr=self._atr_for(st),
+                spread=spread,
+                zones=[z for z in known_zones if z.zone_id != zone.zone_id],
+                mode=self.risk_config.stop_mode,
+            )
+            stop = smart.stop
         except ValueError:
             return None
         if (side == "buy" and row.trade_px <= stop) or (side == "sell" and row.trade_px >= stop):
@@ -1495,8 +1520,75 @@ class DeskLoop:
             source=source,  # type: ignore[arg-type]
             tag=tag,
             funding_interval_min=inst.funding_interval_min,
+            structural=structural,
+            stop_components=smart.components,
         )
         return pid
+
+    def _atr_for(self, st: SymbolState) -> Decimal | None:
+        work = [b for b in st.bars if b.tf == self.config.working_tf]
+        return atr_of(work[-15:]) if len(work) >= 2 else None
+
+    def _trail_state(self, pos: PaperPosition) -> TrailState:
+        stt = self._trails.get(pos.paper_id)
+        if stt is None:
+            assert pos.entry_px is not None
+            stt = TrailState(side=pos.side, entry=pos.entry_px, stop=pos.stop, tick=pos.tick)
+            self._trails[pos.paper_id] = stt
+        return stt
+
+    def _trail_on_bar(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
+        """§7: every closed working bar moves the stops of open paper positions.
+
+        Structure trail after the +1R half; venue-style trailing after an impulse bar;
+        close-based soft exit beyond the structural level (hybrid mode). All monotone.
+        """
+        out: list[dict[str, Any]] = []
+        work = [b for b in st.bars if b.tf == self.config.working_tf][-60:]
+        last_px = self.last_price.get(st.symbol, bar.close)
+        for pos in list(self.paper.open_for(st.symbol)):
+            if pos.state != "open":
+                continue
+            if (
+                self.risk_config.stop_mode == "hybrid"
+                and pos.structural is not None
+                and soft_exit(side=pos.side, structural=pos.structural, bar=bar)
+            ):
+                self.paper.soft_exit(pos.paper_id, bar.close, bar.close_ts)
+                out.append({"event": "trail", "paper_id": pos.paper_id, "action": "soft_exit"})
+                self._trails.pop(pos.paper_id, None)
+                continue
+            stt = self._trail_state(pos)
+            if pos.half_taken and not stt.half_taken:
+                self.trail.on_half(stt)
+            for action in self.trail.on_bar(stt, work, last_px=last_px):
+                if action.kind == "amend_stop" and action.new_stop is not None:
+                    if self.paper.set_stop(pos.paper_id, action.new_stop, reason=action.reason):
+                        out.append(
+                            {
+                                "event": "trail",
+                                "paper_id": pos.paper_id,
+                                "action": "amend_stop",
+                                "stop": str(action.new_stop),
+                                "reason": action.reason,
+                            }
+                        )
+                elif action.kind == "exchange_trailing" and action.trailing_distance:
+                    if self.paper.arm_trailing(
+                        pos.paper_id, action.trailing_distance, reason=action.reason
+                    ):
+                        out.append(
+                            {
+                                "event": "trail",
+                                "paper_id": pos.paper_id,
+                                "action": "exchange_trailing",
+                                "distance": str(action.trailing_distance),
+                                "reason": action.reason,
+                            }
+                        )
+        for pid in [p for p in self._trails if p not in self.paper.positions]:
+            del self._trails[pid]
+        return out
 
     def _on_paper_close(self, pos: PaperPosition) -> None:
         """Persist the closed paper trade, mirror it into the journal, move the demo account."""
