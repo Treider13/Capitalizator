@@ -26,7 +26,13 @@ MAX_DISTANCE = 1
 MAX_RECORDS = 5000
 Z_95 = 1.959963984540054
 TRAP_LOWER_BOUND = 0.5
-IDEA_FAMILY = {"bounce": "bounce", "failed_break": "bounce", "breakout": "break"}
+# spring (exec/ideas): wick through, close inside, traded WITH the zone — bounce family.
+IDEA_FAMILY = {
+    "bounce": "bounce",
+    "spring": "bounce",
+    "failed_break": "bounce",
+    "breakout": "break",
+}
 
 
 @dataclass(frozen=True)
@@ -54,7 +60,7 @@ class Recognition:
 
 def needed_outcome(idea: str) -> str:
     if idea not in IDEA_FAMILY:
-        raise ValueError("idea must be bounce|breakout|failed_break")
+        raise ValueError("idea must be bounce|spring|breakout|failed_break")
     return IDEA_FAMILY[idea]
 
 

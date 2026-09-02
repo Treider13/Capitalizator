@@ -9,7 +9,7 @@ Does not open size.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -131,7 +131,13 @@ class Touch:
 
 
 class Registry:
-    def __init__(self, *, tick_size: Decimal, config: RegistryConfig | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        tick_size: Decimal,
+        config: RegistryConfig | None = None,
+        tick_for: Callable[[str], Decimal] | None = None,
+    ) -> None:
         if tick_size <= 0:
             raise ValueError("tick_size must be > 0")
         self.tick_size = tick_size
@@ -139,6 +145,59 @@ class Registry:
         self.touches: list[Touch] = []
         self._zones: dict[str, Zone] = {}
         self.chain = HashChain()
+        # Per-symbol tick (instruments-info). None keeps the legacy single tick.
+        self._tick_for = tick_for
+        # (kind, label, symbol) → n for touches archived out of memory. Journal
+        # rows are the record; these keep n_cav / n_zlg exact after archiving.
+        self.archived: dict[tuple[str, str, str], int] = {}
+        self.n_archived = 0
+
+    def archive_resolved(self, *, now: datetime, max_age: timedelta) -> list[Touch]:
+        """Move resolved touches older than max_age out of memory, keeping label counts."""
+        cutoff = require_utc(now) - max_age
+        keep: list[Touch] = []
+        gone: list[Touch] = []
+        for touch in self.touches:
+            if touch.outcome == "pending" or touch.ts >= cutoff:
+                keep.append(touch)
+                continue
+            zone = self._zones.get(touch.zone_id)
+            symbol = zone.symbol if zone is not None else ""
+            if touch.cav_label:
+                key = ("cav", touch.cav_label, symbol)
+                self.archived[key] = self.archived.get(key, 0) + 1
+            if touch.gesture:
+                key = ("zlg", touch.gesture, symbol)
+                self.archived[key] = self.archived.get(key, 0) + 1
+            gone.append(touch)
+        if gone:
+            self.touches = keep
+            self.n_archived += len(gone)
+        return gone
+
+    def archived_count(self, kind: str, label: str | None, symbol: str) -> int:
+        if not label:
+            return 0
+        return self.archived.get((kind, label, symbol), 0)
+
+    def count_label(self, kind: str, label: str | None, symbol: str) -> int:
+        """In-memory touches with this label for the symbol plus archived ones."""
+        if not label:
+            return 0
+        attr = "cav_label" if kind == "cav" else "gesture"
+        live = 0
+        for touch in self.touches:
+            if getattr(touch, attr) != label:
+                continue
+            zone = self._zones.get(touch.zone_id)
+            if zone is not None and zone.symbol == symbol:
+                live += 1
+        return live + self.archived_count(kind, label, symbol)
+
+    def tick(self, symbol: str) -> Decimal:
+        if self._tick_for is None:
+            return self.tick_size
+        return self._tick_for(symbol)
 
     def zone(self, zone_id: str) -> Zone:
         return self._zones[zone_id]
@@ -152,7 +211,7 @@ class Registry:
         if px <= 0 or qty <= 0:
             raise ValueError("trade px/qty must be > 0")
         opened: list[Touch] = []
-        pad = self.tick_size * self.config.epsilon_ticks
+        pad = self.tick(trade.symbol) * self.config.epsilon_ticks
         pending_zones = {t.zone_id for t in self.touches if t.outcome == "pending"}
         for zone in zones:
             self._zones[zone.zone_id] = zone
@@ -240,7 +299,7 @@ class Registry:
                 return replace(touch, outcome="break")
             if zone.side == "resistance" and bar.close > zone.hi:
                 return replace(touch, outcome="break")
-        away = self.tick_size * self.config.bounce_away_ticks
+        away = self.tick(zone.symbol) * self.config.bounce_away_ticks
         if zone.side == "support" and last_px >= zone.hi + away:
             return replace(touch, outcome="bounce")
         if zone.side == "resistance" and last_px <= zone.lo - away:
@@ -286,7 +345,7 @@ class Registry:
                 trades=trades,
                 zone=zone,
                 t0=touch.ts,
-                tick_size=self.tick_size,
+                tick_size=self.tick(zone.symbol),
                 config=self.config,
             )
             prints = clf.prints_in_window(
@@ -524,11 +583,12 @@ class Registry:
             voices_for_bounce,
             voices_for_breakout,
             voices_for_failed_break,
+            voices_for_spring,
         )
         from capitalizator.jury.desk import oko_voice as to_voice
 
-        if idea not in {"bounce", "breakout", "failed_break"}:
-            raise ValueError("idea must be bounce|breakout|failed_break")
+        if idea not in {"bounce", "spring", "breakout", "failed_break"}:
+            raise ValueError("idea must be bounce|spring|breakout|failed_break")
         self._require_touch_id_if_many(touch_id, what="stamp_jury")
         changed: list[Touch] = []
         next_rows: list[Touch] = []
@@ -541,6 +601,7 @@ class Registry:
                 continue
             voice_fn = {
                 "bounce": voices_for_bounce,
+                "spring": voices_for_spring,
                 "breakout": voices_for_breakout,
                 "failed_break": voices_for_failed_break,
             }[idea]

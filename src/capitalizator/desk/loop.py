@@ -6,7 +6,8 @@ when user_mode is demo|live and jury is ACCORD. Shadow always writes.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -23,19 +24,28 @@ from capitalizator.card.draft import pending_card
 from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.card.live import CardLive, card_is_fresh, touch_line
 from capitalizator.card.volume import snapshot as volume_snapshot
+from capitalizator.champion.calibrate import ClassStat, class_key, class_stats, refuted, to_meta
 from capitalizator.champion.shadow_day import (
     challenger_on,
     challenger_tag,
     persist_day,
     row_day_utc,
 )
+from capitalizator.desk.bars import TF_MINUTES, BarBuilder
 from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.desk.session_name import session_name
-from capitalizator.exec.failed_break import FailedBreak, sweep_wick
+from capitalizator.exec.ev_gate import evaluate as ev_evaluate
+from capitalizator.exec.failed_break import sweep_wick
 from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.fvg_mark import fvg_present
+from capitalizator.exec.ideas import classify as classify_idea
+from capitalizator.exec.ideas import opposite as opposite_side
+from capitalizator.exec.ideas import shadow_tag as idea_shadow_tag
+from capitalizator.exec.ideas import side_for
 from capitalizator.exec.manage import TradeManager
+from capitalizator.exec.paper import HALF, PaperEngine, PaperPosition
 from capitalizator.exec.shadow import ShadowWriter
+from capitalizator.exec.smart_stop import initial_stop, soft_exit
 from capitalizator.exec.spot import SpotAdapter
 from capitalizator.exec.strategy_bounce import (
     BounceSnapshot,
@@ -43,13 +53,19 @@ from capitalizator.exec.strategy_bounce import (
     in_mid_range,
     opposing_target,
     price_in_zone,
+    stop_behind,
+    stop_behind_wick,
+    take_profit,
 )
+from capitalizator.exec.trail import TrailEngine, TrailState
 from capitalizator.exec.tvh import NO_TVH, tvh_ok
+from capitalizator.instruments import Instrument, InstrumentRegistry, InstrumentUnknown
 from capitalizator.jury.desk import (
     decide,
     voices_for_bounce,
     voices_for_breakout,
     voices_for_failed_break,
+    voices_for_spring,
 )
 from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
@@ -65,6 +81,7 @@ from capitalizator.oko.retina import RawWindow
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.phase import breakout_enabled
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
+from capitalizator.patterns.bar_quality import atr as atr_of
 from capitalizator.patterns.bar_quality import classify_bar_quality
 from capitalizator.patterns.cav import label as cav_label
 from capitalizator.patterns.cav import prior_compress
@@ -72,14 +89,16 @@ from capitalizator.patterns.width import WidthSample, width_now_from_history, wi
 from capitalizator.prs.score import PRS
 from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
-from capitalizator.risk.halts import Halts
-from capitalizator.risk.schema import RiskEngine
+from capitalizator.risk.account import Account
+from capitalizator.risk.config import load_risk_config
+from capitalizator.risk.schema import Intent
 from capitalizator.risk.session import (
     SessionWindow,
     cpi_day,
     in_desk_window,
     us_data_known_at,
 )
+from capitalizator.risk.sizing import size_position
 from capitalizator.tape.classify import TapeClassifier
 from capitalizator.tape.ofi import OFI
 from capitalizator.types import MarketEvent, require_utc
@@ -90,7 +109,7 @@ from capitalizator.zones.map import ZoneMap
 from capitalizator.zones.model import Bar, Zone
 
 State = Literal["IDLE", "ARM_ZLG", "LABEL_ZLG", "JURY"]
-_IDEAS = frozenset({"bounce", "breakout", "failed_break"})
+_IDEAS = frozenset({"bounce", "spring", "breakout", "failed_break"})
 # ОКО Footprint feeds kept per symbol. OI/funding tick every few seconds; a touch
 # window needs the last value before the print and the last inside 8s.
 _FEED_KEEP = timedelta(hours=2)
@@ -108,6 +127,10 @@ class SymbolState:
     bars: list[Bar] = field(default_factory=list)
     last_touch: Touch | None = None
     book_history: list[tuple[datetime, Book]] = field(default_factory=list)
+    bar_builder: BarBuilder | None = None
+    bars_seeded: int = 0
+    trades_dropped: int = 0
+    zlg_card: CardLive | None = None
     oko_window: OkoWindow | None = None
     oi: list[tuple[datetime, Decimal]] = field(default_factory=list)
     funding: list[tuple[datetime, Decimal]] = field(default_factory=list)
@@ -130,24 +153,38 @@ class DeskLoop:
         *,
         knowledge: Knowledge,
         user_mode: str = DEFAULT_MODE,
-        tick_size: Decimal = Decimal("0.1"),
+        tick_size: Decimal | None = None,
         calendar: tuple[NewsRow, ...] = (),
         btc: BtcBus | None = None,
         unlocks: Unlocks | None = None,
+        instruments: InstrumentRegistry | None = None,
     ) -> None:
         self.knowledge = knowledge
         self.user_mode = user_mode
-        self.tick_size = tick_size
+        # tick_size given explicitly = legacy single-tick mode (fixtures / tests).
+        # None = strict: a symbol missing from the instrument registry is refused.
+        self.legacy_tick = tick_size
+        self.tick_size = tick_size if tick_size is not None else Decimal("0.1")
+        self.instruments = instruments if instruments is not None else InstrumentRegistry.offline()
+        self.refused_symbols: dict[str, str] = {}
         self.calendar = calendar
         self.btc = btc if btc is not None else BtcBus()
         self.unlocks = unlocks if unlocks is not None else Unlocks.load()
         self.config = load_registry()
         self.symbols: dict[str, SymbolState] = {}
-        self.registry = Registry(tick_size=tick_size, config=self.config)
+        self.registry = Registry(
+            tick_size=self.tick_size, config=self.config, tick_for=self.tick_for
+        )
         self.shadow = ShadowWriter()
         self.session = SessionWindow()
-        self.risk = RiskEngine()
-        self.halts = Halts(start_equity=Decimal("100000"))
+        # D-09/D-10/D-13: one Account owns equity, open ideas, halts and the
+        # per-session budget; RiskEngine/Halts are its members, not orphans.
+        self.risk_config = load_risk_config(knowledge)
+        self.account = Account.load(knowledge, self.risk_config)
+        self.risk = self.account.risk
+        self.halts = self.account.halts
+        self.funding: dict[str, Decimal] = {}
+        self._funding_hist: dict[str, list[Decimal]] = {}
         self.macro = MacroRules(enabled=True)
         self.strategy = BounceStrategy(
             risk=self.risk,
@@ -161,7 +198,7 @@ class DeskLoop:
             check_wall=True,
             macro=self.macro,
         )
-        self.zlg = ZLG(tick_size=tick_size, config=self.config)
+        self.zlg = ZLG(tick_size=self.tick_size, config=self.config)
         self.tape = TapeClassifier()
         self.zones_map = ZoneMap(self.config)
         self.first_minute = FirstMinute()
@@ -169,6 +206,21 @@ class DeskLoop:
         self.btc_regime = BtcRegime(self.zones_map)
         self.manager = TradeManager()
         self.spot = SpotAdapter(knowledge)
+        # W3: every shadow / fade / demo idea is executed on paper against the tape.
+        self.paper = PaperEngine(
+            funding_rate=lambda s: self.funding.get(s),
+            on_close=self._on_paper_close,
+            max_hold=timedelta(hours=self.config.touch_pending_timeout_h),
+        )
+        # W4: structure / venue trailing for every open paper position (and, via the
+        # gateway, for live positions). One TrailState per paper_id.
+        self.trail = TrailEngine(mode=self.risk_config.trail_mode)
+        self._trails: dict[str, TrailState] = {}
+        self._half_sent: set[str] = set()
+        self.entries_paused = False
+        self._instruments_seen: str | None = None
+        self._calibration: dict[str, ClassStat] = {}
+        self._calibration_at: datetime | None = None
         self.oko = OkoEye(working_tf=self.config.working_tf)
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
@@ -181,6 +233,10 @@ class DeskLoop:
                     continue
                 if px > 0:
                     self.last_price[symbol] = px
+            for key, raw in knowledge.meta_prefix("label_count:").items():
+                parts = key.split(":", 3)
+                if len(parts) == 4 and raw.isdigit():
+                    self.registry.archived[(parts[1], parts[2], parts[3])] = int(raw)
             zones, pending = load_pending(knowledge)
             for zone in zones:
                 self.registry._zones[zone.zone_id] = zone
@@ -192,13 +248,90 @@ class DeskLoop:
         self.walls: dict[str, WallWatch] = {}
         self.prs: dict[str, PRS] = {}
         self._width_history: list[WidthSample] = []
+        self._ui_pending: dict[str, str] = {}
+        self._ui_last_flush: datetime | None = None
+        self.zone_cache: dict[str, tuple[tuple[Any, ...], tuple[Zone, ...]]] = {}
+        self._persisted_zone_ids: dict[str, frozenset[str]] = {}
+        self._last_settle: datetime | None = None
+        if knowledge.available():
+            self._reload_instruments()
+
+    def tick_for(self, symbol: str) -> Decimal:
+        """Instrument tick. Legacy mode falls back to the constructor tick."""
+        if self.instruments.has(symbol):
+            return self.instruments.tick(symbol)
+        if self.legacy_tick is not None:
+            return self.legacy_tick
+        raise InstrumentUnknown(symbol)
+
+    def instrument_ok(self, symbol: str) -> bool:
+        """False (and remembered for the UI) when no instrument facts exist."""
+        try:
+            self.tick_for(symbol)
+        except InstrumentUnknown:
+            self.refused_symbols[symbol] = "instrument_unknown"
+            return False
+        return True
 
     def state_for(self, symbol: str) -> SymbolState:
         if symbol not in self.symbols:
             self.symbols[symbol] = SymbolState(
-                symbol=symbol, book=Book(tick_size=str(self.tick_size))
+                symbol=symbol,
+                book=Book(tick_size=str(self.tick_for(symbol))),
+                bar_builder=BarBuilder(
+                    symbol=symbol,
+                    tfs=(self.config.working_tf, self.config.htf, self.config.htf_d1),
+                ),
             )
         return self.symbols[symbol]
+
+    # --- bounded buffers -------------------------------------------------
+    def _trade_keep_window(self) -> timedelta:
+        """Prints needed after a touch: the working bar that closes it plus the 8s window."""
+        minutes = TF_MINUTES.get(self.config.working_tf, 15)
+        return timedelta(minutes=minutes + 5, seconds=2 * self.config.zlg_window_s)
+
+    def _trim_trades(self, st: SymbolState, now: datetime) -> None:
+        keep_from = now - self._trade_keep_window()
+        if st.last_touch is not None and st.state != "IDLE":
+            keep_from = min(keep_from, st.last_touch.ts - timedelta(seconds=1))
+        drop = 0
+        for trade in st.trades:
+            if trade.exchange_ts >= keep_from:
+                break
+            drop += 1
+        if drop:
+            del st.trades[:drop]
+            st.trades_dropped += drop
+
+    # --- batched UI meta writes -------------------------------------------
+    UI_FLUSH_S = 0.5
+    ARCHIVE_AFTER = timedelta(hours=24)
+
+    def _ui_put(self, key: str, value: str) -> None:
+        self._ui_pending[key] = value
+
+    def _ui_due(self, now: datetime) -> bool:
+        return (
+            self._ui_last_flush is None
+            or (now - self._ui_last_flush).total_seconds() >= self.UI_FLUSH_S
+        )
+
+    def flush_ui(self, now: datetime, *, force: bool = False) -> int:
+        """Write last_price / book snapshots in one transaction, at most every 0.5s."""
+        if not self._ui_pending or not self.knowledge.available():
+            return 0
+        if (
+            not force
+            and self._ui_last_flush is not None
+            and (now - self._ui_last_flush).total_seconds() < self.UI_FLUSH_S
+        ):
+            return 0
+        n = len(self._ui_pending)
+        self.knowledge.set_meta_many(self._ui_pending)
+        self._ui_pending = {}
+        self._ui_last_flush = now
+        return n
 
     def hello_ok(self) -> bool:
         return self.knowledge.meta(META_HELLO) == "1"
@@ -210,6 +343,18 @@ class DeskLoop:
     def persist_zones(self, zones: Sequence[Zone]) -> None:
         if not self.knowledge.available() or not zones:
             return
+        # Same map as last time for these symbols → nothing to write (was one
+        # full `zone` table read + one transaction per print).
+        by_symbol: dict[str, set[str]] = {}
+        for z in zones:
+            by_symbol.setdefault(z.symbol, set()).add(z.zone_id)
+        if all(
+            self._persisted_zone_ids.get(sym) == frozenset(ids)
+            for sym, ids in by_symbol.items()
+        ):
+            return
+        for sym, ids in by_symbol.items():
+            self._persisted_zone_ids[sym] = frozenset(ids)
         vote = self.config.working_tf
         symbols = {z.symbol for z in zones}
         drop_ids: list[str] = []
@@ -253,16 +398,22 @@ class DeskLoop:
         if st.last_touch is not None and st.state == "ARM_ZLG":
             keep_from = st.last_touch.ts
         st.book_history = [row for row in st.book_history if row[0] >= keep_from]
-        if self.knowledge.available():
+        if self.knowledge.available() and self._ui_due(when):
+            # Build the UI book JSON only when a flush is due (was: sort + dumps per diff).
             bids = sorted(
                 ((str(px), str(sz)) for px, sz in st.book.levels("bid").items()),
                 reverse=True,
             )[:20]
             asks = sorted((str(px), str(sz)) for px, sz in st.book.levels("ask").items())[:20]
-            self.knowledge.put_book_levels(
-                st.symbol,
-                {"symbol": st.symbol, "bids": bids, "asks": asks, "ts": when.isoformat()},
+            self._ui_put(
+                f"book:{st.symbol}",
+                json.dumps(
+                    {"symbol": st.symbol, "bids": bids, "asks": asks, "ts": when.isoformat()},
+                    sort_keys=True,
+                    ensure_ascii=False,
+                ),
             )
+            self.flush_ui(when)
 
     def _wall_for(self, symbol: str) -> WallWatch:
         if symbol not in self.walls:
@@ -271,7 +422,7 @@ class DeskLoop:
 
     def _prs_for(self, symbol: str) -> PRS:
         if symbol not in self.prs:
-            self.prs[symbol] = PRS(tick_size=self.tick_size, config=self.config)
+            self.prs[symbol] = PRS(tick_size=self.tick_for(symbol), config=self.config)
         return self.prs[symbol]
 
     def on_book(self, symbol: str, book: Book) -> None:
@@ -299,15 +450,28 @@ class DeskLoop:
             return
         if event.stream == "book_diff":
             if seq is None:
-                st.book = Book(tick_size=str(self.tick_size))
+                st.book = Book(tick_size=str(self.tick_for(st.symbol)))
                 return
-            before = _level_sizes(st.book) if st.book.ready else {}
+            # Only the touched prices can change: read them before the diff instead of
+            # copying the whole book (was 0.9 ms per diff in the profile).
+            before: dict[tuple[str, Decimal], Decimal] = {}
+            if st.book.ready:
+                for side_name, rows in (("bid", bids), ("ask", asks)):
+                    levels = st.book.levels(side_name)  # type: ignore[arg-type]
+                    for px_s, _sz in rows:
+                        px = Decimal(px_s)
+                        before[(side_name, px)] = levels.get(px, Decimal("0"))
             try:
                 st.book.apply_diff(bids, asks, seq=int(seq))
             except (BookDirty, SeqFault):
-                st.book = Book(tick_size=str(self.tick_size))
+                st.book = Book(tick_size=str(self.tick_for(st.symbol)))
                 return
-            _record_adds(st, event.exchange_ts, before)
+            _record_adds_from_diff(st, event.exchange_ts, before, bids, asks)
+            if st.state == "IDLE" and len(st.adds) > 256:
+                # Adds only matter inside the 8s window after a touch; idle symbols
+                # must not accumulate hours of book activity.
+                keep_from = event.exchange_ts - timedelta(seconds=2 * self.config.zlg_window_s)
+                st.adds = [a for a in st.adds if a.ts >= keep_from]
             self._remember_book(st, event.exchange_ts)
             self._wall_for(st.symbol).on_book_and_trade(st.book, ts=event.exchange_ts)
             return
@@ -341,20 +505,38 @@ class DeskLoop:
                     st.book_pre = None
                     st.oko_window = None
                 action = self.manager.on_refute(load_bearing=True, verdict="REFUTED")
+                flattened = 0
+                when = event.get("now")
+                when = require_utc(when) if isinstance(when, datetime) else datetime.now(tz=UTC)
+                if symbol and symbol in self.last_price:
+                    flattened = len(
+                        self.paper.flatten(symbol, self.last_price[symbol], when, reason="flatten")
+                    )
+                if symbol and self.knowledge.available() and self.user_mode in {"demo", "live"}:
+                    self.knowledge.enqueue_oms(
+                        kind="flatten", symbol=symbol,
+                        payload={"reason": str(event.get("reason") or "operator")},
+                        created_ts=when.isoformat(),
+                    )
                 return [
                     {
                         "event": "flatten",
                         "symbol": symbol,
                         "state": "IDLE",
                         "action": None if action is None else action.action,
+                        "paper_flattened": flattened,
                     }
                 ]
             if kind == "bar_close":
                 bar = event.get("bar")
                 if not isinstance(bar, Bar):
                     raise ValueError("bar_close needs a Bar")
+                if not self.instrument_ok(bar.symbol):
+                    return [_refused(bar.symbol)]
                 return self.on_bar_close(bar)
             raise ValueError(f"unknown desk event: {kind!r}")
+        if not self.instrument_ok(event.symbol):
+            return [_refused(event.symbol)]
         if event.stream == "trades":
             return self.on_trade(event, zones or [])
         st = self.state_for(event.symbol)
@@ -362,20 +544,46 @@ class DeskLoop:
             self._apply_book_event(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"funding", "oi", "mark"}:
-            # Kept for ОКО Footprint (INVENTION-OKO §След). No journal row is written here.
+            # Recorder emits these. Funding feeds the EV gate (expected hold cost).
+            # OI / funding / liquidations are kept per symbol for the ОКО Footprint
+            # (INVENTION-OKO §След). No journal row is written here.
+            if event.stream == "funding":
+                try:
+                    self.funding[event.symbol] = Decimal(str(event.payload["funding"]))
+                except (KeyError, ArithmeticError):
+                    pass
             self._keep_feed(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream == "liquidation":
             self._keep_feed(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"gap", "resync"}:
-            st.book = Book(tick_size=str(self.tick_size))
+            if event.stream == "resync" and event.payload.get("bids") and event.seq is not None:
+                # The recorder resynced from REST and shipped the levels: rebuild, do not wipe.
+                st.book = Book(tick_size=str(self.tick_for(st.symbol)))
+                self._apply_book_event(
+                    st,
+                    MarketEvent(
+                        stream="snapshot",
+                        exchange=event.exchange,
+                        symbol=event.symbol,
+                        exchange_ts=event.exchange_ts,
+                        recv_ts=event.recv_ts,
+                        seq=event.seq,
+                        payload={"bids": event.payload["bids"], "asks": event.payload["asks"]},
+                    ),
+                )
+                return [{"event": "resync", "symbol": event.symbol, "book_dirty": False}]
+            st.book = Book(tick_size=str(self.tick_for(st.symbol)))
             return [{"event": event.stream, "symbol": event.symbol, "book_dirty": True}]
         raise ValueError(f"unknown stream: {event.stream!r}")
 
     def on_bar_close(self, bar: Bar) -> list[dict[str, Any]]:
         st = self.state_for(bar.symbol)
         st.bars.append(bar)
+        if st.bar_builder is not None:
+            st.bar_builder.seed_closed((bar,))
+        self.flush_ui(bar.close_ts, force=True)
         if bar.tf == self.config.working_tf:
             # Weather reads only closed working bars. Persist per symbol.
             self.oko.on_bar_close(bar)
@@ -385,15 +593,23 @@ class DeskLoop:
             self._publish_btc_bus(st, bar)
         if bar.tf in {self.config.htf, self.config.htf_d1}:
             self.publish_card(bar.symbol, bar.close_ts)
+        elif bar.tf == self.config.working_tf and self.calendar:
+            # D-21: TTL is 60s, so publishing only on 4h/1d closes left the card
+            # stale 239 minutes out of 240. A working close refreshes a stale card
+            # (a fresh one — e.g. just written by contour B — is kept).
+            self._card_for(bar.symbol, bar.close_ts)
+        trail_events: list[dict[str, Any]] = []
+        if bar.tf == self.config.working_tf:
+            trail_events = self._trail_on_bar(st, bar)
         if st.last_touch is None:
-            return []
+            return trail_events
         if bar.tf != self.config.working_tf:
             return []
         # Plan: LABEL_ZLG (8s) then CAV on a closed bar, then JURY.
         # A working bar can close inside the 8s window — wait for the tick.
         if st.state != "LABEL_ZLG":
-            return []
-        return self._eval_cav_and_jury(st, bar)
+            return trail_events
+        return self._eval_cav_and_jury(st, bar) + trail_events
 
     def publish_card(self, symbol: str, now: datetime) -> CardLive:
         """Compute B labels and write claim b_card:SYMBOL. Never sends."""
@@ -446,12 +662,29 @@ class DeskLoop:
         require_utc(trade.exchange_ts)
         st = self.state_for(trade.symbol)
         st.trades.append(trade)
+        if st.bar_builder is not None:
+            st.bar_builder.on_trade(trade)
+        self._trim_trades(st, trade.exchange_ts)
+        for pos in self.paper.on_print(trade):
+            # The +1R half on a demo/live twin is a venue order (reduce-only limit).
+            if (
+                pos.source == "demo"
+                and pos.state == "open"
+                and pos.half_taken
+                and pos.paper_id not in self._half_sent
+            ):
+                self._half_sent.add(pos.paper_id)
+                self._oms(
+                    pos, "half_tp", trade.exchange_ts,
+                    qty=str(pos.qty * HALF), price=str(pos.half_px), reason="+1R half",
+                )
         try:
             px = Decimal(str(trade.payload["px"]))
             if px > 0:
                 self.last_price[trade.symbol] = px
                 if self.knowledge.available():
-                    self.knowledge.put_last_price(trade.symbol, str(px))
+                    self._ui_put(f"last_price:{trade.symbol}", str(px))
+                    self.flush_ui(trade.exchange_ts)
         except (KeyError, ArithmeticError):
             pass
         if zones:
@@ -476,9 +709,32 @@ class DeskLoop:
         st.armed_at = trade.exchange_ts
         return [{"event": "armed", "touch_id": touch.touch_id, "symbol": trade.symbol}]
 
-    def tick(self, now: datetime) -> list[dict[str, Any]]:
+    def tick(self, now: datetime, *, force_flush: bool = True) -> list[dict[str, Any]]:
         when = require_utc(now)
-        out = self._settle_shadows(when)
+        self.account.roll(when)
+        self.paper.on_clock(when)
+        out: list[dict[str, Any]] = []
+        if self.knowledge.available():
+            # Gateway watchdog reads this: a silent desk cancels entry orders (§7 / Н-4).
+            self._ui_put("desk_heartbeat", when.isoformat())
+            if self.refused_symbols:
+                self._ui_put("refused_symbols", json.dumps(self.refused_symbols, sort_keys=True))
+            if force_flush:
+                out.extend(self._consume_commands(when))
+                self._reload_risk_config()
+                self._reload_instruments()
+                self._refresh_calibration(when)
+                out.extend(self._sync_exchange_state(when))
+        self.flush_ui(when, force=force_flush)
+        # Settling pending touches walks every touch; once per second of clock is
+        # enough (outcomes are 15m closes / 8-tick moves / 6h timeouts).
+        if (
+            force_flush
+            or self._last_settle is None
+            or (when - self._last_settle).total_seconds() >= 1.0
+        ):
+            out.extend(self._settle_shadows(when))
+            self._last_settle = when
         window = timedelta(seconds=self.config.zlg_window_s)
         for st in self.symbols.values():
             if st.state != "ARM_ZLG" or st.armed_at is None or st.last_touch is None:
@@ -533,6 +789,12 @@ class DeskLoop:
                 self.oko.save(self.knowledge, symbols=(symbol,))
         for day in days:
             persist_day(self.knowledge, day)
+        # Resolved touches older than a day leave memory; their label counts stay.
+        gone = self.registry.archive_resolved(now=now, max_age=self.ARCHIVE_AFTER)
+        if gone and self.knowledge.available():
+            for (kind, label, symbol), n in self.registry.archived.items():
+                self._ui_put(f"label_count:{kind}:{label}:{symbol}", str(n))
+            self.flush_ui(now, force=True)
         return events
 
     def _keep_feed(self, st: SymbolState, event: MarketEvent) -> None:
@@ -683,16 +945,18 @@ class DeskLoop:
             self.registry.fill_btc(regime=self.btc.regime, touch_id=touch.touch_id)
             touch = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
             st.last_touch = touch
-        card = self._card_for(st.symbol, now)
-        # ОКО reads the window before the B gate: a B veto is a fact about the
-        # calendar, not about the book. The Passport must still learn this window
-        # and the journal must carry the Shadow / Footprint facts.
+        # D-18: contour B never stops labelling. ZLG / tape / PRS / CAV are stamped
+        # on every touch (the 24/7 shadow learns from all of them); the B verdict
+        # only decides skip_reason / shadow_would / send in _eval_cav_and_jury.
+        # The card read on the 8s clock is remembered: if none is fresh at the bar
+        # close, the verdict that was current when the touch armed still applies.
+        st.zlg_card = self._card_for(st.symbol, now)
+        # ОКО reads the frozen window on the same 8s clock (Retina + Shadow + Footprint).
+        # A B verdict is a fact about the calendar, not about the book: the Passport
+        # learns every window and the journal carries the facts either way.
         self._oko_observe(st, touch, now)
         touch = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
         st.last_touch = touch
-        gated = self._b_gate(st, touch, zone, card)
-        if gated is not None:
-            return gated
         book = st.book_pre or st.book
         bid, ask = book.best() if book.ready else (None, None)
         mid = ((bid + ask) / 2) if bid is not None and ask is not None else touch.trade_px
@@ -708,6 +972,7 @@ class DeskLoop:
             mid=mid,
             opp_best=opp_best,
             book_ready=book.ready,
+            tick=self.tick_for(st.symbol),
         )
         self.registry.fill_gesture(gesture=result.gesture, touch_id=touch.touch_id)
         self.registry._patch(
@@ -768,6 +1033,25 @@ class DeskLoop:
             return None
         return self.publish_card(symbol, now)
 
+    @staticmethod
+    def _b_gate_kind(card: CardLive | None, *, zone_side: str = "support") -> str | None:
+        """B verdict as a skip reason: b_veto | b_hold | b_marks | None (allowed).
+
+        Marks are read for the touch's side (fib retrace from the high for a long,
+        from the low for a short — D-20). Never stops labelling.
+        """
+        if card is None:
+            return None
+        if card.bearing_verdict == "veto":
+            return "b_veto"
+        if card.bearing_verdict == "hold":
+            return "b_hold"
+        if card.bearing_verdict in {"propose", "cut_size"} and not card.context_ok(
+            side="buy" if zone_side == "support" else "sell"
+        ):
+            return "b_marks"
+        return None
+
     def _b_gate(
         self,
         st: SymbolState,
@@ -775,7 +1059,11 @@ class DeskLoop:
         zone: Zone,
         card: CardLive | None,
     ) -> list[dict[str, Any]] | None:
-        """veto / hold / red marks stop ZLG and CAV. Same law as observe()."""
+        """LEGACY (pre D-18): veto / hold / red marks stopped ZLG and CAV.
+
+        The desk no longer calls this — it starved the 24/7 shadow of labels.
+        Kept for `ops/contour.observe` parity and old tests; not deleted.
+        """
         if card is None:
             return None
         if card.bearing_verdict == "veto":
@@ -965,9 +1253,13 @@ class DeskLoop:
             return []
         zone = self.registry.zone(touch.zone_id)
         card = self._card_for(st.symbol, bar.close_ts)
-        gated = self._b_gate(st, touch, zone, card)
-        if gated is not None:
-            return gated
+        if card is None and st.zlg_card is not None:
+            card = st.zlg_card
+        b_gate = self._b_gate_kind(card, zone_side=zone.side)
+        marks_red = b_gate == "b_marks"
+        if marks_red and not self.risk_config.require_ict_marks:
+            # D-19: red ICT marks are recorded, not enforced (operator knob).
+            b_gate = None
         if bar.close_ts < touch.ts:
             return []
         # Atom requires close_ts < t. Plan: CAV only on a closed bar (close_ts ≤ now).
@@ -990,37 +1282,23 @@ class DeskLoop:
         if in_mid_range(
             bar.close,
             known_zones,
-            tick=self.tick_size,
+            tick=self.tick_for(st.symbol),
             band_ticks=self.config.mid_band_ticks,
         ):
             cav = "NOISE"
         self.registry.fill_cav(cav_label=cav, touch_id=touch.touch_id)
         live = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
-        idea = "bounce"
-        tag = FailedBreak.tag(zone=zone, bar=bar)
-        if tag:
-            idea = "failed_break"
-        elif live.cav_label == "THROUGH":
-            idea = "breakout"
+        # exec/ideas: THROUGH → breakout; wick through + close inside → spring
+        # (the held level, traded WITH the zone); else bounce. No side inversion.
+        idea = classify_idea(zone=zone, bar=bar, cav_label=live.cav_label)
+        wick_extreme = bar.low if zone.side == "support" else bar.high
         if live.btc_regime is None and self.btc.regime:
             # Published bus only. Alt H4 is not BTC; BTC already wrote the bus
             # on this close (on_bar_close publishes before jury).
             self.registry.fill_btc(regime=self.btc.regime, touch_id=touch.touch_id)
-        n_cav = sum(
-            1
-            for hist in self.registry.touches
-            if hist.cav_label == live.cav_label and self._same_symbol(hist, st.symbol)
-        )
-        n_zlg = sum(
-            1
-            for row in self.registry.touches
-            if row.gesture == live.gesture and self._same_symbol(row, st.symbol)
-        )
-        idea_side = "buy" if zone.side == "support" else "sell"
-        if idea == "failed_break":
-            idea_side = "sell" if zone.side == "support" else "buy"
-        if idea == "breakout":
-            idea_side = "sell" if zone.side == "support" else "buy"
+        n_cav = self.registry.count_label("cav", live.cav_label, st.symbol)
+        n_zlg = self.registry.count_label("zlg", live.gesture, st.symbol)
+        idea_side = side_for(idea, zone.side)
         # 2.9.3: long vs BTC support break; short vs BTC resistance break.
         break_against = False
         if st.symbol != "BTCUSDT":
@@ -1113,6 +1391,7 @@ class DeskLoop:
         row = next(t for t in self.registry.touches if t.touch_id == row.touch_id)
         voice_fn = {
             "bounce": voices_for_bounce,
+            "spring": voices_for_spring,
             "breakout": voices_for_breakout,
             "failed_break": voices_for_failed_break,
         }[idea]
@@ -1146,7 +1425,7 @@ class DeskLoop:
         mid = in_mid_range(
             row.trade_px,
             known_zones,
-            tick=self.tick_size,
+            tick=self.tick_for(st.symbol),
             band_ticks=self.config.mid_band_ticks,
         )
         has_tvh = tvh_ok(
@@ -1159,6 +1438,11 @@ class DeskLoop:
             tape_eaten=row.tape_eaten,
         )
         shadow_would = jury == "ACCORD"
+        # Challenger readings so data, not a comment, decides whether ICT marks help:
+        #   shadow_would_no_marks — ACCORD ∧ TVH regardless of marks
+        #   shadow_would_marks    — the same, only when the marks are green
+        shadow_would_no_marks = shadow_would and has_tvh and b_gate in {None, "b_marks"}
+        shadow_would_marks = shadow_would_no_marks and not marks_red
         skip: str | None
         if not has_tvh:
             shadow_would = False
@@ -1167,15 +1451,18 @@ class DeskLoop:
             skip = None
         else:
             skip = first.tag if first.tag == "shadow_gesture" else jury
+        if b_gate is not None:
+            # B is part of the strategy: the shadow respects veto / hold / marks and
+            # the operator sees the B reason first (TVH is journalled separately).
+            shadow_would = False
+            skip = b_gate
         if idea == "breakout" and not breakout_enabled() and skip is None:
             skip = "breakout_off"
         shadow_side = idea_side if shadow_would else None
-        if shadow_would:
-            shadow_tag = "bounce" if idea == "bounce" else (
-                "failed_break_bounce" if idea == "failed_break" else "breakout"
-            )
-        else:
-            shadow_tag = None
+        shadow_tag = idea_shadow_tag(idea) if shadow_would else None
+        # Challenger reading of the same spring bar: the old short against it.
+        # Shadow-only; the paper engine scores both so data, not a comment, decides.
+        fade_side = opposite_side(idea_side) if idea == "spring" else None
         self.registry._patch(
             touch_id=row.touch_id,
             overwrite=True,
@@ -1300,7 +1587,7 @@ class DeskLoop:
                         trades=st.trades,
                         zone=zone,
                         t0=row.ts,
-                        tick_size=self.tick_size,
+                        tick_size=self.tick_for(st.symbol),
                         config=self.config,
                     )
                 )
@@ -1319,10 +1606,31 @@ class DeskLoop:
             "tape_eaten_qty": eaten_qty,
             "had_compress": compress_before,
             "zone_side": zone.side,
+            "idea_side": idea_side,
+            "wick_extreme": str(wick_extreme),
+            "fade_side": fade_side,
+            "fade_tag": "fade_spring" if fade_side else None,
+            "b_gate": b_gate,
+            "b_marks_red": marks_red,
+            "has_tvh": has_tvh,
+            "shadow_would_no_marks": shadow_would_no_marks,
+            "shadow_would_marks": shadow_would_marks,
         }
         payload_row = {**journal, **extra}
         payload_row["challenger_would"] = challenger_on(payload_row)
         payload_row["challenger_tag"] = challenger_tag(payload_row)
+        b_action = None
+        if b_gate == "b_veto":
+            # 3.14.3 law kept: a veto on a load-bearing claim flattens an open idea —
+            # the demo/live twin on paper AND the venue position via the OMS queue.
+            act = self.manager.on_refute(load_bearing=True, verdict="veto")
+            b_action = None if act is None else act.action
+            twins = self.paper.open_for(st.symbol, source="demo")
+            if twins:
+                px = self.last_price.get(st.symbol, row.trade_px)
+                for twin in twins:
+                    self._oms(twin, "flatten", closed_at, reason="b_veto")
+                self.paper.flatten(st.symbol, px, closed_at, reason="b_veto")
         self.knowledge.put_journal_touch(row.touch_id, payload_row)
         day = row_day_utc(payload_row)
         if day:
@@ -1334,6 +1642,25 @@ class DeskLoop:
             "challenger_would": payload_row["challenger_would"],
         }
         self.shadow_writes.append(self.shadow.write(payload))
+        # W3: shadow and fade ideas trade on paper 24/7, whatever the user mode.
+        paper_ids: dict[str, str] = {}
+        if shadow_would:
+            pid = self._submit_paper(
+                row, zone, known_zones, idea=idea, side=idea_side, wick_extreme=wick_extreme,
+                now=closed_at, source="shadow", tag=idea_shadow_tag(idea),
+            )
+            if pid:
+                paper_ids["shadow"] = pid
+        if fade_side is not None and has_tvh:
+            pid = self._submit_paper(
+                row, zone, known_zones, idea="fade_spring", side=fade_side,
+                wick_extreme=wick_extreme, now=closed_at, source="fade", tag="fade_spring",
+            )
+            if pid:
+                paper_ids["fade"] = pid
+        if paper_ids:
+            payload_row["paper_ids"] = paper_ids
+            self.knowledge.put_journal_touch(row.touch_id, payload_row)
         sent = False
         if (
             shadow_would
@@ -1352,7 +1679,7 @@ class DeskLoop:
                     now=closed_at,
                     symbol=st.symbol,
                     price=row.trade_px,
-                    tick=self.tick_size,
+                    tick=self.tick_for(st.symbol),
                     trading_mode=self.user_mode,
                     zone=zone,
                     zones=known_zones,
@@ -1366,7 +1693,14 @@ class DeskLoop:
                     calendar=self.calendar,
                     unlock_today=self.unlocks.team_today(st.symbol, closed_at),
                     unlock_tomorrow=self.unlocks.team_tomorrow(st.symbol, closed_at),
+                    # instruments-info status: anything but Trading is not a market we enter
+                    delisted=not self._instrument_for(st.symbol).trading,
+                    funding_extreme=self._funding_extreme(st.symbol),
                     idea=idea,
+                    wick_extreme=wick_extreme,
+                    atr=self._atr_for(st),
+                    spread_abs=spr,
+                    stop_mode=self.risk_config.stop_mode,
                     jury=jury,
                     cav_label=row.cav_label,
                     zlg_label=row.gesture,
@@ -1391,7 +1725,11 @@ class DeskLoop:
                     card_bearing_verdict=row.bearing_verdict,
                     b_verdict=None if card is None else card.bearing_verdict,
                     macro_multiplier=Decimal("1") if card is None else card.macro_multiplier,
-                    b_marks_ok=True if card is None else card.context_ok(),
+                    b_marks_ok=(
+                        True
+                        if card is None or not self.risk_config.require_ict_marks
+                        else card.context_ok(side=idea_side)
+                    ),
                     rvol=(
                         None
                         if card is None or not card.volume.rvol
@@ -1403,24 +1741,582 @@ class DeskLoop:
                     oko_voice=oko.voice,
                     oko_size_mult=oko.size_mult,
                 )
+                self.strategy.budget = self.account.budget(closed_at)
                 intent = self.strategy.propose(snap)
                 if intent is not None:
-                    self.knowledge.enqueue_intent(
-                        intent.model_dump(mode="json"),
-                        created_ts=row.ts.isoformat(),
+                    sized, gate_info = self._size_and_gate(
+                        intent, st.symbol, closed_at,
+                        labels={"cav_label": row.cav_label, "zlg_label": row.gesture},
                     )
-                    sent = True
+                    payload_row.update(gate_info)
+                    self.knowledge.put_journal_touch(row.touch_id, payload_row)
+                    if sized is not None:
+                        intent_id = self.knowledge.enqueue_intent(
+                            sized.model_dump(mode="json"),
+                            created_ts=row.ts.isoformat(),
+                        )
+                        self.account.on_open(sized, now=closed_at, intent_id=intent_id)
+                        # Demo accounting runs on paper until exchange fills replace it.
+                        demo_pid = f"{row.touch_id}:demo"
+                        assert sized.qty is not None
+                        self.paper.submit(
+                            paper_id=demo_pid,
+                            touch_id=row.touch_id,
+                            symbol=st.symbol,
+                            side=sized.side,
+                            limit_px=sized.entry,
+                            qty=sized.qty,
+                            stop=sized.stop,
+                            tp=sized.tp,
+                            tick=self.tick_for(st.symbol),
+                            now=closed_at,
+                            valid_for=timedelta(
+                                minutes=TF_MINUTES.get(self.config.working_tf, 15)
+                                * self.INTENT_TTL_BARS
+                            ),
+                            source="demo",
+                            tag=sized.tag,
+                            funding_interval_min=self._instrument_for(st.symbol).funding_interval_min,
+                            labels={"cav_label": row.cav_label, "zlg_label": row.gesture,
+                                    "symbol": st.symbol, "zone_side": zone.side},
+                        )
+                        payload_row.setdefault("paper_ids", {})["demo"] = demo_pid
+                        payload_row["intent_id"] = intent_id
+                        self.knowledge.put_journal_touch(row.touch_id, payload_row)
+                        sent = True
         st.state = "IDLE"
         st.last_touch = None
-        return [
-            {
-                "event": "jury",
-                "touch_id": row.touch_id,
-                "jury": jury,
-                "sent": sent,
-                "touch_line": line,
+        st.zlg_card = None
+        out_event: dict[str, Any] = {
+            "event": "jury",
+            "touch_id": row.touch_id,
+            "jury": jury,
+            "sent": sent,
+            "skip_reason": skip,
+            "touch_line": line,
+        }
+        if b_action is not None:
+            out_event["action"] = b_action
+        return [out_event]
+
+    # --- operator commands / config hot reload (D-37, D-12) -------------------------
+    def _consume_commands(self, now: datetime) -> list[dict[str, Any]]:
+        raw = self.knowledge.meta("desk_commands")
+        if not raw:
+            return []
+        try:
+            queue = json.loads(raw)
+        except json.JSONDecodeError:
+            queue = []
+        self.knowledge.set_meta("desk_commands", "[]")
+        out: list[dict[str, Any]] = []
+        for cmd in queue if isinstance(queue, list) else []:
+            kind = str(cmd.get("kind") or "")
+            symbol = cmd.get("symbol")
+            if kind == "flatten":
+                targets = list(self.symbols) if symbol in {None, "ALL"} else [str(symbol)]
+                for sym in targets:
+                    out.extend(
+                        self.on_event(
+                            {
+                                "kind": "flatten",
+                                "symbol": sym,
+                                "now": now,
+                                "reason": cmd.get("reason"),
+                            }
+                        )
+                    )
+            elif kind == "release_halts":
+                assert self.account.halts is not None
+                self.account.halts.release(ack=True)
+                self.account._persist()
+                out.append({"event": "release_halts"})
+            elif kind == "pause_entries":
+                self.entries_paused = True
+                out.append({"event": "pause_entries"})
+            elif kind == "resume_entries":
+                self.entries_paused = False
+                out.append({"event": "resume_entries"})
+        return out
+
+    # --- exchange truth → account (live/demo) --------------------------------------
+    EXCHANGE_STATE_MAX_AGE_S = 300.0
+    VENUE_FLAT_GRACE_S = 90.0
+
+    def _sync_exchange_state(self, now: datetime) -> list[dict[str, Any]]:
+        """In demo/live the signer publishes wallet equity and venue positions (REST truth).
+
+        * equity → Account.set_equity (sizing and halts run on real equity, not paper);
+        * an intent the venue refused (`failed`) frees its open idea at once;
+        * a filled twin whose venue position is gone (stop/TP/liquidation on the venue)
+          is closed here so the account, the one-position rule and the journal agree.
+        Shadow/fade twins are untouched: they never went to the venue.
+        """
+        if self.user_mode not in {"demo", "live"}:
+            return []
+        out: list[dict[str, Any]] = []
+        # 1) intents the signer marked failed → free the idea
+        for symbol, idea in list(self.account.open.items()):
+            if idea.intent_id is None:
+                continue
+            status = self.knowledge.intent_status(idea.intent_id)
+            if status in {"failed", "skipped"}:
+                px = self.last_price.get(symbol, idea.entry)
+                self.paper.flatten(symbol, px, now, reason=f"intent_{status}")
+                if symbol in self.account.open:  # twin may not have existed
+                    self.account.on_flat(symbol)
+                out.append({"event": "idea_freed", "symbol": symbol, "reason": f"intent_{status}"})
+        raw = self.knowledge.meta("exchange_state")
+        if not raw:
+            return out
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError:
+            return out
+        at = state.get("at")
+        try:
+            state_at = datetime.fromisoformat(str(at).replace("Z", "+00:00")) if at else None
+        except ValueError:
+            state_at = None
+        if state_at is None or (now - state_at).total_seconds() > self.EXCHANGE_STATE_MAX_AGE_S:
+            return out
+        # 2) equity from the wallet
+        equity = state.get("equity")
+        if equity not in (None, ""):
+            try:
+                eq = Decimal(str(equity))
+            except ArithmeticError:
+                eq = None
+            if eq is not None and eq > 0 and (
+                self.account.equity != eq or not self.account.equity_source.startswith("exchange")
+            ):
+                self.account.set_equity(eq, source=f"exchange:{self.user_mode}", now=now)
+                out.append({"event": "equity", "equity": str(eq), "source": self.user_mode})
+        # 3) venue flat while our filled twin is open → the venue closed it
+        venue_open = {str(p.get("symbol")) for p in state.get("positions") or [] if p.get("symbol")}
+        for symbol in list(self.account.open):
+            if symbol in venue_open:
+                continue
+            twins = [p for p in self.paper.open_for(symbol, source="demo") if p.state == "open"]
+            for twin in twins:
+                if twin.filled_at is None:
+                    continue
+                if (state_at - twin.filled_at).total_seconds() < self.VENUE_FLAT_GRACE_S:
+                    continue
+                px = self.last_price.get(symbol, twin.entry_px or twin.limit_px)
+                self.paper.flatten(symbol, px, now, reason="venue_flat")
+                out.append({"event": "venue_flat", "symbol": symbol})
+        return out
+
+    CALIBRATION_REFRESH_S = 600.0
+
+    def _refresh_calibration(self, now: datetime) -> None:
+        """Per-class Wilson stats from filled shadow paper trades, every 10 minutes."""
+        if (
+            self._calibration_at is not None
+            and (now - self._calibration_at).total_seconds() < self.CALIBRATION_REFRESH_S
+        ):
+            return
+        self._calibration_at = now
+        rows = self.knowledge.paper_trades(source="shadow")
+        self._calibration = class_stats(rows)
+        if self._calibration:
+            self._ui_put("calibration", to_meta(self._calibration))
+
+    def _reload_instruments(self) -> None:
+        """Signer refreshed instruments-info from the venue → registry rows (D-04)."""
+        raw = self.knowledge.meta("instruments_snapshot")
+        if not raw or raw == self._instruments_seen:
+            return
+        self._instruments_seen = raw
+        try:
+            snap = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        n = self.instruments.merge_snapshot(snap)
+        for symbol in list(self.refused_symbols):
+            if self.instruments.has(symbol):
+                del self.refused_symbols[symbol]
+        if n and self.knowledge.available():
+            self._ui_put("instruments_loaded", str(n))
+
+    def _reload_risk_config(self) -> None:
+        """Operator saved a new RiskConfig: apply to new intents only (open ideas keep theirs)."""
+        cfg = load_risk_config(self.knowledge)
+        if cfg.config_id == self.risk_config.config_id:
+            return
+        self.risk_config = cfg
+        self.account.config = cfg
+        self.account.risk.max_open = cfg.max_open_positions
+        assert self.account.halts is not None
+        self.account.halts.day_limit = cfg.day_halt
+        self.account.halts.week_limit = cfg.week_halt
+        self.account.halts.peak_limit = cfg.peak_kill
+        self.trail = TrailEngine(mode=cfg.trail_mode)
+
+    # --- paper (W3) ----------------------------------------------------------------
+    def _submit_paper(
+        self,
+        row: Touch,
+        zone: Zone,
+        known_zones: tuple[Zone, ...],
+        *,
+        idea: str,
+        side: str,
+        wick_extreme: Decimal,
+        now: datetime,
+        source: str,
+        tag: str,
+    ) -> str | None:
+        """Same geometry as the live strategy, sized from the account, no EV gate:
+        the shadow measures what the edge is worth *after* costs, it does not filter."""
+        inst = self._instrument_for(row_symbol := zone.symbol)
+        tick = inst.tick
+        away = self.config.bounce_away_ticks
+        st = self.state_for(row_symbol)
+        try:
+            if idea == "spring":
+                structural = stop_behind_wick(zone, wick_extreme, tick, away, side=side)
+            else:
+                structural = stop_behind(zone, tick, away, side=side)
+            spread = st.book.spread() if st.book.ready else None
+            smart = initial_stop(
+                side=side,
+                structural=structural,
+                tick=tick,
+                atr=self._atr_for(st),
+                spread=spread,
+                zones=[z for z in known_zones if z.zone_id != zone.zone_id],
+                mode=self.risk_config.stop_mode,
+            )
+            stop = smart.stop
+        except ValueError:
+            return None
+        if (side == "buy" and row.trade_px <= stop) or (side == "sell" and row.trade_px >= stop):
+            return None
+        target = opposing_target(known_zones, side=side, entry=row.trade_px, symbol=row_symbol)
+        tp = take_profit(side, row.trade_px, stop, target, idea="bounce")
+        if tp is None:
+            r = abs(row.trade_px - stop)
+            tp = row.trade_px + 2 * r if side == "buy" else row.trade_px - 2 * r
+        cfg = self.risk_config
+        lev = min(cfg.max_lev, inst.max_lev)
+        decision = size_position(
+            equity=self.account.equity,
+            entry=row.trade_px,
+            stop=stop,
+            lev=lev,
+            target_risk=cfg.target_risk_pct,
+            deposit_share=cfg.deposit_share_per_trade,
+            qty_step=inst.qty_step,
+            min_qty=inst.min_qty,
+            min_notional=inst.min_notional,
+            max_lev=cfg.max_lev,
+        )
+        qty = decision.qty if decision.action == "accept" else inst.min_qty
+        pid = f"{row.touch_id}:{source}"
+        if pid in self.paper.positions:
+            return pid
+        self.paper.submit(
+            paper_id=pid,
+            touch_id=row.touch_id,
+            symbol=row_symbol,
+            side=side,  # type: ignore[arg-type]
+            limit_px=row.trade_px,
+            qty=qty,
+            stop=stop,
+            tp=tp,
+            tick=tick,
+            now=now,
+            valid_for=timedelta(
+                minutes=TF_MINUTES.get(self.config.working_tf, 15) * self.INTENT_TTL_BARS
+            ),
+            source=source,  # type: ignore[arg-type]
+            tag=tag,
+            funding_interval_min=inst.funding_interval_min,
+            structural=structural,
+            stop_components=smart.components,
+            labels={
+                "cav_label": row.cav_label,
+                "zlg_label": row.gesture,
+                "symbol": row_symbol,
+                "zone_side": zone.side,
+                "btc_regime": row.btc_regime,
+            },
+        )
+        return pid
+
+    def _oms(self, pos: PaperPosition, kind: str, now: datetime, **fields: Any) -> None:
+        """Mirror a decision on a demo/live twin to the gateway via oms_commands.
+
+        The desk decides once (paper twin), the signer executes on the venue. Shadow and
+        fade twins never reach the venue.
+        """
+        if pos.source != "demo" or not self.knowledge.available():
+            return
+        if self.user_mode not in {"demo", "live"}:
+            return
+        self.knowledge.enqueue_oms(
+            kind=kind,
+            symbol=pos.symbol,
+            payload={
+                "paper_id": pos.paper_id,
+                "touch_id": pos.touch_id,
+                "side": pos.side,
+                **fields,
+            },
+            created_ts=now.isoformat(),
+        )
+
+    # Bybit linear funding clamp is ±0.375%/8h (instruments-info upperFundingRate on
+    # BTCUSDT in the docs example). "Extreme" = the 95th percentile of THIS symbol's
+    # own observed |rate| once ≥ 20 prints exist; before that no rate is extreme
+    # (unknown is not a veto). Provenance: data, self-calibrating.
+    FUNDING_MIN_N = 20
+
+    def _funding_extreme(self, symbol: str) -> bool:
+        rate = self.funding.get(symbol)
+        if rate is None:
+            return False
+        hist = self._funding_hist.setdefault(symbol, [])
+        if not hist or hist[-1] != rate:
+            hist.append(rate)
+            if len(hist) > 2000:
+                del hist[: len(hist) - 2000]
+        if len(hist) < self.FUNDING_MIN_N:
+            return False
+        xs = sorted(abs(x) for x in hist)
+        p95 = xs[min(len(xs) - 1, int(0.95 * (len(xs) - 1)))]
+        return abs(rate) > p95
+
+    def _atr_for(self, st: SymbolState) -> Decimal | None:
+        work = [b for b in st.bars if b.tf == self.config.working_tf]
+        return atr_of(work[-15:]) if len(work) >= 2 else None
+
+    def _trail_state(self, pos: PaperPosition) -> TrailState:
+        stt = self._trails.get(pos.paper_id)
+        if stt is None:
+            assert pos.entry_px is not None
+            stt = TrailState(side=pos.side, entry=pos.entry_px, stop=pos.stop, tick=pos.tick)
+            self._trails[pos.paper_id] = stt
+        return stt
+
+    def _trail_on_bar(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
+        """§7: every closed working bar moves the stops of open paper positions.
+
+        Structure trail after the +1R half; venue-style trailing after an impulse bar;
+        close-based soft exit beyond the structural level (hybrid mode). All monotone.
+        """
+        out: list[dict[str, Any]] = []
+        work = [b for b in st.bars if b.tf == self.config.working_tf][-60:]
+        last_px = self.last_price.get(st.symbol, bar.close)
+        for pos in list(self.paper.open_for(st.symbol)):
+            if pos.state != "open":
+                continue
+            if (
+                self.risk_config.stop_mode == "hybrid"
+                and pos.structural is not None
+                and soft_exit(side=pos.side, structural=pos.structural, bar=bar)
+            ):
+                self._oms(pos, "flatten", bar.close_ts, reason="soft_exit")
+                self.paper.soft_exit(pos.paper_id, bar.close, bar.close_ts)
+                out.append({"event": "trail", "paper_id": pos.paper_id, "action": "soft_exit"})
+                self._trails.pop(pos.paper_id, None)
+                continue
+            stt = self._trail_state(pos)
+            if pos.half_taken and not stt.half_taken:
+                self.trail.on_half(stt)
+            for action in self.trail.on_bar(stt, work, last_px=last_px):
+                if action.kind == "amend_stop" and action.new_stop is not None:
+                    if self.paper.set_stop(pos.paper_id, action.new_stop, reason=action.reason):
+                        out.append(
+                            {
+                                "event": "trail",
+                                "paper_id": pos.paper_id,
+                                "action": "amend_stop",
+                                "stop": str(action.new_stop),
+                                "reason": action.reason,
+                            }
+                        )
+                        self._oms(pos, "amend_stop", bar.close_ts, stop=str(action.new_stop),
+                                  reason=action.reason)
+                elif action.kind == "exchange_trailing" and action.trailing_distance:
+                    if self.paper.arm_trailing(
+                        pos.paper_id, action.trailing_distance, reason=action.reason
+                    ):
+                        out.append(
+                            {
+                                "event": "trail",
+                                "paper_id": pos.paper_id,
+                                "action": "exchange_trailing",
+                                "distance": str(action.trailing_distance),
+                                "reason": action.reason,
+                            }
+                        )
+                        self._oms(
+                            pos, "set_trailing", bar.close_ts,
+                            distance=str(action.trailing_distance),
+                            active_price=(
+                                None if action.active_price is None else str(action.active_price)
+                            ),
+                            reason=action.reason,
+                        )
+        for pid in [p for p in self._trails if p not in self.paper.positions]:
+            del self._trails[pid]
+        return out
+
+    def _on_paper_close(self, pos: PaperPosition) -> None:
+        """Persist the closed paper trade, mirror it into the journal, move the demo account."""
+        payload = pos.to_payload()
+        if self.knowledge.available():
+            self.knowledge.put_paper_trade(payload)
+            row = self.knowledge.get_journal_touch(pos.touch_id)
+            if row is not None:
+                paper = row.get("paper") if isinstance(row.get("paper"), dict) else {}
+                paper[pos.source] = {
+                    "paper_id": pos.paper_id,
+                    "filled": pos.entry_px is not None,
+                    "exit_reason": pos.exit_reason,
+                    "r_net": payload["r_net"],
+                    "r_gross": payload["r_gross"],
+                    "mae_r": payload["mae_r"],
+                    "mfe_r": payload["mfe_r"],
+                    "pnl_net": str(pos.pnl_net()),
+                    "fees": str(pos.fees),
+                    "funding": str(pos.funding),
+                    "hold_s": payload["hold_s"],
+                }
+                row["paper"] = paper
+                day = row_day_utc(row)
+                self.knowledge.put_journal_touch(pos.touch_id, row)
+                if day:
+                    persist_day(self.knowledge, day)
+        if pos.source == "demo":
+            when = pos.closed_at or datetime.now(tz=UTC)
+            if pos.entry_px is not None and not self.account.equity_source.startswith("exchange"):
+                # Paper P&L moves the account only while the account IS paper. With a
+                # venue wallet as the source the realized P&L is already in that number.
+                self.account.apply_pnl(
+                    pnl=pos.realized, fees=pos.fees, funding=pos.funding, now=when, source="paper"
+                )
+            # (3) The twin is the desk's decision; the venue must follow it. flatten on
+            # the venue = cancel resting entries + close whatever position is left, so a
+            # stop/TP/time/expiry/veto here never leaves an orphan order or position.
+            if pos.exit_reason not in {"soft", "b_veto"}:  # those already queued flatten
+                self._oms(pos, "flatten", when, reason=f"twin_{pos.exit_reason}")
+            self.account.on_flat(pos.symbol)
+
+    # --- sizing + EV gate (D-06, D-11, D-12, D-16, D-38) -----------------------
+    INTENT_TTL_BARS = 2
+
+    def _instrument_for(self, symbol: str) -> Instrument:
+        if self.instruments.has(symbol):
+            return self.instruments.get(symbol)
+        # Legacy single-tick fixtures: lot facts are the test fixture's, marked so.
+        return Instrument.fixture(symbol, tick=self.tick_for(symbol))
+
+    def _size_and_gate(
+        self,
+        intent: Intent,
+        symbol: str,
+        now: datetime,
+        labels: Mapping[str, Any] | None = None,
+    ) -> tuple[Intent | None, dict[str, Any]]:
+        """Concrete qty from the account and a fee/funding EV check. Never 0.001."""
+        cfg = self.risk_config
+        inst = self._instrument_for(symbol)
+        labels = dict(labels or {})
+        info: dict[str, Any] = {"send_skip": None}
+        if self.entries_paused:
+            info["send_skip"] = "paused_by_operator"
+            return None, info
+        ok, why = self.account.allow_entry(symbol)
+        if not ok:
+            info["send_skip"] = why
+            return None, info
+        lev = min(cfg.max_lev, inst.max_lev)
+        decision = size_position(
+            equity=self.account.equity,
+            entry=intent.entry,
+            stop=intent.stop,
+            lev=lev,
+            target_risk=cfg.target_risk_pct,
+            deposit_share=cfg.deposit_share_per_trade,
+            qty_step=inst.qty_step,
+            min_qty=inst.min_qty,
+            min_notional=inst.min_notional,
+            max_lev=cfg.max_lev,
+        )
+        info["sizing"] = {
+            "action": decision.action,
+            "reason": decision.reason,
+            "qty": str(decision.qty),
+            "lev": str(decision.lev),
+            "margin": str(decision.margin),
+            "risk_usdt": str(decision.risk_usdt),
+            "risk_frac": str(decision.risk_frac),
+            "binding": decision.binding,
+            "equity": str(self.account.equity),
+            "equity_source": self.account.equity_source,
+            "config_id": cfg.config_id,
+        }
+        if decision.action != "accept":
+            info["send_skip"] = f"size:{decision.binding}"
+            return None, info
+        qty = inst.round_qty(decision.qty * intent.size_mult)
+        qok, qwhy = inst.qty_ok(qty, intent.entry)
+        if not qok:
+            info["send_skip"] = f"size_mult:{qwhy}"
+            return None, info
+        ev = ev_evaluate(
+            qty=qty,
+            entry=intent.entry,
+            stop=intent.stop,
+            tick=inst.tick,
+            role="maker",
+            funding_rate=self.funding.get(symbol),
+            funding_interval_min=inst.funding_interval_min,
+            fee_multiple_min=cfg.fee_multiple_min,
+        )
+        info["ev"] = {
+            "ok": ev.ok,
+            "reason": ev.reason,
+            "r_gross": str(ev.r_gross),
+            "fees": str(ev.fees),
+            "funding": str(ev.funding),
+            "slippage": str(ev.slippage),
+            "fee_multiple": None if ev.fee_multiple is None else str(ev.fee_multiple),
+            "r_net_1r": str(ev.r_net_1r),
+            "r_net_2r": str(ev.r_net_2r),
+            "r_net_3r": str(ev.r_net_3r),
+            "breakeven_winrate": (
+                None if ev.breakeven_winrate is None else str(ev.breakeven_winrate)
+            ),
+        }
+        if not ev.ok:
+            info["send_skip"] = "ev:fee_gt_r"
+            return None, info
+        # D-03: a class the paper record has refuted (Wilson upper bound of its net
+        # winrate below this trade's break-even) is not sent live. It keeps trading
+        # on paper so the verdict can flip with data.
+        key = class_key(idea=intent.tag, cav=labels.get("cav_label"), zlg=labels.get("zlg_label"))
+        stat = self._calibration.get(key)
+        info["calibration"] = None if stat is None else stat.to_payload()
+        if ev.breakeven_winrate is not None and refuted(stat, breakeven=ev.breakeven_winrate):
+            info["send_skip"] = f"calib:{key}"
+            return None, info
+        ttl = timedelta(minutes=TF_MINUTES.get(self.config.working_tf, 15) * self.INTENT_TTL_BARS)
+        sized = intent.model_copy(
+            update={
+                "qty": qty,
+                "size_mult": Decimal("1"),  # cut already applied to qty; signer must not double-cut
+                "lev": lev,
+                "risk_config_id": cfg.config_id,
+                "valid_until": (now + ttl).isoformat(),
             }
-        ]
+        )
+        info["size_mult_applied"] = str(intent.size_mult)
+        return sized, info
 
     def _stamp_journal_atoms(
         self,
@@ -1563,7 +2459,7 @@ class DeskLoop:
         def advance(when: datetime) -> None:
             # Plan: LABEL_ZLG (8s) then CAV on a closed bar, then JURY.
             # Catch-up `--once` lands both clocks in one now= — tick first.
-            out.extend(self.tick(when))
+            out.extend(self.tick(when, force_flush=False))
             for symbol in _close_symbols(self.symbols):
                 out.extend(close_due_bars(self, symbol, when))
 
@@ -1577,6 +2473,9 @@ class DeskLoop:
                 out.extend(self.on_event(event, list(extras) or None))
                 continue
             advance(event.exchange_ts)
+            if not self.instrument_ok(event.symbol):
+                out.append(_refused(event.symbol))
+                continue
             if event.stream == "trades":
                 built = zones_for_trade(self, event, extras)
                 self.persist_zones(built)
@@ -1586,6 +2485,11 @@ class DeskLoop:
         if now is not None:
             advance(require_utc(now))
         return out
+
+
+def _refused(symbol: str) -> dict[str, Any]:
+    """No tick/lot facts for this symbol: refuse loudly instead of assuming 0.1."""
+    return {"event": "refused", "symbol": symbol, "reason": "instrument_unknown"}
 
 
 def _close_symbols(symbols: dict[str, SymbolState]) -> list[str]:
@@ -1632,12 +2536,32 @@ def _level_sizes(book: Book) -> dict[tuple[str, Decimal], Decimal]:
     return out
 
 
+def _record_adds_from_diff(
+    st: SymbolState,
+    ts: datetime,
+    before: dict[tuple[str, Decimal], Decimal],
+    bids: tuple[tuple[str, str], ...],
+    asks: tuple[tuple[str, str], ...],
+) -> None:
+    """Same law as `_record_adds`, O(diff) instead of O(book): a positive size delta
+    at a price the diff touched is a ZLG BookAdd; pulls are not adds."""
+    for side, rows in (("bid", bids), ("ask", asks)):
+        levels = st.book.levels(side)  # type: ignore[arg-type]
+        for px_s, _sz in rows:
+            px = Decimal(px_s)
+            delta = levels.get(px, Decimal("0")) - before.get((side, px), Decimal("0"))
+            if delta > 0:
+                hit: Literal["bid", "ask"] = "bid" if side == "bid" else "ask"
+                st.adds.append(BookAdd(ts=ts, side=hit, px=px, qty=delta))
+
+
 def _record_adds(
     st: SymbolState,
     ts: datetime,
     before: dict[tuple[str, Decimal], Decimal],
 ) -> None:
-    """Positive size deltas after a diff are ZLG BookAdds. Pulls are not adds."""
+    """Positive size deltas after a diff are ZLG BookAdds. Pulls are not adds.
+    Full-book variant kept for reference/tests; the loop uses `_record_adds_from_diff`."""
     for side in ("bid", "ask"):
         for px, sz in st.book.levels(side).items():
             delta = sz - before.get((side, px), Decimal("0"))

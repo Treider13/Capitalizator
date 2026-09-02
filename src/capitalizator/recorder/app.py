@@ -63,8 +63,55 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8081)
     parser.add_argument("--serve", action="store_true")
+    parser.add_argument(
+        "--live-ws",
+        action="store_true",
+        help="24/7 public WebSocket recorder (pybit) for the desk universe; --userdir for status",
+    )
+    parser.add_argument("--userdir", default=None)
+    parser.add_argument("--testnet", action="store_true")
     args = parser.parse_args(argv)
     app = RecorderApp()
+    if args.live_ws:
+        if not args.data_root and not args.userdir:
+            raise SystemExit("--live-ws needs --data-root or --userdir")
+        import signal
+
+        from capitalizator.ops.knowledge import open_knowledge
+        from capitalizator.ops.vault import load_vault
+        from capitalizator.recorder.live_ws import LiveRecorder, make_public_ws
+        from capitalizator.screener.universe import load_desk_universe
+
+        knowledge = None
+        data_root = Path(args.data_root) if args.data_root else None
+        if args.userdir:
+            vault = load_vault(Path(args.userdir))
+            knowledge = open_knowledge(vault)
+            data_root = data_root or vault.tape
+        assert data_root is not None
+        stopped = {"v": False}
+
+        def _stop(signum: int, frame: object) -> None:
+            stopped["v"] = True
+
+        signal.signal(signal.SIGINT, _stop)
+        signal.signal(signal.SIGTERM, _stop)
+        rec = LiveRecorder(
+            symbols=list(load_desk_universe().symbols),
+            data_root=data_root,
+            ws_factory=lambda: make_public_ws(testnet=args.testnet),
+            knowledge=knowledge,
+        )
+        app.recording = True
+        hello = {"live_ws": True, "n_symbols": len(rec.symbols), "data_root": str(data_root)}
+        print(json.dumps(hello), flush=True)
+        try:
+            rec.run(should_stop=lambda: stopped["v"])
+        finally:
+            if knowledge is not None:
+                knowledge.close()
+        print(json.dumps(rec.status(), default=str))
+        return 0
     if args.from_jsonl:
         if not args.data_root:
             raise SystemExit("--data-root is required with --from-jsonl")

@@ -19,17 +19,17 @@ from capitalizator.memory.registry import Registry, Touch
 from capitalizator.ops.console import ConsoleApp, _handler, desk_snapshot
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.product import mark_hello
+from capitalizator.ops.vault import init_vault
+from capitalizator.recorder.rest_snapshot import BookSnapshot
+from capitalizator.recorder.sink_parquet import ParquetSink
 from capitalizator.screener.universe import load_desk_universe
 from capitalizator.signer.process import (
     HEARTBEAT_S,
     RECONCILE_S,
+    on_signer_exit,
     unsigned_from_intent,
     validate_queue_payload,
 )
-from capitalizator.ops.vault import init_vault
-from capitalizator.recorder.rest_snapshot import BookSnapshot
-from capitalizator.recorder.sink_parquet import ParquetSink
-from capitalizator.signer.process import on_signer_exit
 from capitalizator.signer.validate import Signer, UnsignedIntent
 from capitalizator.types import MarketEvent
 from capitalizator.zlg.gesture import ZLG, BookAdd
@@ -530,6 +530,7 @@ def test_demo_hello_sends_stop_in_payload(tmp_path: Path) -> None:
     desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="demo", tick_size=TICK)
     desk.registry._zones[ZONE.zone_id] = ZONE
     from dataclasses import replace
+
     from capitalizator.memory.registry import Touch
 
     for i in range(20):

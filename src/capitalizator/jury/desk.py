@@ -143,6 +143,45 @@ def voices_for_failed_break(
     )
 
 
+def voices_for_spring(
+    *,
+    cav: str | None,
+    n_cav: int,
+    zlg: str | None,
+    n_zlg: int,
+    tape_eaten: bool | None,
+    btc_regime: str | None,
+    card_bearing_verdict: str | None = None,
+    trades_in_window: int | None = None,
+    wall_no_print: bool = False,
+    btc_break_against: bool = False,
+    cpi_window: bool = False,
+    btc_same_side: bool = False,
+    oko: Voice = 0,
+) -> Voices:
+    """Spring = wick through the zone, close back inside, traded WITH the zone.
+
+    Same voice table as bounce on purpose: REJECT (+1) is literally this bar,
+    DEFEND (+1) is the book refilling the level. The old `failed_break` path
+    used these bullish voices to ACCORD a *short* — that inversion is gone.
+    """
+    return voices_for_bounce(
+        cav=cav,
+        n_cav=n_cav,
+        zlg=zlg,
+        n_zlg=n_zlg,
+        tape_eaten=tape_eaten,
+        btc_regime=btc_regime,
+        card_bearing_verdict=card_bearing_verdict,
+        trades_in_window=trades_in_window,
+        wall_no_print=wall_no_print,
+        btc_break_against=btc_break_against,
+        cpi_window=cpi_window,
+        btc_same_side=btc_same_side,
+        oko=oko,
+    )
+
+
 def voices_for_bounce(
     *,
     cav: str | None,

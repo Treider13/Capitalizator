@@ -147,3 +147,106 @@ class ParquetSink:
             if lock_fd >= 0:
                 os.close(lock_fd)
             os.close(dir_fd)
+
+
+class BufferedParquetSink:
+    """Live sink: buffer events, flush one immutable part file per partition.
+
+    `ParquetSink.write` re-reads and rewrites the whole hourly file for every
+    event (O(rows) per print — impossible at a live rate). This sink appends
+    `hour=HH.<seq>.parquet` parts; readers glob `*.parquet` so parts and the
+    single-file layout coexist. Part files are never rewritten.
+    """
+
+    def __init__(self, data_root: Path, *, flush_every_s: float = 1.0, max_rows: int = 5000):
+        if flush_every_s <= 0 or max_rows <= 0:
+            raise ValueError("flush_every_s and max_rows must be > 0")
+        self.data_root = data_root
+        self.flush_every_s = flush_every_s
+        self.max_rows = max_rows
+        self.accepted_count = 0
+        self.flushed_count = 0
+        self.parts_written = 0
+        self._buf: dict[Path, list[dict]] = {}
+        self._seq: dict[Path, int] = {}
+        self._last_flush: float | None = None
+
+    def write(self, event: MarketEvent, *, now_monotonic: float | None = None) -> None:
+        path = partition_path(self.data_root, event)
+        self._buf.setdefault(path, []).append(_row(event))
+        self.accepted_count += 1
+        if sum(len(rows) for rows in self._buf.values()) >= self.max_rows:
+            self.flush()
+        elif now_monotonic is not None:
+            self.maybe_flush(now_monotonic)
+
+    def maybe_flush(self, now_monotonic: float) -> int:
+        if self._last_flush is None:
+            self._last_flush = now_monotonic
+            return 0
+        if now_monotonic - self._last_flush >= self.flush_every_s:
+            n = self.flush()
+            self._last_flush = now_monotonic
+            return n
+        return 0
+
+    def pending(self) -> int:
+        return sum(len(rows) for rows in self._buf.values())
+
+    def flush(self) -> int:
+        """Write every buffered partition as a new part. Returns rows written."""
+        written = 0
+        for hour_path, rows in list(self._buf.items()):
+            if not rows:
+                continue
+            self._write_part(hour_path, rows)
+            written += len(rows)
+            del self._buf[hour_path]
+        self.flushed_count += written
+        return written
+
+    def _write_part(self, hour_path: Path, rows: list[dict]) -> Path:
+        try:
+            ensure_real_parent(self.data_root)
+        except VaultError as exc:
+            raise ValueError(str(exc)) from exc
+        if self.data_root.is_symlink() or not self.data_root.is_dir():
+            raise ValueError(f"symlink: {self.data_root}")
+        mkdir_real_parents(self.data_root, hour_path.parent)
+        assert_no_symlink_components(self.data_root, hour_path)
+        seq = self._seq.get(hour_path, 0)
+        # Pick a name that does not exist yet (another writer may share the dir).
+        while True:
+            part = hour_path.with_name(f"{hour_path.stem}.{seq:06d}.parquet")
+            if not part.exists():
+                break
+            seq += 1
+        self._seq[hour_path] = seq + 1
+        table = pa.Table.from_pylist(rows, schema=SCHEMA)
+        buf = io.BytesIO()
+        pq.write_table(table, buf)
+        dir_fd = open_real_dir_fd(hour_path.parent)
+        fd = -1
+        tmp_name: str | None = None
+        try:
+            fd, tmp_name = mkstemp_at(dir_fd, prefix=f"{part.name}.", suffix=".tmp")
+            created = os.fstat(fd)
+            write_all(fd, buf.getvalue())
+            os.fsync(fd)
+            os.close(fd)
+            fd = -1
+            replace_at(dir_fd, tmp_name, part.name, created)
+            tmp_name = None
+            self.parts_written += 1
+            return part
+        except VaultError as exc:
+            raise ValueError(str(exc)) from exc
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            if tmp_name is not None:
+                try:
+                    os.unlink(tmp_name, dir_fd=dir_fd)
+                except OSError:
+                    pass
+            os.close(dir_fd)

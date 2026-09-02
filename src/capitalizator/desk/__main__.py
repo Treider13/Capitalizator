@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from capitalizator.desk.loop import DeskLoop
-from capitalizator.desk.tape import consume_tape
+from capitalizator.desk.tape import TapeCursor, consume_tape
 from capitalizator.news_macro.ingest import load_desk_calendar
 from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.product import read_user_mode
@@ -70,6 +70,7 @@ def serve_loop(
     )
     seen: set[tuple[str, str, str, int | None]] = set()
     zones = tuple(extra_zones)
+    cursor = TapeCursor()
     while not should_stop():
         desk.user_mode = read_user_mode(vault)
         if desk.user_mode in {"demo", "live"}:
@@ -77,7 +78,7 @@ def serve_loop(
         else:
             desk.strategy.desk_mode = "off"
         when = now if now is not None else datetime.now(tz=UTC)
-        consume_tape(desk, vault.tape, seen=seen, extra_zones=zones, now=when)
+        consume_tape(desk, vault.tape, seen=seen, extra_zones=zones, now=when, cursor=cursor)
         desk.tick(when)
         if on_tick is not None:
             on_tick(desk)

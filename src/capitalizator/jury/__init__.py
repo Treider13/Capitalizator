@@ -9,6 +9,7 @@ from capitalizator.jury.desk import (
     voices_for_bounce,
     voices_for_breakout,
     voices_for_failed_break,
+    voices_for_spring,
 )
 from capitalizator.jury.weights import (
     channel_weight,
@@ -27,5 +28,6 @@ __all__ = [
     "voices_for_bounce",
     "voices_for_breakout",
     "voices_for_failed_break",
+    "voices_for_spring",
     "weight_opens_size",
 ]

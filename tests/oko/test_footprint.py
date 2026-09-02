@@ -386,3 +386,17 @@ def test_two_runs_same_footprint() -> None:
         return _fp(raw, _oi_passport())
 
     assert run() == run()
+
+
+def test_spring_is_the_bounce_family() -> None:
+    """main renamed failed_break → spring (traded WITH the zone). ОКО must accept it."""
+    from capitalizator.oko.forecast import class_key
+    from capitalizator.oko.memory import is_trap, needed_outcome
+
+    assert needed_side(idea="spring", zone_side="support") == "bid"
+    assert needed_side(idea="spring", zone_side="resistance") == "ask"
+    assert needed_outcome("spring") == "bounce"
+    assert is_trap(idea="spring", outcome="break") is True
+    assert class_key(
+        idea="spring", cav="REJECT", zlg="DEFEND", regime="RANGE", footprint="NONE"
+    ).startswith("spring ×")

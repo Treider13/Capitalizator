@@ -56,13 +56,21 @@ def test_fomc_blackout_et_is_closed() -> None:
 
 
 def test_cpi_day_et_hour_is_closed() -> None:
-    """11 Sep 2026 18:10Z = 14:10 EDT on a CPI day."""
+    """D-22: CPI prints 08:30 ET (12:30Z on 11 Sep 2026). The release window
+    closes 12:00Z–13:30Z; 14:10 EDT (18:10Z) on a CPI day is an ordinary hour —
+    the old 14:00–15:00 ET blackout matched nothing real for CPI."""
     news = NewsIngest.from_csv(MACRO)
-    got = MacroRules(enabled=True).decide(
-        datetime(2026, 9, 11, 18, 10, tzinfo=UTC), news.rows
-    )
-    assert got.allow is False
-    assert got.reason == "et_blackout"
+    rules = MacroRules(enabled=True)
+    inside = rules.decide(datetime(2026, 9, 11, 12, 45, tzinfo=UTC), news.rows)
+    assert inside.allow is False
+    assert inside.reason == "event_window_CPI"
+    before = rules.decide(datetime(2026, 9, 11, 11, 59, tzinfo=UTC), news.rows)
+    assert before.allow is True  # still >24h? no: pre_event cut applies, but not closed
+    after = rules.decide(datetime(2026, 9, 11, 13, 31, tzinfo=UTC), news.rows)
+    assert after.allow is True
+    afternoon = rules.decide(datetime(2026, 9, 11, 18, 10, tzinfo=UTC), news.rows)
+    assert afternoon.allow is True
+    assert afternoon.reason == "ok"
 
 
 def test_nfp_is_not_pre_event_or_et_blackout() -> None:

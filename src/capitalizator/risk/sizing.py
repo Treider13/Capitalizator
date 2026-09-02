@@ -14,7 +14,7 @@ PHASE-BUILD artifact: Sizing.compute(equity, lev, stop_frac, target_risk).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Literal
 
 Action = Literal["accept", "reject"]
@@ -139,3 +139,78 @@ class Sizer:
 
 
 Sizing = Sizer
+
+
+@dataclass(frozen=True)
+class QtyDecision:
+    action: Action
+    reason: str
+    qty: Decimal
+    lev: Decimal
+    margin: Decimal
+    risk_usdt: Decimal
+    risk_frac: Decimal
+    binding: str  # target_risk | deposit_share | cap_margin | min_qty | min_notional
+
+
+def size_position(
+    *,
+    equity: Decimal,
+    entry: Decimal,
+    stop: Decimal,
+    lev: Decimal,
+    target_risk: Decimal,
+    deposit_share: Decimal,
+    qty_step: Decimal,
+    min_qty: Decimal,
+    min_notional: Decimal,
+    cap_margin: Decimal = CAP_MARGIN,
+    max_lev: Decimal = F1_MAX_LEV,
+) -> QtyDecision:
+    """Concrete qty from equity, stop distance and the two operator knobs (D-11/D-12).
+
+    qty_risk   = target_risk × equity / |entry − stop|     (risk budget)
+    qty_margin = deposit_share × equity × lev / entry     (margin the operator allows)
+    qty_cap    = cap_margin × equity × lev / entry        (10% margin hard cap)
+    qty = min of the three, floored to qty_step. Leverage is never raised to fit.
+    Below min_qty / min_notional → reject (no "0.001 anyway").
+    """
+    if equity <= 0 or entry <= 0 or stop <= 0:
+        raise ValueError("equity/entry/stop must be > 0")
+    if lev <= 0:
+        raise ValueError("lev must be > 0")
+    if qty_step <= 0 or min_qty <= 0:
+        raise ValueError("qty_step/min_qty must be > 0")
+    if lev > max_lev:
+        return QtyDecision(
+            "reject", f"lev {lev} above max {max_lev}", Decimal("0"), lev,
+            Decimal("0"), Decimal("0"), Decimal("0"), "max_lev",
+        )
+    dist = abs(entry - stop)
+    if dist <= 0:
+        raise ValueError("stop must differ from entry")
+    qty_risk = target_risk * equity / dist
+    qty_margin = deposit_share * equity * lev / entry
+    qty_cap = cap_margin * equity * lev / entry
+    candidates = {
+        "target_risk": qty_risk,
+        "deposit_share": qty_margin,
+        "cap_margin": qty_cap,
+    }
+    binding = min(candidates, key=lambda k: candidates[k])
+    raw = candidates[binding]
+    qty = (raw / qty_step).to_integral_value(rounding=ROUND_DOWN) * qty_step
+    margin = qty * entry / lev
+    risk_usdt = qty * dist
+    risk_frac = risk_usdt / equity
+    if qty < min_qty:
+        return QtyDecision(
+            "reject", f"qty {qty} < minOrderQty {min_qty}", qty, lev, margin,
+            risk_usdt, risk_frac, "min_qty",
+        )
+    if qty * entry < min_notional:
+        return QtyDecision(
+            "reject", f"notional {qty * entry} < minNotional {min_notional}", qty, lev,
+            margin, risk_usdt, risk_frac, "min_notional",
+        )
+    return QtyDecision("accept", "ok", qty, lev, margin, risk_usdt, risk_frac, binding)

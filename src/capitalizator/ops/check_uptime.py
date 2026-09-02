@@ -15,6 +15,7 @@ from typing import Any
 
 import pyarrow.parquet as pq
 
+from capitalizator.recorder.rows import rows_fast
 from capitalizator.types import MarketEvent, require_utc
 
 
@@ -46,7 +47,7 @@ def load_events(root: Path, *, symbol: str) -> list[MarketEvent]:
             table = pq.ParquetFile(path).read()
         except (OSError, ValueError):
             continue
-        for row in table.to_pylist():
+        for row in rows_fast(table):
             if row.get("symbol") != symbol:
                 continue
             event = parse_event_row(row)

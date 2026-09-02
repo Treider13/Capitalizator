@@ -230,3 +230,19 @@ def test_class_id_matches_spec_example() -> None:
         zlg="DEFEND",
         btc="box",
     ) == "bounce × REJECT × DEFEND × BTC_box"
+
+
+def test_voices_for_spring_carries_oko() -> None:
+    from capitalizator.jury.desk import voices_for_spring
+
+    voices = voices_for_spring(
+        cav="REJECT",
+        n_cav=20,
+        zlg="DEFEND",
+        n_zlg=20,
+        tape_eaten=False,
+        btc_regime="box",
+        oko="VETO",
+    )
+    assert voices.oko == "VETO"
+    assert decide(voices) == "VETO"

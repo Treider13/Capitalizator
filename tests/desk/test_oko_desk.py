@@ -376,12 +376,17 @@ def test_b_veto_does_not_blind_oko(tmp_path: Path) -> None:
     desk.knowledge.put_card_live("BTCUSDT", veto.to_payload())
     _touch_then_wall(desk, wall="45")
     events = desk.tick(WINDOW + timedelta(seconds=8))
-    assert events[-1]["jury"] == "VETO"
-    assert events[-1].get("gesture") is None  # B still stops ZLG
-    journal = desk.knowledge.get_journal_touch(events[-1]["touch_id"])
+    # D-18 (main): contour B never stops labelling; ОКО observes on the same clock.
+    assert events[0]["event"] == "zlg"
+    row = next(t for t in desk.registry.touches if t.touch_id == events[0]["touch_id"])
+    assert row.oko_label == "SPOOF"
+    assert desk.oko.passport_for("BTCUSDT").depth.n == 1
+    out = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    journal = desk.knowledge.get_journal_touch(out[0]["touch_id"])
     assert journal is not None
+    assert journal["skip_reason"] == "b_veto"  # B is the skip reason the operator sees
     assert journal["oko_label"] == "SPOOF"
     assert journal["oko_book_trust"] == "0.0000"
     assert journal["oko_footprint"] == "NONE"
-    assert journal["oko_voice"] is None  # no ОКО verdict: B closed first
-    assert desk.oko.passport_for("BTCUSDT").depth.n == 1
+    assert journal["oko_voice"] == "VETO"  # ОКО judged the same touch
+    assert journal["jury"] == "VETO"

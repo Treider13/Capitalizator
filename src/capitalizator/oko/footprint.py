@@ -105,11 +105,11 @@ def needed_side(*, idea: str, zone_side: str) -> FootSide:
         raise ValueError("zone_side must be support|resistance")
     zone_book: FootSide = "bid" if zone_side == "support" else "ask"
     opp: FootSide = "ask" if zone_book == "bid" else "bid"
-    if idea in {"bounce", "failed_break"}:
+    if idea in {"bounce", "spring", "failed_break"}:
         return zone_book
     if idea == "breakout":
         return opp
-    raise ValueError("idea must be bounce|breakout|failed_break")
+    raise ValueError("idea must be bounce|spring|breakout|failed_break")
 
 
 def report(raw: RawWindow, frame: RetinaFrame) -> FootprintReport:

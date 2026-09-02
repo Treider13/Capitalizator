@@ -1,0 +1,28 @@
+# Offline snapshot of Bybit linear `instruments-info`. Refreshed by
+# `InstrumentRegistry.refresh()` (pybit `get_instruments_info(category="linear")`)
+# whenever egress exists; the desk writes the result back here.
+#
+# Only symbols whose filters are confirmed against the official docs are listed.
+# BTCUSDT lot values are the docs example (minOrderQty 0.001, qtyStep 0.001,
+# minNotionalValue 5): https://bybit-exchange.github.io/docs/v5/market/instrument
+# Every other universe symbol is InstrumentUnknown until fetched — the desk
+# refuses to draw zones or size orders for it rather than assume a 0.1 tick.
+source: manual_snapshot_from_docs
+fetched_at: "2026-09-02T00:00:00Z"
+instruments:
+  BTCUSDT:
+    tick: "0.1"
+    qty_step: "0.001"
+    min_qty: "0.001"
+    min_notional: "5"
+    max_lev: "100"
+    funding_interval_min: 480
+    status: Trading
+  ETHUSDT:
+    tick: "0.01"
+    qty_step: "0.01"
+    min_qty: "0.01"
+    min_notional: "5"
+    max_lev: "100"
+    funding_interval_min: 480
+    status: Trading

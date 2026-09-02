@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-import pytest
-
 from capitalizator.memory.registry import Touch
 from capitalizator.zlg.gesture import ZLG, BookAdd, BookSide
 

@@ -59,9 +59,13 @@ class ZLG:
         mid: Decimal,
         opp_best: Decimal,
         book_ready: bool = True,
+        tick: Decimal | None = None,
     ) -> GestureResult:
+        """`tick` overrides the constructor tick for this symbol (instruments-info)."""
         if q <= 0:
             raise ValueError("q must be > 0")
+        if tick is not None and tick <= 0:
+            raise ValueError("tick must be > 0")
         if (not book_ready) or mid == touch.trade_px:
             return GestureResult(
                 gesture="SILENCE",
@@ -73,8 +77,8 @@ class ZLG:
         t0 = require_utc(touch.ts)
         t1 = t0 + timedelta(seconds=self.config.zlg_window_s)
         a_same = a_back = a_in = a_opp = Decimal("0")
-        one = self.tick_size
-        delta = self.tick_size * self.config.prs_delta_ticks
+        one = tick if tick is not None else self.tick_size
+        delta = one * self.config.prs_delta_ticks
         opp: BookSide = "ask" if hit_side == "bid" else "bid"
         for add in book_adds:
             ts = require_utc(add.ts)

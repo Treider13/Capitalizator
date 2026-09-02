@@ -32,7 +32,9 @@ ZONE = Zone.create(
     method="prior_day_hl",
     created_as_of=CREATED,
 )
-# failed_break of support is a short. 3R from 65000 / 65010.8 needs hi ≤ 64967.6.
+# A wick through support with a close back inside is a SPRING: traded with the
+# zone (buy), stop behind the wick (64998 − 0.8), 2R default target. The old
+# reading (short against the held level, tag failed_break_bounce) was inverted.
 TARGET = Zone.create(
     symbol="BTCUSDT",
     tf="15m",
@@ -177,32 +179,87 @@ def test_play_100_trades_runs_full_chain(tmp_path: Path) -> None:
     assert desk.shadow_writes[-1]["payload"]["touch_id"] == row.touch_id
 
     jury_ev = next(e for e in out if e.get("event") == "jury")
-    if journal["jury"] == "ACCORD":
-        assert journal["shadow_would"] is True
-        assert jury_ev["sent"] is True
-        pending = desk.knowledge.pending_intents()
-        assert pending
-        payload = pending[0]["payload"]
-        assert payload["symbol"] == "BTCUSDT"
-        assert payload["side"] == "sell"
-        assert payload["tag"] == "failed_break_bounce"
-        assert payload["stop"] == "65010.8"
-        assert payload["tp"] == "64950"
-        assert journal["shadow_side"] == "sell"
-        assert journal["shadow_tag"] == "failed_break_bounce"
-        assert row.idea == "failed_break"
-        assert row.shadow_would is True
-        assert row.shadow_side == "sell"
-        assert row.session_hour is not None
-        assert row.n_cav == journal["n_cav"]
-        assert row.n_zlg == journal["n_zlg"]
-        assert row.card_id == journal["card_id"]
-        assert row.first_fact == journal["first_fact"]
-        assert row.cav_tf == "15m"
-    else:
-        assert journal["skip_reason"]
-        assert jury_ev["sent"] is False
-        assert desk.knowledge.pending_intents() == []
+    # No branching on the result: the fixture MUST reach ACCORD.
+    assert journal["jury"] == "ACCORD"
+    assert journal["shadow_would"] is True
+    assert journal["shadow_side"] == "buy"
+    assert journal["shadow_tag"] == "spring"
+    assert journal["idea_side"] == "buy"
+    assert journal["fade_side"] == "sell"
+    assert journal["fade_tag"] == "fade_spring"
+    assert journal["wick_extreme"] == "64998"
+    assert row.idea == "spring"
+    assert row.shadow_would is True
+    assert row.shadow_side == "buy"
+    # D-06: an 11-tick zone on BTC gives R = 2.8 USDT/coin; the maker round trip on
+    # the sized position is ~9x that. The EV gate refuses and says so in the journal.
+    assert jury_ev["sent"] is False
+    assert journal["send_skip"] == "ev:fee_gt_r"
+    assert journal["sizing"]["action"] == "accept"
+    assert Decimal(journal["sizing"]["qty"]) > 0
+    assert journal["ev"]["ok"] is False
+    assert Decimal(journal["ev"]["r_net_3r"]) < 0  # even a 3R win would lose money
+    assert desk.knowledge.pending_intents() == []
+    assert desk.account.open == {}
+
+
+def test_play_sends_when_r_covers_fees(tmp_path: Path) -> None:
+    """Same fixture, a zone wide enough that 1R ≥ fee_multiple_min × costs → sized intent."""
+    trades = _load_trades()
+    events = [*_book_events(trades[0]), *trades, *_wick_and_recover(trades[0])]
+    now = datetime(2024, 8, 30, 15, 0, tzinfo=UTC)
+    wide = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("64300"),
+        hi=Decimal("65010"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
+    desk = _desk(tmp_path, user_mode="demo")
+    desk.registry._zones[wide.zone_id] = wide
+    for touch in list(desk.registry.touches):
+        desk.registry.touches.remove(touch)
+        desk.registry.touches.append(replace(touch, zone_id=wide.zone_id))
+    out = desk.play(events, extra_zones=(wide,), now=now)
+    jury_ev = next(e for e in out if e.get("event") == "jury")
+    journal = desk.knowledge.get_journal_touch(jury_ev["touch_id"])
+    assert journal["jury"] == "ACCORD"
+    assert jury_ev["sent"] is True, journal.get("send_skip")
+    pending = desk.knowledge.pending_intents()
+    assert len(pending) == 1
+    payload = pending[0]["payload"]
+    assert payload["side"] == "buy" and payload["tag"] == "bounce"  # wick stays inside the wide zone
+    # structural = band stop 64299.2 (further than the wick stop); hybrid mode adds
+    # max(k·ATR, 3·spread, tick) below it — the book spread here is 0.2 → 0.6.
+    assert Decimal(payload["structural"]) == Decimal("64299.2")
+    assert Decimal(payload["stop"]) == Decimal("64298.6")
+    assert payload["stop_components"]["mode"] == "hybrid"
+    assert Decimal(payload["stop_components"]["buffer"]) == Decimal("0.6")
+    assert Decimal(payload["tp"]) == Decimal("65000") + 2 * (Decimal("65000") - Decimal("64298.6"))
+    assert Decimal(payload["qty"]) > 0 and payload["size_mult"] == "1"
+    assert payload["lev"] == "3" and payload["risk_config_id"] == desk.risk_config.config_id
+    assert payload["valid_until"] is not None
+    # sizing law 8: margin ≤ 10% equity (deposit_share binding), risk ≤ 1%
+    sizing = journal["sizing"]
+    assert sizing["binding"] == "deposit_share"
+    assert Decimal(sizing["margin"]) <= Decimal("10000")
+    assert Decimal(sizing["risk_frac"]) <= Decimal("0.01")
+    ev = journal["ev"]
+    assert ev["ok"] is True and Decimal(ev["fee_multiple"]) >= 5
+    assert Decimal(ev["r_net_1r"]) > 0
+    # the account now carries the open idea; a second entry on BTC is refused
+    assert "BTCUSDT" in desk.account.open
+    assert desk.account.allow_entry("BTCUSDT") == (False, "position_open_same_symbol")
+    assert desk.risk.allow_entry("BTCUSDT") is False
+    row = next(t for t in desk.registry.touches if t.touch_id == jury_ev["touch_id"])
+    assert row.session_hour is not None
+    assert row.n_cav == journal["n_cav"]
+    assert row.n_zlg == journal["n_zlg"]
+    assert row.card_id == journal["card_id"]
+    assert row.first_fact == journal["first_fact"]
+    assert row.cav_tf == "15m"
 
 
 def test_play_off_mode_writes_shadow_not_intent(tmp_path: Path) -> None:

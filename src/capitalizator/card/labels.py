@@ -27,6 +27,8 @@ class BLabels:
     ob_status: str | None = None
     bos_status: str | None = None
     gex_bg: str | None = None
+    fib_zone_short: FibZone = "none"
+    fib_level_short: str | None = None
 
 
 def compute_b_labels(
@@ -41,6 +43,7 @@ def compute_b_labels(
     structure = _structure_bars(bars)
     px = price if price is not None else structure[-1].close
     fib_zone, fib_level = _fib(structure, px)
+    fib_zone_short, fib_level_short = _fib(structure, px, side="sell")
     return BLabels(
         rsi_htf=rsi_htf(bars),
         fvg_status=fvg_status(structure, price=px),
@@ -50,6 +53,8 @@ def compute_b_labels(
         ob_status=ob_status(structure),
         bos_status=bos_status(structure),
         gex_bg=gex_bg(spot=spot if spot is not None else px, chain=chain),
+        fib_zone_short=fib_zone_short,
+        fib_level_short=fib_level_short,
     )
 
 
@@ -61,7 +66,9 @@ def _structure_bars(bars: Sequence[Bar]) -> list[Bar]:
     return list(bars)
 
 
-def _fib(bars: Sequence[Bar], price: Decimal) -> tuple[FibZone, str | None]:
+def _fib(
+    bars: Sequence[Bar], price: Decimal, *, side: str = "buy"
+) -> tuple[FibZone, str | None]:
     """Retrace between the last confirmed swing high and swing low.
 
     Window min/max on a trend pins the high at the last bar and paints
@@ -75,5 +82,5 @@ def _fib(bars: Sequence[Bar], price: Decimal) -> tuple[FibZone, str | None]:
     low = bars[lows[-1]].low
     if high <= low:
         return "none", None
-    zone, level = fib_zone_at(low=low, high=high, price=price)
+    zone, level = fib_zone_at(low=low, high=high, price=price, side=side)
     return zone, level

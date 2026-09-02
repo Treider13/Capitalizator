@@ -26,6 +26,7 @@ from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.phase import trading_mode
 from capitalizator.ops.vault import Vault, iter_regular_files, open_regular
 from capitalizator.patterns.cav import label as cav_label
+from capitalizator.recorder.rows import rows_fast
 from capitalizator.types import MarketEvent, require_utc
 from capitalizator.zlg.gesture import ZLG, BookAdd
 from capitalizator.zones.map import HtfBias
@@ -74,7 +75,7 @@ def load_tape_events(vault: Vault, *, symbol: str) -> list[MarketEvent]:
             continue
         finally:
             fh.close()
-        for row in table.to_pylist():
+        for row in rows_fast(table):
             if row.get("symbol") != symbol:
                 continue
             event = parse_event_row(row)

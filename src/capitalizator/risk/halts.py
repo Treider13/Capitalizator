@@ -24,7 +24,15 @@ class Halt:
 
 
 class Halts:
-    def __init__(self, *, start_equity: Decimal, peak: Decimal | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        start_equity: Decimal,
+        peak: Decimal | None = None,
+        day: Decimal = DAY,
+        week: Decimal = WEEK,
+        peak_kill: Decimal = PEAK,
+    ) -> None:
         if start_equity <= 0:
             raise ValueError("start_equity must be > 0")
         self.day_start = start_equity
@@ -32,6 +40,12 @@ class Halts:
         self.peak = peak if peak is not None else start_equity
         if self.peak <= 0:
             raise ValueError("peak must be > 0")
+        if day >= 0 or week >= 0 or peak_kill >= 0:
+            raise ValueError("halt thresholds must be negative")
+        # Operator knobs (risk_config); defaults are the gates.yaml f5 numbers.
+        self.day_limit = day
+        self.week_limit = week
+        self.peak_limit = peak_kill
         self.halted = False
         self.reason = ""
 
@@ -39,6 +53,25 @@ class Halts:
         if equity <= 0:
             raise ValueError("equity must be > 0")
         self.day_start = equity
+        if self.halted and self.reason == "day":
+            # A day halt ends with the day; week/peak/liq need a human release().
+            self.halted = False
+            self.reason = ""
+
+    def new_week(self, equity: Decimal) -> None:
+        if equity <= 0:
+            raise ValueError("equity must be > 0")
+        self.week_start = equity
+        if self.halted and self.reason == "week":
+            self.halted = False
+            self.reason = ""
+
+    def release(self, *, ack: bool) -> None:
+        """Human release of a sticky halt (peak / liq / equity). Needs an explicit ack."""
+        if not ack:
+            raise ValueError("release needs ack")
+        self.halted = False
+        self.reason = ""
 
     def mark_liq(self) -> None:
         self.halted = True
@@ -56,6 +89,9 @@ class Halts:
             week_pnl_pct=week_pnl_pct,
             dd_from_peak=dd_from_peak,
             liq_flag=liq_flag,
+            day=self.day_limit,
+            week=self.week_limit,
+            peak=self.peak_limit,
         )
         if self.halted:
             return Halt(True, self.reason)
@@ -93,13 +129,16 @@ def _eval(
     week_pnl_pct: Decimal,
     dd_from_peak: Decimal,
     liq_flag: bool,
+    day: Decimal = DAY,
+    week: Decimal = WEEK,
+    peak: Decimal = PEAK,
 ) -> Halt:
     if liq_flag:
         return Halt(True, "liq")
-    if day_pnl_pct <= DAY:
+    if day_pnl_pct <= day:
         return Halt(True, "day")
-    if week_pnl_pct <= WEEK:
+    if week_pnl_pct <= week:
         return Halt(True, "week")
-    if dd_from_peak <= PEAK:
+    if dd_from_peak <= peak:
         return Halt(True, "peak")
     return Halt(False, "")

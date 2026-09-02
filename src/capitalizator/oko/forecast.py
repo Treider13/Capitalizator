@@ -81,8 +81,8 @@ def class_key(
     footprint (INVENTION-OKO §След) is the sixth axis; a row from before the
     organ existed carries '?' and stays in the symbol / global levels.
     """
-    if idea not in {"bounce", "breakout", "failed_break"}:
-        raise ValueError("idea must be bounce|breakout|failed_break")
+    if idea not in {"bounce", "spring", "breakout", "failed_break"}:
+        raise ValueError("idea must be bounce|spring|breakout|failed_break")
     return f"{idea} × {cav or '?'} × {zlg or '?'} × {regime or '?'} × {footprint or '?'}"
 
 

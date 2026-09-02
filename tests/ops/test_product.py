@@ -9,9 +9,9 @@ import pytest
 from capitalizator.ops.phase import phase_path, trading_mode
 from capitalizator.ops.product import (
     USER_MODES,
+    hello_recorded,
     read_user_mode,
     set_user_mode,
-    hello_recorded,
 )
 from capitalizator.ops.vault import init_vault
 

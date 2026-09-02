@@ -6,8 +6,8 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
 import pyarrow.parquet as pq
+import pytest
 
 from capitalizator.recorder.sink_parquet import ParquetSink, partition_path
 from capitalizator.types import MarketEvent

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -16,7 +15,7 @@ import pytest
 from capitalizator.book.reconstruct import Book
 from capitalizator.btc.veto import BtcVeto
 from capitalizator.card.live import CardLive
-from capitalizator.desk.loop import BtcBus, DeskLoop
+from capitalizator.desk.loop import DeskLoop
 from capitalizator.desk.pictures import picture_for
 from capitalizator.exec.demo_adapter import DemoAdapter
 from capitalizator.exec.episodes import EpisodeLog
@@ -550,9 +549,10 @@ def test_24_failed_break_gets_new_card_id(tmp_path: Path) -> None:
     events = desk.on_bar_close(_bar(close, low="99.5", close="100.4"))
     row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
     assert row is not None
-    assert row["idea"] == "failed_break"
+    assert row["idea"] == "spring"
     assert row["picture"] == "Г"
     assert row["card_id"] == card.card_id
+    assert picture_for("spring") == "Г"
     assert picture_for("failed_break") == "Г"
     assert picture_for("bounce") == "A"
     assert picture_for("breakout") == "B"
@@ -569,12 +569,18 @@ def test_26_us_cpi_noon_journals_but_does_not_send(tmp_path: Path) -> None:
     desk.on_trade(_trade(noon), [ZONE])
     events = desk.tick(noon + timedelta(seconds=8))
     assert events
+    # D-18: contour B no longer stops labelling — the 8s clock stamps the gesture.
+    assert events[0]["event"] == "zlg"
     assert events[0].get("sent") is not True
-    assert events[0]["jury"] in {"SPLIT", "VETO", "SILENCE"}
-    row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    closed = desk.on_bar_close(_bar(noon + timedelta(minutes=15)))
+    assert closed and closed[0]["event"] == "jury"
+    assert closed[0]["sent"] is False
+    assert closed[0]["jury"] in {"SPLIT", "VETO", "SILENCE"}
+    row = desk.knowledge.get_journal_touch(closed[0]["touch_id"])
     assert row is not None
+    assert row["zlg_label"] is not None and row["cav_label"] is not None
+    assert row["skip_reason"] is not None
     assert desk.knowledge.pending_intents() == []
-    assert desk.on_bar_close(_bar(noon + timedelta(minutes=15))) == []
 
 
 def test_demo_adapter_default_is_not_sent() -> None:
