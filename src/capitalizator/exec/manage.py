@@ -40,7 +40,7 @@ class TradeManager:
 
     def on_refute(self, *, load_bearing: bool, verdict: str) -> ManageIntent | None:
         """3.14.3 — REFUTED load-bearing claim → flatten. Not 'wait and see'."""
-        if verdict == "REFUTED" and load_bearing:
+        if load_bearing and verdict in {"REFUTED", "veto"}:
             self.remaining = Decimal("0")
             return ManageIntent(action="flatten")
         return None

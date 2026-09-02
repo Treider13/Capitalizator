@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pyarrow.parquet as pq
 
+from capitalizator.card.live import CardLive
 from capitalizator.desk.bars import closed_bars_from_trades
 from capitalizator.desk.loop import DeskLoop
 from capitalizator.ops.vault import VaultError, iter_regular_files
@@ -89,14 +91,29 @@ def zones_for_trade(
     desk: DeskLoop,
     event: MarketEvent,
     extra_zones: Sequence[Zone] = (),
+    card: CardLive | None = None,
 ) -> list[Zone]:
-    """Prior-day / swing zones from already-closed working-TF bars, plus extras."""
+    """Prior-day / swing zones. POC comes from the live B card, not a VWAP stand-in."""
     engine = ZoneEngine(tick_size=desk.tick_size, config=desk.config)
     tf = desk.config.working_tf
     st = desk.state_for(event.symbol)
     work = [b for b in st.bars if b.tf == tf]
-    built = engine.build(event.symbol, event.exchange_ts, work)
+    live = card if card is not None else desk._card_for(event.symbol, event.exchange_ts)
+    poc = _poc_from_card(live)
+    built = engine.build(event.symbol, event.exchange_ts, work, poc=poc)
     return list(extra_zones) + built
+
+
+def _poc_from_card(card: object) -> Decimal | None:
+    volume = getattr(card, "volume", None)
+    raw = getattr(volume, "poc", None) if volume is not None else None
+    if not raw:
+        return None
+    try:
+        value = Decimal(str(raw))
+    except Exception:
+        return None
+    return value if value > 0 else None
 
 
 def close_due_bars(desk: DeskLoop, symbol: str, now: datetime) -> list[dict[str, Any]]:

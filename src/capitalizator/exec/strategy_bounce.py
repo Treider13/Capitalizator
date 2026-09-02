@@ -90,6 +90,13 @@ class BounceSnapshot:
     card_bearing_verdict: str | None = None
     gesture_n: int = 0
     trades_in_window: int | None = None
+    b_verdict: str | None = None
+    macro_multiplier: Decimal = Decimal("1")
+    b_marks_ok: bool = True
+    rvol: Decimal | None = None
+    wall_state: str | None = None
+    venue: str = "perp"
+    spot_acked: bool = False
 
 
 def price_in_zone(price: Decimal, zone: Zone) -> bool:
@@ -241,6 +248,14 @@ class BounceStrategy:
                 return None
             if self.check_load_bearing and not load_bearing_ok(card):
                 return None
+        if snap.b_verdict == "veto":
+            return None
+        if snap.b_verdict == "hold":
+            return None
+        if snap.venue == "spot_proposal" and not snap.spot_acked:
+            return None
+        if snap.b_verdict in {"propose", "cut_size"} and not snap.b_marks_ok:
+            return None
         if TAKER_OK:
             return None
         ok, _reason = self.session.allows(
@@ -255,7 +270,8 @@ class BounceStrategy:
             return None
         if not self.halts.allow_entry():
             return None
-        if not self.screener.ok(
+        spot_rail = snap.venue == "spot_proposal" and snap.spot_acked
+        if not spot_rail and not self.screener.ok(
             snap.symbol,
             spread_frac=snap.spread_frac,
             typical_move=snap.typical_move,
@@ -285,7 +301,11 @@ class BounceStrategy:
         if (
             idea == "bounce"
             and self.require_jury
-            and (snap.tape_eaten is True or snap.wall_no_print is True)
+            and (
+                snap.tape_eaten is True
+                or snap.wall_no_print is True
+                or snap.wall_state == "pulled"
+            )
         ):
             return None
         side = "buy" if zone.side == "support" else "sell"
@@ -307,7 +327,8 @@ class BounceStrategy:
         if (
             self.require_jury
             and self.desk_mode in {"demo", "live"}
-            and snap.card_bearing_verdict != "VERIFIED"
+            and snap.card_bearing_verdict
+            not in {"VERIFIED", "propose", "cut_size"}
         ):
             return None
         if prs_cut(snap.prs_y, threshold=Decimal("3")).action == "reject":
@@ -338,7 +359,7 @@ class BounceStrategy:
                 tape_eaten=snap.tape_eaten,
                 btc_regime=snap.btc_regime,
                 card_bearing_verdict=snap.card_bearing_verdict,
-                wall_no_print=snap.wall_no_print is True,
+                wall_no_print=snap.wall_no_print is True or snap.wall_state == "pulled",
                 btc_break_against=snap.btc_broke,
                 btc_same_side=snap.btc_same_side,
                 trades_in_window=snap.trades_in_window,
@@ -381,6 +402,12 @@ class BounceStrategy:
             tag = "failed_break_bounce"
         else:
             tag = idea
+        size = snap.macro_multiplier
+        if macro.size_mult < size:
+            size = macro.size_mult
+        if snap.b_verdict == "cut_size" and size > Decimal("0.5"):
+            size = Decimal("0.5")
+        qty = None if size == Decimal("1") else size
         intent = Intent(
             symbol=snap.symbol,
             side=side,
@@ -388,6 +415,7 @@ class BounceStrategy:
             stop=stop,
             tp=tp,
             tag=tag,
+            qty=qty,
             size_mult=macro.size_mult,
         )
         self.budget.on_intent()

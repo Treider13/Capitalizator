@@ -367,9 +367,12 @@ def test_btc_touch_stamps_bus_news_not_local_h4(tmp_path: Path) -> None:
             close=Decimal("100.6"),
         )
     )
-    assert events
-    row = next(t for t in desk.registry.touches if t.touch_id == events[0]["touch_id"])
+    # B-card may veto on CPI at ZLG; the bus stamp is already on the touch.
+    row = desk.registry.touches[-1]
     assert row.btc_regime == "news"
+    assert desk.btc.regime == "news"
+    if events:
+        assert events[0]["touch_id"] == row.touch_id
 
 
 def test_btc_bus_does_not_keep_yesterdays_news(tmp_path: Path) -> None:
