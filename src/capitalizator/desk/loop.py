@@ -482,14 +482,15 @@ class DeskLoop:
             idea = "failed_break"
         elif live.cav_label == "THROUGH":
             idea = "breakout"
-        if live.btc_regime is None and st.symbol != "BTCUSDT":
+        if live.btc_regime is None:
+            # Bus is the published fact (news on a US-data day). Local H4 is fallback.
             if self.btc.regime:
                 self.registry.fill_btc(regime=self.btc.regime, touch_id=touch.touch_id)
-        elif live.btc_regime is None and h4 in {"box", "long", "short"}:
-            self.registry.fill_btc(
-                regime="box" if h4 == "box" else "trend",
-                touch_id=touch.touch_id,
-            )
+            elif h4 in {"box", "long", "short"}:
+                self.registry.fill_btc(
+                    regime="box" if h4 == "box" else "trend",
+                    touch_id=touch.touch_id,
+                )
         n_cav = sum(
             1
             for hist in self.registry.touches
@@ -761,7 +762,7 @@ class DeskLoop:
                 gesture_n=n_zlg,
                 trades_in_window=row.trades_in_window,
                 first_minute=(
-                    self.first_minute.blocks(row.ts, bar.close_ts)
+                    self.first_minute.blocks(closed_at, bar.close_ts)
                     if idea == "breakout"
                     else False
                 ),

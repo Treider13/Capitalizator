@@ -281,6 +281,40 @@ def test_us_data_day_marks_btc_news(tmp_path: Path) -> None:
     assert desk.btc.regime == "news"
 
 
+def test_btc_touch_stamps_bus_news_not_local_h4(tmp_path: Path) -> None:
+    """CPI day: bus is news. Painting the BTC touch from H4 would be a lie."""
+    vault = init_vault(tmp_path / "desk")
+    cal = tuple(NewsIngest.from_csv(default_macro_path()).rows)
+    desk = DeskLoop(
+        knowledge=open_knowledge(vault),
+        user_mode="off",
+        tick_size=TICK,
+        calendar=cal,
+    )
+    day = datetime(2026, 9, 11, tzinfo=UTC)
+    _h4_trend(desk, day)
+    assert desk.btc.regime == "news"
+    ts = day.replace(hour=14, minute=10)
+    desk.on_book("BTCUSDT", _book())
+    desk.on_trade(_trade(ts), [ZONE])
+    desk.tick(ts + timedelta(seconds=8))
+    events = desk.on_bar_close(
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=ts,
+            close_ts=ts + timedelta(minutes=15),
+            open=Decimal("100.5"),
+            high=Decimal("101"),
+            low=Decimal("100.2"),
+            close=Decimal("100.6"),
+        )
+    )
+    assert events
+    row = next(t for t in desk.registry.touches if t.touch_id == events[0]["touch_id"])
+    assert row.btc_regime == "news"
+
+
 def test_stale_eaten_touch_is_not_this_bar_btc_break(tmp_path: Path) -> None:
     """Close beyond + last week's eaten is not 2.9.2. Eaten must sit in this bar."""
     vault = init_vault(tmp_path / "desk")
