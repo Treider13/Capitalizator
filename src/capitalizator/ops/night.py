@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from capitalizator.card.draft import pending_card
+from capitalizator.champion.shadow_day import persist_day
 from capitalizator.exec.replay import ReplayEngine
 from capitalizator.memory.registry import Touch
 from capitalizator.ops.daily_map_report import daily_map_report
@@ -40,8 +41,7 @@ def run_night(
             replayed = 1
     body = daily_map_report(day=day, rows=rows)
     knowledge.save_report(day=day, kind="map", body=body)
-    # Overlay row exists; R is unknown until a measured shadow episode.
-    knowledge.put_overlay(f"{day}:shadow")
+    snap = persist_day(knowledge, day)
     fragile = forbid_new_long(
         oi_peak=None,
         funding_top5=None,
@@ -60,6 +60,8 @@ def run_night(
         "fragility": fragile,
         "card": card,
         "verdict": "pending",
+        "n_shadow": snap.n_would,
+        "r_shadow": None if snap.r_shadow is None else format(snap.r_shadow, "f"),
     }
 
 

@@ -23,6 +23,12 @@ from capitalizator.card.draft import pending_card
 from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.card.live import CardLive, card_is_fresh, touch_line
 from capitalizator.card.volume import snapshot as volume_snapshot
+from capitalizator.champion.shadow_day import (
+    challenger_on,
+    challenger_tag,
+    persist_day,
+    row_day_utc,
+)
 from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.desk.session_name import session_name
 from capitalizator.exec.failed_break import FailedBreak, sweep_wick
@@ -150,6 +156,14 @@ class DeskLoop:
         self.spot = SpotAdapter(knowledge)
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
+        if knowledge.available():
+            for symbol, raw in knowledge.last_prices().items():
+                try:
+                    px = Decimal(str(raw))
+                except ArithmeticError:
+                    continue
+                if px > 0:
+                    self.last_price[symbol] = px
         self.open_card_id: dict[str, str] = {}
         self.walls: dict[str, WallWatch] = {}
         self.prs: dict[str, PRS] = {}
@@ -432,7 +446,7 @@ class DeskLoop:
 
     def tick(self, now: datetime) -> list[dict[str, Any]]:
         when = require_utc(now)
-        out: list[dict[str, Any]] = []
+        out = self._settle_shadows(when)
         window = timedelta(seconds=self.config.zlg_window_s)
         for st in self.symbols.values():
             if st.state != "ARM_ZLG" or st.armed_at is None or st.last_touch is None:
@@ -441,6 +455,49 @@ class DeskLoop:
                 continue
             out.extend(self._label_zlg(st, when))
         return out
+
+    def _settle_shadows(self, now: datetime) -> list[dict[str, Any]]:
+        """24/7: close pending touches and score shadow R. No orders."""
+        events: list[dict[str, Any]] = []
+        days: set[str] = set()
+        pending_symbols: set[str] = set()
+        for touch in self.registry.touches:
+            if touch.outcome != "pending":
+                continue
+            try:
+                pending_symbols.add(self.registry.zone(touch.zone_id).symbol)
+            except KeyError:
+                continue
+        for symbol in pending_symbols:
+            st = self.state_for(symbol)
+            px = self.last_price.get(symbol)
+            if px is None:
+                armed = st.last_touch
+                px = None if armed is None else armed.trade_px
+            if px is None:
+                continue
+            changed = self.registry.resolve_symbol(
+                symbol, now=now, bars=st.bars, last_px=px
+            )
+            for touch in changed:
+                events.append(
+                    {
+                        "event": "shadow_outcome",
+                        "touch_id": touch.touch_id,
+                        "outcome": touch.outcome,
+                    }
+                )
+                row = self.knowledge.get_journal_touch(touch.touch_id)
+                if row is None:
+                    continue
+                row["outcome"] = touch.outcome
+                day = row_day_utc(row)
+                if day:
+                    days.add(day)
+                self.knowledge.put_journal_touch(touch.touch_id, row)
+        for day in days:
+            persist_day(self.knowledge, day)
+        return events
 
     def _label_zlg(self, st: SymbolState, now: datetime) -> list[dict[str, Any]]:
         touch = st.last_touch
@@ -678,6 +735,8 @@ class DeskLoop:
                 "card_id": card.card_id,
                 "skip_reason": skip,
                 "shadow_would": False,
+                "challenger_would": False,
+                "challenger_tag": None,
             }
         )
         self.knowledge.put_journal_touch(
@@ -691,6 +750,9 @@ class DeskLoop:
                 "bos_status": card.bos_status,
             },
         )
+        day = row_day_utc(journal)
+        if day:
+            persist_day(self.knowledge, day)
 
     def _eval_cav_and_jury(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
         touch = st.last_touch
@@ -948,6 +1010,8 @@ class DeskLoop:
                 "shadow_would": row.shadow_would,
                 "shadow_side": row.shadow_side,
                 "shadow_tag": row.shadow_tag,
+                "challenger_would": False,
+                "challenger_tag": None,
                 "skip_reason": row.skip_reason,
                 "outcome": row.outcome,
                 "rho_class_id": row.rho_class_id,
@@ -988,8 +1052,19 @@ class DeskLoop:
             "bos_status": None if card is None else card.bos_status,
             "tape_eaten_qty": eaten_qty,
         }
-        self.knowledge.put_journal_touch(row.touch_id, {**journal, **extra})
-        payload = {"touch_id": row.touch_id, "jury": jury, "shadow_would": shadow_would}
+        payload_row = {**journal, **extra}
+        payload_row["challenger_would"] = challenger_on(payload_row)
+        payload_row["challenger_tag"] = challenger_tag(payload_row)
+        self.knowledge.put_journal_touch(row.touch_id, payload_row)
+        day = row_day_utc(payload_row)
+        if day:
+            persist_day(self.knowledge, day)
+        payload = {
+            "touch_id": row.touch_id,
+            "jury": jury,
+            "shadow_would": shadow_would,
+            "challenger_would": payload_row["challenger_would"],
+        }
         self.shadow_writes.append(self.shadow.write(payload))
         sent = False
         if (
