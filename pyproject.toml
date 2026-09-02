@@ -20,6 +20,11 @@ dev = [
     "pytest>=8.3,<9",
     "ruff>=0.6,<1",
 ]
+# Exchange gateway (signer/recorder only; the desk never imports it).
+# bybit-exchange/pybit — official Bybit v5 HTTP + WebSocket connector.
+live = [
+    "pybit>=5.17,<6",
+]
 # Wilder RSI etalon. Needs the TA-Lib C library. B falls back to in-repo Wilder.
 talib = [
     "numpy>=1.26,<3",

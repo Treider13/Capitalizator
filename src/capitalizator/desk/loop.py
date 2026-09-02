@@ -42,7 +42,7 @@ from capitalizator.exec.ideas import opposite as opposite_side
 from capitalizator.exec.ideas import shadow_tag as idea_shadow_tag
 from capitalizator.exec.ideas import side_for
 from capitalizator.exec.manage import TradeManager
-from capitalizator.exec.paper import PaperEngine, PaperPosition
+from capitalizator.exec.paper import HALF, PaperEngine, PaperPosition
 from capitalizator.exec.shadow import ShadowWriter
 from capitalizator.exec.smart_stop import initial_stop, soft_exit
 from capitalizator.exec.spot import SpotAdapter
@@ -201,6 +201,7 @@ class DeskLoop:
         # gateway, for live positions). One TrailState per paper_id.
         self.trail = TrailEngine(mode=self.risk_config.trail_mode)
         self._trails: dict[str, TrailState] = {}
+        self._half_sent: set[str] = set()
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
         if knowledge.available():
@@ -461,11 +462,17 @@ class DeskLoop:
                     st.book_pre = None
                 action = self.manager.on_refute(load_bearing=True, verdict="REFUTED")
                 flattened = 0
+                when = event.get("now")
+                when = require_utc(when) if isinstance(when, datetime) else datetime.now(tz=UTC)
                 if symbol and symbol in self.last_price:
-                    when = event.get("now")
-                    when = require_utc(when) if isinstance(when, datetime) else datetime.now(tz=UTC)
                     flattened = len(
                         self.paper.flatten(symbol, self.last_price[symbol], when, reason="flatten")
+                    )
+                if symbol and self.knowledge.available() and self.user_mode in {"demo", "live"}:
+                    self.knowledge.enqueue_oms(
+                        kind="flatten", symbol=symbol,
+                        payload={"reason": str(event.get("reason") or "operator")},
+                        created_ts=when.isoformat(),
                     )
                 return [
                     {
@@ -589,7 +596,19 @@ class DeskLoop:
         if st.bar_builder is not None:
             st.bar_builder.on_trade(trade)
         self._trim_trades(st, trade.exchange_ts)
-        self.paper.on_print(trade)
+        for pos in self.paper.on_print(trade):
+            # The +1R half on a demo/live twin is a venue order (reduce-only limit).
+            if (
+                pos.source == "demo"
+                and pos.state == "open"
+                and pos.half_taken
+                and pos.paper_id not in self._half_sent
+            ):
+                self._half_sent.add(pos.paper_id)
+                self._oms(
+                    pos, "half_tp", trade.exchange_ts,
+                    qty=str(pos.qty * HALF), price=str(pos.half_px), reason="+1R half",
+                )
         try:
             px = Decimal(str(trade.payload["px"]))
             if px > 0:
@@ -625,6 +644,9 @@ class DeskLoop:
         when = require_utc(now)
         self.account.roll(when)
         self.paper.on_clock(when)
+        if self.knowledge.available():
+            # Gateway watchdog reads this: a silent desk cancels entry orders (§7 / Н-4).
+            self._ui_put("desk_heartbeat", when.isoformat())
         self.flush_ui(when, force=force_flush)
         out: list[dict[str, Any]] = []
         # Settling pending touches walks every touch; once per second of clock is
@@ -1525,6 +1547,28 @@ class DeskLoop:
         )
         return pid
 
+    def _oms(self, pos: PaperPosition, kind: str, now: datetime, **fields: Any) -> None:
+        """Mirror a decision on a demo/live twin to the gateway via oms_commands.
+
+        The desk decides once (paper twin), the signer executes on the venue. Shadow and
+        fade twins never reach the venue.
+        """
+        if pos.source != "demo" or not self.knowledge.available():
+            return
+        if self.user_mode not in {"demo", "live"}:
+            return
+        self.knowledge.enqueue_oms(
+            kind=kind,
+            symbol=pos.symbol,
+            payload={
+                "paper_id": pos.paper_id,
+                "touch_id": pos.touch_id,
+                "side": pos.side,
+                **fields,
+            },
+            created_ts=now.isoformat(),
+        )
+
     def _atr_for(self, st: SymbolState) -> Decimal | None:
         work = [b for b in st.bars if b.tf == self.config.working_tf]
         return atr_of(work[-15:]) if len(work) >= 2 else None
@@ -1554,6 +1598,7 @@ class DeskLoop:
                 and pos.structural is not None
                 and soft_exit(side=pos.side, structural=pos.structural, bar=bar)
             ):
+                self._oms(pos, "flatten", bar.close_ts, reason="soft_exit")
                 self.paper.soft_exit(pos.paper_id, bar.close, bar.close_ts)
                 out.append({"event": "trail", "paper_id": pos.paper_id, "action": "soft_exit"})
                 self._trails.pop(pos.paper_id, None)
@@ -1573,6 +1618,8 @@ class DeskLoop:
                                 "reason": action.reason,
                             }
                         )
+                        self._oms(pos, "amend_stop", bar.close_ts, stop=str(action.new_stop),
+                                  reason=action.reason)
                 elif action.kind == "exchange_trailing" and action.trailing_distance:
                     if self.paper.arm_trailing(
                         pos.paper_id, action.trailing_distance, reason=action.reason
@@ -1585,6 +1632,14 @@ class DeskLoop:
                                 "distance": str(action.trailing_distance),
                                 "reason": action.reason,
                             }
+                        )
+                        self._oms(
+                            pos, "set_trailing", bar.close_ts,
+                            distance=str(action.trailing_distance),
+                            active_price=(
+                                None if action.active_price is None else str(action.active_price)
+                            ),
+                            reason=action.reason,
                         )
         for pid in [p for p in self._trails if p not in self.paper.positions]:
             del self._trails[pid]

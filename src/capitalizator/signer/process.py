@@ -7,6 +7,7 @@ Dead-man (30s) and reconcile (60s) are the existing atoms.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -177,6 +178,150 @@ def drain_validated(
 
     def checked(payload: dict[str, Any]) -> dict[str, Any]:
         signed = validate_queue_payload(payload, universe=universe)
+        # Keep the desk fields the gateway needs (idempotency, staleness, leverage).
+        for key in ("valid_until", "lev", "touch_id", "risk_config_id", "tag"):
+            if key in payload and key not in signed:
+                signed[key] = payload[key]
         return send(signed)
 
     return drain_once(knowledge, checked, user_mode=user_mode, now=now)
+
+
+# --- gateway-driven serve loop (W4b) ------------------------------------------------------
+MODE_FOR_GATEWAY = {"demo": {"testnet"}, "live": {"live_sub", "live_main"}}
+
+
+def gateway_mode_ok(user_mode: str, gateway_mode: str) -> bool:
+    """demo talks to testnet only; live to a live key only. Never cross."""
+    return gateway_mode in MODE_FOR_GATEWAY.get(user_mode, set())
+
+
+def drain_oms(knowledge: Knowledge, gateway: Any, *, now: datetime) -> list[dict[str, Any]]:
+    """Execute desk decisions (stop moves, trailing, half TP, flatten) on the venue."""
+    out: list[dict[str, Any]] = []
+    for cmd in knowledge.pending_oms():
+        kind, symbol, p = cmd["kind"], cmd["symbol"], cmd["payload"]
+        try:
+            if kind == "amend_stop":
+                res = gateway.amend_stop(symbol, Decimal(str(p["stop"])))
+            elif kind == "set_trailing":
+                active = p.get("active_price")
+                res = gateway.set_trailing(
+                    symbol,
+                    Decimal(str(p["distance"])),
+                    None if active is None else Decimal(str(active)),
+                )
+            elif kind == "half_tp":
+                res = gateway.place_half_tp(
+                    symbol=symbol,
+                    side=str(p["side"]),
+                    qty=Decimal(str(p["qty"])),
+                    price=Decimal(str(p["price"])),
+                    link=str(p.get("paper_id") or p.get("touch_id") or symbol),
+                )
+            elif kind == "flatten":
+                res = gateway.flatten(symbol, reason=str(p.get("reason") or "oms"))
+            elif kind == "cancel_entries":
+                res = gateway.cancel_entries(symbol, reason=str(p.get("reason") or "oms"))
+            else:
+                knowledge.mark_oms(cmd["id"], "skipped", {"error": f"unknown kind {kind}"})
+                continue
+            knowledge.mark_oms(cmd["id"], "done", res if isinstance(res, dict) else {"result": res})
+            out.append({"id": cmd["id"], "kind": kind, "status": "done"})
+        except Exception as exc:
+            knowledge.mark_oms(cmd["id"], "failed", {"error": str(exc)})
+            out.append({"id": cmd["id"], "kind": kind, "status": "failed", "error": str(exc)})
+    return out
+
+
+def publish_exchange_state(
+    knowledge: Knowledge, gateway: Any, tracker: Any, *, now: datetime
+) -> dict[str, Any]:
+    """REST truth every reconcile tick: equity, positions, mismatches → meta for the UI."""
+    snap: dict[str, Any] = {"at": now.isoformat(), "mode": gateway.mode}
+    try:
+        snap["equity"] = str(gateway.wallet_equity())
+    except Exception as exc:
+        snap["equity_error"] = str(exc)
+    try:
+        rest = gateway.positions()
+        expected: set[str] = set()
+        raw_acct = knowledge.meta("account")
+        if raw_acct:
+            try:
+                expected = {str(o["symbol"]) for o in json.loads(raw_acct).get("open", [])}
+            except (ValueError, KeyError, TypeError):
+                expected = set()
+        mismatches = tracker.reconcile(rest, now=now, expected=expected)
+        snap["positions"] = [tracker.positions[s].to_payload() for s in tracker.open_symbols()]
+        snap["mismatches"] = mismatches
+        snap["stop_missing"] = [
+            s for s in tracker.open_symbols() if not tracker.stop_confirmed(s)
+        ]
+    except Exception as exc:
+        snap["positions_error"] = str(exc)
+    knowledge.set_meta("exchange_state", json.dumps(snap, sort_keys=True, default=str))
+    return snap
+
+
+def serve_gateway_loop(
+    *,
+    knowledge: Knowledge,
+    vault: Any,
+    gateway: Any,
+    tracker: Any,
+    feed: Any | None,
+    should_stop: Callable[[], bool],
+    idle_s: float = 1.0,
+    now: datetime | None = None,
+    sleep: Callable[[float], None] = _sleep,
+    dead_man_s: int | None = None,
+    reconcile_s: int | None = None,
+) -> None:
+    """Real signer loop: watchdog, intent drain via the gateway, OMS drain, reconcile.
+
+    Blocks new entries (not stops) when: desk heartbeat silent, private WS silent,
+    reconcile mismatch, or a position without a confirmed stop on the venue.
+    """
+    from capitalizator.gateway.watchdog import Watchdog
+    from capitalizator.ops.product import read_user_mode
+
+    dead = Watchdog(
+        dead_man_s=dead_man_s or HEARTBEAT_S,
+        cancel_entries=lambda reason: gateway.cancel_entries(None, reason=reason),
+    )
+    recon_every = reconcile_s or RECONCILE_S
+    last_recon: datetime | None = None
+    if feed is not None:
+        feed.start()
+    while not should_stop():
+        when = now if now is not None else datetime.now(tz=UTC)
+        require_utc(when)
+        mode = read_user_mode(vault)
+        if feed is not None:
+            feed.drain(now=when)
+            if feed.last_frame_at is not None:
+                dead.beat("ws_private", feed.last_frame_at)
+        hb = knowledge.meta("desk_heartbeat")
+        if hb:
+            try:
+                dead.beat("desk", datetime.fromisoformat(hb))
+            except ValueError:
+                pass
+        stale = dead.check(when)
+        blocked: list[str] = list(stale)
+        if last_recon is None or (when - last_recon).total_seconds() >= recon_every:
+            state = publish_exchange_state(knowledge, gateway, tracker, now=when)
+            if state.get("mismatches"):
+                blocked.append("reconcile_mismatch")
+            if state.get("stop_missing"):
+                blocked.append("stop_missing:" + ",".join(state["stop_missing"]))
+            last_recon = when
+        knowledge.set_meta("entries_blocked", json.dumps(sorted(blocked)))
+        if mode in {"demo", "live"} and gateway_mode_ok(mode, gateway.mode):
+            # OMS first: protecting an open position beats opening a new one.
+            drain_oms(knowledge, gateway, now=when)
+            if not blocked:
+                drain_validated(knowledge, gateway.send, user_mode=mode, now=when)
+        if idle_s:
+            sleep(idle_s)

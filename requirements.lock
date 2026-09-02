@@ -14,3 +14,7 @@ PyYAML==6.0.1
 ruff==0.16.5
 typing-inspection==0.4.4
 typing_extensions==4.15.0
+# [live] extra — exchange gateway / live recorder (pip install -e ".[live]"), pinned 2026-09-02.
+pybit==5.17.0
+websocket-client==1.9.2
+requests==2.33.1
