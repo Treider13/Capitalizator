@@ -11,6 +11,7 @@ from capitalizator.book.reconstruct import Book
 from capitalizator.desk.loop import DeskLoop, _close_symbols
 from capitalizator.memory.registry import Touch
 from capitalizator.news_macro.ingest import NewsIngest, default_macro_path
+from capitalizator.news_macro.unlocks import UnlockRow, Unlocks
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.product import mark_hello
 from capitalizator.ops.vault import init_vault
@@ -151,6 +152,61 @@ def test_demo_window_enqueues_after_accord(tmp_path: Path) -> None:
         assert desk.knowledge.pending_intents()
     else:
         assert events[0]["sent"] is False
+
+
+def test_team_unlock_tomorrow_does_not_send(tmp_path: Path) -> None:
+    """Unlocks.team_* already cuts the screener. Desk used to pass default False."""
+    vault = init_vault(tmp_path / "desk")
+    mark_hello(vault, ok=True)
+    unlocks = Unlocks(
+        (
+            UnlockRow(
+                unlock_id="btc-2026-09-01",
+                symbol="BTCUSDT",
+                event_time=datetime(2026, 9, 1, tzinfo=UTC),
+                known_at=datetime(2026, 8, 20, 12, tzinfo=UTC),
+                recipient_type="team",
+                amount_tokens=Decimal("1"),
+                amount_usd_est=Decimal("1"),
+                source="fixture",
+            ),
+        )
+    )
+    assert unlocks.team_tomorrow("BTCUSDT", WINDOW) is True
+    desk = DeskLoop(
+        knowledge=open_knowledge(vault),
+        user_mode="demo",
+        tick_size=TICK,
+        unlocks=unlocks,
+    )
+    desk.registry._zones[ZONE.zone_id] = ZONE
+    for i in range(20):
+        touch = replace(
+            Touch.create(
+                zone_id=ZONE.zone_id,
+                ts=CREATED + timedelta(seconds=i + 1),
+                trade_px=Decimal("100.5"),
+                trade_qty=Decimal("1"),
+            ),
+            outcome="bounce",
+            cav_label="REJECT",
+            gesture="DEFEND",
+            tape_eaten=False,
+            btc_regime="box",
+        )
+        desk.registry.touches.append(touch)
+    desk.on_book("BTCUSDT", _book())
+    desk.on_trade(_trade(WINDOW), [ZONE])
+    live = desk.state_for("BTCUSDT").last_touch
+    assert live is not None
+    desk.registry._patch(
+        touch_id=live.touch_id, overwrite=True, bearing_verdict="VERIFIED"
+    )
+    desk.tick(WINDOW + timedelta(seconds=8))
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    assert events
+    assert events[0]["sent"] is False
+    assert desk.knowledge.pending_intents() == []
 
 
 def test_snapshot_event_applies_to_book(tmp_path: Path) -> None:

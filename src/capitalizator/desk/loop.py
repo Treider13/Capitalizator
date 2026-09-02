@@ -45,6 +45,7 @@ from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
+from capitalizator.news_macro.unlocks import Unlocks
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.phase import breakout_enabled
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
@@ -106,12 +107,14 @@ class DeskLoop:
         tick_size: Decimal = Decimal("0.1"),
         calendar: tuple[NewsRow, ...] = (),
         btc: BtcBus | None = None,
+        unlocks: Unlocks | None = None,
     ) -> None:
         self.knowledge = knowledge
         self.user_mode = user_mode
         self.tick_size = tick_size
         self.calendar = calendar
         self.btc = btc if btc is not None else BtcBus()
+        self.unlocks = unlocks if unlocks is not None else Unlocks.load()
         self.config = load_registry()
         self.symbols: dict[str, SymbolState] = {}
         self.registry = Registry(tick_size=tick_size, config=self.config)
@@ -297,7 +300,9 @@ class DeskLoop:
             self._apply_book_event(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"funding", "oi", "mark"}:
-            return [{"event": event.stream, "symbol": event.symbol, "journal": True}]
+            # Recorder emits these. There is no OI-peak / funding-rank atom on the desk.
+            # Do not pretend a journal row was written.
+            return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"gap", "resync"}:
             st.book = Book(tick_size=str(self.tick_size))
             return [{"event": event.stream, "symbol": event.symbol, "book_dirty": True}]
@@ -746,6 +751,8 @@ class DeskLoop:
                 ),
                 spread_frac=spread_frac,
                 calendar=self.calendar,
+                unlock_today=self.unlocks.team_today(st.symbol, row.ts),
+                unlock_tomorrow=self.unlocks.team_tomorrow(st.symbol, row.ts),
                 idea=idea,
                 jury=jury,
                 cav_label=row.cav_label,

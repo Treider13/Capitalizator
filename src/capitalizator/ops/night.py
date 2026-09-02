@@ -16,7 +16,7 @@ from capitalizator.exec.replay import ReplayEngine
 from capitalizator.memory.registry import Touch
 from capitalizator.ops.daily_map_report import daily_map_report
 from capitalizator.ops.knowledge import Knowledge
-from capitalizator.types import MarketEvent, require_utc
+from capitalizator.types import require_utc
 from capitalizator.whales.fragility import forbid_new_long
 from capitalizator.zones.model import Zone
 
@@ -28,8 +28,6 @@ def run_night(
     now: datetime,
     replay_dir: Path | None = None,
     rows: Sequence[tuple[Zone, Touch]] = (),
-    oi_events: list[MarketEvent] | None = None,
-    funding_events: list[MarketEvent] | None = None,
     thin_book: bool | None = None,
     card_id: str = "night-draft",
 ) -> dict[str, Any]:
@@ -42,16 +40,11 @@ def run_night(
             replayed = 1
     body = daily_map_report(day=day, rows=rows)
     knowledge.save_report(day=day, kind="map", body=body)
-    knowledge.put_overlay(f"{day}:shadow", r_shadow="0")
-    oi_peak = None
-    funding_top5 = None
-    if oi_events:
-        oi_peak = False
-    if funding_events:
-        funding_top5 = False
+    # Overlay row exists; R is unknown until a measured shadow episode.
+    knowledge.put_overlay(f"{day}:shadow")
     fragile = forbid_new_long(
-        oi_peak=oi_peak,
-        funding_top5=funding_top5,
+        oi_peak=None,
+        funding_top5=None,
         thin_book=thin_book,
     )
     card = pending_card(
