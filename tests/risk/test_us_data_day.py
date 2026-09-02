@@ -6,7 +6,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from capitalizator.news_macro.ingest import NewsIngest, NewsRow
-from capitalizator.risk.session import SessionWindow, load_time_config, us_data_known_at
+from capitalizator.risk.session import (
+    SessionWindow,
+    cpi_day,
+    load_time_config,
+    us_data_known_at,
+)
 
 MACRO = Path(__file__).resolve().parents[2] / "infra" / "calendars" / "macro.csv"
 TIME_YAML = Path(__file__).resolve().parents[2] / "infra" / "time.yaml"
@@ -108,6 +113,30 @@ def test_quiet_day_has_no_us_data_known_at() -> None:
     news = NewsIngest.from_csv(MACRO)
     assert us_data_known_at(datetime(2026, 9, 2, 14, 10, tzinfo=UTC), news.rows) is None
     assert us_data_known_at(datetime(2026, 9, 11, 14, 10, tzinfo=UTC), news.rows) is not None
+
+
+def test_cpi_day_is_not_every_us_macro_day() -> None:
+    """Card VETO is CPI. NFP is a US-data day, not a CPI window."""
+    news = NewsIngest.from_csv(MACRO)
+    assert cpi_day(datetime(2026, 9, 2, 14, 10, tzinfo=UTC), news.rows) is False
+    assert cpi_day(datetime(2026, 9, 4, 14, 10, tzinfo=UTC), news.rows) is False
+    assert cpi_day(datetime(2026, 9, 11, 14, 10, tzinfo=UTC), news.rows) is True
+
+
+def test_unlearned_cpi_is_not_a_cpi_day() -> None:
+    row = NewsRow(
+        event_id="cpi-not-yet",
+        event_class="CPI",
+        event_time=datetime(2026, 9, 11, 12, 30, tzinfo=UTC),
+        known_at=datetime(2026, 9, 11, 12, 30, tzinfo=UTC),
+        assets=("BTCUSDT",),
+        source="bls",
+        announce_tz="America/New_York",
+        size_rule="pre24_cut",
+        notes="not in file yet",
+        raw="",
+    )
+    assert cpi_day(datetime(2026, 9, 11, 12, 0, tzinfo=UTC), [row]) is False
 
 
 def test_time_yaml_is_phase_build_window() -> None:

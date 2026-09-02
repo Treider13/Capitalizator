@@ -56,7 +56,12 @@ from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import RiskEngine
-from capitalizator.risk.session import SessionWindow, in_desk_window, us_data_known_at
+from capitalizator.risk.session import (
+    SessionWindow,
+    cpi_day,
+    in_desk_window,
+    us_data_known_at,
+)
 from capitalizator.tape.classify import TapeClassifier
 from capitalizator.tape.ofi import OFI
 from capitalizator.types import MarketEvent, require_utc
@@ -510,10 +515,7 @@ class DeskLoop:
             )
         # BtcRegime writes trend|box|news. long/short never land on the bus.
         btc_same_side = st.symbol == "BTCUSDT" or self.btc.regime == "box"
-        cpi_window = any(
-            row.event_class == "CPI" and row.event_time.date() == bar.close_ts.date()
-            for row in self.calendar
-        )
+        cpi_window = cpi_day(closed_at, self.calendar)
         wall_since, wall_until = self._wall_bounds(touch)
         wall_events = self.walls[st.symbol].events if st.symbol in self.walls else ()
         silent_wall = pulled_without_print(
