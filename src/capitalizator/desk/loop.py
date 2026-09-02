@@ -14,7 +14,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from capitalizator.book.reconstruct import Book, BookDirty
-from capitalizator.book.wall_watch import WallWatch
+from capitalizator.book.wall_watch import WallWatch, last_wall_kind, pulled_without_print
 from capitalizator.btc.break_def import Break
 from capitalizator.btc.regime import BtcRegime
 from capitalizator.btc.veto import BtcVeto
@@ -25,12 +25,20 @@ from capitalizator.card.live import CardLive, card_is_fresh, touch_line
 from capitalizator.card.volume import snapshot as volume_snapshot
 from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.desk.session_name import session_name
-from capitalizator.exec.failed_break import FailedBreak
+from capitalizator.exec.failed_break import FailedBreak, sweep_wick
 from capitalizator.exec.first_minute import FirstMinute
+from capitalizator.exec.fvg_mark import fvg_present
 from capitalizator.exec.manage import TradeManager
 from capitalizator.exec.shadow import ShadowWriter
 from capitalizator.exec.spot import SpotAdapter
-from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy, in_mid_range
+from capitalizator.exec.strategy_bounce import (
+    BounceSnapshot,
+    BounceStrategy,
+    in_mid_range,
+    opposing_target,
+    price_in_zone,
+)
+from capitalizator.exec.tvh import NO_TVH, tvh_ok
 from capitalizator.jury.desk import (
     decide,
     voices_for_bounce,
@@ -41,7 +49,9 @@ from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
+from capitalizator.news_macro.unlocks import Unlocks
 from capitalizator.ops.knowledge import Knowledge
+from capitalizator.ops.phase import breakout_enabled
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
 from capitalizator.patterns.bar_quality import classify_bar_quality
 from capitalizator.patterns.cav import label as cav_label
@@ -51,7 +61,12 @@ from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import RiskEngine
-from capitalizator.risk.session import SessionWindow, in_desk_window
+from capitalizator.risk.session import (
+    SessionWindow,
+    cpi_day,
+    in_desk_window,
+    us_data_known_at,
+)
 from capitalizator.tape.classify import TapeClassifier
 from capitalizator.tape.ofi import OFI
 from capitalizator.types import MarketEvent, require_utc
@@ -97,12 +112,14 @@ class DeskLoop:
         tick_size: Decimal = Decimal("0.1"),
         calendar: tuple[NewsRow, ...] = (),
         btc: BtcBus | None = None,
+        unlocks: Unlocks | None = None,
     ) -> None:
         self.knowledge = knowledge
         self.user_mode = user_mode
         self.tick_size = tick_size
         self.calendar = calendar
         self.btc = btc if btc is not None else BtcBus()
+        self.unlocks = unlocks if unlocks is not None else Unlocks.load()
         self.config = load_registry()
         self.symbols: dict[str, SymbolState] = {}
         self.registry = Registry(tick_size=tick_size, config=self.config)
@@ -192,7 +209,12 @@ class DeskLoop:
             return
         st.book_history.append((when, st.book.snapshot_copy()))
         window = timedelta(seconds=self.config.zlg_window_s)
-        st.book_history = [row for row in st.book_history if when - row[0] <= window]
+        keep_from = when - window
+        # While the 8s ZLG clock is open, do not drop the touch-time book.
+        # A later diff would otherwise slide the window and erase OFI/PRS.
+        if st.last_touch is not None and st.state == "ARM_ZLG":
+            keep_from = st.last_touch.ts
+        st.book_history = [row for row in st.book_history if row[0] >= keep_from]
         if self.knowledge.available():
             bids = sorted(
                 ((str(px), str(sz)) for px, sz in st.book.levels("bid").items()),
@@ -301,7 +323,9 @@ class DeskLoop:
             self._apply_book_event(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"funding", "oi", "mark"}:
-            return [{"event": event.stream, "symbol": event.symbol, "journal": True}]
+            # Recorder emits these. There is no OI-peak / funding-rank atom on the desk.
+            # Do not pretend a journal row was written.
+            return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream in {"gap", "resync"}:
             st.book = Book(tick_size=str(self.tick_size))
             return [{"event": event.stream, "symbol": event.symbol, "book_dirty": True}]
@@ -318,6 +342,10 @@ class DeskLoop:
         if st.last_touch is None:
             return []
         if bar.tf != self.config.working_tf:
+            return []
+        # Plan: LABEL_ZLG (8s) then CAV on a closed bar, then JURY.
+        # A working bar can close inside the 8s window — wait for the tick.
+        if st.state != "LABEL_ZLG":
             return []
         return self._eval_cav_and_jury(st, bar)
 
@@ -338,19 +366,15 @@ class DeskLoop:
     def _publish_btc_bus(self, st: SymbolState, bar: Bar) -> None:
         """BTC symbol loop writes the alt bus. Unknown HTF stays None."""
         closed_at = bar.close_ts + timedelta(microseconds=1)
-        news_at = None
-        for row in self.calendar:
-            if row.known_at <= closed_at:
-                news_at = row.known_at
-                break
+        news_at = us_data_known_at(closed_at, self.calendar)
         label = self.btc_regime.classify(
             closed_at,
             symbol="BTCUSDT",
             bars=st.bars,
             news_known_at=news_at,
         )
-        if label is not None:
-            self.btc.regime = label
+        # Last non-None label is not today's fact. Unknown HTF / quiet day → None.
+        self.btc.regime = label
         if bar.tf != self.config.working_tf:
             return
         self.btc.broke_support = False
@@ -358,8 +382,11 @@ class DeskLoop:
         for zone in self.registry._zones.values():
             if zone.symbol != "BTCUSDT":
                 continue
+            # 2.9.2: eaten is the 8s touch in *this* bar. A stale print is not this close.
             eaten = any(
-                touch.zone_id == zone.zone_id and touch.tape_eaten
+                touch.zone_id == zone.zone_id
+                and touch.tape_eaten
+                and bar.open_ts <= touch.ts < bar.close_ts
                 for touch in self.registry.touches
             )
             if not Break.detect(zone=zone, bar=bar, tape_eaten=eaten, t=closed_at):
@@ -390,7 +417,11 @@ class DeskLoop:
         opened = self.registry.on_trade(trade, zones)
         if not opened:
             return []
-        touch = opened[-1]
+        # Registry may open several zones on one print. The desk is one
+        # 8s clock per symbol — do not steal an armed window for a later zone.
+        if st.last_touch is not None and st.state != "IDLE":
+            return []
+        touch = opened[0]
         st.last_touch = touch
         st.adds.clear()
         if st.book.ready:
@@ -416,6 +447,12 @@ class DeskLoop:
         if touch is None:
             return []
         zone = self.registry.zone(touch.zone_id)
+        if touch.btc_regime is None and self.btc.regime:
+            # Bus is already published. Stamp before B-gate so a CPI veto
+            # does not leave the touch without the regime we already know.
+            self.registry.fill_btc(regime=self.btc.regime, touch_id=touch.touch_id)
+            touch = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
+            st.last_touch = touch
         card = self._card_for(st.symbol, now)
         gated = self._b_gate(st, touch, zone, card)
         if gated is not None:
@@ -449,8 +486,19 @@ class DeskLoop:
             self.registry.fill_tape(
                 book_pre=book, trades=st.trades, touch_id=touch.touch_id
             )
+        self._stamp_touch_interval(st, touch)
         st.state = "LABEL_ZLG"
-        return [{"event": "zlg", "touch_id": touch.touch_id, "gesture": result.gesture}]
+        out = [{"event": "zlg", "touch_id": touch.touch_id, "gesture": result.gesture}]
+        work = [
+            bar
+            for bar in st.bars
+            if bar.tf == self.config.working_tf and bar.close_ts >= touch.ts
+        ]
+        work.sort(key=lambda bar: bar.close_ts)
+        if work:
+            # First closed working bar after the print, not the latest leftover.
+            out.extend(self._eval_cav_and_jury(st, work[0]))
+        return out
 
     def _card_for(self, symbol: str, now: datetime) -> CardLive | None:
         raw = self.knowledge.get_card_live(symbol)
@@ -666,7 +714,9 @@ class DeskLoop:
         elif h4 not in {"unknown", "box"} and h4 != bounce_side:
             htf = h4
         cav = cav_label(zone, bar, t=closed_at, htf_bias=htf, closed_bars=st.bars)
-        known_zones = tuple(self.registry._zones.values()) if self.registry._zones else (zone,)
+        known_zones = tuple(
+            z for z in self.registry._zones.values() if z.symbol == st.symbol
+        ) or (zone,)
         if in_mid_range(
             bar.close,
             known_zones,
@@ -680,46 +730,43 @@ class DeskLoop:
         tag = FailedBreak.tag(zone=zone, bar=bar)
         if tag:
             idea = "failed_break"
-        elif cav == "THROUGH":
+        elif live.cav_label == "THROUGH":
             idea = "breakout"
-        if live.btc_regime is None and st.symbol != "BTCUSDT":
-            if self.btc.regime:
-                self.registry.fill_btc(regime=self.btc.regime, touch_id=touch.touch_id)
-        elif live.btc_regime is None and h4 in {"box", "long", "short"}:
-            self.registry.fill_btc(
-                regime="box" if h4 == "box" else "trend",
-                touch_id=touch.touch_id,
-            )
+        if live.btc_regime is None and self.btc.regime:
+            # Published bus only. Alt H4 is not BTC; BTC already wrote the bus
+            # on this close (on_bar_close publishes before jury).
+            self.registry.fill_btc(regime=self.btc.regime, touch_id=touch.touch_id)
         n_cav = sum(
             1
-            for row in self.registry.touches
-            if row.cav_label == cav and self.registry.zone(row.zone_id).symbol == st.symbol
+            for hist in self.registry.touches
+            if hist.cav_label == live.cav_label and self._same_symbol(hist, st.symbol)
         )
         n_zlg = sum(
             1
             for row in self.registry.touches
-            if row.gesture == live.gesture
-            and self.registry.zone(row.zone_id).symbol == st.symbol
+            if row.gesture == live.gesture and self._same_symbol(row, st.symbol)
         )
-        break_against = (
-            self.btc.broke_resistance if idea == "breakout" else self.btc.broke_support
-        )
-        if st.symbol == "BTCUSDT":
-            break_against = False
         idea_side = "buy" if zone.side == "support" else "sell"
         if idea == "failed_break":
             idea_side = "sell" if zone.side == "support" else "buy"
         if idea == "breakout":
             idea_side = "sell" if zone.side == "support" else "buy"
-        btc_same_side = (
-            (idea_side == "buy" and self.btc.regime in {"long", "box"})
-            or (idea_side == "sell" and self.btc.regime in {"short", "box"})
-        )
-        if st.symbol == "BTCUSDT":
-            btc_same_side = True
-        cpi_window = any(
-            row.event_class == "CPI" and row.event_time.date() == bar.close_ts.date()
-            for row in self.calendar
+        # 2.9.3: long vs BTC support break; short vs BTC resistance break.
+        break_against = False
+        if st.symbol != "BTCUSDT":
+            break_against = (
+                self.btc.broke_support
+                if idea_side == "buy"
+                else self.btc.broke_resistance
+            )
+        # BtcRegime writes trend|box|news. long/short never land on the bus.
+        # BTCUSDT is not "same side" without a box label — that was a rubber stamp.
+        btc_same_side = self.btc.regime == "box"
+        cpi_window = cpi_day(closed_at, self.calendar)
+        wall_since, wall_until = self._wall_bounds(touch)
+        wall_events = self.walls[st.symbol].events if st.symbol in self.walls else ()
+        silent_wall = pulled_without_print(
+            wall_events, since=wall_since, until=wall_until
         )
         if card is not None and live.bearing_verdict is None:
             self.registry._patch(
@@ -742,7 +789,8 @@ class DeskLoop:
                 bos_status=card.bos_status,
             )
             live = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
-        wall_no_print = (card.volume.walls == "pulled") if card is not None else False
+        card_wall_pulled = bool(card is not None and card.volume.walls == "pulled")
+        wall_no_print = silent_wall or card_wall_pulled
         stamped = self.registry.stamp_jury(
             idea=idea,
             n_cav=n_cav,
@@ -790,16 +838,60 @@ class DeskLoop:
         else:
             self.open_card_id[st.symbol] = card_id
         self._persist_card(card_id, idea, st.symbol, row.ts)
+        mid = in_mid_range(
+            row.trade_px,
+            known_zones,
+            tick=self.tick_size,
+            band_ticks=self.config.mid_band_ticks,
+        )
+        has_tvh = tvh_ok(
+            price_in_zone=price_in_zone(row.trade_px, zone),
+            mid=mid,
+            cav=row.cav_label,
+            zlg=row.gesture,
+            n_cav=n_cav,
+            n_zlg=n_zlg,
+            tape_eaten=row.tape_eaten,
+        )
         shadow_would = jury == "ACCORD"
-        shadow_side = None
-        shadow_tag = None
+        skip: str | None
+        if not has_tvh:
+            shadow_would = False
+            skip = NO_TVH
+        elif shadow_would:
+            skip = None
+        else:
+            skip = first.tag if first.tag == "shadow_gesture" else jury
+        if idea == "breakout" and not breakout_enabled() and skip is None:
+            skip = "breakout_off"
+        shadow_side = idea_side if shadow_would else None
         if shadow_would:
-            shadow_side = "buy" if zone.side == "support" else "sell"
-            if idea == "failed_break":
-                shadow_side = "sell" if zone.side == "support" else "buy"
             shadow_tag = "bounce" if idea == "bounce" else (
                 "failed_break_bounce" if idea == "failed_break" else "breakout"
             )
+        else:
+            shadow_tag = None
+        self.registry._patch(
+            touch_id=row.touch_id,
+            overwrite=True,
+            skip_reason=skip,
+            jury=jury,
+            idea=idea,
+            shadow_would=shadow_would,
+            shadow_side=shadow_side,
+            shadow_tag=shadow_tag,
+            first_fact=first.first_fact,
+            n_cav=n_cav,
+            n_zlg=n_zlg,
+            card_id=card_id,
+            htf_h4=h4,
+            htf_d1=d1,
+            cav_tf=zone.tf,
+            btc_break_against=break_against,
+            btc_state=row.btc_regime,
+            session_name=session_name(row.ts),
+        )
+        row = next(t for t in self.registry.touches if t.touch_id == row.touch_id)
         journal = empty_journal()
         journal.update(
             {
@@ -807,8 +899,12 @@ class DeskLoop:
                 "touch_ts": row.ts.isoformat(),
                 "trade_px": str(row.trade_px),
                 "trade_qty": str(row.trade_qty),
-                "session_name": session_name(row.ts),
-                "session_hour_utc": row.ts.hour,
+                "session_name": row.session_name or session_name(row.ts),
+                "session_hour_utc": (
+                    row.session_hour
+                    if row.session_hour is not None
+                    else require_utc(row.ts).hour
+                ),
                 "prior_session_hi": row.prior_session_hi,
                 "prior_session_lo": row.prior_session_lo,
                 "poc": row.poc,
@@ -821,10 +917,10 @@ class DeskLoop:
                 "rsi_value": row.rsi_value,
                 "fvg_present": row.fvg_present,
                 "sweep_wick": row.sweep_wick,
-                "htf_h4": h4,
-                "htf_d1": d1,
+                "htf_h4": row.htf_h4,
+                "htf_d1": row.htf_d1,
                 "cav_label": row.cav_label,
-                "cav_tf": zone.tf,
+                "cav_tf": row.cav_tf or zone.tf,
                 "bar_quality": row.bar_quality,
                 "w_now": None if row.w_now is None else str(row.w_now),
                 "w_rank": None if row.w_rank is None else str(row.w_rank),
@@ -841,20 +937,18 @@ class DeskLoop:
                 "prs_tau": row.prs_tau,
                 "prs_y": None if row.prs_y is None else str(row.prs_y),
                 "gex_bg": row.gex_bg,
-                "btc_state": row.btc_regime,
-                "btc_break_against": break_against,
-                "card_id": card_id,
+                "btc_state": row.btc_state or row.btc_regime,
+                "btc_break_against": row.btc_break_against,
+                "card_id": row.card_id,
                 "bearing_verdict": row.bearing_verdict,
-                "first_fact": first.first_fact,
-                "n_cav": n_cav,
-                "n_zlg": n_zlg,
-                "jury": jury,
-                "shadow_would": shadow_would,
-                "shadow_side": shadow_side,
-                "shadow_tag": shadow_tag,
-                "skip_reason": None
-                if shadow_would
-                else (first.tag if first.tag == "shadow_gesture" else jury),
+                "first_fact": row.first_fact,
+                "n_cav": row.n_cav,
+                "n_zlg": row.n_zlg,
+                "jury": row.jury,
+                "shadow_would": row.shadow_would,
+                "shadow_side": row.shadow_side,
+                "shadow_tag": row.shadow_tag,
+                "skip_reason": row.skip_reason,
                 "outcome": row.outcome,
                 "rho_class_id": row.rho_class_id,
             }
@@ -885,7 +979,7 @@ class DeskLoop:
         extra = {
             "touch_id": row.touch_id,
             "symbol": st.symbol,
-            "idea": idea,
+            "idea": row.idea or idea,
             "picture": picture,
             "imbalance": None if imb is None else str(imb),
             "touch_line": line,
@@ -900,56 +994,77 @@ class DeskLoop:
         sent = False
         if (
             shadow_would
+            and skip is None
             and self.user_mode in {"demo", "live"}
             and self.hello_ok()
-            and in_desk_window(row.ts)
-            and self.session.allows(row.ts, self.calendar)[0]
+            and book.ready
+            and in_desk_window(closed_at)
+            and self.session.allows(closed_at, self.calendar)[0]
         ):
-            snap = BounceSnapshot(
-                now=row.ts,
-                symbol=st.symbol,
-                price=row.trade_px,
-                tick=self.tick_size,
-                trading_mode=self.user_mode,
-                zone=zone,
-                zones=(zone,),
-                calendar=self.calendar,
-                idea=idea,
-                jury=jury,
-                cav_label=row.cav_label,
-                zlg_label=row.gesture,
-                n_cav=n_cav,
-                n_zlg=n_zlg,
-                tape_eaten=row.tape_eaten,
-                btc_regime=row.btc_regime,
-                btc_broke=self.btc.broke_support if st.symbol != "BTCUSDT" else False,
-                btc_same_side=btc_same_side,
-                gesture_n=n_zlg,
-                first_minute=(
-                    self.first_minute.blocks(row.ts, bar.close_ts)
-                    if idea == "breakout"
-                    else False
-                ),
-                close_beyond=cav == "THROUGH",
-                card_bearing_verdict=row.bearing_verdict,
-                b_verdict=None if card is None else card.bearing_verdict,
-                macro_multiplier=Decimal("1") if card is None else card.macro_multiplier,
-                b_marks_ok=True if card is None else card.context_ok(),
-                rvol=None
-                if card is None or not card.volume.rvol
-                else Decimal(card.volume.rvol),
-                wall_state=None if card is None else card.volume.walls,
-                wall_no_print=wall_no_print,
-                venue="perp" if card is None else card.venue,
-                spot_acked=False if card is None else self.spot.acked(st.symbol),
-            )
-            intent = self.strategy.propose(snap)
-            if intent is not None:
-                self.knowledge.enqueue_intent(
-                    intent.model_dump(mode="json"),
-                    created_ts=row.ts.isoformat(),
+            spr = book.spread()
+            bid, ask = book.best()
+            mid_px = (bid + ask) / 2 if bid is not None and ask is not None else None
+            if spr is not None and mid_px is not None and mid_px > 0:
+                snap = BounceSnapshot(
+                    now=closed_at,
+                    symbol=st.symbol,
+                    price=row.trade_px,
+                    tick=self.tick_size,
+                    trading_mode=self.user_mode,
+                    zone=zone,
+                    zones=known_zones,
+                    next_target=opposing_target(
+                        known_zones,
+                        side=idea_side,
+                        entry=row.trade_px,
+                        symbol=st.symbol,
+                    ),
+                    spread_frac=spr / mid_px,
+                    calendar=self.calendar,
+                    unlock_today=self.unlocks.team_today(st.symbol, closed_at),
+                    unlock_tomorrow=self.unlocks.team_tomorrow(st.symbol, closed_at),
+                    idea=idea,
+                    jury=jury,
+                    cav_label=row.cav_label,
+                    zlg_label=row.gesture,
+                    n_cav=n_cav,
+                    n_zlg=n_zlg,
+                    tape_eaten=row.tape_eaten,
+                    wall_no_print=wall_no_print,
+                    prs_y=row.prs_y,
+                    btc_regime=row.btc_regime,
+                    btc_broke=break_against,
+                    btc_zone_side="support" if idea_side == "buy" else "resistance",
+                    btc_same_side=btc_same_side,
+                    gesture_n=n_zlg,
+                    trades_in_window=row.trades_in_window,
+                    first_minute=(
+                        self.first_minute.blocks(closed_at, bar.close_ts)
+                        if idea == "breakout"
+                        else False
+                    ),
+                    close_beyond=row.cav_label == "THROUGH",
+                    allow_break=breakout_enabled(),
+                    card_bearing_verdict=row.bearing_verdict,
+                    b_verdict=None if card is None else card.bearing_verdict,
+                    macro_multiplier=Decimal("1") if card is None else card.macro_multiplier,
+                    b_marks_ok=True if card is None else card.context_ok(),
+                    rvol=(
+                        None
+                        if card is None or not card.volume.rvol
+                        else Decimal(card.volume.rvol)
+                    ),
+                    wall_state=None if card is None else card.volume.walls,
+                    venue="perp" if card is None else card.venue,
+                    spot_acked=False if card is None else self.spot.acked(st.symbol),
                 )
-                sent = True
+                intent = self.strategy.propose(snap)
+                if intent is not None:
+                    self.knowledge.enqueue_intent(
+                        intent.model_dump(mode="json"),
+                        created_ts=row.ts.isoformat(),
+                    )
+                    sent = True
         st.state = "IDLE"
         st.last_touch = None
         return [
@@ -986,35 +1101,79 @@ class DeskLoop:
                 WidthSample(zone_id=zone.zone_id, ts=row.ts, w_now=w_now)
             )
         self.registry.fill_width(w_now=w_now, w_rank=w_rank, touch_id=row.touch_id)
+        self.registry.fill_sweep_wick(
+            flag=sweep_wick(zone=zone, bar=bar),
+            touch_id=row.touch_id,
+        )
+        self.registry.fill_fvg_present(
+            flag=fvg_present(
+                st.bars,
+                symbol=st.symbol,
+                tf=bar.tf,
+                close_ts=bar.close_ts,
+            ),
+            touch_id=row.touch_id,
+        )
+        self.registry.fill_session_hour(touch_id=row.touch_id)
+        wall_since, wall_until = self._wall_bounds(row)
+        events = self.walls.get(st.symbol).events if st.symbol in self.walls else []
+        wall_state = last_wall_kind(events, since=wall_since, until=wall_until)
+        self.registry._patch(
+            touch_id=row.touch_id,
+            overwrite=True,
+            wall_state=wall_state,
+        )
+
+    def _wall_bounds(self, touch: Touch) -> tuple[datetime, datetime]:
+        """Same 8s clock as ZLG/OFI, plus 8s before the print."""
+        delta = timedelta(seconds=self.config.zlg_window_s)
+        return touch.ts - delta, touch.ts + delta
+
+    def _same_symbol(self, touch: Touch, symbol: str) -> bool:
+        zone = self.registry._zones.get(touch.zone_id)
+        return zone is not None and zone.symbol == symbol
+
+    def _touch_window(
+        self, st: SymbolState, touch: Touch, *, seconds: int
+    ) -> tuple[list[MarketEvent], list[tuple[datetime, Book]]]:
+        start = touch.ts
+        end = start + timedelta(seconds=seconds)
+        prints = [
+            trade
+            for trade in st.trades
+            if trade.stream == "trades"
+            and start <= require_utc(trade.exchange_ts) <= end
+        ]
+        books = [
+            (ts, copy)
+            for ts, copy in st.book_history
+            if copy.ready and start <= ts <= end
+        ]
+        return prints, books
+
+    def _stamp_touch_interval(self, st: SymbolState, touch: Touch) -> None:
+        """OFI and PRS belong to the 8s touch window, not the last 8s before CAV."""
+        prints, path = self._touch_window(st, touch, seconds=self.config.zlg_window_s)
         ofi_val = None
-        books = [copy for _, copy in st.book_history if copy.ready]
+        books = [copy for _, copy in path]
         if len(books) >= 2:
             try:
-                ofi_val = str(OFI().window(st.trades, books))
+                ofi_val = str(OFI().window(prints, books))
             except ValueError:
                 ofi_val = None
-        wall_state = None
-        events = self.walls.get(st.symbol).events if st.symbol in self.walls else []
-        if events:
-            wall_state = events[-1].kind
         prs_tau = None
-        src = None
-        for trade in reversed(st.trades):
-            if trade.exchange_ts == row.ts:
-                src = trade
-                break
+        src = next((trade for trade in prints if trade.exchange_ts == touch.ts), None)
         if src is not None and st.book_pre is not None and st.book_pre.ready:
             try:
-                result = self._prs_for(st.symbol).compute(src, st.book_pre, st.book_history)
-                self.registry.fill_prs(prs_y=result.Y, touch_id=row.touch_id)
+                result = self._prs_for(st.symbol).compute(src, st.book_pre, path)
+                self.registry.fill_prs(prs_y=result.Y, touch_id=touch.touch_id)
                 prs_tau = str(result.tau)
             except ValueError:
                 pass
         self.registry._patch(
-            touch_id=row.touch_id,
+            touch_id=touch.touch_id,
             overwrite=True,
             ofi=ofi_val,
-            wall_state=wall_state,
             prs_tau=prs_tau,
         )
 
@@ -1060,7 +1219,7 @@ class DeskLoop:
             # Plan: LABEL_ZLG (8s) then CAV on a closed bar, then JURY.
             # Catch-up `--once` lands both clocks in one now= — tick first.
             out.extend(self.tick(when))
-            for symbol in list(self.symbols):
+            for symbol in _close_symbols(self.symbols):
                 out.extend(close_due_bars(self, symbol, when))
 
         for event in _ordered_events(events):
@@ -1082,6 +1241,11 @@ class DeskLoop:
         if now is not None:
             advance(require_utc(now))
         return out
+
+
+def _close_symbols(symbols: dict[str, SymbolState]) -> list[str]:
+    """BTC writes the alt bus. Close it first when several bars share `now`."""
+    return sorted(symbols, key=lambda name: (name != "BTCUSDT", name))
 
 
 _STREAM_RANK = {

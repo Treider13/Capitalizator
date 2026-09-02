@@ -3,7 +3,8 @@
 trading_mode and desk_mode must be demo|live. TAKER_OK is false (limit only).
 Jury, BtcVeto, FirstMinute, MacroRules, first-fact, and PRS cut are gates
 when the desk sets require_jury (isolated F1 tests leave it off).
-check_tape / check_wall are always on in the product and do not filter.
+check_tape / check_wall record in F1 and do not filter there.
+require_jury (desk) applies 2.10.1: eaten or wall-without-print blocks bounce.
 """
 
 from __future__ import annotations
@@ -44,6 +45,8 @@ ORDER_TYPE = "limit"
 SETUP_TAG = "bounce"
 MIN_R = Decimal("1.5")
 DEFAULT_R = Decimal("2")
+BREAK_MIN_R = Decimal("3")
+_BREAK_IDEAS = frozenset({"breakout", "failed_break"})
 
 
 @dataclass(frozen=True)
@@ -83,8 +86,10 @@ class BounceSnapshot:
     prs_y: Decimal | None = None
     first_minute: bool = False
     close_beyond: bool = False
+    allow_break: bool = False
     card_bearing_verdict: str | None = None
     gesture_n: int = 0
+    trades_in_window: int | None = None
     b_verdict: str | None = None
     macro_multiplier: Decimal = Decimal("1")
     b_marks_ok: bool = True
@@ -122,14 +127,46 @@ def in_mid_range(
     return abs(price - mid) <= tick * band_ticks
 
 
-def stop_behind(zone: Zone, tick: Decimal, away_ticks: int) -> Decimal:
+def stop_behind(zone: Zone, tick: Decimal, away_ticks: int, *, side: str) -> Decimal:
+    """Stop is behind the zone *for this side*. A short after a failed support
+    sweep cannot inherit the bounce-long stop (that would sit below entry).
+    """
     if tick <= 0 or away_ticks <= 0:
         raise ValueError("tick/away_ticks must be > 0")
+    if side not in {"buy", "sell"}:
+        raise ValueError("side must be buy|sell")
     buf = tick * away_ticks
-    stop = zone.lo - buf if zone.side == "support" else zone.hi + buf
+    stop = zone.lo - buf if side == "buy" else zone.hi + buf
     if stop <= 0:
         raise ValueError("stop would be <= 0")
     return stop
+
+
+def reward_multiple(idea: str) -> Decimal:
+    return BREAK_MIN_R if idea in _BREAK_IDEAS else MIN_R
+
+
+def default_multiple(idea: str) -> Decimal:
+    """Bounce may use the product 2R default. Break ideas do not invent a target."""
+    if idea in _BREAK_IDEAS:
+        raise ValueError("break ideas have no default multiple")
+    return DEFAULT_R
+
+
+def opposing_target(
+    zones: Sequence[Zone],
+    *,
+    side: str,
+    entry: Decimal,
+    symbol: str | None = None,
+) -> Zone | None:
+    """Nearest opposite zone beyond entry. Same symbol only. Not a fib line."""
+    pool = [z for z in zones if symbol is None or z.symbol == symbol]
+    if side == "buy":
+        above = [z for z in pool if z.side == "resistance" and z.lo > entry]
+        return min(above, key=lambda z: z.lo) if above else None
+    below = [z for z in pool if z.side == "support" and z.hi < entry]
+    return max(below, key=lambda z: z.hi) if below else None
 
 
 def take_profit(
@@ -137,19 +174,25 @@ def take_profit(
     entry: Decimal,
     stop: Decimal,
     next_zone: Zone | None,
+    *,
+    idea: str = "bounce",
 ) -> Decimal | None:
     r = abs(entry - stop)
     if r <= 0:
         return None
+    need = reward_multiple(idea)
     if next_zone is not None:
         tp = next_zone.lo if side == "buy" else next_zone.hi
         reward = (tp - entry) if side == "buy" else (entry - tp)
-        if reward < MIN_R * r:
+        if reward < need * r:
             return None
         return tp
+    if idea in _BREAK_IDEAS:
+        return None
+    span = DEFAULT_R * r
     if side == "buy":
-        return entry + DEFAULT_R * r
-    return entry - DEFAULT_R * r
+        return entry + span
+    return entry - span
 
 
 class BounceStrategy:
@@ -251,11 +294,23 @@ class BounceStrategy:
             return None
         if not price_in_zone(snap.price, zone):
             return None
-        # check_tape / check_wall always recorded by the desk; they do not filter here.
-        _ = (self.check_tape, self.check_wall, snap.tape_eaten, snap.wall_no_print)
+        # F1 isolated tests: check_tape / check_wall record only.
+        # Desk require_jury: 2.10.1 — eaten or silent wall is not a bounce.
+        _ = (self.check_tape, self.check_wall)
         idea = snap.idea if snap.idea in {"bounce", "breakout", "failed_break"} else "bounce"
+        if (
+            idea == "bounce"
+            and self.require_jury
+            and (
+                snap.tape_eaten is True
+                or snap.wall_no_print is True
+                or snap.wall_state == "pulled"
+            )
+        ):
+            return None
         side = "buy" if zone.side == "support" else "sell"
-        if idea == "failed_break":
+        if idea in _BREAK_IDEAS:
+            # Desk idea_side: break of support is a short, break of resistance a long.
             side = "sell" if zone.side == "support" else "buy"
         if snap.symbol != "BTCUSDT" and not self.btc_veto.allow(
             alt_side=side,
@@ -280,10 +335,13 @@ class BounceStrategy:
             return None
         if idea == "breakout":
             if not BreakoutClose.allow(
-                enabled=True,
+                enabled=snap.allow_break,
                 close_beyond=snap.close_beyond,
-                tape_eaten=bool(snap.tape_eaten),
-                btc_same=snap.btc_regime in {"box", "trend"} and not snap.btc_broke,
+                tape_eaten=snap.tape_eaten is True,
+                btc_same=(
+                    (snap.btc_regime == "box" or snap.btc_same_side)
+                    and not snap.btc_broke
+                ),
                 first_minute=snap.first_minute,
             ):
                 return None
@@ -301,9 +359,10 @@ class BounceStrategy:
                 tape_eaten=snap.tape_eaten,
                 btc_regime=snap.btc_regime,
                 card_bearing_verdict=snap.card_bearing_verdict,
-                wall_no_print=bool(snap.wall_no_print) or snap.wall_state == "pulled",
+                wall_no_print=snap.wall_no_print is True or snap.wall_state == "pulled",
                 btc_break_against=snap.btc_broke,
                 btc_same_side=snap.btc_same_side,
+                trades_in_window=snap.trades_in_window,
             )
             label = decide(voices)
             if snap.jury is not None and snap.jury != "ACCORD":
@@ -329,10 +388,10 @@ class BounceStrategy:
                 if not night_ok:
                     return None
         try:
-            stop = stop_behind(zone, snap.tick, self.registry.bounce_away_ticks)
+            stop = stop_behind(zone, snap.tick, self.registry.bounce_away_ticks, side=side)
         except ValueError:
             return None
-        tp = take_profit(side, snap.price, stop, snap.next_target)
+        tp = take_profit(side, snap.price, stop, snap.next_target, idea=idea)
         if tp is None:
             return None
         if not self.budget.allow_entry():

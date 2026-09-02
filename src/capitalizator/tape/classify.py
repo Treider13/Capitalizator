@@ -107,3 +107,26 @@ class TapeClassifier:
                 continue
             taken += Decimal(str(trade.payload["qty"]))
         return taken
+
+    def prints_in_window(
+        self,
+        trades: Sequence[MarketEvent],
+        *,
+        symbol: str,
+        t0: datetime,
+        config: RegistryConfig | None = None,
+    ) -> int:
+        """Prints in the same 8s touch window as eaten(). Gaps are not prints."""
+        cfg = config or load_registry()
+        start = require_utc(t0)
+        end = start + timedelta(seconds=cfg.zlg_window_s)
+        n = 0
+        for trade in trades:
+            if trade.stream != "trades":
+                continue
+            if trade.symbol != symbol:
+                continue
+            ts = require_utc(trade.exchange_ts)
+            if start <= ts <= end:
+                n += 1
+        return n

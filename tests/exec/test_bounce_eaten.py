@@ -54,3 +54,25 @@ def test_product_records_tape_and_does_not_filter() -> None:
     assert isinstance(strat.propose(_snap(tape_eaten=True)), Intent)
     assert isinstance(strat.propose(_snap(tape_eaten=False)), Intent)
     assert isinstance(strat.propose(_snap()), Intent)
+
+
+def test_require_jury_eaten_blocks_bounce() -> None:
+    strat = BounceStrategy(
+        risk=RiskEngine(),
+        halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
+        require_card=False,
+        require_jury=True,
+    )
+    assert strat.propose(_snap(tape_eaten=True)) is None
+
+
+def test_require_jury_wall_no_print_blocks_bounce() -> None:
+    strat = BounceStrategy(
+        risk=RiskEngine(),
+        halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
+        require_card=False,
+        require_jury=True,
+    )
+    assert strat.propose(_snap(wall_no_print=True, tape_eaten=False)) is None

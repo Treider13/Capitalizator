@@ -93,6 +93,21 @@ def test_journal_width_without_touch_id_writes_every_row() -> None:
     assert all(t.cav_label is None for t in reg.touches)
 
 
+def test_sweep_and_fvg_marks_do_not_change_class_id() -> None:
+    reg = _reg()
+    reg.fill_cav(cav_label="REJECT")
+    reg.fill_gesture(gesture="DEFEND")
+    reg.fill_btc(regime="box")
+    row = reg.stamp_jury(n_cav=20, n_zlg=20)[0]
+    assert row.rho_class_id == "bounce × REJECT × DEFEND × BTC_box"
+    later = reg.fill_sweep_wick(flag=True)[0]
+    later = reg.fill_fvg_present(flag=True)[0]
+    assert later.sweep_wick is True
+    assert later.fvg_present is True
+    assert later.jury == "ACCORD"
+    assert later.rho_class_id == "bounce × REJECT × DEFEND × BTC_box"
+
+
 def test_journal_does_not_change_class_id() -> None:
     reg = _reg()
     reg.fill_cav(cav_label="REJECT")
@@ -437,6 +452,9 @@ def test_journal_is_invisible_to_jury_and_hash() -> None:
     assert "bar_quality" not in src
     assert "session_hour" not in src
     assert "hostile_exam" not in src
+    assert "fvg_present" not in src
+    assert "sweep_wick" not in src
+    assert "no_tvh" not in src
     payload_src = inspect.getsource(touch_payload)
     assert "w_now" not in payload_src
     assert "session_hour" not in payload_src

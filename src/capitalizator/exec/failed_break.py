@@ -11,6 +11,20 @@ from capitalizator.zones.model import Bar, Zone
 TAG = "failed_break"
 
 
+def wick_beyond(*, zone: Zone, bar: Bar) -> bool:
+    """Wick traded through the zone band. Same atom as FailedBreak. Not an entry."""
+    if bar.symbol != zone.symbol:
+        return False
+    if zone.side == "support":
+        return bar.low < zone.lo
+    return bar.high > zone.hi
+
+
+def sweep_wick(*, zone: Zone, bar: Bar) -> bool:
+    """Journal column: wick beyond the zone. Close may be inside or through."""
+    return wick_beyond(zone=zone, bar=bar)
+
+
 class FailedBreak:
     @staticmethod
     def tag(*, zone: Zone, bar: Bar) -> str | None:
@@ -19,11 +33,7 @@ class FailedBreak:
         inside = zone.lo <= bar.close <= zone.hi
         if not inside:
             return None
-        if zone.side == "support":
-            beyond = bar.low < zone.lo
-        else:
-            beyond = bar.high > zone.hi
-        return TAG if beyond else None
+        return TAG if wick_beyond(zone=zone, bar=bar) else None
 
     @staticmethod
     def counts_as_breakout(tag: str) -> bool:

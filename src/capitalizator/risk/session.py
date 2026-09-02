@@ -87,17 +87,40 @@ def allow_entry(
     return False, "outside session"
 
 
-def us_data_day(now: datetime, calendar: Sequence[NewsRow]) -> bool:
+def _macro_known_at(
+    now: datetime,
+    calendar: Sequence[NewsRow],
+    classes: frozenset[str],
+) -> datetime | None:
+    """known_at of a learned row in `classes` on this NY date. Else None."""
     when = require_utc(now)
     ny_day = when.astimezone(NY).date()
     for row in calendar:
-        if row.event_class not in US_MACRO:
+        if row.event_class not in classes:
             continue
         if row.known_at > when:
             continue
         if row.event_time.astimezone(NY).date() == ny_day:
-            return True
-    return False
+            return row.known_at
+    return None
+
+
+def us_data_known_at(now: datetime, calendar: Sequence[NewsRow]) -> datetime | None:
+    """known_at of a US-macro row on this NY date, already learned. Else None.
+
+    A calendar file we ingested last month is not 'news' on a quiet day.
+    Same clock as us_data_day.
+    """
+    return _macro_known_at(now, calendar, US_MACRO)
+
+
+def us_data_day(now: datetime, calendar: Sequence[NewsRow]) -> bool:
+    return us_data_known_at(now, calendar) is not None
+
+
+def cpi_day(now: datetime, calendar: Sequence[NewsRow]) -> bool:
+    """Card CPI window: CPI on this NY date, already learned. Not the 24h pre-cut."""
+    return _macro_known_at(now, calendar, frozenset({"CPI"})) is not None
 
 
 class SessionWindow:

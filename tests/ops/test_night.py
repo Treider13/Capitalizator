@@ -28,10 +28,12 @@ def test_night_cli_writes_report(tmp_path: Path) -> None:
 
 def test_night_writes_report_and_pending_card(tmp_path: Path) -> None:
     knowledge = open_knowledge(init_vault(tmp_path / "desk"))
-    out = run_night(knowledge, day="2026-08-31", now=NOW)
+    out = run_night(knowledge, day="2026-08-31", now=NOW, thin_book=True)
     assert out["verdict"] == "pending"
     assert out["card"].claims[0].verdict == "pending"
     assert len(out["card"].claims) == 5
     assert knowledge.report(day="2026-08-31", kind="map")
-    assert knowledge.get_overlay("2026-08-31:shadow") is not None
+    overlay = knowledge.get_overlay("2026-08-31:shadow")
+    assert overlay is not None
+    assert overlay["r_shadow"] is None
     assert out["fragility"] is False

@@ -243,7 +243,13 @@ class Registry:
                 tick_size=self.tick_size,
                 config=self.config,
             )
-            row = replace(touch, tape_eaten=flag)
+            prints = clf.prints_in_window(
+                trades,
+                symbol=zone.symbol,
+                t0=touch.ts,
+                config=self.config,
+            )
+            row = replace(touch, tape_eaten=flag, trades_in_window=prints)
             next_rows.append(row)
             changed.append(row)
         self.touches = next_rows
@@ -309,8 +315,25 @@ class Registry:
             require_touch_id=False,
         )
 
+    def fill_sweep_wick(self, *, flag: bool, touch_id: str | None = None) -> list[Touch]:
+        """Journal only. Wick beyond the zone. Does not append the hash chain."""
+        return self._patch(
+            sweep_wick=flag,
+            touch_id=touch_id,
+            overwrite=True,
+            require_touch_id=False,
+        )
+
+    def fill_fvg_present(self, *, flag: bool | None, touch_id: str | None = None) -> list[Touch]:
+        """Journal only. 3-candle gap or None if bars are short. Not a voice."""
+        return self._patch(
+            fvg_present=flag,
+            touch_id=touch_id,
+            overwrite=True,
+            require_touch_id=False,
+        )
+
     def fill_session_hour(self, *, touch_id: str | None = None) -> list[Touch]:
-        """UTC hour of touch.ts. Journal only — never part of rho_class_id."""
         changed: list[Touch] = []
         next_rows: list[Touch] = []
         for touch in self.touches:

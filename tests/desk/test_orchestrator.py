@@ -32,6 +32,16 @@ ZONE = Zone.create(
     method="prior_day_hl",
     created_as_of=CREATED,
 )
+# failed_break of support is a short. 3R from 65000 / 65010.8 needs hi ≤ 64967.6.
+TARGET = Zone.create(
+    symbol="BTCUSDT",
+    tf="15m",
+    side="support",
+    lo=Decimal("64940"),
+    hi=Decimal("64950"),
+    method="prior_day_hl",
+    created_as_of=CREATED,
+)
 
 
 class _VerifiedDesk(DeskLoop):
@@ -142,7 +152,7 @@ def test_play_100_trades_runs_full_chain(tmp_path: Path) -> None:
     events = [*_book_events(trades[0]), *trades, *_wick_and_recover(trades[0])]
     now = datetime(2024, 8, 30, 15, 0, tzinfo=UTC)
     desk = _desk(tmp_path, user_mode="demo")
-    out = desk.play(events, extra_zones=(ZONE,), now=now)
+    out = desk.play(events, extra_zones=(ZONE, TARGET), now=now)
 
     live = [t for t in desk.registry.touches if t.ts >= trades[0].exchange_ts]
     assert live, "orchestrator must open a touch from the 100-print fixture"
@@ -174,7 +184,21 @@ def test_play_100_trades_runs_full_chain(tmp_path: Path) -> None:
         assert pending
         payload = pending[0]["payload"]
         assert payload["symbol"] == "BTCUSDT"
-        assert payload.get("stop") is not None
+        assert payload["side"] == "sell"
+        assert payload["tag"] == "failed_break_bounce"
+        assert payload["stop"] == "65010.8"
+        assert payload["tp"] == "64950"
+        assert journal["shadow_side"] == "sell"
+        assert journal["shadow_tag"] == "failed_break_bounce"
+        assert row.idea == "failed_break"
+        assert row.shadow_would is True
+        assert row.shadow_side == "sell"
+        assert row.session_hour is not None
+        assert row.n_cav == journal["n_cav"]
+        assert row.n_zlg == journal["n_zlg"]
+        assert row.card_id == journal["card_id"]
+        assert row.first_fact == journal["first_fact"]
+        assert row.cav_tf == "15m"
     else:
         assert journal["skip_reason"]
         assert jury_ev["sent"] is False
