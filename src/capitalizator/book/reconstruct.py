@@ -137,3 +137,17 @@ class Book:
         clone._seq = self._seq
         clone._ready = self._ready
         return clone
+
+    def with_level(self, side: Side, px: Decimal, size: Decimal) -> Book:
+        """Copy with one level set (0 removes). Same seq. This book is not changed.
+
+        For ОКО's Mirror, which injects synthetic walls into a replayed path.
+        Not a diff: no sequence check, no gap law. Never used on the live book.
+        """
+        if not self._ready:
+            raise BookDirty("with_level needs a ready book")
+        if side not in {"bid", "ask"}:
+            raise ValueError("side must be bid|ask")
+        clone = self.snapshot_copy()
+        clone._put_side(clone._bids if side == "bid" else clone._asks, ((str(px), str(size)),))
+        return clone
