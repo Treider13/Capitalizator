@@ -103,10 +103,8 @@ def main(argv: list[str] | None = None) -> int:
             knowledge=knowledge,
         )
         app.recording = True
-        print(
-            json.dumps({"live_ws": True, "n_symbols": len(rec.symbols), "data_root": str(data_root)}),
-            flush=True,
-        )
+        hello = {"live_ws": True, "n_symbols": len(rec.symbols), "data_root": str(data_root)}
+        print(json.dumps(hello), flush=True)
         try:
             rec.run(should_stop=lambda: stopped["v"])
         finally:
