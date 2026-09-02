@@ -54,6 +54,8 @@ JOURNAL_KEYS = (
     "shadow_would",
     "shadow_side",
     "shadow_tag",
+    "challenger_would",
+    "challenger_tag",
     "skip_reason",
     "outcome",
     "rho_class_id",

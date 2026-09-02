@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS overlay (
   setup_id TEXT PRIMARY KEY,
   r_shadow TEXT,
   r_demo TEXT,
-  r_live TEXT
+  r_live TEXT,
+  r_challenger TEXT
 );
 CREATE TABLE IF NOT EXISTS market_event (
   id INTEGER PRIMARY KEY,
@@ -201,6 +202,7 @@ class Knowledge:
             self._cx.executescript(SCHEMA)
             self._cx.execute("INSERT OR IGNORE INTO meta(k, v) VALUES ('schema', '1')")
             self._cx.execute("PRAGMA secure_delete = ON")
+            self._ensure_overlay_r_challenger()
         else:
             try:
                 self._cx.execute("SELECT 1 FROM sqlite_master LIMIT 1")
@@ -562,21 +564,40 @@ class Knowledge:
                 out.append(raw)
         return out
 
+    def _overlay_cols(self) -> set[str]:
+        if self._cx is None:
+            return set()
+        rows = self._cx.execute("PRAGMA table_info(overlay)").fetchall()
+        return {str(row[1]) for row in rows}
+
+    def _ensure_overlay_r_challenger(self) -> None:
+        """Additive. Old desk.sqlite has overlay without r_challenger."""
+        if self._cx is None or "r_challenger" in self._overlay_cols():
+            return
+        try:
+            self._cx.execute("ALTER TABLE overlay ADD COLUMN r_challenger TEXT")
+        except sqlite3.OperationalError:
+            return
+
+    def _overlay_dict(self, row: sqlite3.Row) -> dict[str, str | None]:
+        keys = ("r_shadow", "r_demo", "r_live", "r_challenger")
+        out: dict[str, str | None] = {"setup_id": str(row["setup_id"])}
+        for key in keys:
+            try:
+                raw = row[key]
+            except (KeyError, IndexError):
+                raw = None
+            out[key] = None if raw is None else str(raw)
+        return out
+
     def overlay_rows(self) -> list[dict[str, str | None]]:
         if self._cx is None:
             return []
-        rows = self._cx.execute(
-            "SELECT setup_id, r_shadow, r_demo, r_live FROM overlay"
-        ).fetchall()
-        return [
-            {
-                "setup_id": str(row["setup_id"]),
-                "r_shadow": None if row["r_shadow"] is None else str(row["r_shadow"]),
-                "r_demo": None if row["r_demo"] is None else str(row["r_demo"]),
-                "r_live": None if row["r_live"] is None else str(row["r_live"]),
-            }
-            for row in rows
-        ]
+        cols = "setup_id, r_shadow, r_demo, r_live"
+        if "r_challenger" in self._overlay_cols():
+            cols += ", r_challenger"
+        rows = self._cx.execute(f"SELECT {cols} FROM overlay").fetchall()
+        return [self._overlay_dict(row) for row in rows]
 
     def get_journal_touch(self, touch_id: str) -> dict[str, Any] | None:
         if self._cx is None:
@@ -675,16 +696,26 @@ class Knowledge:
         r_shadow: str | None = None,
         r_demo: str | None = None,
         r_live: str | None = None,
+        r_challenger: str | None = None,
     ) -> None:
         if self._cx is None:
             raise FileNotFoundError("no knowledge db")
+        self._ensure_overlay_r_challenger()
         self._cx.execute("BEGIN IMMEDIATE")
         try:
-            self._cx.execute(
-                "INSERT OR REPLACE INTO overlay(setup_id, r_shadow, r_demo, r_live) "
-                "VALUES (?, ?, ?, ?)",
-                (setup_id, r_shadow, r_demo, r_live),
-            )
+            if "r_challenger" in self._overlay_cols():
+                self._cx.execute(
+                    "INSERT OR REPLACE INTO overlay"
+                    "(setup_id, r_shadow, r_demo, r_live, r_challenger) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (setup_id, r_shadow, r_demo, r_live, r_challenger),
+                )
+            else:
+                self._cx.execute(
+                    "INSERT OR REPLACE INTO overlay(setup_id, r_shadow, r_demo, r_live) "
+                    "VALUES (?, ?, ?, ?)",
+                    (setup_id, r_shadow, r_demo, r_live),
+                )
             self._cx.commit()
         except Exception:
             self._cx.rollback()
@@ -693,18 +724,16 @@ class Knowledge:
     def get_overlay(self, setup_id: str) -> dict[str, str | None] | None:
         if self._cx is None:
             return None
+        cols = "setup_id, r_shadow, r_demo, r_live"
+        if "r_challenger" in self._overlay_cols():
+            cols += ", r_challenger"
         row = self._cx.execute(
-            "SELECT setup_id, r_shadow, r_demo, r_live FROM overlay WHERE setup_id = ?",
+            f"SELECT {cols} FROM overlay WHERE setup_id = ?",
             (setup_id,),
         ).fetchone()
         if row is None:
             return None
-        return {
-            "setup_id": str(row["setup_id"]),
-            "r_shadow": None if row["r_shadow"] is None else str(row["r_shadow"]),
-            "r_demo": None if row["r_demo"] is None else str(row["r_demo"]),
-            "r_live": None if row["r_live"] is None else str(row["r_live"]),
-        }
+        return self._overlay_dict(row)
 
     def _put_keyed_payload(
         self, table: str, key_col: str, key: str, payload: Mapping[str, Any]
