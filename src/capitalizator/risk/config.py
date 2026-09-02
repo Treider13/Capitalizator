@@ -44,6 +44,10 @@ class RiskConfig:
     allow_night: bool = False
     # Paper / demo equity used until a wallet is read from the exchange.
     paper_equity: Decimal = Decimal("100000")
+    # D-19: ICT context marks (fib OTE / FVG / sweep) are informational by default —
+    # FINAL-SYSTEM.md calls named chart patterns "мусор" and the virtual 26h run
+    # showed them skipping 169/171 touches, starving the shadow. Turn on to require them.
+    require_ict_marks: bool = False
     version: int = 1
     config_id: str = ""
 
@@ -97,7 +101,7 @@ class RiskConfig:
                 kwargs[key] = int(value)
             elif key in {"stop_mode", "trail_mode", "config_id"}:
                 kwargs[key] = str(value)
-            elif key == "allow_night":
+            elif key in {"allow_night", "require_ict_marks"}:
                 kwargs[key] = bool(value)
             else:
                 raise ValueError(f"unknown risk_config key: {key}")

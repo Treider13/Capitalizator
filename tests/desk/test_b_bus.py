@@ -253,14 +253,41 @@ def test_journal_keeps_b_card_id_and_smc(tmp_path: Path) -> None:
     assert events[0]["event"] == "zlg"
     closed = desk.on_bar_close(_bar(NOW + timedelta(minutes=15)))
     assert closed[0]["sent"] is False
-    assert closed[0]["skip_reason"] == "b_marks"  # fib none → red marks, journalled not dropped
     row = desk.knowledge.get_journal_touch(closed[0]["touch_id"])
     assert row is not None
     assert row["card_id"] == card.card_id
     assert row["ob_status"] == "bull"
     assert row["bos_status"] == "bull"
-    assert row["b_gate"] == "b_marks"
+    # D-19: fib none → red marks are RECORDED (b_marks_red) but not enforced by default;
+    # the skip here is the desk's own no_tvh (n<20), not the ICT card.
+    assert row["b_marks_red"] is True and row["b_gate"] is None
+    assert closed[0]["skip_reason"] == "no_tvh"
     assert row["cav_label"] is not None
+
+
+def test_require_ict_marks_knob_enforces_red_marks(tmp_path: Path) -> None:
+    from capitalizator.risk.config import RiskConfig, save_risk_config
+
+    desk = _desk(tmp_path)
+    save_risk_config(desk.knowledge, RiskConfig(require_ict_marks=True), ack=True)
+    desk.tick(NOW - timedelta(minutes=1))  # hot reload picks the knob up
+    assert desk.risk_config.require_ict_marks is True
+    card = CardLive(
+        symbol="BTCUSDT",
+        bearing_verdict="propose",
+        known_at=NOW,
+        fib_zone="none",
+        pluses=("session_profile", "htf_ok", "rvol_above_2"),
+        minuses=("base_rate_unknown", "spread_cost"),
+    )
+    desk.knowledge.put_card_live("BTCUSDT", card.to_payload())
+    desk.registry._zones[ZONE.zone_id] = ZONE
+    desk.on_trade(_trade(), [ZONE])
+    desk.tick(NOW + timedelta(seconds=8))
+    closed = desk.on_bar_close(_bar(NOW + timedelta(minutes=15)))
+    assert closed[0]["skip_reason"] == "b_marks"
+    row = desk.knowledge.get_journal_touch(closed[0]["touch_id"])
+    assert row["b_gate"] == "b_marks" and row["shadow_would"] is False
 
 
 def test_get_card_live_bad_json_is_none(tmp_path: Path) -> None:

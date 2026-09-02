@@ -289,6 +289,12 @@ class DeskLoop:
     def _ui_put(self, key: str, value: str) -> None:
         self._ui_pending[key] = value
 
+    def _ui_due(self, now: datetime) -> bool:
+        return (
+            self._ui_last_flush is None
+            or (now - self._ui_last_flush).total_seconds() >= self.UI_FLUSH_S
+        )
+
     def flush_ui(self, now: datetime, *, force: bool = False) -> int:
         """Write last_price / book snapshots in one transaction, at most every 0.5s."""
         if not self._ui_pending or not self.knowledge.available():
@@ -370,7 +376,8 @@ class DeskLoop:
         if st.last_touch is not None and st.state == "ARM_ZLG":
             keep_from = st.last_touch.ts
         st.book_history = [row for row in st.book_history if row[0] >= keep_from]
-        if self.knowledge.available():
+        if self.knowledge.available() and self._ui_due(when):
+            # Build the UI book JSON only when a flush is due (was: sort + dumps per diff).
             bids = sorted(
                 ((str(px), str(sz)) for px, sz in st.book.levels("bid").items()),
                 reverse=True,
@@ -423,13 +430,26 @@ class DeskLoop:
             if seq is None:
                 st.book = Book(tick_size=str(self.tick_for(st.symbol)))
                 return
-            before = _level_sizes(st.book) if st.book.ready else {}
+            # Only the touched prices can change: read them before the diff instead of
+            # copying the whole book (was 0.9 ms per diff in the profile).
+            before: dict[tuple[str, Decimal], Decimal] = {}
+            if st.book.ready:
+                for side_name, rows in (("bid", bids), ("ask", asks)):
+                    levels = st.book.levels(side_name)  # type: ignore[arg-type]
+                    for px_s, _sz in rows:
+                        px = Decimal(px_s)
+                        before[(side_name, px)] = levels.get(px, Decimal("0"))
             try:
                 st.book.apply_diff(bids, asks, seq=int(seq))
             except (BookDirty, SeqFault):
                 st.book = Book(tick_size=str(self.tick_for(st.symbol)))
                 return
-            _record_adds(st, event.exchange_ts, before)
+            _record_adds_from_diff(st, event.exchange_ts, before, bids, asks)
+            if st.state == "IDLE" and len(st.adds) > 256:
+                # Adds only matter inside the 8s window after a touch; idle symbols
+                # must not accumulate hours of book activity.
+                keep_from = event.exchange_ts - timedelta(seconds=2 * self.config.zlg_window_s)
+                st.adds = [a for a in st.adds if a.ts >= keep_from]
             self._remember_book(st, event.exchange_ts)
             self._wall_for(st.symbol).on_book_and_trade(st.book, ts=event.exchange_ts)
             return
@@ -1028,6 +1048,10 @@ class DeskLoop:
         if card is None and st.zlg_card is not None:
             card = st.zlg_card
         b_gate = self._b_gate_kind(card, zone_side=zone.side)
+        marks_red = b_gate == "b_marks"
+        if marks_red and not self.risk_config.require_ict_marks:
+            # D-19: red ICT marks are recorded, not enforced (operator knob).
+            b_gate = None
         if bar.close_ts < touch.ts:
             return []
         # Atom requires close_ts < t. Plan: CAV only on a closed bar (close_ts ≤ now).
@@ -1171,9 +1195,11 @@ class DeskLoop:
             tape_eaten=row.tape_eaten,
         )
         shadow_would = jury == "ACCORD"
-        # Challenger reading that ignores the ICT context marks (fib/FVG/sweep):
-        # same jury, same TVH, only b_marks lifted. Data decides if marks help.
+        # Challenger readings so data, not a comment, decides whether ICT marks help:
+        #   shadow_would_no_marks — ACCORD ∧ TVH regardless of marks
+        #   shadow_would_marks    — the same, only when the marks are green
         shadow_would_no_marks = shadow_would and has_tvh and b_gate in {None, "b_marks"}
+        shadow_would_marks = shadow_would_no_marks and not marks_red
         skip: str | None
         if not has_tvh:
             shadow_would = False
@@ -1319,8 +1345,10 @@ class DeskLoop:
             "fade_side": fade_side,
             "fade_tag": "fade_spring" if fade_side else None,
             "b_gate": b_gate,
+            "b_marks_red": marks_red,
             "has_tvh": has_tvh,
             "shadow_would_no_marks": shadow_would_no_marks,
+            "shadow_would_marks": shadow_would_marks,
         }
         payload_row = {**journal, **extra}
         payload_row["challenger_would"] = challenger_on(payload_row)
@@ -1421,7 +1449,11 @@ class DeskLoop:
                     card_bearing_verdict=row.bearing_verdict,
                     b_verdict=None if card is None else card.bearing_verdict,
                     macro_multiplier=Decimal("1") if card is None else card.macro_multiplier,
-                    b_marks_ok=True if card is None else card.context_ok(side=idea_side),
+                    b_marks_ok=(
+                        True
+                        if card is None or not self.risk_config.require_ict_marks
+                        else card.context_ok(side=idea_side)
+                    ),
                     rvol=(
                         None
                         if card is None or not card.volume.rvol
@@ -2071,12 +2103,32 @@ def _level_sizes(book: Book) -> dict[tuple[str, Decimal], Decimal]:
     return out
 
 
+def _record_adds_from_diff(
+    st: SymbolState,
+    ts: datetime,
+    before: dict[tuple[str, Decimal], Decimal],
+    bids: tuple[tuple[str, str], ...],
+    asks: tuple[tuple[str, str], ...],
+) -> None:
+    """Same law as `_record_adds`, O(diff) instead of O(book): a positive size delta
+    at a price the diff touched is a ZLG BookAdd; pulls are not adds."""
+    for side, rows in (("bid", bids), ("ask", asks)):
+        levels = st.book.levels(side)  # type: ignore[arg-type]
+        for px_s, _sz in rows:
+            px = Decimal(px_s)
+            delta = levels.get(px, Decimal("0")) - before.get((side, px), Decimal("0"))
+            if delta > 0:
+                hit: Literal["bid", "ask"] = "bid" if side == "bid" else "ask"
+                st.adds.append(BookAdd(ts=ts, side=hit, px=px, qty=delta))
+
+
 def _record_adds(
     st: SymbolState,
     ts: datetime,
     before: dict[tuple[str, Decimal], Decimal],
 ) -> None:
-    """Positive size deltas after a diff are ZLG BookAdds. Pulls are not adds."""
+    """Positive size deltas after a diff are ZLG BookAdds. Pulls are not adds.
+    Full-book variant kept for reference/tests; the loop uses `_record_adds_from_diff`."""
     for side in ("bid", "ask"):
         for px, sz in st.book.levels(side).items():
             delta = sz - before.get((side, px), Decimal("0"))

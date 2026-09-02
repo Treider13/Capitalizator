@@ -16,6 +16,7 @@ from capitalizator.card.live import CardLive
 from capitalizator.desk.bars import closed_bars_from_trades
 from capitalizator.desk.loop import DeskLoop
 from capitalizator.ops.vault import VaultError, iter_regular_files
+from capitalizator.recorder.rows import rows_fast
 from capitalizator.types import MarketEvent
 from capitalizator.zones.engine import ZoneEngine
 from capitalizator.zones.model import Zone
@@ -61,7 +62,7 @@ def load_tape(tape: Path) -> list[MarketEvent]:
             table = pq.ParquetFile(path).read()
         except (OSError, ValueError):
             continue
-        for row in table.to_pylist():
+        for row in rows_fast(table):
             event = _parse(row)
             if event is not None:
                 events.append(event)
@@ -108,7 +109,7 @@ class TapeCursor:
             except (OSError, ValueError):
                 continue
             self.files_read += 1
-            rows = table.to_pylist()
+            rows = rows_fast(table)
             for row in rows[offset:]:
                 event = _parse(row)
                 if event is not None:
