@@ -20,7 +20,7 @@ No order leaves this module. It is deterministic on the tape (tests replay).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -78,6 +78,8 @@ class PaperPosition:
     # Structural level (zone edge / spring wick) for the close-based soft exit.
     structural: Decimal | None = None
     stop_components: dict[str, str] = field(default_factory=dict)
+    # Journal labels the trade was taken on (idea class stats, champion/calibrate.py).
+    labels: dict[str, Any] = field(default_factory=dict)
 
     # --- geometry -----------------------------------------------------------
     @property
@@ -103,11 +105,11 @@ class PaperPosition:
                 return v.total_seconds()
             return v
 
-        out = {
-            k: s(v) for k, v in self.__dict__.items() if k not in {"stop_moves", "stop_components"}
-        }
+        skip = {"stop_moves", "stop_components", "labels"}
+        out = {k: s(v) for k, v in self.__dict__.items() if k not in skip}
         out["stop_moves"] = list(self.stop_moves)
         out["stop_components"] = dict(self.stop_components)
+        out["labels"] = dict(self.labels)
         out["r_net"] = s(self.r_net())
         out["r_gross"] = s(self.r_gross())
         out["mae_r"] = s(self.mae_r())
@@ -185,6 +187,7 @@ class PaperEngine:
         max_hold: timedelta | None = None,
         structural: Decimal | None = None,
         stop_components: dict[str, str] | None = None,
+        labels: Mapping[str, Any] | None = None,
     ) -> PaperPosition:
         if qty <= 0 or limit_px <= 0 or stop <= 0 or tick <= 0:
             raise ValueError("qty/limit/stop/tick must be > 0")
@@ -214,6 +217,7 @@ class PaperEngine:
             funding_interval_min=funding_interval_min,
             structural=structural,
             stop_components=dict(stop_components or {}),
+            labels=dict(labels or {}),
         )
         self.positions[paper_id] = pos
         self.n_submitted += 1

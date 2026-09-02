@@ -195,6 +195,29 @@ def test_b_veto_flattens_the_live_twin_and_queues_venue_flatten(tmp_path: Path) 
     assert desk.account.open == {}
 
 
+def test_refuted_class_is_not_sent_but_still_shadowed(tmp_path: Path) -> None:
+    desk = _desk(tmp_path, "demo", SUP, "100000.1")
+    # 40 filled shadow losers of the exact class this touch will produce (spring × REJECT × DEFEND)
+    for i in range(40):
+        desk.knowledge.put_paper_trade({
+            "paper_id": f"old{i}:shadow", "touch_id": f"old{i}", "source": "shadow", "symbol": "BTCUSDT",
+            "closed_at": (CREATED + timedelta(minutes=i)).isoformat(), "tag": "spring",
+            "entry_px": "100", "r_net": "-1.2", "realized": "-1", "fees": "0.1", "funding": "0",
+            "labels": {"cav_label": "REJECT", "zlg_label": "DEFEND"},
+        })
+    desk.tick(WINDOW - timedelta(minutes=1))  # refresh calibration
+    ev = _arm_and_close(desk, SUP, "100000.1")
+    row = desk.knowledge.get_journal_touch(ev["touch_id"])
+    assert row["jury"] == "ACCORD" and row["idea"] == "spring"
+    assert ev["sent"] is False
+    assert row["send_skip"].startswith("calib:spring|REJECT|DEFEND")
+    assert row["calibration"]["n"] == 40 and Decimal(row["calibration"]["upper"]) < Decimal("0.2")
+    assert desk.knowledge.pending_intents() == []
+    # the shadow and the fade keep trading on paper — the verdict can flip with data
+    assert set(row["paper_ids"]) == {"shadow", "fade"}
+    assert json.loads(desk.knowledge.meta("calibration"))["spring|REJECT|DEFEND"]["n"] == 40
+
+
 def test_instruments_published_by_signer_are_loaded_by_desk(tmp_path: Path) -> None:
     from capitalizator.instruments import InstrumentRegistry, instrument_from_bybit
 

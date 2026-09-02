@@ -7,7 +7,7 @@ when user_mode is demo|live and jury is ACCORD. Shadow always writes.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -24,6 +24,7 @@ from capitalizator.card.draft import pending_card
 from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.card.live import CardLive, card_is_fresh, touch_line
 from capitalizator.card.volume import snapshot as volume_snapshot
+from capitalizator.champion.calibrate import ClassStat, class_key, class_stats, refuted, to_meta
 from capitalizator.champion.shadow_day import (
     challenger_on,
     challenger_tag,
@@ -205,6 +206,8 @@ class DeskLoop:
         self._half_sent: set[str] = set()
         self.entries_paused = False
         self._instruments_seen: str | None = None
+        self._calibration: dict[str, ClassStat] = {}
+        self._calibration_at: datetime | None = None
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
         if knowledge.available():
@@ -695,6 +698,7 @@ class DeskLoop:
                 out.extend(self._consume_commands(when))
                 self._reload_risk_config()
                 self._reload_instruments()
+                self._refresh_calibration(when)
                 out.extend(self._sync_exchange_state(when))
         self.flush_ui(when, force=force_flush)
         # Settling pending touches walks every touch; once per second of clock is
@@ -1482,7 +1486,10 @@ class DeskLoop:
                 self.strategy.budget = self.account.budget(closed_at)
                 intent = self.strategy.propose(snap)
                 if intent is not None:
-                    sized, gate_info = self._size_and_gate(intent, st.symbol, closed_at)
+                    sized, gate_info = self._size_and_gate(
+                        intent, st.symbol, closed_at,
+                        labels={"cav_label": row.cav_label, "zlg_label": row.gesture},
+                    )
                     payload_row.update(gate_info)
                     self.knowledge.put_journal_touch(row.touch_id, payload_row)
                     if sized is not None:
@@ -1512,6 +1519,8 @@ class DeskLoop:
                             source="demo",
                             tag=sized.tag,
                             funding_interval_min=self._instrument_for(st.symbol).funding_interval_min,
+                            labels={"cav_label": row.cav_label, "zlg_label": row.gesture,
+                                    "symbol": st.symbol, "zone_side": zone.side},
                         )
                         payload_row.setdefault("paper_ids", {})["demo"] = demo_pid
                         payload_row["intent_id"] = intent_id
@@ -1641,6 +1650,21 @@ class DeskLoop:
                 out.append({"event": "venue_flat", "symbol": symbol})
         return out
 
+    CALIBRATION_REFRESH_S = 600.0
+
+    def _refresh_calibration(self, now: datetime) -> None:
+        """Per-class Wilson stats from filled shadow paper trades, every 10 minutes."""
+        if (
+            self._calibration_at is not None
+            and (now - self._calibration_at).total_seconds() < self.CALIBRATION_REFRESH_S
+        ):
+            return
+        self._calibration_at = now
+        rows = self.knowledge.paper_trades(source="shadow")
+        self._calibration = class_stats(rows)
+        if self._calibration:
+            self._ui_put("calibration", to_meta(self._calibration))
+
     def _reload_instruments(self) -> None:
         """Signer refreshed instruments-info from the venue → registry rows (D-04)."""
         raw = self.knowledge.meta("instruments_snapshot")
@@ -1754,6 +1778,13 @@ class DeskLoop:
             funding_interval_min=inst.funding_interval_min,
             structural=structural,
             stop_components=smart.components,
+            labels={
+                "cav_label": row.cav_label,
+                "zlg_label": row.gesture,
+                "symbol": row_symbol,
+                "zone_side": zone.side,
+                "btc_regime": row.btc_regime,
+            },
         )
         return pid
 
@@ -1923,11 +1954,16 @@ class DeskLoop:
         return Instrument.fixture(symbol, tick=self.tick_for(symbol))
 
     def _size_and_gate(
-        self, intent: Intent, symbol: str, now: datetime
+        self,
+        intent: Intent,
+        symbol: str,
+        now: datetime,
+        labels: Mapping[str, Any] | None = None,
     ) -> tuple[Intent | None, dict[str, Any]]:
         """Concrete qty from the account and a fee/funding EV check. Never 0.001."""
         cfg = self.risk_config
         inst = self._instrument_for(symbol)
+        labels = dict(labels or {})
         info: dict[str, Any] = {"send_skip": None}
         if self.entries_paused:
             info["send_skip"] = "paused_by_operator"
@@ -1997,6 +2033,15 @@ class DeskLoop:
         }
         if not ev.ok:
             info["send_skip"] = "ev:fee_gt_r"
+            return None, info
+        # D-03: a class the paper record has refuted (Wilson upper bound of its net
+        # winrate below this trade's break-even) is not sent live. It keeps trading
+        # on paper so the verdict can flip with data.
+        key = class_key(idea=intent.tag, cav=labels.get("cav_label"), zlg=labels.get("zlg_label"))
+        stat = self._calibration.get(key)
+        info["calibration"] = None if stat is None else stat.to_payload()
+        if ev.breakeven_winrate is not None and refuted(stat, breakeven=ev.breakeven_winrate):
+            info["send_skip"] = f"calib:{key}"
             return None, info
         ttl = timedelta(minutes=TF_MINUTES.get(self.config.working_tf, 15) * self.INTENT_TTL_BARS)
         sized = intent.model_copy(
