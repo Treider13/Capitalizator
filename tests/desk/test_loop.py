@@ -372,6 +372,15 @@ def test_btc_touch_stamps_bus_news_not_local_h4(tmp_path: Path) -> None:
     assert row.btc_regime == "news"
 
 
+def test_btc_bus_does_not_keep_yesterdays_news(tmp_path: Path) -> None:
+    """A later unknown HTF close must not keep a latched news label."""
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.btc.regime = "news"
+    desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    assert desk.btc.regime is None
+
+
 def test_alt_touch_does_not_paint_btc_from_own_htf(tmp_path: Path) -> None:
     """ETH H4 is not the BTC bus. Empty bus stays None on the alt touch."""
     vault = init_vault(tmp_path / "desk")

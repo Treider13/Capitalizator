@@ -334,8 +334,8 @@ class DeskLoop:
             bars=st.bars,
             news_known_at=news_at,
         )
-        if label is not None:
-            self.btc.regime = label
+        # Last non-None label is not today's fact. Unknown HTF / quiet day → None.
+        self.btc.regime = label
         if bar.tf != self.config.working_tf:
             return
         self.btc.broke_support = False
