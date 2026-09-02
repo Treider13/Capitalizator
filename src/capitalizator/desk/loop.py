@@ -436,8 +436,10 @@ class DeskLoop:
             for bar in st.bars
             if bar.tf == self.config.working_tf and bar.close_ts >= touch.ts
         ]
+        work.sort(key=lambda bar: bar.close_ts)
         if work:
-            out.extend(self._eval_cav_and_jury(st, work[-1]))
+            # First closed working bar after the print, not the latest leftover.
+            out.extend(self._eval_cav_and_jury(st, work[0]))
         return out
 
     def _eval_cav_and_jury(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
@@ -513,9 +515,11 @@ class DeskLoop:
             row.event_class == "CPI" and row.event_time.date() == bar.close_ts.date()
             for row in self.calendar
         )
-        wall_since = touch.ts - timedelta(seconds=self.config.zlg_window_s)
+        wall_since, wall_until = self._wall_bounds(touch)
         wall_events = self.walls[st.symbol].events if st.symbol in self.walls else ()
-        silent_wall = pulled_without_print(wall_events, since=wall_since)
+        silent_wall = pulled_without_print(
+            wall_events, since=wall_since, until=wall_until
+        )
         stamped = self.registry.stamp_jury(
             idea=idea,
             n_cav=n_cav,
@@ -813,14 +817,19 @@ class DeskLoop:
             touch_id=row.touch_id,
         )
         self.registry.fill_session_hour(touch_id=row.touch_id)
-        wall_since = row.ts - timedelta(seconds=self.config.zlg_window_s)
+        wall_since, wall_until = self._wall_bounds(row)
         events = self.walls.get(st.symbol).events if st.symbol in self.walls else []
-        wall_state = last_wall_kind(events, since=wall_since)
+        wall_state = last_wall_kind(events, since=wall_since, until=wall_until)
         self.registry._patch(
             touch_id=row.touch_id,
             overwrite=True,
             wall_state=wall_state,
         )
+
+    def _wall_bounds(self, touch: Touch) -> tuple[datetime, datetime]:
+        """Same 8s clock as ZLG/OFI, plus 8s before the print."""
+        delta = timedelta(seconds=self.config.zlg_window_s)
+        return touch.ts - delta, touch.ts + delta
 
     def _same_symbol(self, touch: Touch, symbol: str) -> bool:
         zone = self.registry._zones.get(touch.zone_id)

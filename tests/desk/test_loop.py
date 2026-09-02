@@ -273,6 +273,44 @@ def test_working_bar_inside_zlg_window_waits_for_label(tmp_path: Path) -> None:
     assert desk.state_for("BTCUSDT").state == "IDLE"
 
 
+def test_cav_uses_first_closed_bar_not_latest(tmp_path: Path) -> None:
+    """Two working closes before ZLG: CAV is the first bar after the print."""
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.on_book("BTCUSDT", _book())
+    desk.on_trade(_trade(WINDOW), [ZONE])
+    desk.on_bar_close(
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=WINDOW - timedelta(minutes=15),
+            close_ts=WINDOW + timedelta(seconds=3),
+            open=Decimal("100.5"),
+            high=Decimal("101"),
+            low=Decimal("100.2"),
+            close=Decimal("100.6"),
+        )
+    )
+    desk.on_bar_close(
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=WINDOW + timedelta(seconds=3),
+            close_ts=WINDOW + timedelta(minutes=18),
+            open=Decimal("100.6"),
+            high=Decimal("101"),
+            low=Decimal("98"),
+            close=Decimal("99"),
+        )
+    )
+    assert desk.state_for("BTCUSDT").state == "ARM_ZLG"
+    out = desk.tick(WINDOW + timedelta(seconds=8))
+    assert any(e.get("event") == "jury" for e in out)
+    live = [t for t in desk.registry.touches if t.ts == WINDOW]
+    assert live
+    assert live[-1].cav_label != "THROUGH"
+
+
 def test_ofi_uses_touch_window_not_later_books(tmp_path: Path) -> None:
     """CKS OFI is the 8s touch interval. Later L2 must not replace the number."""
     vault = init_vault(tmp_path / "desk")

@@ -160,3 +160,13 @@ def test_last_wall_kind_ignores_stale_and_keeps_window() -> None:
     assert last_wall_kind((old,), since=TS) is None
     assert last_wall_kind((old, appeared, pulled), since=TS) == "pulled"
     assert last_wall_kind((), since=TS) is None
+
+
+def test_pull_after_until_is_not_this_touch() -> None:
+    """A pull after the 8s clock is another event, not this bounce's wall."""
+    later = _wall("pulled", TS + timedelta(minutes=10))
+    assert pulled_without_print((later,), since=TS, until=TS + timedelta(seconds=8)) is False
+    assert last_wall_kind((later,), since=TS, until=TS + timedelta(seconds=8)) is None
+    inside = _wall("pulled", TS + timedelta(seconds=3))
+    assert pulled_without_print((inside, later), since=TS, until=TS + timedelta(seconds=8)) is True
+    assert last_wall_kind((inside, later), since=TS, until=TS + timedelta(seconds=8)) == "pulled"
