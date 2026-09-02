@@ -4,6 +4,10 @@ risk% = margin% × lev × stop%.
 raw_margin = target_risk / (lev × stop_frac).
 If raw > 10% equity cap → reject (do not raise lev). F1 max lev = 3.
 
+B `cut_size` is applied in proposer (`exec/strategy_bounce.propose`):
+it shrinks Intent.size_mult. Sizer only accepts or rejects; it does not
+cut size.
+
 PHASE-BUILD artifact: Sizing.compute(equity, lev, stop_frac, target_risk).
 """
 

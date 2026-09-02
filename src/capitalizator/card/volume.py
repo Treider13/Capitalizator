@@ -22,33 +22,49 @@ def snapshot(
     if not bars:
         return VolumeSnapshot(walls=walls, eaten_levels=eaten_levels)
     last = bars[-1]
-    vols = [b.volume if b.volume and b.volume > 0 else Decimal("1") for b in bars]
+    last_price = _n(last.close)
+    vol_bars = [b for b in bars if b.volume is not None and b.volume > 0]
+    if not vol_bars:
+        # Zero or missing volume is honest None. Never invent unit volume.
+        return VolumeSnapshot(
+            eaten_levels=eaten_levels,
+            walls=walls,
+            a_price=last_price,
+            a_wall=walls,
+        )
+    vols = [b.volume for b in vol_bars]
     total = sum(vols, Decimal("0"))
-    typical = [((b.high + b.low + b.close) / 3, v) for b, v in zip(bars, vols, strict=True)]
-    vwap = sum((px * v for px, v in typical), Decimal("0")) / total if total else last.close
+    typical = [((b.high + b.low + b.close) / 3, v) for b, v in zip(vol_bars, vols, strict=True)]
+    vwap = sum((px * v for px, v in typical), Decimal("0")) / total
     poc_px, _ = max(typical, key=lambda row: row[1])
     ordered = sorted(typical, key=lambda row: row[0])
     vah, val = _value_area(ordered, total)
     signed = Decimal("0")
-    for bar, vol in zip(bars, vols, strict=True):
+    for bar, vol in zip(vol_bars, vols, strict=True):
         if bar.close > bar.open:
             signed += vol
         elif bar.close < bar.open:
             signed -= vol
-    prior = vols[:-1]
-    mean = (sum(prior, Decimal("0")) / len(prior)) if prior else vols[-1]
-    rvol = (vols[-1] / mean) if mean > 0 else Decimal("0")
+    last_vol = last.volume if last.volume is not None and last.volume > 0 else None
+    if last_vol is None:
+        rvol_s = None
+        a_vol_s = None
+    else:
+        prior = [b.volume for b in bars[:-1] if b.volume is not None and b.volume > 0]
+        mean = (sum(prior, Decimal("0")) / len(prior)) if prior else last_vol
+        rvol_s = _n((last_vol / mean) if mean > 0 else Decimal("0"))
+        a_vol_s = _n(last_vol)
     return VolumeSnapshot(
         poc=_n(poc_px),
         vah=_n(vah),
         val=_n(val),
         vwap=_n(vwap),
         delta=_n(signed),
-        rvol=_n(rvol),
+        rvol=rvol_s,
         eaten_levels=eaten_levels,
         walls=walls,
-        a_price=_n(last.close),
-        a_volume=_n(vols[-1]),
+        a_price=last_price,
+        a_volume=a_vol_s,
         a_delta=_n(signed),
         a_wall=walls,
     )

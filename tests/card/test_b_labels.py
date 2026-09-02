@@ -37,7 +37,7 @@ def _bar(
     low: str,
     close: str,
     tf: str = "1h",
-    volume: str = "10",
+    volume: str | None = "10",
 ) -> Bar:
     open_ts = START + timedelta(hours=i)
     return Bar(
@@ -49,7 +49,7 @@ def _bar(
         high=Decimal(high),
         low=Decimal(low),
         close=Decimal(close),
-        volume=Decimal(volume),
+        volume=None if volume is None else Decimal(volume),
     )
 
 
@@ -75,6 +75,52 @@ def test_from_news_none_marks_are_red() -> None:
     assert marks["sweep"] is False
     assert marks["fvg"] is False
     assert marks["gex"] is None
+
+
+def test_rsi_and_smc_do_not_vote() -> None:
+    card = CardLive(
+        symbol="BTCUSDT",
+        bearing_verdict="propose",
+        known_at=NOW,
+        fib_zone="OTE",
+        rsi_htf="12.00",
+        ob_status="bear",
+        bos_status="bear",
+        fvg_status="filled",
+        sweep_status="done",
+        pluses=("session_profile", "htf_ok", "rvol_above_2"),
+        minuses=("base_rate_unknown", "spread_cost"),
+    )
+    marks = card.mark_green()
+    assert "rsi" not in marks
+    assert "smc" not in marks
+    assert "ob" not in marks
+    assert "bos" not in marks
+    assert set(marks) == {"fib", "sweep", "gex", "fvg", "jury_b"}
+    assert card.context_ok() is True
+
+
+def test_volume_zero_and_none_are_honest() -> None:
+    zero = volume_snapshot(
+        [
+            _bar(0, open_="100", high="101", low="99", close="100.5", volume="0"),
+            _bar(1, open_="100", high="101", low="99", close="100.5", volume="0"),
+        ]
+    )
+    assert zero.poc is None
+    assert zero.vah is None
+    assert zero.val is None
+    assert zero.vwap is None
+    assert zero.a_volume is None
+    assert zero.rvol is None
+    none = volume_snapshot(
+        [
+            _bar(0, open_="100", high="101", low="99", close="100.5", volume=None),
+            _bar(1, open_="100", high="101", low="99", close="100.5", volume=None),
+        ]
+    )
+    assert none.poc is None
+    assert none.a_volume is None
 
 
 def test_context_ok_gex_optional_when_none() -> None:
