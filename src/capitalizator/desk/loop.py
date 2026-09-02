@@ -14,7 +14,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from capitalizator.book.reconstruct import Book, BookDirty
-from capitalizator.book.wall_watch import WallWatch, pulled_without_print
+from capitalizator.book.wall_watch import WallWatch, last_wall_kind, pulled_without_print
 from capitalizator.btc.break_def import Break
 from capitalizator.btc.regime import BtcRegime
 from capitalizator.btc.veto import BtcVeto
@@ -564,19 +564,24 @@ class DeskLoop:
             skip = first.tag if first.tag == "shadow_gesture" else jury
         if idea == "breakout" and not breakout_enabled() and skip is None:
             skip = "breakout_off"
+        shadow_side = idea_side if shadow_would else None
+        if shadow_would:
+            shadow_tag = "bounce" if idea == "bounce" else (
+                "failed_break_bounce" if idea == "failed_break" else "breakout"
+            )
+        else:
+            shadow_tag = None
         self.registry._patch(
             touch_id=row.touch_id,
             overwrite=True,
             skip_reason=skip,
+            jury=jury,
+            idea=idea,
+            shadow_would=shadow_would,
+            shadow_side=shadow_side,
+            shadow_tag=shadow_tag,
         )
         row = next(t for t in self.registry.touches if t.touch_id == row.touch_id)
-        shadow_side = None
-        shadow_tag = None
-        if shadow_would:
-            shadow_side = idea_side
-            shadow_tag = "bounce" if idea == "bounce" else (
-                "failed_break_bounce" if idea == "failed_break" else "breakout"
-            )
         journal = empty_journal()
         journal.update(
             {
@@ -585,7 +590,11 @@ class DeskLoop:
                 "trade_px": str(row.trade_px),
                 "trade_qty": str(row.trade_qty),
                 "session_name": session_name(row.ts),
-                "session_hour_utc": require_utc(row.ts).hour,
+                "session_hour_utc": (
+                    row.session_hour
+                    if row.session_hour is not None
+                    else require_utc(row.ts).hour
+                ),
                 "prior_session_hi": row.prior_session_hi,
                 "prior_session_lo": row.prior_session_lo,
                 "poc": row.poc,
@@ -625,11 +634,11 @@ class DeskLoop:
                 "first_fact": first.first_fact,
                 "n_cav": n_cav,
                 "n_zlg": n_zlg,
-                "jury": jury,
-                "shadow_would": shadow_would,
-                "shadow_side": shadow_side,
-                "shadow_tag": shadow_tag,
-                "skip_reason": skip,
+                "jury": row.jury,
+                "shadow_would": row.shadow_would,
+                "shadow_side": row.shadow_side,
+                "shadow_tag": row.shadow_tag,
+                "skip_reason": row.skip_reason,
                 "outcome": row.outcome,
                 "rho_class_id": row.rho_class_id,
             }
@@ -659,7 +668,7 @@ class DeskLoop:
         extra = {
             "touch_id": row.touch_id,
             "symbol": st.symbol,
-            "idea": idea,
+            "idea": row.idea or idea,
             "picture": picture,
             "imbalance": None if imb is None else str(imb),
             "tape_eaten_qty": eaten_qty,
@@ -772,6 +781,7 @@ class DeskLoop:
             ),
             touch_id=row.touch_id,
         )
+        self.registry.fill_session_hour(touch_id=row.touch_id)
         ofi_val = None
         books = [copy for _, copy in st.book_history if copy.ready]
         if len(books) >= 2:
@@ -779,10 +789,9 @@ class DeskLoop:
                 ofi_val = str(OFI().window(st.trades, books))
             except ValueError:
                 ofi_val = None
-        wall_state = None
+        wall_since = row.ts - timedelta(seconds=self.config.zlg_window_s)
         events = self.walls.get(st.symbol).events if st.symbol in self.walls else []
-        if events:
-            wall_state = events[-1].kind
+        wall_state = last_wall_kind(events, since=wall_since)
         prs_tau = None
         src = None
         for trade in reversed(st.trades):

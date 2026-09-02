@@ -8,7 +8,12 @@ from decimal import Decimal
 import pytest
 
 from capitalizator.book.reconstruct import Book
-from capitalizator.book.wall_watch import WallEvent, WallWatch, pulled_without_print
+from capitalizator.book.wall_watch import (
+    WallEvent,
+    WallWatch,
+    last_wall_kind,
+    pulled_without_print,
+)
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.types import MarketEvent
 
@@ -146,3 +151,12 @@ def test_pull_then_appear_in_window_still_counts() -> None:
 
 def test_empty_wall_history_is_false() -> None:
     assert pulled_without_print((), since=TS) is False
+
+
+def test_last_wall_kind_ignores_stale_and_keeps_window() -> None:
+    old = _wall("pulled", TS - timedelta(hours=1))
+    appeared = _wall("appeared", TS)
+    pulled = _wall("pulled", TS + timedelta(seconds=1))
+    assert last_wall_kind((old,), since=TS) is None
+    assert last_wall_kind((old, appeared, pulled), since=TS) == "pulled"
+    assert last_wall_kind((), since=TS) is None

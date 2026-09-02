@@ -50,6 +50,13 @@ def pulled_without_print(events: Sequence[WallEvent], *, since: datetime) -> boo
     return any(event.kind == "pulled" and event.ts >= start for event in events)
 
 
+def last_wall_kind(events: Sequence[WallEvent], *, since: datetime) -> WallKind | None:
+    """Last wall event in the same window as pulled_without_print. Else None."""
+    start = require_utc(since)
+    in_window = [event for event in events if event.ts >= start]
+    return in_window[-1].kind if in_window else None
+
+
 class WallWatch:
     def __init__(self, symbol: str, *, min_size: Decimal) -> None:
         if min_size <= 0:
