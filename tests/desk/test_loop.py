@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from capitalizator.book.reconstruct import Book
-from capitalizator.desk.loop import DeskLoop
+from capitalizator.desk.loop import DeskLoop, _close_symbols
 from capitalizator.memory.registry import Touch
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.product import mark_hello
@@ -245,3 +245,139 @@ def test_desk_btc_same_side_uses_bus_labels() -> None:
     assert 'self.btc.regime == "box"' in text
     assert '{"long", "box"}' not in text
     assert '{"short", "box"}' not in text
+
+
+def test_working_bar_inside_zlg_window_waits_for_label(tmp_path: Path) -> None:
+    """A 15m close 3s after the print is not a jury. Plan is ZLG then CAV."""
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.on_book("BTCUSDT", _book())
+    desk.on_trade(_trade(WINDOW), [ZONE])
+    early = desk.on_bar_close(
+        Bar(
+            symbol="BTCUSDT",
+            tf="15m",
+            open_ts=WINDOW - timedelta(minutes=15),
+            close_ts=WINDOW + timedelta(seconds=3),
+            open=Decimal("100.5"),
+            high=Decimal("101"),
+            low=Decimal("100.2"),
+            close=Decimal("100.6"),
+        )
+    )
+    assert early == []
+    assert desk.state_for("BTCUSDT").state == "ARM_ZLG"
+    out = desk.tick(WINDOW + timedelta(seconds=8))
+    kinds = [e.get("event") for e in out]
+    assert kinds.index("zlg") < kinds.index("jury")
+    assert desk.state_for("BTCUSDT").state == "IDLE"
+
+
+def test_ofi_uses_touch_window_not_later_books(tmp_path: Path) -> None:
+    """CKS OFI is the 8s touch interval. Later L2 must not replace the number."""
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW,
+            recv_ts=WINDOW,
+            seq=1,
+            payload={"bids": [["100.4", "5"]], "asks": [["100.6", "5"]]},
+        )
+    )
+    desk.on_event(_trade(WINDOW), [ZONE])
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=WINDOW + timedelta(seconds=1),
+            recv_ts=WINDOW + timedelta(seconds=1),
+            seq=2,
+            payload={"bids": [["100.4", "8"]], "asks": []},
+        )
+    )
+    desk.tick(WINDOW + timedelta(seconds=8))
+    later = WINDOW + timedelta(minutes=10)
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=later,
+            recv_ts=later,
+            seq=3,
+            payload={"bids": [["100.4", "5"]], "asks": [["100.6", "5"]]},
+        )
+    )
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=later + timedelta(seconds=1),
+            recv_ts=later + timedelta(seconds=1),
+            seq=4,
+            payload={"bids": [["100.4", "20"]], "asks": []},
+        )
+    )
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    assert events
+    row = next(t for t in desk.registry.touches if t.touch_id == events[0]["touch_id"])
+    assert row.ofi == "3"
+
+
+def test_later_zone_does_not_steal_armed_touch(tmp_path: Path) -> None:
+    other = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("101"),
+        method="prior_day_hl",
+        created_as_of=CREATED,
+    )
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.on_book("BTCUSDT", _book())
+    desk.on_trade(_trade(WINDOW), [ZONE])
+    held = desk.state_for("BTCUSDT").last_touch
+    assert held is not None
+    desk.on_trade(_trade(WINDOW + timedelta(seconds=2)), [other])
+    assert desk.state_for("BTCUSDT").last_touch is not None
+    assert desk.state_for("BTCUSDT").last_touch.touch_id == held.touch_id
+    assert any(t.zone_id == other.zone_id for t in desk.registry.touches)
+
+
+def test_missing_zone_does_not_crash_n_cav(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.registry.touches.append(
+        replace(
+            Touch.create(
+                zone_id="ghost",
+                ts=CREATED + timedelta(seconds=1),
+                trade_px=Decimal("100.5"),
+                trade_qty=Decimal("1"),
+            ),
+            outcome="bounce",
+            cav_label="REJECT",
+            gesture="DEFEND",
+        )
+    )
+    desk.on_book("BTCUSDT", _book())
+    desk.on_trade(_trade(WINDOW), [ZONE])
+    desk.tick(WINDOW + timedelta(seconds=8))
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    assert events
+    assert events[0]["event"] == "jury"
+
+
+def test_close_symbols_puts_btc_first() -> None:
+    assert _close_symbols({"ETHUSDT": None, "BTCUSDT": None}) == [
+        "BTCUSDT",
+        "ETHUSDT",
+    ]

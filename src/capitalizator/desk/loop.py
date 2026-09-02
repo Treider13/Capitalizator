@@ -178,7 +178,12 @@ class DeskLoop:
             return
         st.book_history.append((when, st.book.snapshot_copy()))
         window = timedelta(seconds=self.config.zlg_window_s)
-        st.book_history = [row for row in st.book_history if when - row[0] <= window]
+        keep_from = when - window
+        # While the 8s ZLG clock is open, do not drop the touch-time book.
+        # A later diff would otherwise slide the window and erase OFI/PRS.
+        if st.last_touch is not None and st.state == "ARM_ZLG":
+            keep_from = st.last_touch.ts
+        st.book_history = [row for row in st.book_history if row[0] >= keep_from]
         if self.knowledge.available():
             bids = sorted(
                 ((str(px), str(sz)) for px, sz in st.book.levels("bid").items()),
@@ -303,6 +308,10 @@ class DeskLoop:
             return []
         if bar.tf != self.config.working_tf:
             return []
+        # Plan: LABEL_ZLG (8s) then CAV on a closed bar, then JURY.
+        # A working bar can close inside the 8s window — wait for the tick.
+        if st.state != "LABEL_ZLG":
+            return []
         return self._eval_cav_and_jury(st, bar)
 
     def _publish_btc_bus(self, st: SymbolState, bar: Bar) -> None:
@@ -360,7 +369,11 @@ class DeskLoop:
         opened = self.registry.on_trade(trade, zones)
         if not opened:
             return []
-        touch = opened[-1]
+        # Registry may open several zones on one print. The desk is one
+        # 8s clock per symbol — do not steal an armed window for a later zone.
+        if st.last_touch is not None and st.state != "IDLE":
+            return []
+        touch = opened[0]
         st.last_touch = touch
         st.adds.clear()
         if st.book.ready:
@@ -415,8 +428,17 @@ class DeskLoop:
             self.registry.fill_tape(
                 book_pre=book, trades=st.trades, touch_id=touch.touch_id
             )
+        self._stamp_touch_interval(st, touch)
         st.state = "LABEL_ZLG"
-        return [{"event": "zlg", "touch_id": touch.touch_id, "gesture": result.gesture}]
+        out = [{"event": "zlg", "touch_id": touch.touch_id, "gesture": result.gesture}]
+        work = [
+            bar
+            for bar in st.bars
+            if bar.tf == self.config.working_tf and bar.close_ts >= touch.ts
+        ]
+        if work:
+            out.extend(self._eval_cav_and_jury(st, work[-1]))
+        return out
 
     def _eval_cav_and_jury(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
         touch = st.last_touch
@@ -465,14 +487,12 @@ class DeskLoop:
         n_cav = sum(
             1
             for hist in self.registry.touches
-            if hist.cav_label == live.cav_label
-            and self.registry.zone(hist.zone_id).symbol == st.symbol
+            if hist.cav_label == live.cav_label and self._same_symbol(hist, st.symbol)
         )
         n_zlg = sum(
             1
             for row in self.registry.touches
-            if row.gesture == live.gesture
-            and self.registry.zone(row.zone_id).symbol == st.symbol
+            if row.gesture == live.gesture and self._same_symbol(row, st.symbol)
         )
         idea_side = "buy" if zone.side == "support" else "sell"
         if idea == "failed_break":
@@ -793,34 +813,60 @@ class DeskLoop:
             touch_id=row.touch_id,
         )
         self.registry.fill_session_hour(touch_id=row.touch_id)
-        ofi_val = None
-        books = [copy for _, copy in st.book_history if copy.ready]
-        if len(books) >= 2:
-            try:
-                ofi_val = str(OFI().window(st.trades, books))
-            except ValueError:
-                ofi_val = None
         wall_since = row.ts - timedelta(seconds=self.config.zlg_window_s)
         events = self.walls.get(st.symbol).events if st.symbol in self.walls else []
         wall_state = last_wall_kind(events, since=wall_since)
+        self.registry._patch(
+            touch_id=row.touch_id,
+            overwrite=True,
+            wall_state=wall_state,
+        )
+
+    def _same_symbol(self, touch: Touch, symbol: str) -> bool:
+        zone = self.registry._zones.get(touch.zone_id)
+        return zone is not None and zone.symbol == symbol
+
+    def _touch_window(
+        self, st: SymbolState, touch: Touch, *, seconds: int
+    ) -> tuple[list[MarketEvent], list[tuple[datetime, Book]]]:
+        start = touch.ts
+        end = start + timedelta(seconds=seconds)
+        prints = [
+            trade
+            for trade in st.trades
+            if trade.stream == "trades"
+            and start <= require_utc(trade.exchange_ts) <= end
+        ]
+        books = [
+            (ts, copy)
+            for ts, copy in st.book_history
+            if copy.ready and start <= ts <= end
+        ]
+        return prints, books
+
+    def _stamp_touch_interval(self, st: SymbolState, touch: Touch) -> None:
+        """OFI and PRS belong to the 8s touch window, not the last 8s before CAV."""
+        prints, path = self._touch_window(st, touch, seconds=self.config.zlg_window_s)
+        ofi_val = None
+        books = [copy for _, copy in path]
+        if len(books) >= 2:
+            try:
+                ofi_val = str(OFI().window(prints, books))
+            except ValueError:
+                ofi_val = None
         prs_tau = None
-        src = None
-        for trade in reversed(st.trades):
-            if trade.exchange_ts == row.ts:
-                src = trade
-                break
+        src = next((trade for trade in prints if trade.exchange_ts == touch.ts), None)
         if src is not None and st.book_pre is not None and st.book_pre.ready:
             try:
-                result = self._prs_for(st.symbol).compute(src, st.book_pre, st.book_history)
-                self.registry.fill_prs(prs_y=result.Y, touch_id=row.touch_id)
+                result = self._prs_for(st.symbol).compute(src, st.book_pre, path)
+                self.registry.fill_prs(prs_y=result.Y, touch_id=touch.touch_id)
                 prs_tau = str(result.tau)
             except ValueError:
                 pass
         self.registry._patch(
-            touch_id=row.touch_id,
+            touch_id=touch.touch_id,
             overwrite=True,
             ofi=ofi_val,
-            wall_state=wall_state,
             prs_tau=prs_tau,
         )
 
@@ -866,7 +912,7 @@ class DeskLoop:
             # Plan: LABEL_ZLG (8s) then CAV on a closed bar, then JURY.
             # Catch-up `--once` lands both clocks in one now= — tick first.
             out.extend(self.tick(when))
-            for symbol in list(self.symbols):
+            for symbol in _close_symbols(self.symbols):
                 out.extend(close_due_bars(self, symbol, when))
 
         for event in _ordered_events(events):
@@ -888,6 +934,11 @@ class DeskLoop:
         if now is not None:
             advance(require_utc(now))
         return out
+
+
+def _close_symbols(symbols: dict[str, SymbolState]) -> list[str]:
+    """BTC writes the alt bus. Close it first when several bars share `now`."""
+    return sorted(symbols, key=lambda name: (name != "BTCUSDT", name))
 
 
 _STREAM_RANK = {
