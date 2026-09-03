@@ -7,7 +7,12 @@ x-base: &base
   build:
     context: ../..
     dockerfile: infra/deploy/Dockerfile
+    args:
+      CAP_UID: ${CAP_UID:-1000}
+      CAP_GID: ${CAP_GID:-1000}
   image: capitalizator:local
+  # Same uid/gid as the host owner of the data directory (deploy.sh exports them).
+  user: "${CAP_UID:-1000}:${CAP_GID:-1000}"
   restart: unless-stopped
   init: true
   stop_grace_period: 20s
@@ -67,9 +72,9 @@ services:
     command:
       - |
         while true; do
-          now=$(date -u +%H%M)
-          if [ "$now" = "0030" ]; then
-            python -m capitalizator.ops.night --userdir /data --day "$(date -u -d yesterday +%F)" || true
+          now=$$(date -u +%H%M)
+          if [ "$$now" = "0030" ]; then
+            python -m capitalizator.ops.night --userdir /data --day "$$(date -u -d yesterday +%F)" || true
             sleep 60
           fi
           sleep 30

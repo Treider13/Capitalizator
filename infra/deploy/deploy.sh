@@ -15,6 +15,7 @@ fi
 cd infra/deploy
 [ -f .env ] || { cp ../../.env.example .env; chmod 600 .env; echo "created infra/deploy/.env from .env.example — fill BYBIT_* (or use /data/secrets/bybit.json)"; }
 export CAP_DATA="$DATA/userdir"
+export CAP_UID="$(id -u)" CAP_GID="$(id -g)"
 docker compose build --pull
 docker compose up -d --remove-orphans
 docker compose ps
