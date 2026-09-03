@@ -1,0 +1,7 @@
+# never in the image: secrets, git, tests, local data
+infra/deploy/.env*
+infra/deploy/
+.git
+tests
+**/__pycache__
+*.sqlite*

@@ -28,9 +28,14 @@ RES = Zone.create(symbol="ETHUSDT", tf="15m", side="resistance", lo=Decimal("399
                   hi=Decimal("4040"), method="prior_day_hl", created_as_of=CREATED)
 
 
-def _trade(ts: datetime, px: str, symbol: str = "BTCUSDT", side: str = "sell") -> MarketEvent:
+def _trade(
+    ts: datetime, px: str, symbol: str = "BTCUSDT", side: str = "sell", qty: str = "1000"
+) -> MarketEvent:
+    # default 1000 lots: more than whatever rests ahead of a paper order at the level in
+    # these fixtures, so a single print fills the twin (queue model); the arming touch
+    # itself is a 1-lot print
     return MarketEvent(stream="trades", exchange="bybit", symbol=symbol, exchange_ts=ts, recv_ts=ts,
-                       payload={"px": px, "qty": "1", "side": side})
+                       payload={"px": px, "qty": qty, "side": side})
 
 
 def _desk(tmp_path: Path, mode: str, zone: Zone, px: str) -> DeskLoop:
@@ -60,7 +65,7 @@ def _arm_and_close(desk: DeskLoop, zone: Zone, px: str, when: datetime = WINDOW)
     p = Decimal(px)
     tick = desk.tick_for(zone.symbol)
     taker = "sell" if zone.side == "support" else "buy"
-    desk.on_trade(_trade(when, px, zone.symbol, taker), [zone])
+    desk.on_trade(_trade(when, px, zone.symbol, taker, qty="1"), [zone])
     live = desk.state_for(zone.symbol).last_touch
     add_side = "b" if zone.side == "support" else "a"
     book = desk.state_for(zone.symbol).book
@@ -162,12 +167,48 @@ def test_failed_intent_frees_the_idea_and_venue_flat_closes_twin(tmp_path: Path)
     desk.knowledge.set_meta("exchange_state", json.dumps({"at": fresh.isoformat(), "positions": []}))
     desk.tick(fresh)
     assert twin2.state == "open"  # inside the 90 s grace: the venue may not have filled yet
+    # The venue never showed this position: our real limit may simply be queued.
+    # A tape-filled twin must NOT be closed on "venue flat" (that flatten used to
+    # cancel the live entry order) — no proof, no close.
     later = t + timedelta(seconds=120)
     desk.knowledge.set_meta("exchange_state", json.dumps({"at": later.isoformat(), "positions": []}))
     out = desk.tick(later)
+    assert not any(e.get("event") == "venue_flat" for e in out)
+    assert twin2.state == "open" and "BTCUSDT" in desk.account.open
+    # Now the venue shows the position (filled) …
+    held = t + timedelta(seconds=150)
+    desk.knowledge.set_meta("exchange_state", json.dumps({
+        "at": held.isoformat(),
+        "positions": [{"symbol": "BTCUSDT", "side": "buy", "size": "0.3", "avg_price": "100000.1"}],
+    }))
+    desk.tick(held)
+    assert twin2.state == "open"
+    # … and then flat: the venue closed it (stop / TP / liquidation) → twin closed
+    gone = t + timedelta(seconds=240)
+    desk.knowledge.set_meta("exchange_state", json.dumps({"at": gone.isoformat(), "positions": []}))
+    out = desk.tick(gone)
     assert {"event": "venue_flat", "symbol": "BTCUSDT"} in out
     assert twin2.state == "closed" and twin2.exit_reason == "venue_flat"
     assert desk.account.open == {}
+
+
+def test_restart_keeps_open_idea_and_twin(tmp_path: Path) -> None:
+    """Audit B3: `Account.open` was written but never read back; twins were in-memory."""
+    desk = _desk(tmp_path, "demo", SUP, "100000.1")
+    ev = _arm_and_close(desk, SUP, "100000.1")
+    assert ev["sent"] is True
+    row = desk.knowledge.get_journal_touch(ev["touch_id"])
+    pid = row["paper_ids"]["demo"]
+    desk.on_trade(_trade(WINDOW + timedelta(minutes=6), "100000.1"), [SUP])
+    assert desk.paper.positions[pid].state == "open"
+    desk.tick(WINDOW + timedelta(minutes=6, seconds=1))
+    # new process, same knowledge
+    again = DeskLoop(knowledge=desk.knowledge, user_mode="demo", tick_size=TICK)
+    assert "BTCUSDT" in again.account.open
+    assert again.risk.allow_entry("BTCUSDT") is False
+    twin = again.paper.positions[pid]
+    assert twin.state == "open" and twin.initial_stop is not None
+    assert again.account.open["BTCUSDT"].intent_id == row["intent_id"]
 
 
 def test_b_veto_flattens_the_live_twin_and_queues_venue_flatten(tmp_path: Path) -> None:
@@ -272,3 +313,35 @@ def test_instruments_published_by_signer_are_loaded_by_desk(tmp_path: Path) -> N
     # a fresh desk picks the snapshot up at start
     desk2 = DeskLoop(knowledge=kn, user_mode="off")
     assert desk2.instruments.has("DOGEUSDT")
+
+
+def test_drift_in_the_shadow_error_series_cuts_the_live_target_risk(tmp_path: Path) -> None:
+    """Contour C wired (audit §2): Page-Hinkley on the champion's errors → 0.5% target.
+    Below 40 closed trades nothing is judged; a 30%→70% error shift is drift."""
+    import json
+    from datetime import UTC, datetime
+
+    desk = _desk(tmp_path, "demo", SUP, "100000.1")
+    assert desk.effective_target_risk() == desk.risk_config.target_risk_pct
+    t0 = datetime(2026, 8, 1, tzinfo=UTC)
+    rows = []
+    for i in range(120):
+        err = (i % 10 < 3) if i < 60 else (i % 10 < 7)
+        rows.append({
+            "paper_id": f"p{i}", "touch_id": f"t{i}", "source": "shadow", "symbol": "BTCUSDT",
+            "entry_px": "100", "r_net": "-1" if err else "1", "tag": "bounce",
+            "closed_at": (t0 + timedelta(minutes=i)).isoformat(),
+            "labels": {"cav_label": "REJECT", "zlg_label": "DEFEND"},
+        })
+    desk._refresh_drift(rows[:30], t0)
+    assert desk.drift_active is False  # too few
+    desk._refresh_drift(rows, t0)
+    assert desk.drift_active is True
+    assert desk.effective_target_risk() == Decimal("0.005")
+    desk.flush_ui(t0, force=True)
+    meta = json.loads(desk.knowledge.meta("drift"))
+    assert meta["drift"] is True and meta["target_risk"] == "0.005"
+    # a calm series clears it
+    calm = [{**r, "r_net": "1" if i % 10 >= 3 else "-1"} for i, r in enumerate(rows)]
+    desk._refresh_drift(calm, t0)
+    assert desk.drift_active is False and desk.effective_target_risk() == Decimal("0.01")

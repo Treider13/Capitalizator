@@ -25,11 +25,6 @@ from capitalizator.types import require_utc
 MSK = ZoneInfo("Europe/Moscow")
 
 
-def session_key(when: datetime) -> str:
-    """One desk session per Moscow calendar day (time.yaml window is inside it)."""
-    return require_utc(when).astimezone(MSK).date().isoformat()
-
-
 class PersistentBudget(SessionBudget):
     """SessionBudget whose count survives a restart (meta budget:<session>)."""
 
@@ -78,6 +73,7 @@ class Account:
     _budgets: dict[str, PersistentBudget] = field(default_factory=dict)
     _day: str | None = None
     _week: str | None = None
+    source_switches: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.equity <= 0:
@@ -95,11 +91,17 @@ class Account:
 
     # --- clocks -------------------------------------------------------------
     def roll(self, now: datetime) -> None:
-        """Day/week starts for the halts. UTC date, ISO week."""
-        when = require_utc(now)
-        day = when.date().isoformat()
-        week = f"{when.isocalendar().year}-W{when.isocalendar().week:02d}"
+        """Day/week starts for the halts — in the desk's session calendar (Moscow),
+        the same day the intent budget uses. A UTC roll put the −3% day and the
+        3-entry day in different days (audit §3.5)."""
+        local = require_utc(now).astimezone(MSK)
+        day = local.date().isoformat()
+        week = f"{local.isocalendar().year}-W{local.isocalendar().week:02d}"
         assert self.halts is not None
+        if self._day is not None and day < self._day:
+            # replayed history after a restart must not re-baseline the day or lift a
+            # day halt (audit A3): the calendar only moves forward
+            return
         changed = False
         if self._day != day:
             if self._day is not None:
@@ -114,18 +116,17 @@ class Account:
         if changed:
             self._persist()
 
-    def budget(
-        self, now: datetime, *, key: str | None = None, max_n: int | None = None
-    ) -> PersistentBudget:
+    def budget(self, now: datetime, *, key: str, max_n: int | None = None) -> PersistentBudget:
         """Intent budget for a session key.
 
-        Legacy call (no key): one budget per Moscow calendar day, cap from RiskConfig.
-        Sessions release: the desk passes the window's `budget_key`
-        (`YYYY-MM-DD:window`) and the window's cap; the operator's
-        `max_intents_per_session` stays the ceiling for any single key. Stale keys
-        are dropped when a newer one appears (keys sort chronologically).
+        The desk passes the window's `budget_key` (`YYYY-MM-DD:window`, UTC) and the
+        window's cap; the operator's `max_intents_per_session` stays the ceiling for
+        any single key. Stale keys are dropped when a newer one appears (keys sort
+        chronologically). There is no keyless form: a second calendar (the old
+        Moscow-day key) next to the UTC window keys was two budgets for one desk.
         """
-        budget_key = key if key is not None else session_key(now)
+        require_utc(now)
+        budget_key = key
         cap = self.config.max_intents_per_session
         if max_n is not None:
             cap = max(0, min(cap, max_n))
@@ -138,21 +139,6 @@ class Account:
                 del self._budgets[stale]
         return got
 
-    def daily_intents(self, now: datetime) -> int:
-        """Intents already spent today across every window key (UTC date prefix)."""
-        day = require_utc(now).date().isoformat()
-        total = 0
-        if self.knowledge is not None and self.knowledge.available():
-            for key, raw in self.knowledge.meta_prefix(f"budget:{day}").items():
-                if raw.isdigit():
-                    total += int(raw)
-            return total
-        for key, b in self._budgets.items():
-            if key.startswith(day):
-                total += b.n
-        return total
-
-    # --- equity --------------------------------------------------------------
     def set_equity(self, equity: Decimal, *, source: str, now: datetime) -> None:
         if equity <= 0:
             raise ValueError("equity must be > 0")
@@ -160,13 +146,23 @@ class Account:
         if source != self.equity_source:
             # Source switch (paper → venue wallet, testnet → live): the old baselines
             # belong to another number. Comparing the first wallet reading with the
-            # paper equity tripped a false day halt (found by test). Re-baseline.
+            # paper equity tripped a false day halt (found by test). Re-baseline the
+            # *numbers* — but a halt that is already on stays on: releasing a kill
+            # switch is an operator act (`release_halts` with ack), never a side
+            # effect of reading a wallet (audit B3).
             self.halts.day_start = equity
             self.halts.week_start = equity
             self.halts.peak = equity
-            if self.halts.halted and self.halts.reason in {"day", "week", "peak"}:
-                self.halts.halted = False
-                self.halts.reason = ""
+            self.source_switches.append(
+                {
+                    "at": require_utc(now).isoformat(),
+                    "from": self.equity_source,
+                    "to": source,
+                    "equity": str(equity),
+                    "halted": self.halts.halted,
+                }
+            )
+            del self.source_switches[:-20]
         self.equity = equity
         self.equity_source = source
         self.equity_at = require_utc(now)
@@ -256,16 +252,23 @@ class Account:
                     "stop": str(o.stop),
                     "opened_at": o.opened_at.isoformat(),
                     "source": o.source,
+                    "intent_id": o.intent_id,
                 }
                 for o in self.open.values()
             ],
+            "source_switches": list(self.source_switches),
+            "day_key": self._day,
+            "week_key": self._week,
             "config_id": self.config.config_id,
         }
 
-    def _persist(self) -> None:
+    def persist(self) -> None:
         if self.knowledge is None or not self.knowledge.available():
             return
         self.knowledge.set_meta("account", json.dumps(self.snapshot(), sort_keys=True))
+
+    # kept for callers that still use the private name
+    _persist = persist
 
     @classmethod
     def load(
@@ -296,6 +299,43 @@ class Account:
                 if snap.get("halted"):
                     acct.halts.halted = True
                     acct.halts.reason = str(snap.get("halt_reason") or "")
+                acct.source_switches = list(snap.get("source_switches") or [])
+                acct._day = snap.get("day_key") or None
+                acct._week = snap.get("week_key") or None
+                # Open ideas survive a restart: `allow_entry` must know about the
+                # position the venue still holds (audit B3: "one position persisted"
+                # was written but never read back).
+                for raw_open in snap.get("open") or []:
+                    idea = OpenIdea(
+                        symbol=str(raw_open["symbol"]),
+                        side=str(raw_open["side"]),
+                        qty=Decimal(str(raw_open["qty"])),
+                        entry=Decimal(str(raw_open["entry"])),
+                        stop=Decimal(str(raw_open["stop"])),
+                        opened_at=datetime.fromisoformat(str(raw_open["opened_at"])),
+                        intent_id=(
+                            None if raw_open.get("intent_id") is None
+                            else int(raw_open["intent_id"])
+                        ),
+                        source=str(raw_open.get("source") or "paper"),
+                    )
+                    acct.open[idea.symbol] = idea
+                    tp = (
+                        idea.entry + (idea.entry - idea.stop)
+                        if idea.side == "buy"
+                        else idea.entry - (idea.stop - idea.entry)
+                    )
+                    acct.risk.on_open(
+                        Intent(
+                            symbol=idea.symbol,
+                            side=idea.side,  # type: ignore[arg-type]
+                            entry=idea.entry,
+                            stop=idea.stop,
+                            tp=tp,
+                            tag="restored",
+                            qty=idea.qty,
+                        )
+                    )
             except (KeyError, ValueError, ArithmeticError, json.JSONDecodeError):
                 pass
         acct.roll(now if now is not None else datetime.now(tz=UTC))

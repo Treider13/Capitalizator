@@ -1,0 +1,128 @@
+# Capitalizator on one VPS. All processes share the vault volume; only `signer` sees keys.
+# Console binds to 127.0.0.1 — reach it through an SSH tunnel, never from the internet.
+#   ssh -L 8082:127.0.0.1:8082 trader@<vps>   →   http://127.0.0.1:8082
+name: capitalizator
+
+x-base: &base
+  build:
+    context: ../..
+    dockerfile: infra/deploy/Dockerfile
+    args:
+      CAP_UID: ${CAP_UID:-1000}
+      CAP_GID: ${CAP_GID:-1000}
+  image: capitalizator:local
+  # Same uid/gid as the host owner of the data directory (deploy.sh exports them).
+  user: "${CAP_UID:-1000}:${CAP_GID:-1000}"
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 20s
+  # Least privilege: no capabilities, no privilege escalation, immutable image FS
+  # (only /data and a tmpfs /tmp are writable).
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  read_only: true
+  tmpfs: ["/tmp:size=64m,mode=1777"]
+  volumes:
+    - ${CAP_DATA:-/srv/capitalizator/userdir}:/data
+  environment:
+    TZ: UTC
+    PYTHONDONTWRITEBYTECODE: "1"
+    # One universe for every process: week0 (BTC+ETH, canon) | desk (infra/universe.yaml
+    # or the applied /data/universe.yaml). Recorder, desk, signer and console read the same.
+    CAP_UNIVERSE: ${CAP_UNIVERSE:-week0}
+    CAP_USERDIR: /data
+  logging:
+    driver: json-file
+    options: { max-size: "50m", max-file: "5" }
+  healthcheck:
+    test: ["CMD", "python", "-c", "import capitalizator"]
+    interval: 60s
+    timeout: 10s
+    retries: 3
+
+services:
+  init:
+    <<: *base
+    restart: "no"
+    command: ["python", "-m", "capitalizator.desk", "--userdir", "/data", "--init"]
+
+  recorder:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    # CAP_UNIVERSE=week0 (BTC+ETH, canon until 24h of clean tape) | desk (24 symbols)
+    command: ["python", "-m", "capitalizator.recorder.app", "--live-ws", "--userdir", "/data", "--universe", "desk"]
+
+  desk:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    network_mode: none  # tape + SQLite only; the desk never talks to the internet
+    command: ["python", "-m", "capitalizator.desk", "--userdir", "/data", "--serve"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "capitalizator.ops.healthz", "--userdir", "/data", "--heartbeat", "desk_heartbeat", "--max-age-s", "120"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+  signer:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    # Keys: BYBIT_API_KEY / BYBIT_API_SECRET / BYBIT_MODE from .env (never in the image),
+    # or /data/secrets/bybit.json with mode 0600. Without them the signer parks intents.
+    env_file:
+      - path: ./.env
+        required: false
+    command: ["python", "-m", "capitalizator.signer", "--userdir", "/data", "--serve"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "capitalizator.ops.healthz", "--userdir", "/data", "--heartbeat", "signer_heartbeat", "--max-age-s", "120"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+  intel:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    # Contour B raw material: RSS / Reddit / X API / Hyperliquid / Bybit public / F&G every 5 min;
+    # LLM extraction only when a provider is configured in Настройки. No exchange keys here.
+    command: ["python", "-m", "capitalizator.intel", "--userdir", "/data", "--serve", "--every-s", "300"]
+    healthcheck:
+      # one cycle every 300 s; a heartbeat older than 3 cycles = hung
+      test: ["CMD", "python", "-m", "capitalizator.ops.healthz", "--userdir", "/data", "--heartbeat", "intel_heartbeat", "--max-age-s", "900"]
+      interval: 120s
+      timeout: 15s
+      retries: 3
+
+  console:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    # Host network so the console binds 127.0.0.1 on the VPS itself: its write
+    # endpoints accept localhost only, and an SSH tunnel arrives as 127.0.0.1.
+    network_mode: host
+    command: ["python", "-m", "capitalizator.ops.console", "--userdir", "/data", "--serve", "--host", "127.0.0.1", "--port", "8082"]
+
+  night:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    network_mode: none
+    # Night contour once a day after 00:30 UTC (replay, challengers, report) and tape
+    # compaction at every :05 (hourly parts → one file, old live feeds pruned).
+    # A marker in /data records the last day reported, so a restart at 00:30 does
+    # not skip a day: the report runs at the first tick after 00:30 with no marker.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        marker=/data/night/.last_report_day
+        mkdir -p /data/night
+        while true; do
+          now=$$(date -u +%H%M); today=$$(date -u +%F)
+          if [ "$$now" \> "0029" ] && [ "$$(cat $$marker 2>/dev/null)" != "$$today" ]; then
+            if python -m capitalizator.ops.night --userdir /data --day "$$(date -u -d yesterday +%F)"; then
+              echo "$$today" > "$$marker"
+            fi
+            sleep 60
+          fi
+          if [ "$${now#??}" = "05" ]; then
+            python -m capitalizator.ops.compact_tape --tape /data/tape || true
+            sleep 60
+          fi
+          sleep 30
+        done

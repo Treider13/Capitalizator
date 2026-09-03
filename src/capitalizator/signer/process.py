@@ -2,7 +2,17 @@
 
 Desk writes intent_queue. This process reads pending rows and calls `send`.
 Host and key live in Vault / the injected callable — not in this file.
-Dead-man (30s) and reconcile (60s) are the existing atoms.
+
+Statuses the gateway returns and what the signer persists:
+  sent       → `sent`      (+ order_queue row)
+  rejected   → `rejected`  (venue or local refusal; the desk frees the idea)
+  unknown    → `unknown`   (transport failed after the order left; resolved by link)
+  no_gateway → `no_gateway` (no key/process; the desk keeps the idea, row re-sent later)
+Anything else is a bug and is persisted as `failed`.
+
+Entry blocking is *sticky*: a reconcile mismatch, a missing venue stop or an
+unknown venue position blocks new entries until an operator posts
+`release_signer` (audit B1: the old block lasted one loop iteration).
 """
 
 from __future__ import annotations
@@ -15,25 +25,37 @@ from time import sleep as _sleep
 from typing import Any
 
 from capitalizator.gateway.keys import LIVE_MODES, PAPER_MODES
+from capitalizator.ops.alerts import Alerter
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.product import USER_MODES
+from capitalizator.risk.session import load_time_config
 from capitalizator.screener.universe import Universe, load_desk_universe
-from capitalizator.signer.deadman import DeadMan
-from capitalizator.signer.reconcile import Reconciler
 from capitalizator.signer.validate import Signer, UnsignedIntent
 from capitalizator.types import require_utc
 
 SendFn = Callable[[dict[str, Any]], dict[str, Any]]
 SENT = frozenset({"sent", "accepted", "ok"})
-HEARTBEAT_S = 30
-RECONCILE_S = 60
+PERSISTED = frozenset({"sent", "rejected", "unknown", "no_gateway"})
+
+
+def _clock_from_yaml() -> tuple[int, int]:
+    """dead_man_s / reconcile_s from infra/time.yaml — one source, not module magic."""
+    cfg = load_time_config()
+    dead = int(cfg["dead_man_s"])
+    recon = int(cfg["reconcile_s"])
+    if dead <= 0 or recon <= 0:
+        raise ValueError("dead_man_s / reconcile_s must be > 0")
+    return dead, recon
+
+
+HEARTBEAT_S, RECONCILE_S = _clock_from_yaml()
 
 
 def unsigned_from_intent(
     payload: dict[str, Any],
     *,
     trading_mode: str = "demo",
-    allow_default_qty: bool = True,
+    allow_default_qty: bool = False,
 ) -> UnsignedIntent:
     """Map desk Intent dump onto the signer schema. Stop is mandatory.
 
@@ -104,12 +126,17 @@ def drain_once(
             # content (same zone on two days) must not share an orderLinkId.
             result = send({**row["payload"], "intent_id": row["id"]})
         except Exception as exc:
-            knowledge.mark_intent(row["id"], "failed")
+            knowledge.mark_intent(row["id"], "failed", {"error": str(exc)})
             out.append({"id": row["id"], "status": "failed", "error": str(exc)})
             continue
         status = str(result.get("status") or "")
-        marked = "sent" if status in SENT else "failed"
-        knowledge.mark_intent(row["id"], marked)
+        if status in SENT:
+            marked = "sent"
+        elif status in PERSISTED:
+            marked = status
+        else:
+            marked = "failed"
+        knowledge.mark_intent(row["id"], marked, result)
         if marked == "sent":
             knowledge.enqueue_order(
                 result,
@@ -120,48 +147,62 @@ def drain_once(
     return out
 
 
+def resolve_unknown_intents(
+    knowledge: Knowledge, gateway: Any, *, now: datetime
+) -> list[dict[str, Any]]:
+    """Rows whose transport failed after the order left: ask the venue by link id."""
+    out: list[dict[str, Any]] = []
+    for row in knowledge.intents_with_status("unknown"):
+        res = row.get("result") or {}
+        link = str(res.get("orderLinkId") or "")
+        symbol = str(row["payload"].get("symbol") or res.get("symbol") or "")
+        if not link or not symbol:
+            knowledge.mark_intent(row["id"], "failed", {"error": "unknown without link"})
+            continue
+        verdict = gateway.resolve_unknown(symbol, link)
+        status = str(verdict.get("status") or "unknown")
+        if status == "unknown":
+            out.append({"id": row["id"], "status": "unknown"})
+            continue
+        knowledge.mark_intent(row["id"], status, verdict)
+        if status == "sent":
+            knowledge.enqueue_order(verdict, created_ts=now.isoformat(), intent_id=row["id"])
+        out.append({"id": row["id"], "status": status})
+    return out
+
+
+def requeue_no_gateway(knowledge: Knowledge) -> int:
+    """A gateway appeared: rows parked as `no_gateway` become pending again."""
+    n = 0
+    for row in knowledge.intents_with_status("no_gateway"):
+        knowledge.mark_intent(row["id"], "pending")
+        n += 1
+    return n
+
+
 def on_signer_exit(cancel_all: Callable[[], None]) -> None:
     """Supervisor hook: process gone → cancel_all. No leftover live order."""
     cancel_all()
-
-
-def make_watchdogs(
-    *,
-    cancel_all: Callable[[], None],
-    dead_man_s: int | None = None,
-    reconcile_s: int | None = None,
-) -> tuple[DeadMan, Reconciler]:
-    """30s heartbeat + 60s reconcile. Callbacks are injected."""
-    dead = DeadMan(cancel_all, dead_man_s=dead_man_s or HEARTBEAT_S)
-    recon = Reconciler()
-    if reconcile_s is not None:
-        _ = reconcile_s
-    return dead, recon
 
 
 def serve_loop(
     *,
     knowledge: Knowledge,
     vault: Any,
-    send: SendFn,
-    cancel_all: Callable[[], None],
     should_stop: Callable[[], bool],
     idle_s: float = 1.0,
     now: datetime | None = None,
     sleep: Callable[[float], None] = _sleep,
+    dead_man_s: int | None = None,
 ) -> None:
-    """No-key loop: drain intent_queue through `send`, watch the DESK heartbeat.
-
-    The old DeadMan beat and ticked itself in one iteration and could never fire
-    (Н-4). The Watchdog reads the desk heartbeat the desk writes every tick; a
-    silent desk calls `cancel_all` once per episode and blocks the drain.
-    """
+    """No-key loop. Nothing can be sent, so nothing pretends to be: pending intents
+    are parked as `no_gateway` (the desk keeps the idea; `requeue_no_gateway` brings
+    them back when a key appears). The desk heartbeat is still watched and
+    reported, but there are no venue orders to cancel."""
     from capitalizator.gateway.watchdog import Watchdog
     from capitalizator.ops.product import read_user_mode
 
-    dead = Watchdog(dead_man_s=HEARTBEAT_S, cancel_entries=lambda _reason: cancel_all())
-    _legacy_dead, recon = make_watchdogs(cancel_all=cancel_all)
-    last_recon: datetime | None = None
+    dead = Watchdog(dead_man_s=dead_man_s or HEARTBEAT_S, cancel_entries=lambda _reason: None)
     while not should_stop():
         when = now if now is not None else datetime.now(tz=UTC)
         require_utc(when)
@@ -173,14 +214,17 @@ def serve_loop(
             except ValueError:
                 pass
         stale = dead.check(when)
-        knowledge.set_meta("entries_blocked", json.dumps(sorted(stale)))
-        if mode in {"demo", "live"} and not stale:
-            drain_validated(knowledge, send, user_mode=mode, now=when)
-        if last_recon is None or (when - last_recon).total_seconds() >= RECONCILE_S:
-            recon.tick({})
-            last_recon = when
+        knowledge.set_meta("entries_blocked", json.dumps(sorted(stale + ["no_gateway"])))
+        if mode in {"demo", "live"}:
+            drain_once(knowledge, park_no_gateway, user_mode=mode, now=when)
+        knowledge.set_meta("signer_heartbeat", when.isoformat())
         if idle_s:
             sleep(idle_s)
+
+
+def park_no_gateway(row: dict[str, Any]) -> dict[str, Any]:
+    """The no-key `send`: an honest status, not a fake refusal."""
+    return {"status": "no_gateway", "symbol": row.get("symbol")}
 
 
 def drain_validated(
@@ -277,8 +321,21 @@ def publish_exchange_state(
         mismatches = tracker.reconcile(rest, now=now, expected=expected)
         snap["positions"] = [tracker.positions[s].to_payload() for s in tracker.open_symbols()]
         snap["mismatches"] = mismatches
+        snap["unknown_positions"] = tracker.unknown_symbols()
+        snap["unknown_detail"] = [
+            tracker.unknown[s].to_payload() for s in tracker.unknown_symbols()
+        ]
         snap["stop_missing"] = [
             s for s in tracker.open_symbols() if not tracker.stop_confirmed(s)
+        ]
+        snap["fills"] = [
+            {
+                "symbol": f.symbol, "side": f.side, "price": str(f.price), "qty": str(f.qty),
+                "fee": str(f.fee), "orderLinkId": f.order_link_id,
+                "exec_time": f.exec_time.isoformat() if f.exec_time else None,
+                "is_maker": f.is_maker,
+            }
+            for f in tracker.fills[-200:]
         ]
     except Exception as exc:
         snap["positions_error"] = str(exc)
@@ -329,18 +386,24 @@ def serve_gateway_loop(
     sleep: Callable[[float], None] = _sleep,
     dead_man_s: int | None = None,
     reconcile_s: int | None = None,
+    alerter: Alerter | None = None,
 ) -> None:
     """Real signer loop: watchdog, intent drain via the gateway, OMS drain, reconcile.
 
-    Blocks new entries (not stops) when: desk heartbeat silent, private WS silent,
-    reconcile mismatch, or a position without a confirmed stop on the venue.
+    Blocks new entries (never stops or exits) when:
+      * the desk heartbeat is silent, the private socket is down, or the REST
+        reconcile has not succeeded within dead_man_s (watchdog, per episode);
+      * a reconcile reported a mismatch / an unknown venue position / a position
+        without a confirmed venue stop — **sticky** until an operator posts
+        `release_signer` (with ack) — audit B1;
+      * the process just started: the first reconcile runs before the first drain.
     """
     from capitalizator.gateway.watchdog import Watchdog
     from capitalizator.ops.product import read_user_mode
 
     dead = Watchdog(
         dead_man_s=dead_man_s or HEARTBEAT_S,
-        cancel_entries=lambda reason: gateway.cancel_entries(None, reason=reason),
+        cancel_entries=lambda reason: _cancel_entries_safely(knowledge, gateway, reason),
     )
     from capitalizator.screener.refresh import REFRESH_S as UNIVERSE_REFRESH_S
 
@@ -348,8 +411,28 @@ def serve_gateway_loop(
     last_recon: datetime | None = None
     last_instruments: datetime | None = None
     last_universe: datetime | None = None
+    # reason → first seen (iso). Persisted: a signer restart must not clear a block
+    # an operator has not released.
+    sticky: dict[str, str] = {}
+    raw_sticky = knowledge.meta("entries_blocked_since")
+    if raw_sticky:
+        try:
+            loaded = json.loads(raw_sticky)
+            if isinstance(loaded, dict):
+                sticky = {str(k): str(v) for k, v in loaded.items()}
+        except json.JSONDecodeError:
+            sticky = {}
+    raw_ack = knowledge.meta("acknowledged_positions")
+    if raw_ack:
+        try:
+            tracker.acknowledged.update(str(x) for x in json.loads(raw_ack))
+        except (json.JSONDecodeError, TypeError):
+            pass
     if feed is not None:
         feed.start()
+    requeued = requeue_no_gateway(knowledge)
+    if requeued:
+        knowledge.set_meta("signer_requeued", str(requeued))
     while not should_stop():
         when = now if now is not None else datetime.now(tz=UTC)
         require_utc(when)
@@ -362,17 +445,46 @@ def serve_gateway_loop(
             try:
                 publish_instruments(knowledge, gateway, now=when)
             except Exception as exc:  # venue/network: keep the last snapshot, say why
-                knowledge.set_meta("instruments_error", str(exc))
+                knowledge.set_meta("instruments_error_signer", _note(exc))
             last_instruments = when
+        # --- operator commands addressed to the signer -------------------------
+        for cmd in knowledge.claim_commands(("release_signer", "ack_position")):
+            try:
+                if cmd["kind"] == "release_signer":
+                    # unknown positions must be acknowledged first: releasing with a
+                    # stranger still on the venue would re-block on the next reconcile
+                    still = [s for s in tracker.unknown_symbols() if s not in tracker.acknowledged]
+                    if still:
+                        knowledge.mark_command(
+                            cmd["id"], "failed",
+                            {"error": "acknowledge unknown positions first", "unknown": still},
+                        )
+                        continue
+                    released = sorted(sticky)
+                    sticky.clear()
+                    knowledge.mark_command(cmd["id"], "done", {"released": released})
+                else:
+                    sym = str(cmd["payload"].get("symbol") or "")
+                    ok = tracker.acknowledge(sym)
+                    if ok:
+                        acked = sorted(tracker.acknowledged)
+                        knowledge.set_meta("acknowledged_positions", json.dumps(acked))
+                    knowledge.mark_command(cmd["id"], "done", {"acknowledged": ok, "symbol": sym})
+            except Exception as exc:
+                knowledge.mark_command(cmd["id"], "failed", {"error": _note(exc)})
         if last_universe is None or (when - last_universe).total_seconds() >= UNIVERSE_REFRESH_S:
             try:
                 publish_universe_proposal(knowledge, gateway, now=when)
             except Exception as exc:  # a proposal is advice; failing to write one blocks nothing
                 knowledge.set_meta("universe_proposal_error", str(exc))
             last_universe = when
+        # --- liveness ------------------------------------------------------------
         if feed is not None:
             feed.drain(now=when)
-            if feed.last_frame_at is not None:
+            connected = feed.connected()
+            if connected:
+                dead.beat("ws_private", when)
+            elif connected is None and feed.last_frame_at is not None:
                 dead.beat("ws_private", feed.last_frame_at)
         hb = knowledge.meta("desk_heartbeat")
         if hb:
@@ -380,21 +492,105 @@ def serve_gateway_loop(
                 dead.beat("desk", datetime.fromisoformat(hb))
             except ValueError:
                 pass
-        stale = dead.check(when)
-        blocked: list[str] = list(stale)
+        # --- REST truth ------------------------------------------------------------
         if last_recon is None or (when - last_recon).total_seconds() >= recon_every:
             state = publish_exchange_state(knowledge, gateway, tracker, now=when)
+            if "positions_error" not in state:
+                dead.beat("rest", when)
             if state.get("mismatches"):
-                blocked.append("reconcile_mismatch")
-            if state.get("stop_missing"):
-                blocked.append("stop_missing:" + ",".join(state["stop_missing"]))
+                sticky.setdefault("reconcile_mismatch", when.isoformat())
+            for sym in state.get("unknown_positions") or []:
+                sticky.setdefault(f"unknown_position:{sym}", when.isoformat())
+            for sym in state.get("stop_missing") or []:
+                sticky.setdefault(f"stop_missing:{sym}", when.isoformat())
+            resolve_unknown_intents(knowledge, gateway, now=when)
             last_recon = when
-        knowledge.set_meta("entries_blocked", json.dumps(sorted(blocked)))
+        stale = dead.check(when)
+        blocked = sorted(set(stale) | set(sticky))
+        mode = read_user_mode(vault)
+        if mode in {"demo", "live"} and not gateway_mode_ok(mode, gateway.mode):
+            # demo with a live key or live with a paper key: nothing is sent, and the
+            # operator sees WHY instead of a queue that only grows
+            blocked = sorted({*blocked, "mode_mismatch"})
+        if alerter is not None:
+            _alert_transitions(alerter, knowledge, blocked=blocked, mode=mode, when=when)
+        knowledge.set_meta_many(
+            {
+                "entries_blocked": json.dumps(blocked),
+                "entries_blocked_since": json.dumps(sticky, sort_keys=True),
+                "signer_heartbeat": when.isoformat(),
+            }
+        )
         if mode in {"demo", "live"} and gateway_mode_ok(mode, gateway.mode):
             # OMS first: protecting an open position beats opening a new one.
             drain_oms(knowledge, gateway, now=when)
             if not blocked:
-                venue = gateway.mode if gateway.mode in PAPER_MODES else "demo"
+                venue = gateway.mode  # the order carries the venue the key really talks to
                 drain_validated(knowledge, gateway.send, user_mode=mode, now=when, venue=venue)
         if idle_s:
             sleep(idle_s)
+
+
+def _alert_transitions(
+    alerter: Alerter, knowledge: Knowledge, *, blocked: list[str], mode: str, when: datetime
+) -> None:
+    """Critical facts → one Telegram message per CHANGE: entries blocked / released,
+    a halt on the account, the dead-man firing. Never per tick."""
+    try:
+        if blocked:
+            text = "⛔ Входы заблокированы: " + ", ".join(blocked)
+        else:
+            text = "✅ Входы разблокированы"
+        alerter.on_change(knowledge, "entries_blocked", blocked, f"[{mode}] {text}")
+        raw = knowledge.meta("account") if knowledge.available() else None
+        halt = ""
+        if raw:
+            try:
+                halt = str((json.loads(raw).get("halts") or {}).get("reason") or "")
+            except (json.JSONDecodeError, AttributeError):
+                halt = ""
+        alerter.on_change(
+            knowledge, "halt", halt,
+            f"[{mode}] 🛑 Кран: {halt}" if halt else f"[{mode}] кран снят",
+        )
+        dead_raw = knowledge.meta("dead_man_last") if knowledge.available() else None
+        if dead_raw:
+            alerter.on_change(
+                knowledge, "dead_man", dead_raw,
+                f"[{mode}] ⚠️ Сторож снял входные ордера: {dead_raw}",
+            )
+    except Exception as exc:  # alerts never take the signer down
+        if knowledge.available():
+            knowledge.set_meta("alerts_last_error", type(exc).__name__)
+
+
+def alerter_from_settings(vault: Any) -> Alerter | None:
+    """Telegram credentials from Настройки (0600 settings.json); None when absent."""
+    try:
+        from capitalizator.ops.settings import Settings
+
+        values = Settings(vault, exclude_prefixes=("bybit.", "llm.", "x.", "reddit.")).load()
+    except Exception:
+        return None
+    token, chat = values.get("telegram.bot_token", ""), values.get("telegram.chat_id", "")
+    if not token or not chat:
+        return None
+    return Alerter(token, chat)
+
+
+def _note(exc: BaseException) -> str:
+    """Exception → short service note: type + code, never the raw text (which may carry
+    URLs with credentials or words the advice filter refuses) — audit B15/F."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    return f"{type(exc).__name__}" + (f" {code}" if code is not None else "")
+
+
+def _cancel_entries_safely(knowledge: Knowledge, gateway: Any, reason: str) -> None:
+    """Watchdog callback: cancel entry orders; a venue error is recorded, not raised."""
+    try:
+        gateway.cancel_entries(None, reason=reason)
+        knowledge.set_meta("dead_man_last", json.dumps({"reason": reason, "ok": True}))
+    except Exception as exc:
+        knowledge.set_meta(
+            "dead_man_last", json.dumps({"reason": reason, "ok": False, "error": _note(exc)})
+        )

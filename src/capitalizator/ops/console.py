@@ -9,24 +9,37 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import secrets
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
-from capitalizator.ops import chronos_data
+from capitalizator.ops import chronos_data, i18n_ru
 from capitalizator.ops.contour import ContourNotReady
 from capitalizator.ops.contour import enable as enable_contour
 from capitalizator.ops.contour import status as contour_status
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
-from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.phase import load_phase, trading_mode
 from capitalizator.ops.product import (
+    HelloRequired,
+    KeysRequired,
+    LiveGateClosed,
+    cred_present,
     hello_recorded,
     read_user_mode,
     set_user_mode,
 )
+from capitalizator.ops.settings import (
+    Settings,
+    add_source,
+    load_sources,
+    remove_source,
+    set_source_enabled,
+)
+from capitalizator.ops.settings_page import render_settings_html
 from capitalizator.ops.touch_screen import latest as latest_touch
 from capitalizator.ops.touch_screen import render_html as render_touch_html
 from capitalizator.ops.vault import (
@@ -141,8 +154,13 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     try:
         money = account_view(knowledge)
         queue = queue_view(knowledge, limit=50)
+        raw_blocked = knowledge.meta("entries_blocked") if knowledge.available() else None
     finally:
         knowledge.close()
+    try:
+        entries_blocked = json.loads(raw_blocked) if raw_blocked else []
+    except json.JSONDecodeError:
+        entries_blocked = []
     if report_body is None:
         report_body = daily_map_report(day=report_day or "нет даты", rows=[])
         report_day = report_day or "нет даты"
@@ -151,6 +169,8 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     user = read_user_mode(vault)
     hello_ok = hello_recorded(vault)
     banners: list[str] = []
+    if knowledge.available() and knowledge.meta("desk_backlog") == "1":
+        banners.append("Стол догоняет ленту после рестарта: метки исторические, входов нет")
     if not hello_ok:
         banners.append("Демо: нет hello")
     if n_touches < 20:
@@ -171,6 +191,8 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         "contour": contour["contour"],
         "hours24": contour["hours24"],
         "hours24_span_s": contour["hours24_span_s"],
+        "hours24_source": contour.get("hours24_source"),
+        "hours24_detail": contour.get("hours24_detail"),
         "can_enable": contour["can_enable"],
         "n_hash": counts["hash_links"],
         "n_episode": counts["episodes"],
@@ -192,6 +214,8 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
             "overlay": overlays,
         },
         "taps": _desk_taps(),
+        "entries_blocked": entries_blocked if isinstance(entries_blocked, list) else [],
+        "learning": _learning_snapshot(vault),
         "touch": touch_snap,
         "last_price": chronos_data.last_prices(vault),
         "session_window": chronos_data.session_window(),
@@ -206,7 +230,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     return snap
 
 
-def _page(snap: dict[str, Any]) -> str:
+def _page(snap: dict[str, Any], *, token: str = "") -> str:
     template = (Path(__file__).with_name("chronos.html")).read_text(encoding="utf-8")
     taps = snap.get("taps") or {}
     hours24 = bool(snap.get("hours24"))
@@ -220,6 +244,7 @@ def _page(snap: dict[str, Any]) -> str:
         contour_form = (
             '<form method="post" action="/contour">'
             '<input type="hidden" name="action" value="on"/>'
+            f'<input type="hidden" name="ack_token" value="{html.escape(token)}"/>'
             f'<button type="submit"{disabled}>Включить контур</button>'
             "</form>"
         )
@@ -228,31 +253,38 @@ def _page(snap: dict[str, Any]) -> str:
         contour_form = (
             '<form method="post" action="/contour">'
             '<input type="hidden" name="action" value="on"/>'
+            f'<input type="hidden" name="ack_token" value="{html.escape(token)}"/>'
             '<button type="submit" disabled>Включить контур</button>'
             "</form>"
         )
+    def _term(code: object) -> str:
+        """Русское название + код, подсказка по наведению."""
+        title = html.escape(i18n_ru.hint(code))
+        return f'<span title="{title}">{html.escape(i18n_ru.ru(code))}</span>'
+
+
     cav_rows = snap.get("cav_zlg") or []
     if cav_rows:
         cav_html = "".join(
             (
                 "<tr>"
-                f"<td>{html.escape(str(r['cav']))}</td>"
-                f"<td>{html.escape(str(r['zlg']))}</td>"
-                f"<td>{html.escape(str(r['outcome']))}</td>"
+                f"<td>{_term(r['cav'])}</td>"
+                f"<td>{_term(r['zlg'])}</td>"
+                f"<td>{_term(r['outcome'])}</td>"
                 f"<td>{int(r['n'])}</td>"
                 "</tr>"
             )
             for r in cav_rows
         )
     else:
-        cav_html = '<tr><td colspan="4" class="empty">CAV×ZLG×outcome пусто</td></tr>'
+        cav_html = '<tr><td colspan="4" class="empty">Свеча × Книга × Исход — пока пусто</td></tr>'
     jury_rows = snap.get("jury_today") or []
     if jury_rows:
         jury_html = "".join(
-            f"<li>{html.escape(str(r['jury']))}: {int(r['n'])}</li>" for r in jury_rows
+            f"<li>{_term(r['jury'])}: {int(r['n'])}</li>" for r in jury_rows
         )
     else:
-        jury_html = '<li class="empty">жюри дня пусто</li>'
+        jury_html = '<li class="empty">решений жюри сегодня нет</li>'
     vs = snap.get("shadow_vs_demo_vs_live") or {}
     learn_n = snap.get("learn_n_days")
     learn_txt = "—" if learn_n is None else str(learn_n)
@@ -292,8 +324,36 @@ def _page(snap: dict[str, Any]) -> str:
         return html.escape(str(value))
 
     halt_txt = _e(acct.get("halt_reason") or "открыт")
+    blocked_txt = _e(
+        ", ".join(i18n_ru.ru(b) for b in (snap.get("entries_blocked") or [])) or "не заблокированы"
+    )
     queue_txt = _e(json.dumps(snap.get("queue_counts") or {}, ensure_ascii=False))
-    money_block = f"""<h2>Счёт</h2>
+    learn = snap.get("learning") or {}
+    drift = learn.get("drift") or {}
+    exam = learn.get("exam") or {}
+    oko_n = learn.get("oko") or {}
+    learn_block = (
+        "<h2>Учёба (контур C и ОКО)</h2>"
+        f"<p>дрейф: {'есть' if drift.get('drift') else 'нет'} (n={_e(drift.get('n', 0))}, "
+        f"целевой риск {_e(drift.get('target_risk', '—'))}) · классов в калибровке: "
+        f"{_e(learn.get('calibration_classes', 0))} · экзамен претендента: "
+        f"{'пройден' if exam.get('passed') else 'не пройден'}"
+        f" (n чемпиона {_e((exam.get('champion') or {}).get('n', 0))}, "
+        f"n претендента {_e((exam.get('challenger') or {}).get('n', 0))})</p>"
+        f"<p>паспорта ОКО: {_e(oko_n.get('passports', 0))} (зрелых {_e(oko_n.get('mature', 0))}) · "
+        f"память ловушек: {_e(oko_n.get('memory', 0))} · Зеркало: "
+        f"{'пройдено' if oko_n.get('mirror_passed') else 'не пройдено / нет'} · "
+        f"сентимент (F&G): {_e(learn.get('sentiment', '—'))} · intel-элементов: "
+        f"{_e(learn.get('intel_items', 0))}</p>"
+        + (
+            "<p class='warn'>ОКО: органы, не прочитанные при старте (начали с нуля): "
+            + _e(", ".join(sorted(learn.get("oko_load_errors") or {})))
+            + "</p>"
+            if learn.get("oko_load_errors")
+            else ""
+        )
+    )
+    money_block = f"""{learn_block}<h2>Счёт</h2>
       <p>{equity_line}</p>
       <p>день {_pct(acct.get("day_pnl_pct"))} · неделя {_pct(acct.get("week_pnl_pct"))}
       · просадка от пика {_pct(acct.get("drawdown_from_peak"))} · кран: {halt_txt}</p>
@@ -307,10 +367,14 @@ def _page(snap: dict[str, Any]) -> str:
       <p>очередь интентов: {queue_txt}</p>
       <h2>Предупреждения</h2><ul>{banner_items}</ul>"""
     service = f"""<div id="service">
+      <h2>Стол: счёт, позиции, учёба, предупреждения (факты из журнала)</h2>
       {money_block}
-      <h2>CAV × ZLG × outcome</h2>
+      <h2>Свеча (CAV) × Книга (ZLG) × Исход</h2>
       <table><tbody>{cav_html}</tbody></table>
       <h2>Жюри дня</h2><ul>{jury_html}</ul>
+      <p><a href="/ops">Управление: команды, риск-меню, сессии, вселенная</a>
+      · <a href="/settings">Настройки: ключи и источники</a>
+      · <a href="/api/glossary">Словарь кодов (JSON)</a> · входы: {blocked_txt}</p>
       <p>n касаний {int(snap.get("n_touches") or 0)}</p>
       <p>День учёбы {html.escape(learn_txt)}</p>
       <p>Дыры ленты {int(snap.get("tape_holes") or 0)}</p>
@@ -331,11 +395,73 @@ def _page(snap: dict[str, Any]) -> str:
             "user_mode": snap.get("user_mode") or "off",
             "last_price": snap.get("last_price") or {},
             "session_window": snap.get("session_window") or {},
+            "ack_token": token,
         },
         ensure_ascii=False,
     )
     page = template.replace("{{SERVICE}}", service).replace("{{BOOT}}", boot)
     return page
+
+
+def _json_or(raw: str | None, default: Any) -> Any:
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return default
+
+
+def _learning_snapshot(vault: Vault) -> dict[str, Any]:
+    """Contour C / ОКО facts for the operator: drift, calibration, exam, passports."""
+    knowledge = open_knowledge(vault, create=False)
+    try:
+        if not knowledge.available():
+            return {}
+
+        def _j(key: str) -> Any:
+            raw = knowledge.meta(key)
+            if not raw:
+                return None
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return None
+
+        calib = _j("calibration") or {}
+        passports = knowledge.meta_prefix("oko:passport:")
+        mature = 0
+        for raw in passports.values():
+            try:
+                if len(json.loads(raw).get("depth") or []) >= 30:
+                    mature += 1
+            except (json.JSONDecodeError, AttributeError):
+                continue
+        memory = 0
+        for raw in knowledge.meta_prefix("oko:memory:").values():
+            try:
+                memory += len(json.loads(raw).get("records") or [])
+            except (json.JSONDecodeError, AttributeError):
+                continue
+        mirror = _j("oko:mirror") or {}
+        sentiment = _j("sentiment") or {}
+        return {
+            "drift": _j("drift") or {},
+            "calibration_classes": len(calib) if isinstance(calib, dict) else 0,
+            "exam": _j("exam_last") or _j("exam_night") or {},
+            "champion_candidate": _j("champion_candidate"),
+            "oko": {
+                "passports": len(passports),
+                "mature": mature,
+                "memory": memory,
+                "mirror_passed": bool(mirror.get("passed")) if isinstance(mirror, dict) else False,
+            },
+            "sentiment": sentiment.get("value") if isinstance(sentiment, dict) else None,
+            "intel_items": len(knowledge.intel_items(limit=100_000)),
+            "oko_load_errors": _json_or(knowledge.meta("oko_load_errors"), {}),
+        }
+    finally:
+        knowledge.close()
 
 
 def _int_arg(qs: dict[str, list[str]], name: str, default: int) -> int:
@@ -371,7 +497,7 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
     if path == "/api/authors":
         return {
             "posts": chronos_data.author_rows(vault),
-            "sources": chronos_data.author_sources(),
+            "sources": chronos_data.author_sources(vault),
         }
     if path == "/api/llm_summary":
         return chronos_data.llm_summary(vault)
@@ -383,7 +509,21 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
             return gates_from_sqlite(knowledge)
         finally:
             knowledge.close()
-    if path in {"/api/account", "/api/queue", "/api/paper", "/api/risk"}:
+    if path == "/api/glossary":
+        return {"terms": i18n_ru.glossary(), "columns": i18n_ru.COLUMNS}
+    if path == "/api/settings":
+        knowledge = open_knowledge(vault, create=False)
+        try:
+            return {"fields": Settings(vault).view(), "sources": load_sources(knowledge)}
+        finally:
+            knowledge.close()
+    if path == "/api/sources":
+        knowledge = open_knowledge(vault, create=False)
+        try:
+            return {"sources": load_sources(knowledge)}
+        finally:
+            knowledge.close()
+    if path in {"/api/account", "/api/queue", "/api/paper", "/api/risk", "/api/commands"}:
         from capitalizator.ops.account_view import account_view, queue_view
         from capitalizator.risk.config import load_risk_config
 
@@ -400,6 +540,8 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
                         source=source, limit=_int_arg(qs, "limit", 200)
                     )
                 }
+            if path == "/api/commands":
+                return {"commands": knowledge.commands(limit=_int_arg(qs, "limit", 100))}
             return {"risk_config": load_risk_config(knowledge).to_payload()}
         finally:
             knowledge.close()
@@ -419,8 +561,47 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
     return None
 
 
-def render_html(vault: Vault, *, day: str | None = None) -> str:
-    page = _page(desk_snapshot(vault, day=day))
+def render_ops(app: ConsoleApp, *, message: str | None = None) -> str:
+    """«Управление»: every operator capability as a form, current facts beside it."""
+    from capitalizator.ops.account_view import sessions_view, universe_view
+    from capitalizator.ops.ops_page import render_ops_html
+    from capitalizator.risk.config import load_risk_config
+
+    status = desk_snapshot(app.vault)
+    knowledge = open_knowledge(app.vault, create=False)
+    try:
+        keys = (
+            "exchange_state", "entries_blocked_since", "window_drift", "drift", "exam_last",
+            "night_last", "champion_candidate", "entries_paused", "desk_heartbeat",
+            "signer_heartbeat", "desk_backlog", "recorder_status", "dead_man_last",
+            "signer_requeued", "instruments_error_signer", "instruments_error_recorder",
+            "intel_status", "llm_last_error", "reddit_auth_error", "paper_restored",
+            "paper_open_error", "oko_load_errors",
+        )
+        meta: dict[str, str | None] = dict.fromkeys(keys)
+        if knowledge.available():
+            meta = {k: knowledge.meta(k) for k in keys}
+        page = render_ops_html(
+            token=app.csrf_token,
+            status=status,
+            risk={"risk_config": load_risk_config(knowledge).to_payload()},
+            sessions=sessions_view(knowledge),
+            universe=universe_view(knowledge),
+            commands=knowledge.commands(limit=40) if knowledge.available() else [],
+            meta=meta,
+            message=message,
+        )
+    finally:
+        knowledge.close()
+    low = page.lower()
+    for word in ADVICE_WORDS:
+        if word in low:
+            raise ValueError("ops page must not advise")
+    return page
+
+
+def render_html(vault: Vault, *, day: str | None = None, token: str = "") -> str:
+    page = _page(desk_snapshot(vault, day=day), token=token)
     low = page.lower()
     for word in ADVICE_WORDS:
         if word in low:
@@ -431,6 +612,10 @@ def render_html(vault: Vault, *, day: str | None = None) -> str:
 class ConsoleApp:
     def __init__(self, vault: Vault) -> None:
         self.vault = vault
+        # Per-process CSRF/ack token. Every write must carry it (header `X-Ack-Token`
+        # or field `ack_token`); pages embed it, `/api/csrf` hands it to same-origin
+        # scripts. A literal "yes" from any browser tab used to be enough (audit A8).
+        self.csrf_token = secrets.token_urlsafe(24)
 
     def healthz(self) -> int:
         return 200
@@ -444,8 +629,35 @@ class ConsoleApp:
         *,
         ack: bool,
         learn_n_days: int | None = None,
+        override_reason: str | None = None,
     ) -> dict[str, Any]:
-        return set_user_mode(self.vault, mode, ack=ack, learn_n_days=learn_n_days)
+        return set_user_mode(
+            self.vault, mode, ack=ack, learn_n_days=learn_n_days, override_reason=override_reason
+        )
+
+    def prove_hello(self, *, ack: bool, probe_order: bool = False) -> dict[str, Any]:
+        """Talk to the venue (wallet, instruments). Sets the hello flag only on success."""
+        if not ack:
+            raise ValueError("ack required")
+        from capitalizator.gateway.keys import load_keys
+
+        keys = load_keys(self.vault)
+        if keys is None:
+            raise HelloRequired("no keys")
+        from capitalizator.gateway import BybitGateway
+        from capitalizator.gateway.bybit import make_session
+
+        gateway = BybitGateway(make_session(keys), mode=keys.mode)
+        result = gateway.hello(probe_order=probe_order)
+        from capitalizator.ops.product import record_hello
+
+        knowledge = open_knowledge(self.vault, create=True)
+        try:
+            ok = record_hello(self.vault, knowledge, result)
+        finally:
+            knowledge.close()
+        # `real` means the last venue hello succeeded — same as GET /api/hello/status.
+        return {"hello": result, "hello_ok": ok, "real": ok}
 
     def set_risk(self, changes: dict[str, Any], *, ack: bool) -> dict[str, Any]:
         """Operator risk menu (D-12). Validated by RiskConfig; applies to new intents."""
@@ -474,10 +686,50 @@ class ConsoleApp:
         finally:
             knowledge.close()
 
+    def alerts_test(self, *, ack: bool) -> dict[str, Any]:
+        """Send one test message with the Telegram credentials from Настройки."""
+        from capitalizator.ops.alerts import send
+
+        if not ack:
+            raise ValueError("ack required")
+        values = Settings(self.vault, exclude_prefixes=("bybit.", "llm.", "x.", "reddit.")).load()
+        ok, note = send(
+            values.get("telegram.bot_token", ""),
+            values.get("telegram.chat_id", ""),
+            "Capitalizator: тестовое оповещение из консоли",
+        )
+        return {"ok": ok, "note": note}
+
+    def settings_post(self, path: str, payload: dict[str, Any], *, ack: bool) -> dict[str, Any]:
+        """/api/settings: {field: value, ...} (empty value deletes). /api/sources:
+        {action: add|enable|disable|remove, kind, value, label | id}."""
+        knowledge = open_knowledge(self.vault, create=True)
+        try:
+            if path == "/api/settings":
+                changes = {str(k): str(v) for k, v in payload.items()}
+                return Settings(self.vault).update(changes, knowledge=knowledge, ack=ack)
+            action = str(payload.get("action") or "add")
+            if action == "add":
+                return add_source(
+                    knowledge,
+                    kind=str(payload.get("kind") or ""),
+                    value=str(payload.get("value") or ""),
+                    label=str(payload.get("label") or ""),
+                    ack=ack,
+                )
+            if action in {"enable", "disable"}:
+                ok = set_source_enabled(
+                    knowledge, str(payload.get("id") or ""), action == "enable", ack=ack
+                )
+                return {"updated": ok}
+            if action == "remove":
+                return {"removed": remove_source(knowledge, str(payload.get("id") or ""), ack=ack)}
+            raise ValueError(f"unknown action {action!r}")
+        finally:
+            knowledge.close()
+
     def apply_universe(self, proposal_id: str, *, ack: bool) -> dict[str, Any]:
         """Human step: the weekly top-N proposal becomes infra/universe.yaml."""
-        from datetime import UTC, datetime
-
         from capitalizator.screener.refresh import apply_universe
 
         if not ack:
@@ -487,7 +739,11 @@ class ConsoleApp:
         knowledge = open_knowledge(self.vault, create=True)
         try:
             universe = apply_universe(
-                knowledge, proposal_id=proposal_id, ack=True, now=datetime.now(tz=UTC)
+                knowledge,
+                proposal_id=proposal_id,
+                ack=True,
+                now=datetime.now(tz=UTC),
+                universe_path=self.vault.root / "universe.yaml",
             )
             return {
                 "universe": list(universe.symbols),
@@ -504,22 +760,17 @@ class ConsoleApp:
         → picked up by the desk tick. drift_release takes a window name in `symbol` (or ALL)."""
         if not ack:
             raise ValueError("ack required")
-        if kind not in {
-            "flatten", "release_halts", "pause_entries", "resume_entries", "drift_release"
-        }:
+        if kind not in Knowledge.COMMAND_KINDS:
             raise ValueError(f"unknown command: {kind}")
-        if kind == "flatten" and not symbol:
-            raise ValueError("flatten needs a symbol (or ALL)")
+        if kind in {"flatten", "ack_position"} and not symbol:
+            raise ValueError(f"{kind} needs a symbol" + (" (or ALL)" if kind == "flatten" else ""))
         knowledge = open_knowledge(self.vault, create=True)
         try:
-            cmd = {
-                "kind": kind,
-                "symbol": symbol,
-                "reason": reason or "operator",
-                "at": datetime.now(tz=UTC).isoformat(),
-            }
-            pending = knowledge.push_command(cmd)
-            return {"queued": cmd, "pending": pending}
+            now = datetime.now(tz=UTC).isoformat()
+            cmd = {"kind": kind, "symbol": symbol, "reason": reason or "operator", "at": now}
+            cmd_id = knowledge.enqueue_command(kind, cmd, created_ts=now)
+            pending = sum(1 for c in knowledge.commands(limit=500) if c["status"] == "pending")
+            return {"queued": {**cmd, "id": cmd_id}, "pending": pending}
         finally:
             knowledge.close()
 
@@ -551,6 +802,36 @@ def _read_action(handler: BaseHTTPRequestHandler) -> str:
 def _is_local(handler: BaseHTTPRequestHandler) -> bool:
     host = handler.client_address[0]
     return host in {"127.0.0.1", "localhost", "::1"}
+
+
+_LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+
+
+def _write_allowed(handler: BaseHTTPRequestHandler) -> str | None:
+    """None when the write may proceed, else the refusal reason.
+
+    Peer must be loopback; `Host` must be a loopback host (DNS rebinding); when a
+    browser sends `Origin` it must be a loopback origin (cross-site form/XHR).
+    """
+    if not _is_local(handler):
+        return "localhost only"
+    host = (handler.headers.get("Host") or "").split(":")[0].lower()
+    if host and host not in {"127.0.0.1", "localhost", "[::1]", "::1"}:
+        return "bad host"
+    origin = handler.headers.get("Origin")
+    if origin:
+        try:
+            o_host = urlparse(origin).hostname or ""
+        except ValueError:
+            return "bad origin"
+        if o_host not in {"127.0.0.1", "localhost", "::1"}:
+            return "bad origin"
+    return None
+
+
+def _token_ok(app: ConsoleApp, handler: BaseHTTPRequestHandler, payload: dict[str, Any]) -> bool:
+    given = handler.headers.get("X-Ack-Token") or payload.get("ack_token")
+    return isinstance(given, str) and secrets.compare_digest(given, app.csrf_token)
 
 
 def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
@@ -600,8 +881,7 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 self._send(409, body, "application/json; charset=utf-8")
 
         def _set_mode(self, payload: dict[str, Any], *, redirect: bool) -> None:
-            raw_ack = payload.get("ack_token", payload.get("ack"))
-            ack = raw_ack in {True, "true", "1", 1, "yes"}
+            ack = _token_ok(app, self, payload)
             mode = str(payload.get("mode") or "")
             raw_n = payload.get("learn_n_days")
             learn_n = int(raw_n) if raw_n not in {None, ""} else None
@@ -613,8 +893,24 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
             if mode in {"demo", "live"} and not hello_recorded(app.vault):
                 self._send(403, b"hello required", "text/plain; charset=utf-8")
                 return
+            if mode == "live" and not cred_present(app.vault):
+                self._send(403, b"cred required", "text/plain; charset=utf-8")
+                return
+            reason = payload.get("override_reason")
             try:
-                out = app.set_mode(mode, ack=True, learn_n_days=learn_n)
+                out = app.set_mode(
+                    mode, ack=True, learn_n_days=learn_n,
+                    override_reason=None if reason in {None, ""} else str(reason),
+                )
+            except LiveGateClosed as exc:
+                self._send(409, str(exc).encode(), "text/plain; charset=utf-8")
+                return
+            except KeysRequired:
+                self._send(403, b"cred required", "text/plain; charset=utf-8")
+                return
+            except HelloRequired:
+                self._send(403, b"hello required", "text/plain; charset=utf-8")
+                return
             except ValueError as exc:
                 self._send(400, str(exc).encode(), "text/plain; charset=utf-8")
                 return
@@ -628,13 +924,11 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
             sent = False
             try:
                 path = urlparse(self.path).path
-                if path == "/order":
-                    self._reject_write()
+                denied = _write_allowed(self)
+                if denied is not None:
+                    self._send(403, denied.encode(), "text/plain; charset=utf-8")
                     return
                 if path in {"/api/mode", "/mode"}:
-                    if not _is_local(self):
-                        self._send(403, b"localhost only", "text/plain; charset=utf-8")
-                        return
                     try:
                         payload = _read_body(self)
                     except (ValueError, json.JSONDecodeError):
@@ -642,24 +936,109 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                         return
                     self._set_mode(payload, redirect=path == "/mode")
                     return
-                if path in {"/api/risk", "/api/command", "/api/universe"}:
-                    if not _is_local(self):
-                        self._send(403, b"localhost only", "text/plain; charset=utf-8")
-                        return
+                if path == "/api/hello":
                     try:
                         payload = _read_body(self)
                     except (ValueError, json.JSONDecodeError):
                         self._send(400, b"bad-json", "text/plain; charset=utf-8")
                         return
-                    raw_ack = payload.pop("ack_token", payload.pop("ack", None))
-                    ack = raw_ack in {True, "true", "1", 1, "yes"}
+                    if not _token_ok(app, self, payload):
+                        self._send(403, b"ack required", "text/plain; charset=utf-8")
+                        return
+                    probe = payload.get("probe_order") in {"1", "true", True}
+                    try:
+                        out = app.prove_hello(ack=True, probe_order=probe)
+                    except HelloRequired:
+                        self._send(403, b"no keys", "text/plain; charset=utf-8")
+                        return
+                    except ImportError:
+                        self._send(503, b"gateway extra not installed", "text/plain; charset=utf-8")
+                        return
+                    except Exception:
+                        self._send(502, b"hello failed", "text/plain; charset=utf-8")
+                        return
+                    body = json.dumps(out, ensure_ascii=False, default=str).encode()
+                    self._send(200, body, "application/json; charset=utf-8")
+                    return
+                if path == "/api/alerts/test":
+                    try:
+                        payload = _read_body(self)
+                    except (ValueError, json.JSONDecodeError):
+                        self._send(400, b"bad-json", "text/plain; charset=utf-8")
+                        return
+                    ack = _token_ok(app, self, payload)
+                    try:
+                        out = app.alerts_test(ack=ack)
+                    except ValueError as exc:
+                        self._send(403, str(exc).encode(), "text/plain; charset=utf-8")
+                        return
+                    if payload.get("redirect") in {"1", "true"}:
+                        note = (
+                            "Telegram: отправлено" if out["ok"]
+                            else f"Telegram: отказ ({out['note']})"
+                        )
+                        self._send(
+                            303, b"", "text/plain; charset=utf-8",
+                            extra={"Location": "/settings?msg=" + quote(note)},
+                        )
+                        return
+                    self._send(200, json.dumps(out).encode(), "application/json; charset=utf-8")
+                    return
+                if path in {"/api/settings", "/api/sources"}:
+                    try:
+                        payload = _read_body(self)
+                    except (ValueError, json.JSONDecodeError):
+                        self._send(400, b"bad-json", "text/plain; charset=utf-8")
+                        return
+                    ack = _token_ok(app, self, payload)
+                    payload.pop("ack_token", None)
+                    payload.pop("ack", None)
+                    payload.pop("confirm", None)  # settings page checkbox; not a field
+                    redirect = payload.pop("redirect", None) in {"1", "true", True}
+                    # HTML form: empty input = leave unchanged (settings_page.py).
+                    # JSON still deletes on "" — that path is the explicit wipe API.
+                    ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+                    if path == "/api/settings" and ctype != "application/json":
+                        payload = {
+                            k: v for k, v in payload.items() if str(v).strip() != ""
+                        }
+                    try:
+                        out = app.settings_post(path, payload, ack=ack)
+                    except ValueError as exc:
+                        code = 403 if "ack" in str(exc) else 400
+                        self._send(code, str(exc).encode(), "text/plain; charset=utf-8")
+                        return
+                    if redirect:
+                        self._send(
+                            303, b"", "text/plain; charset=utf-8", extra={"Location": "/settings"}
+                        )
+                        return
+                    body = json.dumps(out, ensure_ascii=False, default=str).encode()
+                    self._send(200, body, "application/json; charset=utf-8")
+                    return
+                if path in {"/api/risk", "/api/command", "/api/universe"}:
+                    try:
+                        payload = _read_body(self)
+                    except (ValueError, json.JSONDecodeError):
+                        self._send(400, b"bad-json", "text/plain; charset=utf-8")
+                        return
+                    ack = _token_ok(app, self, payload)
+                    payload.pop("ack_token", None)
+                    payload.pop("ack", None)
+                    payload.pop("confirm", None)  # «Управление» checkbox; not a field
+                    redirect = payload.pop("redirect", None) in {"1", "true", True}
+                    if path == "/api/risk" and redirect:
+                        # HTML form: empty input = leave unchanged
+                        payload = {k: v for k, v in payload.items() if str(v).strip() != ""}
                     try:
                         if path == "/api/risk":
                             out = app.set_risk(payload, ack=ack)
+                            note = f"риск-меню сохранено, версия {out['risk_config']['version']}"
                         elif path == "/api/universe":
                             out = app.apply_universe(
                                 str(payload.get("proposal_id") or ""), ack=ack
                             )
+                            note = "вселенная применена; вступит после рестарта стола и рекордера"
                         else:
                             out = app.command(
                                 str(payload.get("kind") or ""),
@@ -667,9 +1046,22 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                                 ack=ack,
                                 reason=str(payload.get("reason") or ""),
                             )
+                            note = f"команда поставлена в очередь (#{out['queued']['id']})"
                     except ValueError as exc:
                         code = 403 if "ack" in str(exc) else 400
+                        if redirect:
+                            self._send(
+                                303, b"", "text/plain; charset=utf-8",
+                                extra={"Location": "/ops?msg=" + quote(f"отказ: {exc}")},
+                            )
+                            return
                         self._send(code, str(exc).encode(), "text/plain; charset=utf-8")
+                        return
+                    if redirect:
+                        self._send(
+                            303, b"", "text/plain; charset=utf-8",
+                            extra={"Location": "/ops?msg=" + quote(note)},
+                        )
                         return
                     body = json.dumps(out, ensure_ascii=False, default=str).encode()
                     self._send(200, body, "application/json; charset=utf-8")
@@ -678,9 +1070,13 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     self._reject_write()
                     return
                 try:
-                    action = _read_action(self)
+                    payload = _read_body(self)
+                    action = str(payload.get("action") or "")
                 except (ValueError, json.JSONDecodeError):
                     self._send(400, b"bad-action", "text/plain; charset=utf-8")
+                    return
+                if not _token_ok(app, self, payload):
+                    self._send(403, b"ack token required", "text/plain; charset=utf-8")
                     return
                 if action != "on":
                     self._send(400, b"bad-action", "text/plain; charset=utf-8")
@@ -698,7 +1094,7 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                         extra={"Location": "/"},
                     )
                 except ContourNotReady:
-                    body = render_html(app.vault).encode()
+                    body = render_html(app.vault, token=app.csrf_token).encode()
                     sent = True
                     self._send(409, body, "text/html; charset=utf-8")
             except Exception:
@@ -729,6 +1125,13 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     payload = desk_snapshot(app.vault)
                     body = json.dumps(payload, ensure_ascii=False).encode()
                     code, ctype = 200, "application/json; charset=utf-8"
+                elif path == "/api/csrf":
+                    # same-origin scripts only can read this (no CORS headers are sent)
+                    if not _is_local(self):
+                        body, code, ctype = b"localhost only", 403, "text/plain; charset=utf-8"
+                    else:
+                        body = json.dumps({"ack_token": app.csrf_token}).encode()
+                        code, ctype = 200, "application/json; charset=utf-8"
                 elif path.startswith("/api/"):
                     payload = _api_get(app.vault, path, parse_qs(parsed.query))
                     if payload is None:
@@ -742,11 +1145,26 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 elif path in {"/", "/index.html"}:
                     qs = parse_qs(parsed.query)
                     day = qs.get("day", [None])[0]
-                    body = render_html(app.vault, day=day).encode()
+                    body = render_html(app.vault, day=day, token=app.csrf_token).encode()
                     code, ctype = 200, "text/html; charset=utf-8"
                 elif path == "/touch":
                     snap = desk_snapshot(app.vault)
                     body = render_touch_html(snap.get("touch")).encode()
+                    code, ctype = 200, "text/html; charset=utf-8"
+                elif path == "/ops":
+                    msg = (parse_qs(parsed.query).get("msg") or [None])[0]
+                    body = render_ops(app, message=msg).encode()
+                    code, ctype = 200, "text/html; charset=utf-8"
+                elif path == "/settings":
+                    knowledge = open_knowledge(app.vault, create=False)
+                    try:
+                        body = render_settings_html(
+                            Settings(app.vault).view(), load_sources(knowledge),
+                            token=app.csrf_token,
+                            message=(parse_qs(parsed.query).get("msg") or [None])[0],
+                        ).encode()
+                    finally:
+                        knowledge.close()
                     code, ctype = 200, "text/html; charset=utf-8"
                 elif path == "/api/touch":
                     snap = desk_snapshot(app.vault)

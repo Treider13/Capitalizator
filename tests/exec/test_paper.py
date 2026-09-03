@@ -66,7 +66,11 @@ def test_half_at_one_r_then_tp_on_remainder() -> None:
     eng = _engine()
     pos = _buy(eng)
     eng.on_print(_print(T0 + timedelta(seconds=1), "99.9"))
-    eng.on_print(_print(T0 + timedelta(minutes=1), "102"))  # +1R → half at 102
+    # +1R: our half is a resting SELL at 102. A seller hitting a bid at 102 is not
+    # our fill (same queue rule as the entry); a buyer lifting 102 is.
+    eng.on_print(_print(T0 + timedelta(minutes=1), "102", side="sell"))
+    assert not pos.half_taken
+    eng.on_print(_print(T0 + timedelta(minutes=1), "102", side="buy"))
     assert pos.half_taken and pos.half_px == Decimal("102") and pos.qty_open == Decimal("0.5")
     assert pos.realized == Decimal("2") * Decimal("0.5")
     eng.on_print(_print(T0 + timedelta(minutes=2), "104.5"))  # tp 104 on the rest
@@ -168,3 +172,53 @@ def test_stats_count_filled_only_and_report_costs() -> None:
     assert stats["profit_factor"] is not None and stats["profit_factor"] > 1
     assert stats["fees"] == win.fees + loss.fees
     assert len(closed) == 3
+
+
+def test_one_r_is_fixed_at_entry_even_after_the_stop_trails() -> None:
+    """Audit D-10: MAE/MFE in R drifted because r_px followed the trailed stop."""
+    eng = _engine()
+    pos = _buy(eng)  # limit 100, stop 98 → 1R = 2
+    eng.on_print(_print(T0 + timedelta(seconds=1), "99.9"))
+    eng.on_print(_print(T0 + timedelta(seconds=2), "99"))  # MAE 1 → 0.5R
+    assert pos.mae_r() == Decimal("0.5")
+    assert eng.set_stop("t1:shadow", Decimal("99.5"), reason="trail") is True
+    assert pos.r_px == Decimal("2") and pos.initial_stop == Decimal("98")
+    assert pos.mae_r() == Decimal("0.5")  # unchanged by the trail
+    eng.set_stop("t1:shadow", Decimal("100"), reason="be")  # break-even stop
+    assert pos.r_px == Decimal("2") and pos.mfe_r() is not None  # not None at BE any more
+
+
+def test_queue_model_fills_only_after_the_depth_ahead_traded() -> None:
+    eng = _engine()
+    pos = _buy(eng, queue_ahead=Decimal("0.25"))
+    # sellers hit the bid at our price: 0.1 + 0.1 = 0.2 ≤ 0.25 ahead of us → still queued
+    eng.on_print(_print(T0 + timedelta(seconds=1), "100", side="sell"))
+    eng.on_print(_print(T0 + timedelta(seconds=2), "100", side="sell"))
+    assert pos.state == "pending" and pos.queue_traded == Decimal("0.2")
+    eng.on_print(_print(T0 + timedelta(seconds=3), "100", side="sell"))  # 0.3 > 0.25
+    assert pos.state == "open"
+    # trading THROUGH the limit fills regardless of the queue
+    pos2 = _buy(eng, paper_id="t2:shadow", touch_id="t2", queue_ahead=Decimal("1000"))
+    eng.on_print(_print(T0 + timedelta(seconds=4), "99.9", side="sell"))
+    assert pos2.state == "open"
+
+
+def test_twins_survive_a_restart_via_snapshot_and_restore() -> None:
+    eng = _engine()
+    pos = _buy(eng)
+    eng.on_print(_print(T0 + timedelta(seconds=1), "99.9"))
+    eng.set_stop("t1:shadow", Decimal("99"), reason="trail")
+    _buy(eng, paper_id="t2:shadow", touch_id="t2", limit_px=Decimal("95"), stop=Decimal("93"))
+    snap = eng.snapshot()
+    assert {r["paper_id"] for r in snap} == {"t1:shadow", "t2:shadow"}
+    fresh = _engine()
+    assert fresh.restore(snap) == 2
+    back = fresh.positions["t1:shadow"]
+    assert back.state == "open" and back.entry_px == Decimal("100") and back.stop == Decimal("99")
+    assert back.initial_stop == Decimal("98") and back.r_px == Decimal("2")
+    assert back.stop_moves == [("98", "99")] and back.max_hold == pos.max_hold
+    assert fresh.positions["t2:shadow"].state == "pending"
+    # the restored twin keeps trading on the tape
+    fresh.on_print(_print(T0 + timedelta(minutes=1), "98.9"))
+    assert back.state == "closed" and back.exit_reason == "stop"
+    assert fresh.restore(snap) == 0  # idempotent: nothing duplicated

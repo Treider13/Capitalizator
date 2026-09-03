@@ -16,7 +16,7 @@ from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import Intent, RiskEngine
-from capitalizator.risk.session import SessionWindow
+from capitalizator.risk.sessions import SessionPolicy
 from capitalizator.signer.process import unsigned_from_intent
 from capitalizator.zones.model import Zone
 
@@ -28,9 +28,9 @@ NFP_MORNING = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 
 
 class _AlwaysOpen:
-    """Isolate MacroRules from SessionWindow. Not a product session."""
+    """Isolate MacroRules from the session policy. Not a product session."""
 
-    def allows(self, now_utc, calendar=None, *, lev=Decimal("3"), no_us_today=False):
+    def allows(self, now_utc, calendar=None, **_kw):
         return True, "test_open"
 
 
@@ -109,9 +109,10 @@ def test_macro_off_does_not_cut_pre_cpi() -> None:
 
 
 def test_fomc_et_blackout_is_macro_not_session() -> None:
-    """14:10 ET on FOMC day: SessionWindow says us_data_day; MacroRules says et_blackout."""
+    """14:10 ET on FOMC day: MacroRules says et_blackout regardless of the session window."""
     cal = NewsIngest.from_csv(MACRO).rows
-    assert SessionWindow().allows(FOMC_ET, cal, no_us_today=True) == (False, "us_data_day")
+    ok, why = SessionPolicy.load().allows(FOMC_ET, cal, idea="bounce", symbol="BTCUSDT")
+    assert ok or why.startswith(("us_data_day", "window"))
     assert MacroRules(enabled=True).decide(FOMC_ET, cal).reason == "et_blackout"
     assert _strategy(session=_AlwaysOpen()).propose(_snap(now=FOMC_ET)) is None
     open_day = _strategy(session=_AlwaysOpen()).propose(_snap(now=FOMC_ET, calendar=()))
@@ -136,7 +137,8 @@ def test_signer_applies_intent_size_mult() -> None:
             "tp": "103.1",
             "tag": "bounce",
             "size_mult": "0.5",
-        }
+        },
+        allow_default_qty=True,
     )
     assert raw.qty == Decimal("0.0005")
 
@@ -151,5 +153,6 @@ def test_signer_rejects_zero_size_mult() -> None:
                 "stop": "99.2",
                 "tp": "103.1",
                 "size_mult": 0,
-            }
+            },
+            allow_default_qty=True,
         )

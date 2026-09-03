@@ -8,7 +8,7 @@ from pathlib import Path
 
 from capitalizator.news_macro.ingest import NewsIngest
 from capitalizator.news_macro.rules import PRE_CLASSES, MacroRules
-from capitalizator.risk.session import SessionWindow
+from capitalizator.risk.sessions import SessionPolicy
 
 MACRO = Path(__file__).resolve().parents[2] / "infra" / "calendars" / "macro.csv"
 
@@ -26,9 +26,9 @@ def test_disabled_does_not_cut() -> None:
 def test_day_before_cpi_is_pre_event_when_enabled() -> None:
     news = NewsIngest.from_csv(MACRO)
     when = datetime(2026, 9, 10, 14, 10, tzinfo=UTC)
-    win_ok, win_reason = SessionWindow().allows(when, news.rows)
+    win_ok, win_reason = SessionPolicy.load().allows(when, news.rows, idea="bounce", symbol="BTCUSDT")
     assert win_ok is True
-    assert win_reason == "session"
+    assert win_reason.startswith("window:")
     got = MacroRules(enabled=True).decide(when, news.rows)
     assert got.reason == "pre_event"
     assert got.size_mult == Decimal("0.5")
@@ -74,7 +74,7 @@ def test_cpi_day_et_hour_is_closed() -> None:
 
 
 def test_nfp_is_not_pre_event_or_et_blackout() -> None:
-    """NFP/PCE close the morning via SessionWindow. MacroRules 24h/ET stay CPI+FOMC."""
+    """NFP/PCE close the morning via the session policy. MacroRules 24h/ET stay CPI+FOMC."""
     assert PRE_CLASSES == frozenset({"CPI", "FOMC"})
     news = NewsIngest.from_csv(MACRO)
     rules = MacroRules(enabled=True)

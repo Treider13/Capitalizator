@@ -42,7 +42,7 @@ def _snap(**overrides: object) -> BounceSnapshot:
     return BounceSnapshot(**raw)  # type: ignore[arg-type]
 
 
-def test_wall_is_journal_only_when_flag_on() -> None:
+def test_wall_without_a_print_blocks_when_flag_on() -> None:
     strat = BounceStrategy(
         risk=RiskEngine(),
         halts=Halts(start_equity=Decimal("100000")),
@@ -50,8 +50,18 @@ def test_wall_is_journal_only_when_flag_on() -> None:
         require_card=False,
         check_wall=True,
     )
-    assert isinstance(strat.propose(_snap(wall_no_print=True)), Intent)
+    assert strat.propose(_snap(wall_no_print=True)) is None
     assert isinstance(strat.propose(_snap(wall_no_print=False)), Intent)
+
+
+def test_wall_flag_off_records_only() -> None:
+    strat = BounceStrategy(
+        risk=RiskEngine(),
+        halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
+        require_card=False,
+    )
+    assert isinstance(strat.propose(_snap(wall_no_print=True)), Intent)
 
 
 def test_unknown_wall_is_still_an_intent() -> None:

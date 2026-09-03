@@ -37,7 +37,6 @@ from capitalizator.risk.budget import SessionBudget
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.prs_cut import decide as prs_cut
 from capitalizator.risk.schema import Intent, RiskEngine
-from capitalizator.risk.session import SessionWindow
 from capitalizator.risk.sessions import SessionPolicy
 from capitalizator.screener.filters import Screener
 from capitalizator.screener.universe import load_desk_universe
@@ -91,6 +90,9 @@ class BounceSnapshot:
     n_zlg: int = 0
     btc_regime: str | None = None
     btc_broke: bool = False
+    # 3.15.5 fragility from the desk: OI peak × crowded funding × thin book, per side.
+    fragile_long: bool = False
+    fragile_short: bool = False
     btc_same_side: bool = False
     btc_zone_side: str = "support"
     prs_y: Decimal | None = None
@@ -269,21 +271,23 @@ class BounceStrategy:
         *,
         risk: RiskEngine,
         halts: Halts,
-        session: SessionWindow | SessionPolicy | None = None,
+        session: SessionPolicy | None = None,
         screener: Screener | None = None,
         registry: RegistryConfig | None = None,
         desk_mode: str | None = None,
         budget: SessionBudget | None = None,
         require_card: bool = True,
         check_load_bearing: bool = True,
-        check_tape: bool = True,
-        check_wall: bool = True,
+        # 2.10.1 / 2.10.2: off in isolated F1 fixtures (record only); the desk turns
+        # both on — an eaten level or a silent/pulled wall is not a bounce.
+        check_tape: bool = False,
+        check_wall: bool = False,
         require_jury: bool = False,
         macro: MacroRules | None = None,
     ) -> None:
         self.risk = risk
         self.halts = halts
-        self.session = session or SessionWindow()
+        self.session = session or SessionPolicy.load()
         self.screener = screener or Screener(
             universe=load_desk_universe() if require_jury else None
         )
@@ -302,25 +306,18 @@ class BounceStrategy:
         self.last_aplus_5x_ok: bool | None = None
 
     def _session_allows(self, snap: BounceSnapshot, *, lev: Decimal) -> tuple[bool, str]:
-        """Legacy SessionWindow (time only) or SessionPolicy (time × idea × symbol)."""
-        if isinstance(self.session, SessionPolicy):
-            idea = snap.idea if snap.idea in _IDEAS else "bounce"
-            return self.session.allows(
-                snap.now,
-                snap.calendar,
-                idea="bounce" if idea == _LEGACY_FADE else idea,
-                symbol=snap.symbol,
-                lev=lev,
-                no_us_today=snap.no_us_today,
-                next_funding_at=snap.next_funding_at,
-                rank=snap.universe_rank,
-                screened=snap.screened,
-            )
+        """SessionPolicy: time × idea × symbol × funding × US-data day (one calendar)."""
+        idea = snap.idea if snap.idea in _IDEAS else "bounce"
         return self.session.allows(
             snap.now,
             snap.calendar,
+            idea="bounce" if idea == _LEGACY_FADE else idea,
+            symbol=snap.symbol,
             lev=lev,
             no_us_today=snap.no_us_today,
+            next_funding_at=snap.next_funding_at,
+            rank=snap.universe_rank,
+            screened=snap.screened,
         )
 
     def propose(self, snap: BounceSnapshot) -> Intent | None:
@@ -381,28 +378,26 @@ class BounceStrategy:
             return None
         if not price_in_zone(snap.price, zone):
             return None
-        # F1 isolated tests: check_tape / check_wall record only.
-        # Desk require_jury: 2.10.1 — eaten or silent wall is not a bounce.
-        _ = (self.check_tape, self.check_wall)
         idea = snap.idea if snap.idea in _IDEAS else "bounce"
         if idea == _LEGACY_FADE and self.require_jury:
             # Desk law: a wick through + close inside is a held level (spring).
             # Fading it is a shadow challenger, never a sent order.
             return None
-        if (
-            idea in {"bounce", "spring"}
-            and self.require_jury
-            and (
-                snap.tape_eaten is True
-                or snap.wall_no_print is True
-                or snap.wall_state == "pulled"
-            )
+        # 2.10.1 / 2.10.2: an eaten level or a silent/pulled wall is not a bounce. The
+        # desk turns these checks on (check_tape / check_wall); F1 isolated fixtures
+        # leave them off and only record.
+        if idea in {"bounce", "spring"} and (
+            (self.check_tape and snap.tape_eaten is True)
+            or (self.check_wall and (snap.wall_no_print is True or snap.wall_state == "pulled"))
         ):
             return None
         side = "buy" if zone.side == "support" else "sell"
         if idea in _BREAK_IDEAS:
             # Desk idea_side: break of support is a short, break of resistance a long.
             side = "sell" if zone.side == "support" else "buy"
+        if (side == "buy" and snap.fragile_long) or (side == "sell" and snap.fragile_short):
+            # 3.15.5: no new entries on the crowded side at an OI peak with a thin book.
+            return None
         if snap.symbol != "BTCUSDT" and not self.btc_veto.allow(
             alt_side=side,
             btc_broke=snap.btc_broke,
@@ -551,5 +546,7 @@ class BounceStrategy:
             structural=structural,
             stop_components=dict(smart.components),
         )
-        self.budget.on_intent()
+        # The session budget is spent by the desk *after* sizing and the EV gate
+        # accept (`DeskLoop._size_and_gate`): a proposal the gates refuse must not
+        # burn one of the day's three entries (audit B3).
         return intent

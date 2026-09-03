@@ -1,0 +1,282 @@
+"""Настройки: ключи в secrets/settings.json (0600, маска в UI), источники в knowledge,
+запреты канона (Telegram/скрейпинг), синхронизация bybit.json для сигнера."""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+from pathlib import Path
+
+import pytest
+
+from capitalizator.gateway.keys import load_keys
+from capitalizator.ops.console import ConsoleApp, _api_get
+from capitalizator.ops.i18n_ru import glossary, hint, ru
+from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.settings import Settings, add_source, ensure_default_sources, load_sources
+from capitalizator.ops.settings_page import render_settings_html
+from capitalizator.ops.vault import init_vault
+
+
+def test_secrets_are_0600_masked_and_feed_the_signer(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "v")
+    app = ConsoleApp(vault)
+    with pytest.raises(ValueError, match="ack"):
+        app.settings_post("/api/settings", {"llm.provider": "anthropic"}, ack=False)
+    out = app.settings_post(
+        "/api/settings",
+        {"bybit.api_key": "KEY123456789", "bybit.api_secret": "SECRETXYZ987", "bybit.mode": "testnet",
+         "llm.provider": "anthropic", "llm.model": "claude-sonnet-4-5", "llm.api_key": "sk-ant-abcdef0123456789"},
+        ack=True,
+    )
+    assert set(out["changed"]) >= {"bybit.api_key", "llm.api_key"}
+    path = vault.secrets / "settings.json"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    raw = json.loads(path.read_text())
+    assert raw["bybit.api_secret"] == "SECRETXYZ987"
+    # the console never shows the raw secret
+    view = {f["key"]: f for f in _api_get(vault, "/api/settings", {})["fields"]}
+    assert view["bybit.api_secret"]["display"] not in ("SECRETXYZ987",) and "…" in view["bybit.api_secret"]["display"]
+    assert view["llm.model"]["display"] == "claude-sonnet-4-5"
+    page = render_settings_html(Settings(vault).view(), [])
+    assert "SECRETXYZ987" not in page and "sk-ant-abcdef0123456789" not in page
+    assert "Подтверждаю" in page and "не задано" in page
+    # gateway/keys.py reads the synced bybit.json
+    keys = load_keys(vault, env={})
+    assert keys is not None and keys.api_key == "KEY123456789" and keys.mode == "testnet"
+    # empty value deletes; bad mode refused
+    with pytest.raises(ValueError, match="bybit.mode"):
+        app.settings_post("/api/settings", {"bybit.mode": "mainnet"}, ack=True)
+    app.settings_post("/api/settings", {"bybit.mode": "demo"}, ack=True)
+    assert load_keys(vault, env={}) is not None and load_keys(vault, env={}).mode == "demo"
+    app.settings_post("/api/settings", {"bybit.api_key": "", "bybit.api_secret": ""}, ack=True)
+    assert load_keys(vault, env={}) is None
+    # knowledge records field names only
+    kn = open_knowledge(vault)
+    changed = json.loads(kn.meta("settings_changed"))
+    assert "bybit.api_key" in changed["fields"] and "KEY123456789" not in json.dumps(changed)
+    kn.close()
+    # world-readable file is refused
+    os.chmod(path, 0o644)
+    with pytest.raises(ValueError, match="0600"):
+        Settings(vault).load()
+
+
+def test_sources_respect_the_canon(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "v")
+    kn = open_knowledge(vault)
+    assert ensure_default_sources(kn) >= 5
+    with pytest.raises(ValueError, match="forbidden"):
+        add_source(kn, kind="telegram", value="https://t.me/x", ack=True)
+    with pytest.raises(ValueError, match="telegram"):
+        add_source(kn, kind="rss", value="https://t.me/s/channel", ack=True)
+    with pytest.raises(ValueError, match="https"):
+        add_source(kn, kind="rss", value="http://example.com/feed", ack=True)
+    with pytest.raises(ValueError, match="0x"):
+        add_source(kn, kind="hl_wallet", value="notawallet", ack=True)
+    out = add_source(kn, kind="x_account", value="@someone", label="тест", ack=True)
+    assert out["added"] and out["source"]["value"] == "someone"
+    assert add_source(kn, kind="x_account", value="someone", ack=True)["added"] is False
+    app = ConsoleApp(vault)
+    sid = out["source"]["id"]
+    assert app.settings_post("/api/sources", {"action": "disable", "id": sid}, ack=True)["updated"]
+    assert next(s for s in load_sources(kn) if s["id"] == sid)["enabled"] is False
+    assert app.settings_post("/api/sources", {"action": "remove", "id": sid}, ack=True)["removed"]
+    kn.close()
+
+
+def test_russian_glossary_covers_desk_codes() -> None:
+    assert ru("DEFEND").startswith("ЗАЩИТА") and "(DEFEND)" in ru("DEFEND")
+    assert "снятые заявки" in hint("DEFEND")
+    assert ru("no_such_code") == "no_such_code" and hint("no_such_code") == ""
+    codes = {g["code"] for g in glossary()}
+    for c in ("ACCORD", "SPLIT", "VETO", "SILENCE", "REJECT", "THROUGH", "SPOOF", "ABSORB",
+              "BUILD_LONG", "RANGE", "TRANSITION", "bounce", "spring", "no_gateway", "reconcile_mismatch"):
+        assert c in codes
+    for g in glossary():  # hints describe facts, never advise
+        low = (g["name"] + " " + g["hint"]).lower()
+        assert "купи" not in low and "продай" not in low
+
+
+def test_glossary_endpoint_passes_the_advice_filter() -> None:
+    import json
+
+    from capitalizator.ops.daily_map_report import contains_advice
+
+    assert not contains_advice(json.dumps(glossary(), ensure_ascii=False))
+
+
+def test_intel_is_runnable_as_a_module() -> None:
+    """`python -m capitalizator.intel` must exist (the VPS service restart-looped without it)."""
+    from pathlib import Path as _P
+
+    import capitalizator.intel as pkg
+
+    assert (_P(pkg.__file__).parent / "__main__.py").is_file()
+
+
+def test_settings_html_form_does_not_treat_empty_or_confirm_as_fields(tmp_path: Path) -> None:
+    """The /settings page posts every input in the group. Its own copy says empty
+    means «не менять»; `confirm` is a checkbox, not a setting. Today both go into
+    Settings.update: confirm → 400 unknown settings; empty key/secret → wipe."""
+    import threading
+    from http.client import HTTPConnection
+    from http.server import HTTPServer
+    from urllib.parse import urlencode
+
+    from capitalizator.ops.console import _handler
+
+    vault = init_vault(tmp_path / "v")
+    app = ConsoleApp(vault)
+    app.settings_post(
+        "/api/settings",
+        {"bybit.api_key": "KEY123456789", "bybit.api_secret": "SECRETXYZ987", "bybit.mode": "demo"},
+        ack=True,
+    )
+    assert load_keys(vault, env={}) is not None
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    host, port = server.server_address[:2]
+    try:
+        body = urlencode(
+            {
+                "redirect": "1",
+                "bybit.api_key": "",
+                "bybit.api_secret": "",
+                "bybit.mode": "testnet",
+                "ack_token": app.csrf_token,
+                "confirm": "on",
+            }
+        )
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/settings",
+            body=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": f"http://127.0.0.1:{port}",
+            },
+        )
+        resp = conn.getresponse()
+        status = resp.status
+        location = resp.getheader("Location")
+        err = resp.read().decode()
+        conn.close()
+        assert status == 303, err
+        assert location == "/settings"
+        keys = load_keys(vault, env={})
+        assert keys is not None
+        assert keys.api_key == "KEY123456789"
+        assert keys.mode == "testnet"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_console_writes_need_the_process_token_and_a_loopback_origin(tmp_path: Path) -> None:
+    """Audit A8: a cross-site form from any browser tab used to pass with ack=yes."""
+    import threading
+    from http.client import HTTPConnection
+    from http.server import HTTPServer
+
+    from capitalizator.ops.console import _handler
+
+    vault = init_vault(tmp_path / "v")
+    app = ConsoleApp(vault)
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    host, port = server.server_address[:2]
+
+    def post(path: str, body: str, **headers: str) -> int:
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("POST", path, body=body, headers={"Content-Type": "application/json", **headers})
+        code = conn.getresponse().status
+        conn.close()
+        return code
+
+    try:
+        # the old literal ack is refused
+        assert post("/api/command", '{"kind":"pause_entries","ack_token":"yes"}') == 403
+        # cross-site form: Origin from another host
+        assert post("/api/command", '{"kind":"pause_entries"}', Origin="http://evil.example",
+                    **{"X-Ack-Token": app.csrf_token}) == 403
+        # DNS rebinding: Host is not loopback
+        assert post("/api/command", '{"kind":"pause_entries"}', Host="attacker.tld:8082",
+                    **{"X-Ack-Token": app.csrf_token}) == 403
+        # same-origin with the token works
+        assert post("/api/command", '{"kind":"pause_entries"}', Origin=f"http://127.0.0.1:{port}",
+                    **{"X-Ack-Token": app.csrf_token}) == 200
+        # the token is readable same-origin
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("GET", "/api/csrf")
+        assert json.loads(conn.getresponse().read())["ack_token"] == app.csrf_token
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_ops_page_exposes_every_operator_command_and_posts_through_the_token(tmp_path: Path) -> None:
+    """Everything that used to be API-only is a form on /ops: commands, risk menu,
+    universe apply, sessions and drift facts; a form post lands in the ONE queue."""
+    import threading
+    from http.client import HTTPConnection
+    from http.server import HTTPServer
+    from urllib.parse import urlencode
+
+    from capitalizator.ops.console import _handler, render_ops
+    from capitalizator.ops.knowledge import Knowledge, open_knowledge
+
+    vault = init_vault(tmp_path / "v")
+    kn0 = open_knowledge(vault)
+    # a stranger on the venue → the page offers «Принять позицию» for it
+    kn0.set_meta("exchange_state", json.dumps({"unknown_detail": [
+        {"symbol": "ETHUSDT", "side": "Buy", "size": "1", "avg_price": "4000", "stop_loss": None}
+    ], "unknown_positions": ["ETHUSDT"]}))
+    kn0.close()
+    app = ConsoleApp(vault)
+    page = render_ops(app)
+    for kind in Knowledge.COMMAND_KINDS:
+        assert f"name='kind' value='{kind}'" in page, kind
+    assert "name='symbol' value='ETHUSDT'" in page
+    for key in ("target_risk_pct", "max_lev", "participating_share", "require_ict_marks"):
+        assert f"name='{key}'" in page
+    assert "action='/api/risk'" in page and "Сессии" in page and "Вселенная" in page
+    assert app.csrf_token in page and "name='confirm'" in page
+
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    host, port = server.server_address[:2]
+    try:
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("GET", "/ops")
+        assert conn.getresponse().status == 200
+        conn.close()
+        body = urlencode({"kind": "pause_entries", "reason": "тест", "ack_token": app.csrf_token,
+                          "confirm": "on", "redirect": "1"})
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("POST", "/api/command", body=body,
+                     headers={"Content-Type": "application/x-www-form-urlencoded",
+                              "Origin": f"http://127.0.0.1:{port}"})
+        resp = conn.getresponse()
+        assert resp.status == 303 and resp.getheader("Location", "").startswith("/ops?msg=")
+        conn.close()
+        # the risk form leaves empty fields alone and refuses to lift above phase.yaml
+        body = urlencode({"target_risk_pct": "0.5", "max_lev": "", "ack_token": app.csrf_token,
+                          "confirm": "on", "redirect": "1"})
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("POST", "/api/risk", body=body,
+                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        resp = conn.getresponse()
+        assert resp.status == 303 and "%D0%BE%D1%82%D0%BA%D0%B0%D0%B7" in resp.getheader("Location", "")  # «отказ»
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+    kn = open_knowledge(vault)
+    rows = kn.commands(limit=5)
+    assert [r["kind"] for r in rows] == ["pause_entries"] and rows[0]["status"] == "pending"
+    assert rows[0]["payload"]["reason"] == "тест"
+    kn.close()

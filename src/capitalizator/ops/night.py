@@ -1,74 +1,134 @@
-"""Contour B/C: night replay, overlay, daily report, fragility, card draft.
+"""Contour C night pass: facts of the day, no orders, no LLM verdict, nothing invented.
 
-Does not send. Does not ask an LLM for a verdict. Replay uses recorded
-frames only — missing tape is empty, not invented.
+Once a day (00:30 UTC on the VPS, or by hand) over the desk's own knowledge:
+
+  1. daily map report from the day's journal rows (touches / gestures) → `reports`;
+  2. ShadowDay overlay: shadow / challenger / fade R of the day → `overlay`;
+  3. class calibration snapshot from filled paper trades → meta `calibration_night`;
+  4. the champion-vs-challenger exam, recorded (never promoting by itself) → meta `exam_night`;
+  5. ОКО state summary: passports (n, mature), memory sizes, mirror → meta `oko_night`;
+  6. author weights and intel source health as they stand → meta `intel_night`.
+
+The old version "replayed" a directory and threw the result away, called the
+fragility law with two unknown inputs (always False) and drafted a card of
+`pending` claims. Those were placeholders and are gone.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from capitalizator.card.draft import pending_card
+from capitalizator.champion.calibrate import class_stats, to_meta
+from capitalizator.champion.exam import exam
 from capitalizator.champion.shadow_day import persist_day
-from capitalizator.exec.replay import ReplayEngine
 from capitalizator.memory.registry import Touch
+from capitalizator.memory.revive import load_pending
 from capitalizator.ops.daily_map_report import daily_map_report
 from capitalizator.ops.knowledge import Knowledge
+from capitalizator.ops.settings import load_sources
 from capitalizator.types import require_utc
-from capitalizator.whales.fragility import forbid_new_long
 from capitalizator.zones.model import Zone
 
 
-def run_night(
-    knowledge: Knowledge,
-    *,
-    day: str,
-    now: datetime,
-    replay_dir: Path | None = None,
-    rows: Sequence[tuple[Zone, Touch]] = (),
-    thin_book: bool | None = None,
-    card_id: str = "night-draft",
-) -> dict[str, Any]:
-    require_utc(now)
-    replayed = 0
-    if replay_dir is not None and replay_dir.exists():
-        book = replay_dir / "book.jsonl"
-        if book.is_file() or replay_dir.is_file():
-            ReplayEngine().run(replay_dir)
-            replayed = 1
+def _day_rows(knowledge: Knowledge, day: str) -> list[tuple[Zone, Touch]]:
+    """(zone, touch) pairs of the day whose zone is still stored — for the map report."""
+    zones, touches = load_pending(knowledge)
+    by_id = {z.zone_id: z for z in zones}
+    out: list[tuple[Zone, Touch]] = []
+    for touch in touches:
+        if touch.ts.date().isoformat() != day:
+            continue
+        zone = by_id.get(touch.zone_id)
+        if zone is not None:
+            out.append((zone, touch))
+    return out
+
+
+def _oko_summary(knowledge: Knowledge) -> dict[str, Any]:
+    out: dict[str, Any] = {"passports": {}, "memory": {}, "mirror": None}
+    for key, raw in knowledge.meta_prefix("oko:passport:").items():
+        try:
+            d = json.loads(raw)
+            depth = d.get("depth") or []
+            out["passports"][key.split(":", 2)[2]] = {
+                "n": len(depth),
+                "mature": len(depth) >= 30,
+                "churn_n": len(d.get("churn") or []),
+            }
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+    for key, raw in knowledge.meta_prefix("oko:memory:").items():
+        try:
+            d = json.loads(raw)
+            out["memory"][key.split(":", 2)[2]] = len(d.get("records") or [])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+    mirror = knowledge.meta("oko:mirror")
+    if mirror:
+        try:
+            m = json.loads(mirror)
+            out["mirror"] = {"passed": m.get("passed"), "at": m.get("at")}
+        except json.JSONDecodeError:
+            out["mirror"] = None
+    return out
+
+
+def run_night(knowledge: Knowledge, *, day: str, now: datetime) -> dict[str, Any]:
+    when = require_utc(now)
+    rows = _day_rows(knowledge, day) if knowledge.available() else []
     body = daily_map_report(day=day, rows=rows)
     knowledge.save_report(day=day, kind="map", body=body)
     snap = persist_day(knowledge, day)
-    fragile = forbid_new_long(
-        oi_peak=None,
-        funding_top5=None,
-        thin_book=thin_book,
-    )
-    card = pending_card(
-        thesis=f"night {day}",
-        as_of=now,
-        card_id=card_id,
-        n_claims=5,
-    )
-    return {
+
+    paper = knowledge.paper_trades(limit=200_000)
+    stats = class_stats([p for p in paper if p.get("source") == "shadow"])
+    knowledge.set_meta("calibration_night", to_meta(stats))
+
+    report = exam(paper, now=when)
+    knowledge.set_meta("exam_night", json.dumps(report.to_payload(), sort_keys=True))
+
+    oko = _oko_summary(knowledge)
+    knowledge.set_meta("oko_night", json.dumps({"at": when.isoformat(), **oko}, sort_keys=True))
+
+    weights_raw = knowledge.meta("author_weights")
+    intel = {
+        "at": when.isoformat(),
+        "sources": [
+            {"id": s.get("id"), "enabled": s.get("enabled"), "last_ok": s.get("last_ok"),
+             "last_error": s.get("last_error")}
+            for s in load_sources(knowledge)
+        ],
+        "author_weights": json.loads(weights_raw) if weights_raw else None,
+        "intel_items": len(knowledge.intel_items(limit=1_000_000)),
+    }
+    knowledge.set_meta("intel_night", json.dumps(intel, sort_keys=True, default=str))
+
+    out = {
         "day": day,
-        "replayed": replayed,
+        "n_rows": len(rows),
         "report": body,
-        "fragility": fragile,
-        "card": card,
-        "verdict": "pending",
         "n_shadow": snap.n_would,
         "r_shadow": None if snap.r_shadow is None else format(snap.r_shadow, "f"),
+        "classes": len(stats),
+        "exam_passed": report.passed,
+        "exam_reasons": list(report.reasons),
+        "oko": oko,
+        "intel_sources": len(intel["sources"]),
     }
+    # the console's «Управление» page shows the last night run without the report body
+    knowledge.set_meta(
+        "night_last",
+        json.dumps({**{k: v for k, v in out.items() if k != "report"}, "at": when.isoformat()},
+                   sort_keys=True, default=str),
+    )
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
-    """VPS cron: night replay + daily report + overlay. No LLM verdict. No send."""
+    """VPS: nightly facts of the day. No orders. No LLM verdict."""
     import argparse
-    import json
     from datetime import UTC
     from pathlib import Path
 
@@ -83,20 +143,11 @@ def main(argv: list[str] | None = None) -> int:
     vault = init_vault(Path(args.userdir)) if args.init else load_vault(Path(args.userdir))
     knowledge = open_knowledge(vault)
     try:
-        out = run_night(
-            knowledge,
-            day=args.day,
-            now=datetime.now(tz=UTC),
-        )
+        out = run_night(knowledge, day=args.day, now=datetime.now(tz=UTC))
         print(
             json.dumps(
-                {
-                    "day": out["day"],
-                    "replayed": out["replayed"],
-                    "fragility": out["fragility"],
-                    "verdict": out["verdict"],
-                    "n_claims": len(out["card"].claims),
-                },
+                {k: out[k] for k in ("day", "n_rows", "n_shadow", "r_shadow", "classes",
+                                      "exam_passed", "intel_sources")},
                 ensure_ascii=False,
             )
         )

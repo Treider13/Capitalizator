@@ -37,6 +37,7 @@ from capitalizator.champion.calibrate import (
 )
 from capitalizator.champion.calibrate import lookup as calibration_lookup
 from capitalizator.champion.drift import PageHinkley
+from capitalizator.champion.exam import exam
 from capitalizator.champion.shadow_day import (
     challenger_on,
     challenger_tag,
@@ -89,9 +90,11 @@ from capitalizator.oko.footprint import FINGERPRINT_LEN as OKO_FINGERPRINT_LEN
 from capitalizator.oko.forecast import Sample as OkoSample
 from capitalizator.oko.forecast import class_key as oko_class_key
 from capitalizator.oko.retina import RawWindow
+from capitalizator.oko.shadow import FINGERPRINT_LEN as OKO_SHADOW_FP_LEN
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.phase import breakout_enabled
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
+from capitalizator.ops.uptime import UptimeTracker
 from capitalizator.patterns.bar_quality import atr as atr_of
 from capitalizator.patterns.bar_quality import classify_bar_quality
 from capitalizator.patterns.cav import label as cav_label
@@ -103,6 +106,7 @@ from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.risk.account import Account
 from capitalizator.risk.config import load_risk_config
 from capitalizator.risk.correlation import CorrelationGuard, returns_from_closes
+from capitalizator.risk.drift_cut import target_after_drift
 from capitalizator.risk.schema import Intent
 from capitalizator.risk.session import cpi_day, us_data_known_at
 from capitalizator.risk.sessions import SessionPolicy, WindowState
@@ -110,7 +114,8 @@ from capitalizator.risk.sizing import size_position
 from capitalizator.tape.classify import TapeClassifier
 from capitalizator.tape.ofi import OFI
 from capitalizator.types import MarketEvent, require_utc
-from capitalizator.zlg.gesture import ZLG, BookAdd
+from capitalizator.whales.fragility import forbid_new_long, forbid_new_short
+from capitalizator.zlg.gesture import ZLG, BookAdd, BookPull
 from capitalizator.zones.config import load_registry
 from capitalizator.zones.engine import MAP_VOTE_METHODS
 from capitalizator.zones.map import ZoneMap
@@ -131,6 +136,7 @@ class SymbolState:
     state: State = "IDLE"
     armed_at: datetime | None = None
     adds: list[BookAdd] = field(default_factory=list)
+    pulls: list[BookPull] = field(default_factory=list)
     trades: list[MarketEvent] = field(default_factory=list)
     bars: list[Bar] = field(default_factory=list)
     last_touch: Touch | None = None
@@ -197,6 +203,7 @@ class DeskLoop:
         self.halts = self.account.halts
         self.funding: dict[str, Decimal] = {}
         self._funding_hist: dict[str, list[Decimal]] = {}
+        self._oi_hist: dict[str, list[tuple[datetime, Decimal]]] = {}
         # Settlement clock and 24h turnover per symbol from the ticker stream.
         self.next_funding: dict[str, datetime] = {}
         self.turnover: dict[str, Decimal] = {}
@@ -232,10 +239,14 @@ class DeskLoop:
         self.trail = TrailEngine(mode=self.risk_config.trail_mode)
         self._trails: dict[str, TrailState] = {}
         self._half_sent: set[str] = set()
-        self.entries_paused = False
+        self.entries_paused = knowledge.available() and knowledge.meta("entries_paused") == "1"
         self._instruments_seen: str | None = None
         self._calibration: dict[str, ClassStat] = {}
         self._calibration_at: datetime | None = None
+        self.drift_active = False
+        self._sentiment_at: datetime | None = None
+        self._sentiment_mult = Decimal("1")
+        self._oko_samples_cache: tuple[Any, list[OkoSample], set[str]] | None = None
         self._k_atr_calibrated: dict[str, Decimal] = {}
         self._hold_hours: dict[str, Decimal] = {}
         # window → ISO time the drift was detected; cleared by the operator only.
@@ -249,10 +260,40 @@ class DeskLoop:
         self._live_funding_interval: dict[str, int] = {}
         self._correlation_at: datetime | None = None
         self.oko = OkoEye(working_tf=self.config.working_tf)
+        # F0 tape uptime, tracked from the events this process already streams
+        self.uptime = UptimeTracker.from_json(
+            knowledge.meta("tape_uptime") if knowledge.available() else None
+        )
+        self._uptime_dirty = False
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
+        # Symbols the venue has shown a position or a fill for (venue_flat needs proof
+        # the venue ever held the idea before it may close the twin).
+        self._venue_seen: set[str] = set()
+        self._paper_dirty = False
         if knowledge.available():
             self.oko.load(knowledge)
+            # a corrupt organ is dropped, and the operator sees which one (Учёба block)
+            knowledge.set_meta(
+                "oko_load_errors",
+                json.dumps(self.oko.load_errors, ensure_ascii=False, sort_keys=True),
+            )
+            # Twins (pending/open paper positions) survive a restart: the position the
+            # venue still holds keeps its trail / half / stop logic (audit B3).
+            raw_twins = knowledge.meta("paper_open")
+            if raw_twins:
+                try:
+                    restored = self.paper.restore(json.loads(raw_twins))
+                except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+                    knowledge.set_meta("paper_open_error", str(exc))
+                else:
+                    knowledge.set_meta("paper_restored", str(restored))
+            raw_seen = knowledge.meta("venue_seen")
+            if raw_seen:
+                try:
+                    self._venue_seen = set(json.loads(raw_seen))
+                except (json.JSONDecodeError, TypeError):
+                    self._venue_seen = set()
             for symbol, raw in knowledge.last_prices().items():
                 try:
                     px = Decimal(str(raw))
@@ -282,6 +323,7 @@ class DeskLoop:
         self._last_settle: datetime | None = None
         if knowledge.available():
             self._reload_instruments()
+            self._load_oi_history()
             self._load_drift()
 
     def tick_for(self, symbol: str) -> Decimal:
@@ -347,7 +389,7 @@ class DeskLoop:
 
     def flush_ui(self, now: datetime, *, force: bool = False) -> int:
         """Write last_price / book snapshots in one transaction, at most every 0.5s."""
-        if not self._ui_pending or not self.knowledge.available():
+        if (not self._ui_pending and not self._uptime_dirty) or not self.knowledge.available():
             return 0
         if (
             not force
@@ -355,6 +397,9 @@ class DeskLoop:
             and (now - self._ui_last_flush).total_seconds() < self.UI_FLUSH_S
         ):
             return 0
+        if self._uptime_dirty:
+            self._ui_pending["tape_uptime"] = self.uptime.to_json()
+            self._uptime_dirty = False
         n = len(self._ui_pending)
         self.knowledge.set_meta_many(self._ui_pending)
         self._ui_pending = {}
@@ -443,9 +488,18 @@ class DeskLoop:
             )
             self.flush_ui(when)
 
+    # A "wall" is a notional, not a coin count: 50 BTC ≈ $3M at 60k. The same
+    # threshold in coins made every DOGE level a wall and no SOL level one.
+    WALL_MIN_NOTIONAL = Decimal("3000000")
+
     def _wall_for(self, symbol: str) -> WallWatch:
+        px = self.last_price.get(symbol)
         if symbol not in self.walls:
-            self.walls[symbol] = WallWatch(symbol, min_size=Decimal("50"))
+            size = self.WALL_MIN_NOTIONAL / px if px else Decimal("50")
+            self.walls[symbol] = WallWatch(symbol, min_size=size)
+        elif px:
+            # follow the price: the wall stays a $3M object as the coin moves
+            self.walls[symbol].min_size = self.WALL_MIN_NOTIONAL / px
         return self.walls[symbol]
 
     def _prs_for(self, symbol: str) -> PRS:
@@ -495,11 +549,12 @@ class DeskLoop:
                 st.book = Book(tick_size=str(self.tick_for(st.symbol)))
                 return
             _record_adds_from_diff(st, event.exchange_ts, before, bids, asks)
-            if st.state == "IDLE" and len(st.adds) > 256:
-                # Adds only matter inside the 8s window after a touch; idle symbols
-                # must not accumulate hours of book activity.
+            if st.state == "IDLE" and (len(st.adds) > 256 or len(st.pulls) > 256):
+                # Adds/pulls only matter inside the 8s window after a touch; idle
+                # symbols must not accumulate hours of book activity.
                 keep_from = event.exchange_ts - timedelta(seconds=2 * self.config.zlg_window_s)
                 st.adds = [a for a in st.adds if a.ts >= keep_from]
+                st.pulls = [a for a in st.pulls if a.ts >= keep_from]
             self._remember_book(st, event.exchange_ts)
             self._wall_for(st.symbol).on_book_and_trade(st.book, ts=event.exchange_ts)
             return
@@ -529,6 +584,7 @@ class DeskLoop:
                     st.state = "IDLE"
                     st.last_touch = None
                     st.adds.clear()
+                    st.pulls.clear()
                     st.trades.clear()
                     st.book_pre = None
                     st.oko_window = None
@@ -697,11 +753,16 @@ class DeskLoop:
                 and pos.state == "open"
                 and pos.half_taken
                 and pos.paper_id not in self._half_sent
+                and not pos.labels.get("half_sent")
             ):
                 self._half_sent.add(pos.paper_id)
+                pos.labels["half_sent"] = True  # persisted with the twin: no re-send after restart
+                # Half of what the venue actually holds, not of the paper size.
+                venue_qty = self._venue_qty(pos.symbol)
+                base = venue_qty if venue_qty is not None and venue_qty > 0 else pos.qty
                 self._oms(
                     pos, "half_tp", trade.exchange_ts,
-                    qty=str(pos.qty * HALF), price=str(pos.half_px), reason="+1R half",
+                    qty=str(base * HALF), price=str(pos.half_px), reason="+1R half",
                 )
         try:
             px = Decimal(str(trade.payload["px"]))
@@ -742,7 +803,8 @@ class DeskLoop:
         if self.knowledge.available():
             # Gateway watchdog reads this: a silent desk cancels entry orders (§7 / Н-4).
             self._ui_put("desk_heartbeat", when.isoformat())
-            if self.refused_symbols:
+            if force_flush:
+                # Always written on a clock tick: a symbol that gained facts leaves the banner.
                 self._ui_put("refused_symbols", json.dumps(self.refused_symbols, sort_keys=True))
             if force_flush:
                 out.extend(self._consume_commands(when))
@@ -751,6 +813,11 @@ class DeskLoop:
                 self._refresh_calibration(when)
                 self._refresh_correlation(when)
                 out.extend(self._sync_exchange_state(when))
+            if force_flush:
+                # Twins and venue proof survive a restart (audit B3); once per clock tick,
+                # not per print (audit E).
+                self._ui_put("paper_open", json.dumps(self.paper.snapshot(), sort_keys=True))
+                self._ui_put("venue_seen", json.dumps(sorted(self._venue_seen)))
         self.flush_ui(when, force=force_flush)
         # Settling pending touches walks every touch; once per second of clock is
         # enough (outcomes are 15m closes / 8-tick moves / 6h timeouts).
@@ -836,6 +903,7 @@ class DeskLoop:
                 return
             st.oi.append((when, level))
             st.oi = [row for row in st.oi if row[0] >= keep_from]
+            self._sample_oi_history(st.symbol, when, level)
         elif event.stream == "funding":
             try:
                 rate = Decimal(str(event.payload["funding"]))
@@ -864,8 +932,12 @@ class DeskLoop:
             fingerprint = tuple(int(v) for v in touch.oko_fingerprint.split("-"))
         except ValueError:
             return False
+        if len(fingerprint) == OKO_SHADOW_FP_LEN:
+            # Rows stamped before the Footprint organ carry 10 ints: the Footprint
+            # axes are padded with the neutral bucket, the same way the memory
+            # migrates its persisted antigens.
+            fingerprint = fingerprint + (0,) * (OKO_FINGERPRINT_LEN - OKO_SHADOW_FP_LEN)
         if len(fingerprint) != OKO_FINGERPRINT_LEN:
-            # Rows stamped before the Footprint organ carry 10 ints. Not learnable.
             return False
         # Antigen carries the touch time, not the tick that resolved it: replay-stable.
         return self.oko.learn(
@@ -896,7 +968,7 @@ class DeskLoop:
             zone=zone,
             t0=touch.ts,
             window_s=window_s,
-            tick_size=self.tick_size,
+            tick_size=self.tick_for(st.symbol),
             delta_ticks=self.config.prs_delta_ticks,
             book_pre=pre,
             book_path=path,
@@ -915,10 +987,18 @@ class DeskLoop:
         )
 
     def _oko_samples(self) -> list[OkoSample]:
-        """Resolved touches as Forecast samples. Journal first, then unsaved rows."""
+        """Resolved touches as Forecast samples. Journal first, then unsaved rows.
+        The journal part is cached and rebuilt only when the journal grew (audit E:
+        a full journal scan on every jury)."""
+        rows = self.knowledge.journal_rows()
+        key = (len(rows), rows[-1].get("touch_id") if rows else None)
+        if self._oko_samples_cache is not None and self._oko_samples_cache[0] == key:
+            out = list(self._oko_samples_cache[1])
+            seen = set(self._oko_samples_cache[2])
+            return self._oko_samples_tail(out, seen)
         out: list[OkoSample] = []
         seen: set[str] = set()
-        for row in self.knowledge.journal_rows():
+        for row in rows:
             touch_id = str(row.get("touch_id") or "")
             outcome = row.get("outcome")
             idea = row.get("idea")
@@ -931,15 +1011,34 @@ class DeskLoop:
             out.append(
                 OkoSample(
                     symbol=str(symbol),
+                    # The same six axes `judge` uses — footprint included. A key built
+                    # without it never matched the judge's key and n_class stayed 0
+                    # forever (audit B7).
                     class_key=oko_class_key(
                         idea=str(idea),
                         cav=row.get("cav_label"),
                         zlg=row.get("zlg_label"),
                         regime=row.get("oko_regime"),
+                        footprint=row.get("oko_footprint"),
                     ),
                     outcome=str(outcome),
                 )
             )
+        self._oko_samples_cache = (key, list(out), set(seen))
+        return self._oko_samples_tail(out, seen)
+
+    def _queue_ahead(self, symbol: str, side: str, px: Decimal) -> Decimal | None:
+        """Resting size at our limit price on our side of the book at submit: the queue in
+        front of a paper order. None when the book has no such level (the fill model
+        then falls back to "first print at the level")."""
+        st = self.symbols.get(symbol)
+        if st is None or not st.book.ready:
+            return None
+        levels = st.book.levels("bid" if side == "buy" else "ask")
+        size = levels.get(px)
+        return Decimal(str(size)) if size is not None else None
+
+    def _oko_samples_tail(self, out: list[OkoSample], seen: set[str]) -> list[OkoSample]:
         for touch in self.registry.touches:
             if touch.touch_id in seen or touch.outcome == "pending" or touch.idea not in _IDEAS:
                 continue
@@ -954,6 +1053,7 @@ class DeskLoop:
                         cav=touch.cav_label,
                         zlg=touch.gesture,
                         regime=touch.oko_regime,
+                        footprint=touch.oko_footprint,
                     ),
                     outcome=touch.outcome,
                 )
@@ -990,6 +1090,17 @@ class DeskLoop:
         opp_best = ask if hit_side == "bid" else bid
         if opp_best is None:
             opp_best = touch.trade_px
+        t_end = touch.ts + timedelta(seconds=self.config.zlg_window_s)
+        prints = [
+            (
+                require_utc(t.exchange_ts),
+                Decimal(str(t.payload["px"])),
+                Decimal(str(t.payload.get("qty") or "0")),
+            )
+            for t in st.trades
+            if t.stream == "trades" and "px" in t.payload
+            and touch.ts <= require_utc(t.exchange_ts) <= t_end
+        ]
         result = self.zlg.classify(
             touch,
             st.adds,
@@ -999,6 +1110,8 @@ class DeskLoop:
             opp_best=opp_best,
             book_ready=book.ready,
             tick=self.tick_for(st.symbol),
+            book_pulls=st.pulls,
+            prints=prints,
         )
         self.registry.fill_gesture(gesture=result.gesture, touch_id=touch.touch_id)
         self.registry._patch(
@@ -1077,201 +1190,6 @@ class DeskLoop:
         ):
             return "b_marks"
         return None
-
-    def _b_gate(
-        self,
-        st: SymbolState,
-        touch: Touch,
-        zone: Zone,
-        card: CardLive | None,
-    ) -> list[dict[str, Any]] | None:
-        """LEGACY (pre D-18): veto / hold / red marks stopped ZLG and CAV.
-
-        The desk no longer calls this — it starved the 24/7 shadow of labels.
-        Kept for `ops/contour.observe` parity and old tests; not deleted.
-        """
-        if card is None:
-            return None
-        if card.bearing_verdict == "veto":
-            return self._b_veto_touch(st, touch, zone, card)
-        if card.bearing_verdict == "hold":
-            return self._b_hold_touch(st, touch, zone, card)
-        if card.bearing_verdict in {"propose", "cut_size"} and not card.context_ok():
-            return self._b_split_touch(st, touch, zone, card)
-        return None
-
-    def _b_veto_touch(
-        self,
-        st: SymbolState,
-        touch: Touch,
-        zone: Zone,
-        card: CardLive,
-    ) -> list[dict[str, Any]]:
-        self.registry._patch(
-            touch_id=touch.touch_id,
-            overwrite=True,
-            bearing_verdict="veto",
-            jury="VETO",
-            skip_reason="b_veto",
-            card_id=card.card_id,
-            fib_trend=card.fib_zone,
-            fvg_present=card.fvg_status == "filled",
-            sweep_wick=card.sweep_status == "done",
-            gex_bg=card.gex_bg,
-            poc=card.volume.poc,
-            vah=card.volume.vah,
-            val=card.volume.val,
-            ob_status=card.ob_status,
-            bos_status=card.bos_status,
-        )
-        action = self.manager.on_refute(load_bearing=True, verdict="veto")
-        line = touch_line(symbol=st.symbol, card=card, jury="VETO")
-        self._write_b_journal(touch, zone, card, jury="VETO", skip="b_veto", line=line)
-        st.state = "IDLE"
-        st.last_touch = None
-        return [
-            {
-                "event": "jury",
-                "touch_id": touch.touch_id,
-                "jury": "VETO",
-                "sent": False,
-                "touch_line": line,
-                "action": None if action is None else action.action,
-            }
-        ]
-
-    def _b_hold_touch(
-        self,
-        st: SymbolState,
-        touch: Touch,
-        zone: Zone,
-        card: CardLive,
-    ) -> list[dict[str, Any]]:
-        self.registry._patch(
-            touch_id=touch.touch_id,
-            overwrite=True,
-            bearing_verdict="hold",
-            jury="SILENCE",
-            skip_reason="b_hold",
-            card_id=card.card_id,
-            fib_trend=card.fib_zone,
-            fvg_present=card.fvg_status == "filled",
-            sweep_wick=card.sweep_status == "done",
-            gex_bg=card.gex_bg,
-            ob_status=card.ob_status,
-            bos_status=card.bos_status,
-        )
-        line = touch_line(symbol=st.symbol, card=card, jury="SILENCE")
-        self._write_b_journal(touch, zone, card, jury="SILENCE", skip="b_hold", line=line)
-        st.state = "IDLE"
-        st.last_touch = None
-        return [
-            {
-                "event": "jury",
-                "touch_id": touch.touch_id,
-                "jury": "SILENCE",
-                "sent": False,
-                "touch_line": line,
-            }
-        ]
-
-    def _b_split_touch(
-        self,
-        st: SymbolState,
-        touch: Touch,
-        zone: Zone,
-        card: CardLive,
-    ) -> list[dict[str, Any]]:
-        self.registry._patch(
-            touch_id=touch.touch_id,
-            overwrite=True,
-            bearing_verdict=card.card_voice(),
-            jury="SPLIT",
-            skip_reason="b_marks",
-            card_id=card.card_id,
-            fib_trend=card.fib_zone,
-            fvg_present=card.fvg_status == "filled",
-            sweep_wick=card.sweep_status == "done",
-            gex_bg=card.gex_bg,
-            ob_status=card.ob_status,
-            bos_status=card.bos_status,
-        )
-        line = touch_line(symbol=st.symbol, card=card, jury="SPLIT")
-        self._write_b_journal(touch, zone, card, jury="SPLIT", skip="b_marks", line=line)
-        st.state = "IDLE"
-        st.last_touch = None
-        return [
-            {
-                "event": "jury",
-                "touch_id": touch.touch_id,
-                "jury": "SPLIT",
-                "sent": False,
-                "touch_line": line,
-            }
-        ]
-
-    def _write_b_journal(
-        self,
-        touch: Touch,
-        zone: Zone,
-        card: CardLive,
-        *,
-        jury: str,
-        skip: str,
-        line: str,
-    ) -> None:
-        journal = empty_journal()
-        journal.update(
-            {
-                "zone_id": touch.zone_id,
-                "touch_ts": touch.ts.isoformat(),
-                "trade_px": str(touch.trade_px),
-                "trade_qty": str(touch.trade_qty),
-                "session_name": self.policy.clock_name(touch.ts),
-                "session_hour_utc": touch.ts.hour,
-                "poc": card.volume.poc,
-                "vah": card.volume.vah,
-                "val": card.volume.val,
-                "fib_trend": card.fib_zone,
-                "fib_in_05_1": card.fib_zone in {"OTE", "in_05_1"},
-                "fib_in_ote_gold": card.fib_zone == "OTE",
-                "rsi_tf": "htf",
-                "rsi_value": card.rsi_htf,
-                "fvg_present": card.fvg_status == "filled",
-                "sweep_wick": card.sweep_status == "done",
-                "gex_bg": card.gex_bg,
-                "cav_label": touch.cav_label,
-                "zlg_label": touch.gesture,
-                "jury": jury,
-                "bearing_verdict": card.card_voice(),
-                "card_id": card.card_id,
-                "skip_reason": skip,
-                "shadow_would": False,
-                "challenger_would": False,
-                "challenger_tag": None,
-                # B gate closes before the ОКО verdict; the window facts stay.
-                "oko_label": touch.oko_label,
-                "oko_book_trust": touch.oko_book_trust,
-                "oko_tape_trust": touch.oko_tape_trust,
-                "oko_fingerprint": touch.oko_fingerprint,
-                "oko_footprint": touch.oko_footprint,
-                "oko_footprint_side": touch.oko_footprint_side,
-            }
-        )
-        self.knowledge.put_journal_touch(
-            touch.touch_id,
-            {
-                **journal,
-                "touch_id": touch.touch_id,
-                "symbol": zone.symbol,
-                "touch_line": line,
-                "ob_status": card.ob_status,
-                "bos_status": card.bos_status,
-            },
-        )
-        day = row_day_utc(journal)
-        if day:
-            persist_day(self.knowledge, day)
 
     def _eval_cav_and_jury(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
         touch = st.last_touch
@@ -1685,6 +1603,8 @@ class DeskLoop:
             "challenger_would": payload_row["challenger_would"],
         }
         self.shadow_writes.append(self.shadow.write(payload))
+        if len(self.shadow_writes) > self.SHADOW_WRITES_MAX:
+            del self.shadow_writes[: len(self.shadow_writes) - self.SHADOW_WRITES_MAX]
         # W3: shadow and fade ideas trade on paper 24/7, whatever the user mode.
         paper_ids: dict[str, str] = {}
         if shadow_would:
@@ -1701,6 +1621,16 @@ class DeskLoop:
             )
             if pid:
                 paper_ids["fade"] = pid
+        # Contour C challenger: the same idea WITHOUT the jury's accord (TVH only, no
+        # VETO). It never leaves paper; it exists so the exam and the class calibration
+        # see every class the champion refuses, not only the ones it takes.
+        if has_tvh and not shadow_would and jury != "VETO" and b_gate is None:
+            pid = self._submit_paper(
+                row, zone, known_zones, idea=idea, side=idea_side, wick_extreme=wick_extreme,
+                now=closed_at, source="challenger", tag=idea_shadow_tag(idea),
+            )
+            if pid:
+                paper_ids["challenger"] = pid
         if paper_ids:
             payload_row["paper_ids"] = paper_ids
             self.knowledge.put_journal_touch(row.touch_id, payload_row)
@@ -1717,6 +1647,8 @@ class DeskLoop:
             bid, ask = book.best()
             mid_px = (bid + ask) / 2 if bid is not None and ask is not None else None
             if spr is not None and mid_px is not None and mid_px > 0:
+                fragility = self._fragility(st)
+                payload_row["fragility"] = fragility
                 snap = BounceSnapshot(
                     now=closed_at,
                     symbol=st.symbol,
@@ -1773,11 +1705,11 @@ class DeskLoop:
                     allow_break=breakout_enabled(),
                     card_bearing_verdict=row.bearing_verdict,
                     b_verdict=None if card is None else card.bearing_verdict,
-                    # Window multiplier and the card's macro multiplier: the smaller
-                    # wins (the strategy takes min with MacroRules / B / ОКО as well).
+                    # Window, card macro and monthly sentiment: the smallest wins.
                     macro_multiplier=min(
                         Decimal("1") if card is None else card.macro_multiplier,
                         self.window_size_mult(window),
+                        self._sentiment_multiplier(closed_at),
                     ),
                     b_marks_ok=(
                         True
@@ -1794,6 +1726,8 @@ class DeskLoop:
                     spot_acked=False if card is None else self.spot.acked(st.symbol),
                     oko_voice=oko.voice,
                     oko_size_mult=oko.size_mult,
+                    fragile_long=bool(fragility["forbid_long"]),
+                    fragile_short=bool(fragility["forbid_short"]),
                 )
                 self.strategy.budget = self.account.budget(
                     closed_at, key=window.budget_key, max_n=window.budget
@@ -1814,6 +1748,10 @@ class DeskLoop:
                             sized.model_dump(mode="json"),
                             created_ts=row.ts.isoformat(),
                         )
+                        # Budget is spent here, on an intent that passed every gate.
+                        self.account.budget(
+                            closed_at, key=window.budget_key, max_n=window.budget
+                        ).on_intent()
                         self.account.on_open(sized, now=closed_at, intent_id=intent_id)
                         # Demo accounting runs on paper until exchange fills replace it.
                         demo_pid = f"{row.touch_id}:demo"
@@ -1835,6 +1773,7 @@ class DeskLoop:
                             ),
                             source="demo",
                             tag=sized.tag,
+                            queue_ahead=self._queue_ahead(st.symbol, sized.side, sized.entry),
                             funding_interval_min=self._instrument_for(st.symbol).funding_interval_min,
                             structural=sized.structural,
                             stop_components=dict(sized.stop_components or {}),
@@ -1860,46 +1799,97 @@ class DeskLoop:
         return [out_event]
 
     # --- operator commands / config hot reload (D-37, D-12) -------------------------
-    def _consume_commands(self, now: datetime) -> list[dict[str, Any]]:
-        # One transaction takes the queue and empties it: a console append that lands
-        # between "read" and "clear" is neither lost nor executed twice.
-        queue = self.knowledge.pop_commands()
-        if not queue:
-            return []
-        out: list[dict[str, Any]] = []
-        for cmd in queue:
-            kind = str(cmd.get("kind") or "")
-            symbol = cmd.get("symbol")
-            if kind == "flatten":
-                targets = list(self.symbols) if symbol in {None, "ALL"} else [str(symbol)]
-                for sym in targets:
-                    out.extend(
-                        self.on_event(
-                            {
-                                "kind": "flatten",
-                                "symbol": sym,
-                                "now": now,
-                                "reason": cmd.get("reason"),
-                            }
-                        )
+    DESK_COMMANDS = (
+        "flatten",
+        "release_halts",
+        "pause_entries",
+        "resume_entries",
+        "promote",
+        "drift_release",
+    )
+    # Bounded in-memory tails for a 24/7 process (audit §5): the journal in SQLite is
+    # the record; these are working windows.
+    SHADOW_WRITES_MAX = 2000
+    WIDTH_HISTORY_MAX = 5000
+
+    def _run_command(
+        self, kind: str, payload: Mapping[str, Any], symbol: Any, now: datetime
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Execute one operator command. Returns (result, events)."""
+        if kind == "flatten":
+            known = set(self.symbols) | set(self.account.open) | set(self.paper.open_symbols())
+            targets = sorted(known) if symbol in {None, "ALL"} else [str(symbol)]
+            events: list[dict[str, Any]] = []
+            for sym in targets:
+                events.extend(
+                    self.on_event(
+                        {
+                            "kind": "flatten",
+                            "symbol": sym,
+                            "now": now,
+                            "reason": payload.get("reason"),
+                        }
                     )
-            elif kind == "release_halts":
-                assert self.account.halts is not None
-                self.account.halts.release(ack=True)
-                self.account._persist()
-                out.append({"event": "release_halts"})
-            elif kind == "pause_entries":
-                self.entries_paused = True
-                out.append({"event": "pause_entries"})
-            elif kind == "resume_entries":
-                self.entries_paused = False
-                out.append({"event": "resume_entries"})
-            elif kind == "drift_release":
-                target = cmd.get("symbol")
-                window = None if target in (None, "", "ALL") else str(target)
-                cleared = self.release_drift(window)
-                out.append({"event": "drift_release", "windows": cleared})
+                )
+            return {"targets": targets, "events": len(events)}, events
+        if kind == "release_halts":
+            assert self.account.halts is not None
+            self.account.halts.release(ack=True)
+            self.account.persist()
+            return {"released": True}, [{"event": "release_halts"}]
+        if kind == "pause_entries":
+            self.entries_paused = True
+            self.knowledge.set_meta("entries_paused", "1")
+            return {"paused": True}, [{"event": "pause_entries"}]
+        if kind == "resume_entries":
+            self.entries_paused = False
+            self.knowledge.set_meta("entries_paused", "0")
+            return {"paused": False}, [{"event": "resume_entries"}]
+        if kind == "drift_release":
+            window = None if symbol in {None, "", "ALL"} else str(symbol)
+            cleared = self.release_drift(window)
+            return {"windows": cleared}, [{"event": "drift_release", "windows": cleared}]
+        # promote — run the exam now; flip the label only on a pass
+        result = self._promote(payload, now)
+        return result, [{"event": "promote", **{k: result[k] for k in ("passed",)}}]
+
+    def _consume_commands(self, now: datetime) -> list[dict[str, Any]]:
+        """Operator commands are claimed atomically from the one `desk_commands` table
+        (no read-modify-write on meta): a command posted between two desk ticks can
+        neither be lost nor run twice; its result is written back for the console."""
+        out: list[dict[str, Any]] = []
+        for cmd in self.knowledge.claim_commands(self.DESK_COMMANDS):
+            kind = cmd["kind"]
+            payload = cmd["payload"]
+            symbol = payload.get("symbol")
+            try:
+                result, events = self._run_command(kind, payload, symbol, now)
+                out.extend(events)
+                self.knowledge.mark_command(cmd["id"], "done", result)
+            except Exception as exc:  # one bad command must not stop the others
+                self.knowledge.mark_command(cmd["id"], "failed", {"error": str(exc)})
+                out.append({"event": "command_failed", "kind": kind, "error": str(exc)})
         return out
+
+    def _promote(self, payload: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+        """Operator asked for the exam. The report is recorded (meta `exam_last`); a pass
+        records the winner as `champion_candidate`. The actual switch of what the desk
+        sends is a code-reviewed change (the challenger reading becomes the sendable
+        idea) — never an automatic flip in the fight (ARCHITECTURE-AZ §6.1 п.6)."""
+        rows = self.knowledge.paper_trades(limit=100_000)
+        report = exam(rows, now=now)
+        body = report.to_payload()
+        body["requested_by"] = payload.get("reason") or "operator"
+        self.knowledge.set_meta("exam_last", json.dumps(body, sort_keys=True))
+        if report.passed:
+            champion = {
+                "since": now.isoformat(),
+                "from": "shadow",
+                "to": "challenger",
+                "report": body,
+            }
+            self.knowledge.set_meta("champion_candidate", json.dumps(champion, sort_keys=True))
+        return body
 
     # --- exchange truth → account (live/demo) --------------------------------------
     EXCHANGE_STATE_MAX_AGE_S = 300.0
@@ -1917,12 +1907,14 @@ class DeskLoop:
         if self.user_mode not in {"demo", "live"}:
             return []
         out: list[dict[str, Any]] = []
-        # 1) intents the signer marked failed → free the idea
+        # 1) intents the venue refused (or the signer could not send at all) free the
+        #    idea. `unknown` (transport failed after the order left) and `no_gateway`
+        #    (no key yet) keep it: the venue may hold the order / the row is re-sent.
         for symbol, idea in list(self.account.open.items()):
             if idea.intent_id is None:
                 continue
             status = self.knowledge.intent_status(idea.intent_id)
-            if status in {"failed", "skipped"}:
+            if status in {"failed", "skipped", "rejected"}:
                 px = self.last_price.get(symbol, idea.entry)
                 self.paper.flatten(symbol, px, now, reason=f"intent_{status}")
                 if symbol in self.account.open:  # twin may not have existed
@@ -1954,10 +1946,21 @@ class DeskLoop:
             ):
                 self.account.set_equity(eq, source=f"exchange:{self.user_mode}", now=now)
                 out.append({"event": "equity", "equity": str(eq), "source": self.user_mode})
-        # 3) venue flat while our filled twin is open → the venue closed it
+        # 3) venue flat while our filled twin is open → the venue closed it.
+        #    Only after the venue has *shown* the position (or a fill) for this idea:
+        #    a twin the tape "filled" while our real limit is still queued is not
+        #    closed (audit B3: that flatten used to cancel the live entry).
         venue_open = {str(p.get("symbol")) for p in state.get("positions") or [] if p.get("symbol")}
+        for symbol in venue_open:
+            self._venue_seen.add(symbol)
+        for fill in state.get("fills") or []:
+            sym = str(fill.get("symbol") or "")
+            if sym:
+                self._venue_seen.add(sym)
         for symbol in list(self.account.open):
             if symbol in venue_open:
+                continue
+            if symbol not in self._venue_seen:
                 continue
             twins = [p for p in self.paper.open_for(symbol, source="demo") if p.state == "open"]
             for twin in twins:
@@ -1968,6 +1971,7 @@ class DeskLoop:
                 px = self.last_price.get(symbol, twin.entry_px or twin.limit_px)
                 self.paper.flatten(symbol, px, now, reason="venue_flat")
                 out.append({"event": "venue_flat", "symbol": symbol})
+            self._venue_seen.discard(symbol)
         return out
 
     CALIBRATION_REFRESH_S = 600.0
@@ -2027,6 +2031,80 @@ class DeskLoop:
             self._calibration, breakeven=self.BREAKEVEN_2R_MAKER, closed_windows=closed
         )
         self._ui_put("eligible_windows", json.dumps(flagged, sort_keys=True))
+        self._refresh_drift(rows, now)
+
+    # --- drift (4.19.2 / contour C): Page-Hinkley on the champion's error series --------
+    DRIFT_WINDOW = 200
+    CHAMPION_DRIFT_MIN_N = 40
+
+    def _refresh_drift(self, rows: Sequence[Mapping[str, Any]], now: datetime) -> None:
+        """Errors = filled shadow trades with r_net ≤ 0, in close order. A detected
+        increase in the error rate is drift: the live target risk is cut to 0.5%
+        (`risk/drift_cut`) until the window clears. Never raises risk."""
+        closed = [
+            r for r in rows
+            if r.get("entry_px") not in (None, "") and r.get("r_net") not in (None, "")
+            and r.get("closed_at")
+        ]
+        closed.sort(key=lambda r: str(r["closed_at"]))
+        errors = [1 if Decimal(str(r["r_net"])) <= 0 else 0 for r in closed[-self.DRIFT_WINDOW:]]
+        was = self.drift_active
+        if len(errors) < self.CHAMPION_DRIFT_MIN_N:
+            self.drift_active = False
+            result = None
+        else:
+            result = PageHinkley().run(errors)
+            self.drift_active = result.drift
+        if self.knowledge.available():
+            self._ui_put(
+                "drift",
+                json.dumps(
+                    {
+                        "at": now.isoformat(),
+                        "n": len(errors),
+                        "drift": self.drift_active,
+                        "t": None if result is None else result.t,
+                        "target_risk": str(self.effective_target_risk()),
+                    }
+                ),
+            )
+        if was != self.drift_active and self.knowledge.available():
+            self.knowledge.set_meta(
+                "drift_last_change",
+                json.dumps({"at": now.isoformat(), "drift": self.drift_active}),
+            )
+
+    # --- sentiment (2.12.5): monthly extreme greed de-risks; nothing else ----------------
+    SENTIMENT_GREED = 80
+    SENTIMENT_MULT = Decimal("0.7")
+    SENTIMENT_REFRESH_S = 600.0
+
+    def _sentiment_multiplier(self, now: datetime) -> Decimal:
+        """×0.7 when the 30-day mean Fear & Greed (intel `fng` items) is ≥ 80. Hourly
+        readings never decide anything ("buy fear" is refused by design)."""
+        if (
+            self._sentiment_at is not None
+            and (now - self._sentiment_at).total_seconds() < self.SENTIMENT_REFRESH_S
+        ):
+            return self._sentiment_mult
+        self._sentiment_at = now
+        self._sentiment_mult = Decimal("1")
+        if not self.knowledge.available():
+            return self._sentiment_mult
+        since = (now - timedelta(days=30)).isoformat()
+        values: list[float] = []
+        for item in self.knowledge.intel_items(kind="fng", since=since, limit=100):
+            try:
+                values.append(float(item.get("value")))
+            except (TypeError, ValueError):
+                continue
+        # a month is ≥ 20 daily prints; fewer is not a monthly window
+        if len(values) >= 20 and sum(values) / len(values) >= self.SENTIMENT_GREED:
+            self._sentiment_mult = self.SENTIMENT_MULT
+        return self._sentiment_mult
+
+    def effective_target_risk(self) -> Decimal:
+        return target_after_drift(drift=self.drift_active, base=self.risk_config.target_risk_pct)
 
     def _reload_instruments(self) -> None:
         """Signer refreshed instruments-info from the venue → registry rows (D-04)."""
@@ -2140,7 +2218,7 @@ class DeskLoop:
             entry=row.trade_px,
             stop=stop,
             lev=lev,
-            target_risk=cfg.target_risk_pct,
+            target_risk=self.effective_target_risk(),
             deposit_share=cfg.deposit_share_per_trade,
             qty_step=inst.qty_step,
             min_qty=inst.min_qty,
@@ -2167,6 +2245,7 @@ class DeskLoop:
             ),
             source=source,  # type: ignore[arg-type]
             tag=tag,
+            queue_ahead=self._queue_ahead(row_symbol, side, row.trade_px),
             funding_interval_min=inst.funding_interval_min,
             structural=structural,
             stop_components=smart.components,
@@ -2256,6 +2335,90 @@ class DeskLoop:
     # own observed |rate| once ≥ 20 prints exist; before that no rate is extreme
     # (unknown is not a veto). Provenance: data, self-calibrating.
     FUNDING_MIN_N = 20
+
+    # --- fragility (3.15.5): OI peak × crowded funding × thin book -----------------
+    OI_HIST_STEP = timedelta(minutes=5)
+    OI_HIST_KEEP = timedelta(days=30)
+    FRAGILITY_THIN_Z = Decimal("-1")
+
+    def _sample_oi_history(self, symbol: str, when: datetime, level: Decimal) -> None:
+        """One OI sample per 5 minutes per symbol, 30 days, persisted (meta oi_hist:*)."""
+        hist = self._oi_hist.setdefault(symbol, [])
+        if hist and when - hist[-1][0] < self.OI_HIST_STEP:
+            return
+        hist.append((when, level))
+        cutoff = when - self.OI_HIST_KEEP
+        while hist and hist[0][0] < cutoff:
+            hist.pop(0)
+        if self.knowledge.available():
+            self._ui_put(
+                f"oi_hist:{symbol}",
+                json.dumps([[ts.isoformat(), str(lv)] for ts, lv in hist]),
+            )
+
+    def _load_oi_history(self) -> None:
+        for key, raw in self.knowledge.meta_prefix("oi_hist:").items():
+            symbol = key.split(":", 1)[1]
+            try:
+                rows = json.loads(raw)
+                hist = [(datetime.fromisoformat(ts), Decimal(str(lv))) for ts, lv in rows]
+            except (json.JSONDecodeError, ValueError, TypeError, ArithmeticError):
+                continue
+            # Samples from before the openInterest/openInterestValue split were USD
+            # figures mixed into a contracts series: drop anything 50× off the median.
+            if len(hist) >= 3:
+                med = sorted(lv for _t, lv in hist)[len(hist) // 2]
+                hist = [(t, lv) for t, lv in hist if med > 0 and lv <= med * 50 and lv * 50 >= med]
+            self._oi_hist[symbol] = hist
+
+    def _oi_peak(self, symbol: str) -> bool | None:
+        hist = self._oi_hist.get(symbol) or []
+        if len(hist) < self.FUNDING_MIN_N:
+            return None
+        levels = sorted(lv for _ts, lv in hist)
+        p95 = levels[min(len(levels) - 1, int(0.95 * (len(levels) - 1)))]
+        return hist[-1][1] >= p95
+
+    def _funding_tail(self, symbol: str) -> tuple[bool | None, bool | None]:
+        """(top-5% positive → longs pay, crowd long; bottom-5% → shorts pay, crowd short)."""
+        rate = self.funding.get(symbol)
+        hist = self._funding_hist.get(symbol) or []
+        if rate is None or len(hist) < self.FUNDING_MIN_N:
+            return None, None
+        xs = sorted(hist)
+        p95 = xs[min(len(xs) - 1, int(0.95 * (len(xs) - 1)))]
+        p5 = xs[max(0, int(0.05 * (len(xs) - 1)))]
+        return (rate >= p95 and rate > 0), (rate <= p5 and rate < 0)
+
+    def _thin_book(self, st: SymbolState) -> bool | None:
+        """Depth near the touch against the ОКО Passport norm (robust z < −1 = thin)."""
+        book = st.book_pre or st.book
+        if not book.ready or st.last_touch is None:
+            return None
+        passport = self.oko.passport_for(st.symbol)
+        px = str(st.last_touch.trade_px)
+        depth = book.depth_near("bid", px, self.config.prs_delta_ticks) + book.depth_near(
+            "ask", px, self.config.prs_delta_ticks
+        )
+        z = passport.depth.z(depth)
+        if z is None:
+            return None
+        return z < self.FRAGILITY_THIN_Z
+
+    def _fragility(self, st: SymbolState) -> dict[str, Any]:
+        oi_peak = self._oi_peak(st.symbol)
+        top5, bottom5 = self._funding_tail(st.symbol)
+        thin = self._thin_book(st)
+        return {
+            "oi_peak": oi_peak,
+            "funding_top5": top5,
+            "funding_bottom5": bottom5,
+            "thin_book": thin,
+            "forbid_long": forbid_new_long(oi_peak=oi_peak, funding_top5=top5, thin_book=thin),
+            "forbid_short": forbid_new_short(
+                oi_peak=oi_peak, funding_bottom5=bottom5, thin_book=thin
+            ),
+        }
 
     def _funding_extreme(self, symbol: str) -> bool:
         rate = self.funding.get(symbol)
@@ -2481,9 +2644,34 @@ class DeskLoop:
         stt = self._trails.get(pos.paper_id)
         if stt is None:
             assert pos.entry_px is not None
-            stt = TrailState(side=pos.side, entry=pos.entry_px, stop=pos.stop, tick=pos.tick)
+            # After a restart the twin carries its trailed stop and its initial stop:
+            # 1R must come from the initial one, the phase from the half flag.
+            stt = TrailState(
+                side=pos.side,
+                entry=pos.entry_px,
+                stop=pos.stop,
+                tick=pos.tick,
+                initial_stop=pos.initial_stop,
+            )
             self._trails[pos.paper_id] = stt
         return stt
+
+    def _venue_qty(self, symbol: str) -> Decimal | None:
+        """Size the venue reports for `symbol` (REST truth), None when unknown."""
+        raw = self.knowledge.meta("exchange_state") if self.knowledge.available() else None
+        if not raw:
+            return None
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        for p in state.get("positions") or []:
+            if str(p.get("symbol")) == symbol:
+                try:
+                    return Decimal(str(p.get("size") or "0"))
+                except ArithmeticError:
+                    return None
+        return None
 
     def _trail_on_bar(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
         """§7: every closed working bar moves the stops of open paper positions.
@@ -2624,7 +2812,7 @@ class DeskLoop:
             entry=intent.entry,
             stop=intent.stop,
             lev=lev,
-            target_risk=cfg.target_risk_pct,
+            target_risk=self.effective_target_risk(),
             deposit_share=cfg.deposit_share_per_trade,
             qty_step=inst.qty_step,
             min_qty=inst.min_qty,
@@ -2737,6 +2925,8 @@ class DeskLoop:
             self._width_history.append(
                 WidthSample(zone_id=zone.zone_id, ts=row.ts, w_now=w_now)
             )
+            if len(self._width_history) > self.WIDTH_HISTORY_MAX:
+                del self._width_history[: len(self._width_history) - self.WIDTH_HISTORY_MAX]
         self.registry.fill_width(w_now=w_now, w_rank=w_rank, touch_id=row.touch_id)
         self.registry.fill_sweep_wick(
             flag=sweep_wick(zone=zone, bar=bar),
@@ -2869,6 +3059,9 @@ class DeskLoop:
                 out.extend(self.on_event(event, list(extras) or None))
                 continue
             advance(event.exchange_ts)
+            if event.stream in {"trades", "gap"}:
+                self.uptime.on_event(event)
+                self._uptime_dirty = True
             if not self.instrument_ok(event.symbol):
                 out.append(_refused(event.symbol))
                 continue
@@ -2939,31 +3132,18 @@ def _record_adds_from_diff(
     bids: tuple[tuple[str, str], ...],
     asks: tuple[tuple[str, str], ...],
 ) -> None:
-    """Same law as `_record_adds`, O(diff) instead of O(book): a positive size delta
-    at a price the diff touched is a ZLG BookAdd; pulls are not adds."""
+    """O(diff): a positive size delta at a price the diff touched is a ZLG BookAdd; a
+    negative one is a BookPull. The gesture nets them (survived liquidity)."""
     for side, rows in (("bid", bids), ("ask", asks)):
         levels = st.book.levels(side)  # type: ignore[arg-type]
         for px_s, _sz in rows:
             px = Decimal(px_s)
             delta = levels.get(px, Decimal("0")) - before.get((side, px), Decimal("0"))
+            hit: Literal["bid", "ask"] = "bid" if side == "bid" else "ask"
             if delta > 0:
-                hit: Literal["bid", "ask"] = "bid" if side == "bid" else "ask"
                 st.adds.append(BookAdd(ts=ts, side=hit, px=px, qty=delta))
-
-
-def _record_adds(
-    st: SymbolState,
-    ts: datetime,
-    before: dict[tuple[str, Decimal], Decimal],
-) -> None:
-    """Positive size deltas after a diff are ZLG BookAdds. Pulls are not adds.
-    Full-book variant kept for reference/tests; the loop uses `_record_adds_from_diff`."""
-    for side in ("bid", "ask"):
-        for px, sz in st.book.levels(side).items():
-            delta = sz - before.get((side, px), Decimal("0"))
-            if delta > 0:
-                hit: Literal["bid", "ask"] = "bid" if side == "bid" else "ask"
-                st.adds.append(BookAdd(ts=ts, side=hit, px=px, qty=delta))
+            elif delta < 0:
+                st.pulls.append(BookPull(ts=ts, side=hit, px=px, qty=-delta))
 
 
 def _f(value: float | None) -> str | None:

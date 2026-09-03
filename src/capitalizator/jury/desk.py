@@ -1,12 +1,25 @@
 """WJD — six voices, Accord-or-Silence. Not an ensemble average.
 
-INVENTION-JURY / PHASE-BUILD glossary:
-any VETO → VETO; CAV and ZLG both 0 → SILENCE; opposite signs → SPLIT;
-only +1 and 0 with at least one +1 → ACCORD.
-INVENTION-OKO: the sixth voice `oko` is the manipulation / regime eye. Its VETO
-kills the trade like any other; its +1 never opens ACCORD alone (CAV and ZLG
-both 0 is still SILENCE); its −1 splits like any other. Default 0 = ОКО absent.
-Does not open size. Weights do not open size. F1 bounce idea only.
+Two kinds of voice (audit 2026-09-03, jury §3.1):
+
+  facts    cav (closed working bar), zlg (book gesture in the 8 s window),
+           oko (the eye's window read), tape for a *breakout* (the level was
+           eaten) — may say +1 / −1 / VETO.
+  filters  tape for a bounce, btc, card — may say VETO / −1 / 0, never +1.
+           "The wall was not eaten", "BTC is in a box", "the card proposes" are
+           the *absence* of a bad sign, not evidence for the trade. Before this
+           rule CAV=REJECT alone plus three such non-events made ACCORD — an entry
+           on chart geometry with no first fact from the book.
+
+Decision:
+  any VETO                          → VETO
+  cav == 0 and zlg == 0             → SILENCE
+  any −1 among the voices           → SPLIT   (a lone −1 is a dispute too: no entry)
+  a book fact == +1 and no −1       → ACCORD   (book fact: zlg, oko, or tape on a breakout;
+                                                the chart may be 0 — a plain bounce is DRIFT)
+  otherwise                         → SILENCE  (chart alone never enters; the shadow learns)
+
+Does not open size. Weights do not open size.
 """
 
 from __future__ import annotations
@@ -14,12 +27,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from capitalizator.stats import n_min
+
 Voice = Literal[-1, 0, 1, "VETO"]
 VOICES = (-1, 0, 1, "VETO")
 JuryLabel = Literal["ACCORD", "SPLIT", "VETO", "SILENCE"]
 CAV_LABELS = frozenset({"REJECT", "THROUGH", "COMPRESS", "DRIFT", "NOISE"})
 ZLG_LABELS = frozenset({"DEFEND", "RETREAT", "IMPROVE", "FADE", "SILENCE"})
-N_MIN = 20
+N_MIN = n_min()
 
 
 @dataclass(frozen=True)
@@ -57,8 +72,11 @@ def oko_voice(value: object) -> Voice:
     return 0
 
 
+BOOK_FACTS = ("zlg", "oko", "tape")
+
+
 def decide(voices: Voices, *, risk_ok: bool = True) -> JuryLabel:
-    """Accord-or-Silence. Disagreeing signs are never averaged."""
+    """Accord-or-Silence. Disagreeing signs are never averaged; a bare chart never enters."""
     if not risk_ok:
         return "VETO"
     votes = (voices.cav, voices.zlg, voices.tape, voices.btc, voices.card, voices.oko)
@@ -66,12 +84,13 @@ def decide(voices: Voices, *, risk_ok: bool = True) -> JuryLabel:
         return "VETO"
     if voices.cav == 0 and voices.zlg == 0:
         return "SILENCE"
-    if voices.cav in (1, -1) and voices.zlg in (1, -1) and voices.cav != voices.zlg:
-        return "SPLIT"
     signed = [v for v in votes if v in (1, -1)]
     if 1 in signed and -1 in signed:
         return "SPLIT"
-    if 1 in signed and -1 not in signed:
+    if -1 in signed:
+        return "SPLIT"
+    book_plus = any(getattr(voices, name) == 1 for name in BOOK_FACTS)
+    if book_plus:
         return "ACCORD"
     return "SILENCE"
 
@@ -251,13 +270,15 @@ def _tape_bounce(
     trades_in_window: int | None,
     wall_no_print: bool,
 ) -> Voice:
+    """Filter for a bounce: eaten level → −1, wall without a print → VETO. A level
+    that was *not* eaten is the absence of a bad sign (0), not a vote for the trade."""
     if wall_no_print:
         return "VETO"
     if trades_in_window is not None and trades_in_window <= 0:
         return 0
     if tape_eaten is None:
         return 0
-    return -1 if tape_eaten else 1
+    return -1 if tape_eaten else 0
 
 
 def _cav_breakout(cav: str | None, n: int) -> Voice:
@@ -299,19 +320,18 @@ def _tape_breakout(
 
 
 def _btc_bounce(regime: str | None, break_against: bool, same_side: bool = False) -> Voice:
-    """+1 = box or same side as the alt idea. Wick/break-against is VETO."""
+    """Filter: BTC breaking its own zone against the alt idea is VETO. A box or the
+    same side is permission, not evidence — 0."""
     if break_against:
         return "VETO"
-    if regime == "box" or same_side:
-        return 1
     return 0
 
 
 def _card_voice(verdict: str | None, cpi_window: bool) -> Voice:
+    """Filter: a refuted / unverifiable bearing claim or a macro window is VETO. A
+    card that proposes is context, not a fact from the book — 0."""
     if cpi_window:
         return "VETO"
     if verdict in {"REFUTED", "UNVERIFIABLE", "veto"}:
         return "VETO"
-    if verdict in {"VERIFIED", "propose", "cut_size"}:
-        return 1
     return 0

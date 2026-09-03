@@ -56,3 +56,30 @@ def test_refuted_needs_n_and_a_losing_upper_bound() -> None:
     assert refuted(None, breakeven=breakeven) is False
     assert MIN_N == 30
     assert isinstance(stat, ClassStat)
+
+
+def test_refuted_is_about_mean_net_r_not_winrate() -> None:
+    """Audit B6: 60% "wins" of +0.3R and 40% losses of −1R lose money; the old rule
+    (winrate upper bound vs a 2R break-even) passed such a class."""
+    from decimal import Decimal
+
+    from capitalizator.champion.calibrate import class_stats, refuted
+
+    rows = []
+    for i in range(60):
+        rows.append({"entry_px": "1", "r_net": "0.3", "tag": "bounce",
+                     "labels": {"cav_label": "REJECT", "zlg_label": "DEFEND"}})
+    for i in range(40):
+        rows.append({"entry_px": "1", "r_net": "-1", "tag": "bounce",
+                     "labels": {"cav_label": "REJECT", "zlg_label": "DEFEND"}})
+    stat = class_stats(rows)["bounce|REJECT|DEFEND|*|*"]
+    assert stat.winrate == Decimal("0.6") and stat.avg_r_net < 0
+    assert stat.upper_r_net is not None and stat.upper_r_net < 0
+    assert refuted(stat) is True
+    # a genuinely positive class is not refuted
+    good = class_stats([{"entry_px": "1", "r_net": "1.5" if i % 2 else "-1", "tag": "bounce",
+                         "labels": {"cav_label": "REJECT", "zlg_label": "DEFEND"}} for i in range(60)])
+    assert refuted(good["bounce|REJECT|DEFEND|*|*"]) is False
+    # too few observations: never refuted
+    few = class_stats(rows[:10])
+    assert refuted(few["bounce|REJECT|DEFEND|*|*"]) is False

@@ -1,7 +1,8 @@
-"""Fair Value Gap label for contour B. Three-candle gap. Not an A entry engine.
+"""Fair Value Gap label for contour B. Not an A entry engine.
 
-Bullish: High1 < Low3. Bearish: Low1 > High3.
-Filled when the current price sits inside the gap (100% fill).
+The gap itself comes from `exec/fvg_mark.latest_fvg` — one implementation for the
+journal mark and the card (the card used to accept non-consecutive bars).
+Filled when the current price sits inside the gap band (FVG_FILL_FRAC of it).
 """
 
 from __future__ import annotations
@@ -11,7 +12,10 @@ from decimal import Decimal
 
 from capitalizator.card.live import FvgStatus
 from capitalizator.card.params import FVG_FILL_FRAC
+from capitalizator.exec.fvg_mark import latest_fvg
 from capitalizator.zones.model import Bar
+
+__all__ = ["fvg_status", "latest_fvg"]
 
 
 def fvg_status(bars: Sequence[Bar], *, price: Decimal | None = None) -> FvgStatus:
@@ -29,17 +33,3 @@ def fvg_status(bars: Sequence[Bar], *, price: Decimal | None = None) -> FvgStatu
     if lo + pad <= px <= hi - pad:
         return "filled"
     return "open"
-
-
-def latest_fvg(bars: Sequence[Bar]) -> tuple[Decimal, Decimal] | None:
-    """Most recent three-candle gap (low, high), or None."""
-    if len(bars) < 3:
-        return None
-    found: tuple[Decimal, Decimal] | None = None
-    for i in range(2, len(bars)):
-        first, _mid, third = bars[i - 2], bars[i - 1], bars[i]
-        if first.high < third.low:
-            found = (first.high, third.low)
-        elif first.low > third.high:
-            found = (third.high, first.low)
-    return found

@@ -1,9 +1,10 @@
-"""Signer process: only process with a key. Heartbeat 30s, reconcile 60s.
+"""Signer process: the only process with a key. Heartbeat / reconcile from time.yaml.
 
-With keys (environment or vault secrets file — see gateway/keys.py) the loop
-is the real gateway loop: watchdog, intent drain to Bybit via pybit, OMS drain,
-reconcile, exchange state for the console. Without keys the drain keeps the
-`{"status": "not_sent"}` stub and prints `"gateway": "absent"` — nothing pretends.
+With keys (environment or vault secrets file — see gateway/keys.py) the loop is
+the real gateway loop: watchdog, intent drain to Bybit via pybit, OMS drain,
+reconcile, exchange state for the console. Without keys pending intents are
+parked as `no_gateway` and the process prints `"gateway": "absent"` — nothing
+pretends, and the desk keeps its ideas for when a key appears.
 """
 
 from __future__ import annotations
@@ -13,17 +14,18 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from capitalizator.gateway.keys import PAPER_MODES
 from capitalizator.ops.knowledge import open_knowledge
-from capitalizator.ops.product import read_user_mode
+from capitalizator.ops.product import read_user_mode, record_hello
 from capitalizator.ops.vault import init_vault, load_vault
 from capitalizator.signer.process import (
     HEARTBEAT_S,
     RECONCILE_S,
+    alerter_from_settings,
+    drain_once,
     drain_validated,
     gateway_mode_ok,
-    make_watchdogs,
     on_signer_exit,
+    park_no_gateway,
     serve_gateway_loop,
     serve_loop,
 )
@@ -58,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.userdir)
     vault = init_vault(root) if args.init else load_vault(root)
     knowledge = open_knowledge(vault)
-    cancels: list[int] = []
+    gateway = None
     try:
         gateway, tracker, feed = build_gateway(vault)
         mode = read_user_mode(vault)
@@ -74,61 +76,62 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({**payload, "hello": {"ok": False, "error": "no keys"}}))
                 return 2
             result = gateway.hello(probe_order=args.probe_order)
-            from capitalizator.ops.product import mark_hello
-
-            mark_hello(vault, ok=bool(result.get("ok")))
-            knowledge.set_meta("hello_result", json.dumps(result, default=str))
+            ok = record_hello(vault, knowledge, result)
             print(json.dumps({**payload, "hello": result}, ensure_ascii=False, default=str))
-            return 0 if result.get("ok") else 1
+            return 0 if ok else 1
         if gateway is None:
-            dead, _recon = make_watchdogs(
-                cancel_all=lambda: cancels.append(1),
-                dead_man_s=HEARTBEAT_S,
-                reconcile_s=RECONCILE_S,
-            )
             if args.once or not args.serve:
                 if mode in {"demo", "live"}:
-                    drain_validated(
-                        knowledge,
-                        lambda row: {"status": "not_sent"},
-                        user_mode=mode,
-                        now=datetime.now(tz=UTC),
+                    drain_once(
+                        knowledge, park_no_gateway, user_mode=mode, now=datetime.now(tz=UTC)
                     )
                 print(json.dumps(payload, ensure_ascii=False))
                 return 0
             print(json.dumps({**payload, "serve": True}, ensure_ascii=False), flush=True)
-            serve_loop(
-                knowledge=knowledge,
-                vault=vault,
-                send=lambda row: {"status": "not_sent"},
-                cancel_all=lambda: cancels.append(1),
-                should_stop=lambda: False,
-            )
+            serve_loop(knowledge=knowledge, vault=vault, should_stop=lambda: False)
             return 0
         if args.once or not args.serve:
+            blocked = json.loads(knowledge.meta("entries_blocked") or "[]")
             if mode in {"demo", "live"}:
                 if not gateway_mode_ok(mode, gateway.mode):
                     print(json.dumps({**payload, "error": "user mode / key mode mismatch"}))
                     return 3
-                venue = gateway.mode if gateway.mode in PAPER_MODES else "demo"
-                drain_validated(
-                    knowledge, gateway.send, user_mode=mode, now=datetime.now(tz=UTC), venue=venue
-                )
-            print(json.dumps(payload, ensure_ascii=False))
+                if not blocked:
+                    venue = gateway.mode  # the order carries the venue the key really talks to
+                    drain_validated(
+                        knowledge,
+                        gateway.send,
+                        user_mode=mode,
+                        now=datetime.now(tz=UTC),
+                        venue=venue,
+                    )
+            print(json.dumps({**payload, "entries_blocked": blocked}, ensure_ascii=False))
             return 0
         print(json.dumps({**payload, "serve": True}, ensure_ascii=False), flush=True)
-        serve_gateway_loop(
-            knowledge=knowledge,
-            vault=vault,
-            gateway=gateway,
-            tracker=tracker,
-            feed=feed,
-            should_stop=lambda: False,
-        )
+        try:
+            serve_gateway_loop(
+                knowledge=knowledge,
+                vault=vault,
+                gateway=gateway,
+                tracker=tracker,
+                feed=feed,
+                should_stop=lambda: False,
+                alerter=alerter_from_settings(vault),
+            )
+        finally:
+            # Only the serving process owns resting entries: when IT goes, no entry may
+            # survive it. `--hello` / `--once` are inspections and cancel nothing (audit A4).
+            on_signer_exit(lambda: _cancel_quiet(gateway))
         return 0
     finally:
-        on_signer_exit(lambda: cancels.append(1))
         knowledge.close()
+
+
+def _cancel_quiet(gateway) -> None:  # type: ignore[no-untyped-def]
+    try:
+        gateway.cancel_entries(None, reason="signer_exit")
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

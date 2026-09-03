@@ -25,6 +25,16 @@ STOP_MODES = frozenset({"structural", "volatility", "hybrid", "manual_bounded"})
 TRAIL_MODES = frozenset({"structure", "exchange_trailing", "both"})
 
 
+def phase_ceilings() -> tuple[Decimal, Decimal]:
+    """(target_risk, max_lev) from infra/phase.yaml; only a human edits that file."""
+    from capitalizator.ops.phase import load_phase
+
+    raw = load_phase()
+    risk = Decimal(str(raw.get("target_risk") or "0.01"))
+    lev = Decimal(str(raw.get("max_lev") or "3"))
+    return risk, lev
+
+
 @dataclass(frozen=True)
 class RiskConfig:
     # Fraction of equity used as margin per trade ("какая часть депозита в сделку").
@@ -70,10 +80,14 @@ class RiskConfig:
     def __post_init__(self) -> None:
         if not (Decimal("0") < self.deposit_share_per_trade <= Decimal("1")):
             raise ValueError("deposit_share_per_trade must be in (0, 1]")
-        if not (Decimal("0") < self.target_risk_pct <= Decimal("0.05")):
-            raise ValueError("target_risk_pct must be in (0, 0.05]")
-        if self.max_lev <= 0 or self.max_lev > Decimal("10"):
-            raise ValueError("max_lev must be in (0, 10]")
+        # Ceilings are the phase file — the artifact a human writes after a gate
+        # (ARCHITECTURE-AZ §10 п.2/3: 1% until Ф4, 3x unless A+). The operator menu can
+        # lower risk, never lift it above the phase (audit: 5% / 10x were reachable).
+        ceiling_risk, ceiling_lev = phase_ceilings()
+        if not (Decimal("0") < self.target_risk_pct <= ceiling_risk):
+            raise ValueError(f"target_risk_pct must be in (0, {ceiling_risk}] (phase.yaml)")
+        if self.max_lev <= 0 or self.max_lev > ceiling_lev:
+            raise ValueError(f"max_lev must be in (0, {ceiling_lev}] (phase.yaml)")
         if self.max_open_positions < 1 or self.max_intents_per_session < 1:
             raise ValueError("positions / intents per session must be >= 1")
         for name in ("day_halt", "week_halt", "peak_kill"):

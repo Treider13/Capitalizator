@@ -13,7 +13,6 @@ from capitalizator.risk.schema import (
     RiskDecision,
     RiskEngine,
 )
-from capitalizator.risk.session import SessionWindow, allow_entry
 from capitalizator.risk.sizing import Sizer, Sizing
 
 __all__ = [
@@ -31,9 +30,7 @@ __all__ = [
     "RiskDecision",
     "RiskEngine",
     "SessionBudget",
-    "SessionWindow",
     "Sizer",
     "Sizing",
-    "allow_entry",
     "prs_decide",
 ]

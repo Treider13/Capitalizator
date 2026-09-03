@@ -12,6 +12,7 @@ It does not mark 0.2.6 live-green.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,12 +85,36 @@ def default_week0_path() -> Path:
     raise FileNotFoundError("infra/universe.week0.yaml not found from package tree")
 
 
-def default_desk_path() -> Path:
+def _packaged_desk_path() -> Path:
     for parent in Path(__file__).resolve().parents:
         candidate = parent / "infra" / "universe.yaml"
         if candidate.is_file():
             return candidate
     raise FileNotFoundError("infra/universe.yaml not found from package tree")
+
+
+def applied_universe_path() -> Path | None:
+    """`$CAP_USERDIR/universe.yaml` — the file `apply_universe` writes. The image is
+    read-only and each container has its own copy of `infra/`, so an applied universe
+    can only live in the shared data dir; every process (desk, signer, recorder,
+    console) mounts it."""
+    raw = os.environ.get("CAP_USERDIR")
+    return Path(raw) / "universe.yaml" if raw else None
+
+
+def default_desk_path() -> Path:
+    """Universe every process agrees on.
+
+    `CAP_UNIVERSE=week0` → the canon BTC+ETH list (PHASE-BUILD: until 24h of clean
+    tape). Otherwise the applied file in the data dir when it exists, else the packaged
+    `infra/universe.yaml`. The recorder, the desk, the signer and the console all call
+    this: the desk cannot wait for symbols the recorder does not write."""
+    if os.environ.get("CAP_UNIVERSE", "").strip().lower() == "week0":
+        return default_week0_path()
+    applied = applied_universe_path()
+    if applied is not None and applied.is_file():
+        return applied
+    return _packaged_desk_path()
 
 
 def load_desk_universe(path: Path | None = None) -> Universe:

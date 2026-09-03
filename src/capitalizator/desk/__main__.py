@@ -61,16 +61,23 @@ def serve_loop(
     on_tick: Callable[[DeskLoop], None] | None = None,
     now: datetime | None = None,
     extra_zones: Sequence[Zone] = (),
+    replay_all_first: bool = True,
 ) -> DeskLoop:
-    """Stay up. Read parquet tape, tick ZLG, re-read user_mode. No invented rows."""
+    """Stay up. Read parquet tape, tick ZLG, re-read user_mode. No invented rows.
+
+    `replay_all_first=False` (production `--serve`) restarts on the last days of tape
+    only, and the dedup set forgets keys older than that window (audit E: a set of
+    every event ever seen grew without bound)."""
     desk = DeskLoop(
         knowledge=knowledge,
         user_mode=read_user_mode(vault),
         calendar=load_desk_calendar(),
     )
-    seen: set[tuple[str, str, str, int | None]] = set()
+    # production: the cursor's offsets are the dedup; a per-event set is unbounded
+    seen: set[tuple[str, str, str, int | None]] | None = set() if replay_all_first else None
     zones = tuple(extra_zones)
-    cursor = TapeCursor()
+    cursor = TapeCursor(replay_all_first=replay_all_first)
+    ticks = 0
     while not should_stop():
         desk.user_mode = read_user_mode(vault)
         if desk.user_mode in {"demo", "live"}:
@@ -80,10 +87,14 @@ def serve_loop(
         when = now if now is not None else datetime.now(tz=UTC)
         consume_tape(desk, vault.tape, seen=seen, extra_zones=zones, now=when, cursor=cursor)
         desk.tick(when)
+        ticks += 1
+        if ticks % 30 == 0 and knowledge.available():
+            # the console shows whether the desk is still catching up on the tape
+            knowledge.set_meta("desk_backlog", "1" if cursor.backlog else "0")
         if on_tick is not None:
             on_tick(desk)
-        if idle_s:
-            sleep(idle_s)
+        if idle_s and not cursor.backlog:
+            sleep(idle_s)  # while catching up, the next pass follows at once
     return desk
 
 
@@ -123,7 +134,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, ensure_ascii=False))
             return 0
         print(json.dumps({**payload, "serve": True}, ensure_ascii=False), flush=True)
-        serve_loop(vault=vault, knowledge=knowledge, should_stop=stop_on_signals())
+        serve_loop(
+            vault=vault, knowledge=knowledge, should_stop=stop_on_signals(), replay_all_first=False
+        )
         return 0
     finally:
         knowledge.close()

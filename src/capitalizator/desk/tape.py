@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -73,57 +73,261 @@ def load_tape(tape: Path) -> list[MarketEvent]:
 class TapeCursor:
     """Per-file read position so a 1s serve loop does not re-parse the whole tape.
 
-    A file is re-read only when its (size, mtime) changed; rows already consumed
-    are skipped by offset (the sink appends in order). Immutable part files are
-    read once. `seen` dedup still guards against a rewritten file re-emitting rows.
+    Two layers, same rows:
+      * `hour=HH.jsonl` — the recorder's live feed, appended per event. Tailed by byte
+        offset: O(new bytes) per tick, no re-parse, no per-second part files.
+      * `hour=HH*.parquet` — the archive (parts, later compacted). Read once each; used
+        for hours that have no live feed (backfill, old recordings, fixtures).
+    The first pass reads the whole tape (backfill after a restart, fixtures); every
+    later pass scans only partitions of the last `RECENT_DAYS`: a month of tape is
+    hundreds of thousands of files and `os.walk` over all of them every second was
+    the desk's own latency (2026-09-03). `seen` dedup guards a rewritten file.
+
+    Every pass is BOUNDED: at most `max_bytes` of jsonl and `max_rows` of parquet are
+    turned into events, files are visited in (date, hour) order and a file that was not
+    finished is resumed on the next pass. Two days of BTC+ETH tape are ~3 GB of JSON;
+    read in one list they were 3.2 GB of RSS and the OOM killer restarted the desk
+    every 30 s (VPS, 2026-09-03). Old `book_diff` rows are skipped on a production
+    first pass (`book_hours`): a book is only valid from its next snapshot anyway.
     """
 
-    def __init__(self) -> None:
+    RECENT_DAYS = 2
+    # sized so one pass stays well under the 30 s dead-man: a longer pass starves the
+    # desk heartbeat and the signer blocks entries with reason `desk` while catching up
+    MAX_BYTES = 8 * 1024 * 1024  # jsonl bytes per pass
+    MAX_ROWS = 60_000  # parquet rows per pass
+    BOOK_HOURS = 2  # production first pass: book deltas only this recent
+
+    def __init__(
+        self,
+        *,
+        recent_days: int | None = None,
+        replay_all_first: bool = True,
+        max_bytes: int | None = None,
+        max_rows: int | None = None,
+        book_hours: int | None = None,
+    ) -> None:
         self._pos: dict[Path, tuple[int, int, int]] = {}
+        self._tail: dict[Path, int] = {}  # jsonl → bytes consumed
+        self._partial: dict[Path, str] = {}  # jsonl → unfinished last line
         self.files_scanned = 0
         self.files_read = 0
+        self.recent_days = self.RECENT_DAYS if recent_days is None else recent_days
+        self.max_bytes = self.MAX_BYTES if max_bytes is None else max_bytes
+        self.max_rows = self.MAX_ROWS if max_rows is None else max_rows
+        # a 24/7 desk restarting on a month of tape must not replay the month:
+        # `replay_all_first=False` makes even the first pass recent-only (audit A2/E)
+        self._first_pass_done = not replay_all_first
+        self._production = not replay_all_first
+        self.book_hours = self.BOOK_HOURS if book_hours is None else book_hours
+        self._skipped_book: set[Path] = set()
+        self.backlog = False  # True while a pass hit its budget (replay still catching up)
 
-    def fresh_rows(self, tape: Path) -> list[MarketEvent]:
+    def _recent(self, path: Path, now: datetime | None) -> bool:
+        if not self._first_pass_done or now is None or self.recent_days <= 0:
+            return True
+        for part in path.parts:
+            if part.startswith("date="):
+                try:
+                    day = datetime.strptime(part[5:], "%Y-%m-%d").date()
+                except ValueError:
+                    return True
+                return (now.date() - day).days <= self.recent_days
+        return True
+
+    def fresh_rows(self, tape: Path, *, now: datetime | None = None) -> list[MarketEvent]:
         if tape.is_symlink() or not tape.is_dir():
             return []
         try:
-            paths = list(iter_regular_files(tape))
+            # prune old `date=` subtrees during the walk, not after it
+            paths = [
+                p
+                for p in iter_regular_files(tape, keep_dir=lambda d: self._recent(d, now))
+                if self._recent(p, now)
+            ]
         except VaultError:
             return []
+        self._first_pass_done = True
+        paths.sort(key=_chrono_key)
         events: list[MarketEvent] = []
+        live_dirs: set[Path] = set()
         for path in paths:
+            if path.suffix == ".jsonl":
+                live_dirs.add(path.parent / path.stem)  # hour=HH key
+        budget_bytes = self.max_bytes
+        budget_rows = self.max_rows
+        self.backlog = False
+        for path in paths:
+            if self._skip_old_book(path, now):
+                continue
+            if path.suffix == ".jsonl":
+                if budget_bytes <= 0:
+                    self.backlog = True
+                    break
+                got, used = self._tail_jsonl(path, budget_bytes)
+                events.extend(got)
+                budget_bytes -= used
+                continue
             if path.suffix != ".parquet":
                 continue
-            self.files_scanned += 1
-            try:
-                st = path.stat()
-            except OSError:
-                continue
-            size, mtime = st.st_size, st.st_mtime_ns
-            prev = self._pos.get(path)
-            if prev is not None and prev[0] == size and prev[1] == mtime:
-                continue
-            offset = prev[2] if prev is not None else 0
-            try:
-                table = pq.ParquetFile(path).read()
-            except (OSError, ValueError):
-                continue
-            self.files_read += 1
-            rows = rows_fast(table)
-            for row in rows[offset:]:
-                event = _parse(row)
-                if event is not None:
-                    events.append(event)
-            self._pos[path] = (size, mtime, len(rows))
+            # `hour=HH.000123.parquet` → stem `hour=HH.000123`; live key is `hour=HH`
+            hour_key = path.parent / path.name.split(".")[0]
+            if hour_key in live_dirs:
+                continue  # the live feed already delivered these rows
+            if budget_rows <= 0:
+                self.backlog = True
+                break
+            got, used = self._read_parquet(path, budget_rows)
+            events.extend(got)
+            budget_rows -= used
         events.sort(key=lambda e: (e.exchange_ts, e.symbol, e.stream))
         return events
+
+    def _skip_old_book(self, path: Path, now: datetime | None) -> bool:
+        """Production first pass: `book_diff` older than `book_hours` is not replayed.
+        Deltas are only meaningful from the snapshot that follows them; the ZLG/ОКО
+        use them live, the zones use trades. Marked so a later pass does not read them
+        from the start either."""
+        if not self._production or now is None or "book_diff" not in path.parts:
+            return False
+        if path in self._skipped_book:
+            return True
+        stamp = _partition_time(path)
+        if stamp is None:
+            return False
+        if (now - stamp).total_seconds() > self.book_hours * 3600:
+            self._skipped_book.add(path)
+            return True
+        return False
+
+    def _read_parquet(self, path: Path, budget_rows: int) -> tuple[list[MarketEvent], int]:
+        self.files_scanned += 1
+        try:
+            st = path.stat()
+        except OSError:
+            return [], 0
+        size, mtime = st.st_size, st.st_mtime_ns
+        prev = self._pos.get(path)
+        if prev is not None and prev[0] == size and prev[1] == mtime and prev[2] < 0:
+            return [], 0  # finished and unchanged
+        offset = prev[2] if prev is not None and prev[2] >= 0 else 0
+        if prev is not None and (prev[0] != size or prev[1] != mtime):
+            offset = 0  # rewritten (compaction): start over; `seen` dedups the rest
+        try:
+            pf = pq.ParquetFile(path)
+            total = pf.metadata.num_rows
+        except (OSError, ValueError):
+            return [], 0
+        self.files_read += 1
+        out: list[MarketEvent] = []
+        seen_rows = 0
+        wanted_end = min(total, offset + budget_rows)
+        for batch in pf.iter_batches(batch_size=50_000):
+            n = batch.num_rows
+            if seen_rows + n <= offset:
+                seen_rows += n
+                continue
+            rows = rows_fast(batch)
+            lo = max(0, offset - seen_rows)
+            hi = min(n, wanted_end - seen_rows)
+            for row in rows[lo:hi]:
+                event = _parse(row)
+                if event is not None:
+                    out.append(event)
+            seen_rows += n
+            if seen_rows >= wanted_end:
+                break
+        used = wanted_end - offset
+        done = wanted_end >= total
+        self._pos[path] = (size, mtime, -1 if done else wanted_end)
+        if not done:
+            self.backlog = True
+        return out, used
+
+    def _tail_jsonl(self, path: Path, budget: int) -> tuple[list[MarketEvent], int]:
+        """Read at most `budget` new bytes from the live feed; returns (events, bytes)."""
+        self.files_scanned += 1
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return [], 0
+        start = self._tail.get(path, 0)
+        if size < start:  # truncated/rotated: start over
+            start = 0
+            self._partial.pop(path, None)
+        if size == start:
+            return [], 0
+        want = min(size - start, budget)
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(start)
+                chunk = fh.read(want)
+        except OSError:
+            return [], 0
+        self.files_read += 1
+        self._tail[path] = start + len(chunk)
+        if start + len(chunk) < size:
+            self.backlog = True
+        # split on bytes, then decode: a read boundary inside a multibyte character
+        # must not corrupt the tail (kept as the partial line)
+        raw_lines = chunk.split(b"\n")
+        partial = self._partial.pop(path, b"")
+        if raw_lines:
+            raw_lines[0] = partial + raw_lines[0]
+        if not chunk.endswith(b"\n"):
+            self._partial[path] = raw_lines.pop()  # incomplete line: wait for the rest
+        else:
+            raw_lines.pop()  # trailing empty
+        out: list[MarketEvent] = []
+        for raw in raw_lines:
+            if not raw:
+                continue
+            line = raw.decode("utf-8", errors="replace")
+            try:
+                row = json.loads(line)
+                row["exchange_ts"] = datetime.fromisoformat(row["exchange_ts"])
+                row["recv_ts"] = datetime.fromisoformat(row["recv_ts"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            event = _parse(row)
+            if event is not None:
+                out.append(event)
+        return out, len(chunk)
+
+
+def _partition_time(path: Path) -> datetime | None:
+    day = hour = None
+    for part in path.parts:
+        if part.startswith("date="):
+            day = part[5:]
+        elif part.startswith("hour="):
+            hour = part[5:7]
+    if day is None:
+        return None
+    try:
+        stamp = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=UTC)
+        if hour is not None:
+            stamp = stamp.replace(hour=int(hour))
+        return stamp + timedelta(hours=1)  # the partition's last moment
+    except ValueError:
+        return None
+
+
+def _chrono_key(path: Path) -> tuple[str, str, str]:
+    day = hour = ""
+    for part in path.parts:
+        if part.startswith("date="):
+            day = part
+        elif part.startswith("hour="):
+            hour = part[:7]
+    return (day, hour, str(path))
 
 
 def consume_tape(
     desk: DeskLoop,
     tape: Path,
     *,
-    seen: Seen,
+    seen: Seen | None,
     extra_zones: tuple[Zone, ...] = (),
     now: datetime | None = None,
     cursor: TapeCursor | None = None,
@@ -131,16 +335,21 @@ def consume_tape(
     """Feed unseen parquet events into the loop. Second pass does not replay.
 
     With a `cursor` only changed files are parsed; without it (one-shot `--once`,
-    old tests) the whole tape is loaded as before.
+    old tests) the whole tape is loaded as before. `seen=None` (production) trusts
+    the cursor's per-file offsets instead of a per-event set: a tuple per event for
+    every event of two days is gigabytes.
     """
     fresh: list[MarketEvent] = []
-    source = cursor.fresh_rows(tape) if cursor is not None else load_tape(tape)
-    for event in source:
-        key = (event.stream, event.symbol, event.exchange_ts.isoformat(), event.seq)
-        if key in seen:
-            continue
-        seen.add(key)
-        fresh.append(event)
+    source = cursor.fresh_rows(tape, now=now) if cursor is not None else load_tape(tape)
+    if seen is None:
+        fresh = list(source)
+    else:
+        for event in source:
+            key = (event.stream, event.symbol, event.exchange_ts.isoformat(), event.seq)
+            if key in seen:
+                continue
+            seen.add(key)
+            fresh.append(event)
     desk.play(fresh, extra_zones=extra_zones, now=now)
     return len(fresh)
 

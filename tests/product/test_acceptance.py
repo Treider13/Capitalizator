@@ -21,6 +21,7 @@ from capitalizator.exec.demo_adapter import DemoAdapter
 from capitalizator.exec.episodes import EpisodeLog
 from capitalizator.exec.replay import ReplayEngine
 from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy
+from capitalizator.gateway.watchdog import Watchdog
 from capitalizator.jury.desk import decide, voices_for_bounce
 from capitalizator.llm.daily_summary import DailySummary
 from capitalizator.memory.registry import Registry, Touch
@@ -35,7 +36,6 @@ from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import Intent, RiskEngine, reject_forbidden_keys
 from capitalizator.risk.sizing import Sizer, implied_risk
 from capitalizator.screener.universe import UniverseError, load_desk_universe, validate_universe
-from capitalizator.signer.deadman import DeadMan
 from capitalizator.signer.validate import UnsignedIntent
 from capitalizator.types import MarketEvent
 from capitalizator.zlg.gesture import ZLG, BookAdd
@@ -46,7 +46,7 @@ TICK = Decimal("0.1")
 CREATED = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 WINDOW = datetime(2026, 8, 31, 14, 10, tzinfo=UTC)
 ASIA = datetime(2026, 8, 31, 0, 0, tzinfo=UTC)  # 03:00 MSK
-OUTSIDE = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
+OUTSIDE = datetime(2026, 8, 31, 22, 0, tzinfo=UTC)  # sessions.yaml: night, ideas: []
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "day_btc_small"
 ZONE = Zone.create(
     symbol="BTCUSDT",
@@ -320,12 +320,12 @@ def test_11_llm_poison_is_not_advice() -> None:
 
 
 def test_12_dead_man_cancel_all() -> None:
-    hits: list[int] = []
-    man = DeadMan(lambda: hits.append(1), dead_man_s=30)
-    man.beat(WINDOW)
-    assert man.tick(WINDOW + timedelta(seconds=30)) is False
-    assert man.tick(WINDOW + timedelta(seconds=31)) is True
-    assert hits == [1]
+    hits: list[str] = []
+    dog = Watchdog(dead_man_s=30, cancel_entries=hits.append)
+    dog.beat("desk", WINDOW)
+    assert dog.check(WINDOW + timedelta(seconds=30)) == []
+    assert dog.check(WINDOW + timedelta(seconds=31)) == ["desk"]
+    assert hits == ["dead_man:desk"]
 
 
 def test_13_future_zone_is_invisible() -> None:
@@ -599,6 +599,7 @@ def test_demo_adapter_default_is_not_sent() -> None:
 
 def test_set_mode_with_ack_does_not_write_phase(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "user")
+    mark_hello(vault, ok=True)
     out = set_user_mode(vault, "demo", ack=True)
     assert out["user_mode"] == "demo"
     assert out["trading_mode_yaml"] == "off"

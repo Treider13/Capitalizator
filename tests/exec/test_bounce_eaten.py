@@ -42,18 +42,32 @@ def _snap(**overrides: object) -> BounceSnapshot:
     return BounceSnapshot(**raw)  # type: ignore[arg-type]
 
 
-def test_product_records_tape_and_does_not_filter() -> None:
+def test_f1_default_records_tape_and_does_not_filter() -> None:
     strat = BounceStrategy(
         risk=RiskEngine(),
         halts=Halts(start_equity=Decimal("100000")),
         desk_mode="demo",
         require_card=False,
     )
-    assert strat.check_tape is True
-    assert strat.check_wall is True
+    assert strat.check_tape is False
+    assert strat.check_wall is False
     assert isinstance(strat.propose(_snap(tape_eaten=True)), Intent)
     assert isinstance(strat.propose(_snap(tape_eaten=False)), Intent)
     assert isinstance(strat.propose(_snap()), Intent)
+
+
+def test_check_tape_on_blocks_an_eaten_level_even_without_the_jury() -> None:
+    """The desk turns check_tape on; the flag is a filter, not a journal note."""
+    strat = BounceStrategy(
+        risk=RiskEngine(),
+        halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
+        require_card=False,
+        check_tape=True,
+    )
+    assert strat.propose(_snap(tape_eaten=True)) is None
+    assert isinstance(strat.propose(_snap(tape_eaten=False)), Intent)
+    assert isinstance(strat.propose(_snap()), Intent)  # unknown is not "eaten"
 
 
 def test_require_jury_eaten_blocks_bounce() -> None:

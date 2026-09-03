@@ -34,10 +34,19 @@ def test_valid_demo_trading_venue() -> None:
     assert order.trading_mode == "demo"
 
 
-@pytest.mark.parametrize("mode", ["mainnet", "live", "live_sub", "live_main"])
-def test_live_modes_rejected(mode: str) -> None:
-    with pytest.raises(Exception, match="demo|testnet|literal"):
-        _intent(trading_mode=mode)
+@pytest.mark.parametrize("mode", ["mainnet", "live", "paper", ""])
+def test_unknown_venues_rejected(mode: str) -> None:
+    with pytest.raises(Exception, match="venue|literal"):
+        Signer().validate(_intent(trading_mode=mode))
+
+
+@pytest.mark.parametrize("mode", ["live_sub", "live_main"])
+def test_live_venues_are_stamped_as_themselves(mode: str) -> None:
+    """A live order used to be stamped `demo` because the validator knew only paper
+    venues: the journal then called a live fill a demo one. The gate for live is the
+    user mode × key pairing × hello × phase.yaml, not this type check."""
+    order = Signer().validate(_intent(trading_mode=mode))
+    assert order.trading_mode == mode
 
 
 def test_symbol_outside_week0_rejected() -> None:

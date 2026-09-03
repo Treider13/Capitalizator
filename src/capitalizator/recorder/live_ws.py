@@ -1,24 +1,19 @@
-"""Live public recorder on pybit's WebSocket (D-44). Streams, does not buffer an hour.
+"""Live public recorder on a raw Bybit v5 socket (D-44). Streams, does not buffer an hour.
 
-Before: no socket existed in the repo (`opener` had to be injected), `recv_ts`
-was stamped once per run, frames were collected into a list before any write,
-and the sink rewrote the hourly file on every event.
+Why raw and not pybit's `WebSocket` (audit B2, verified on pybit 5.17): pybit
+rebuilds the book locally and hands every callback `type="snapshot"` with the full
+book; the deltas the desk needs for the 8 s ZLG/ОКО window never arrive. Same for
+`tickers`. `recorder/raw_ws.py` passes frames through untouched.
 
-Now:
-  * pybit `WebSocket(channel_type="linear")` with ping 20s and auto-restart
-    (https://bybit-exchange.github.io/docs/v5/ws/connect: ping every 20s);
-  * `publicTrade.<sym>`, `orderbook.50.<sym>`, `tickers.<sym>` for the desk
-    universe. Bybit docs (ws/connect, "Public channel - Args limits"): one
-    connection's args may not exceed 21 000 characters; spot takes ≤10 args per
-    request, futures "no args limit for now". pybit sends one request per call
-    and does NOT batch, and `args size >10` rejections are reported in the wild
-    (tiagosiebler/bybit-api#174), so we subscribe in chunks of 10 ourselves;
-  * every frame gets its own `recv_ts` on arrival (callback thread), then is
-    parked in a queue; the main thread normalises with the existing
-    TradesNormalizer / BybitBookWs (gap → REST snapshot via RestSnapshot) /
-    ticker_events and writes through `BufferedParquetSink` (immutable parts);
-  * a status JSON (frames, last age per stream, gaps, dropped) is written for
-    the console every second — an honest "recorder silent for N s" banner.
+  * `publicTrade.<sym>`, `orderbook.<depth>.<sym>`, `tickers.<sym>`,
+    `allLiquidation.<sym>` for the desk universe (docs/v5/websocket/public/*);
+    subscribed in chunks of ≤10 args, re-subscribed after a reconnect;
+  * every frame gets its own `recv_ts` on arrival (socket thread), then is
+    parked in a queue; the main thread normalises with TradesNormalizer /
+    BybitBookWs (gap → REST snapshot via RestSnapshot) / ticker_events /
+    liquidation_events and writes through `BufferedParquetSink` (immutable parts);
+  * a status JSON (frames, last age per stream, gaps, dropped, socket state) is
+    written for the console every second — an honest "recorder silent for N s".
 """
 
 from __future__ import annotations
@@ -35,9 +30,10 @@ from typing import Any
 from capitalizator.book.reconstruct import BookDirty
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.recorder.gap import SeqFault
-from capitalizator.recorder.live import ticker_events
+from capitalizator.recorder.live import liquidation_events, ticker_events
 from capitalizator.recorder.normalize import TradesNormalizer
 from capitalizator.recorder.public_ws import is_control_frame
+from capitalizator.recorder.raw_ws import RawPublicWs
 from capitalizator.recorder.rest_snapshot import BookSnapshot, RestSnapshot
 from capitalizator.recorder.sink_parquet import BufferedParquetSink
 from capitalizator.recorder.ws_book import BybitBookWs
@@ -45,21 +41,13 @@ from capitalizator.types import MarketEvent
 
 Frame = Mapping[str, Any]
 WsFactory = Callable[[], Any]
-BOOK_DEPTH = 50  # docs: linear orderbook depth ∈ {1, 50, 200, 1000}
+BOOK_DEPTH = 200  # docs: linear orderbook depth ∈ {1, 50, 200, 500, 1000}; 200 = deltas + depth
 SUBSCRIBE_CHUNK = 10  # docs: spot ≤10 args/request; observed `args size >10` rejections
 
 
 def make_public_ws(*, testnet: bool = False) -> Any:
-    from pybit.unified_trading import WebSocket
-
-    return WebSocket(
-        testnet=testnet,
-        channel_type="linear",
-        ping_interval=20,
-        ping_timeout=10,
-        retries=200,
-        restart_on_error=True,
-    )
+    """Raw socket: deltas untouched. `start()` is called by LiveRecorder.start."""
+    return RawPublicWs(testnet=testnet)
 
 
 @dataclass
@@ -87,16 +75,25 @@ class LiveRecorder:
     ws: Any = None
     started_at: datetime | None = None
     _last_status: float | None = None
+    # last trade time per symbol (this process) and the reconnect count we last marked
+    last_trade_ts: dict[str, datetime] = field(default_factory=dict)
+    _marked_reconnects: int = 0
+    _last_instruments: float | None = None
 
     def __post_init__(self) -> None:
         if not self.symbols:
             raise ValueError("symbols required")
         if self.sink is None:
-            self.sink = BufferedParquetSink(self.data_root, flush_every_s=1.0, max_rows=5000)
+            # Live feed (jsonl, per event) for the desk; parquet archive parts once a
+            # minute (compacted later). 1 s parts × 24 symbols × 4 streams = 5 800
+            # files/min on the VPS (2026-09-03) — the desk's own cursor choked on them.
+            self.sink = BufferedParquetSink(
+                self.data_root, flush_every_s=60.0, max_rows=200_000, live_jsonl=True
+            )
         if self.fetch_snapshot is None:
             rest = RestSnapshot()
             self.fetch_snapshot = rest.fetch
-        for name in ("trades", "book", "ticker"):
+        for name in ("trades", "book", "ticker", "liquidation"):
             self.stats[name] = StreamStat()
 
     # --- socket side (pybit thread) ----------------------------------------------------
@@ -108,6 +105,10 @@ class LiveRecorder:
             self.ws.trade_stream(chunk, self._cb("trades"))
             self.ws.orderbook_stream(BOOK_DEPTH, chunk, self._cb("book"))
             self.ws.ticker_stream(chunk, self._cb("ticker"))
+            if hasattr(self.ws, "liquidation_stream"):
+                self.ws.liquidation_stream(chunk, self._cb("liquidation"))
+        if hasattr(self.ws, "start"):
+            self.ws.start()
 
     def _cb(self, stream: str) -> Callable[[Frame], None]:
         def handle(frame: Frame) -> None:
@@ -159,12 +160,16 @@ class LiveRecorder:
                     stat.gaps += 1
             elif stream == "ticker":
                 events = ticker_events(frame, recv_ts=recv_ts)
+            elif stream == "liquidation":
+                events = liquidation_events(frame, recv_ts=recv_ts)
         except (ValueError, BookDirty, SeqFault, KeyError):
             stat.errors += 1
             return []
         assert self.sink is not None
         for event in events:
             self.sink.write(event)
+            if event.stream == "trades":
+                self.last_trade_ts[event.symbol] = event.exchange_ts
         stat.events += len(events)
         return events
 
@@ -179,6 +184,9 @@ class LiveRecorder:
             "flushed_rows": self.sink.flushed_count,
             "parts_written": self.sink.parts_written,
             "started_at": self.started_at.isoformat() if self.started_at else None,
+            "socket_connected": self._socket_connected(),
+            "reconnects": getattr(self.ws, "reconnects", None),
+            "last_trade_ts": {k: v.isoformat() for k, v in sorted(self.last_trade_ts.items())},
             "streams": {},
         }
         for name, st in self.stats.items():
@@ -192,6 +200,65 @@ class LiveRecorder:
             }
         return out
 
+    def mark_time_gap(self, *, now: datetime, reason: str) -> int:
+        """Write one `gap` event per symbol with ts_from/ts_to: the hole this process
+        knows about (F0 law: a restart or a reconnect is a MARKED hole; an unmarked one
+        is a silent death). ts_from = the last trade we saw for the symbol — in this
+        process, or, at startup, in the previous process's `recorder_status`."""
+        assert self.sink is not None
+        n = 0
+        for symbol in self.symbols:
+            since = self.last_trade_ts.get(symbol)
+            if since is None:
+                since = self._previous_last_trade(symbol)
+            if since is None or since >= now:
+                continue
+            self.sink.write(
+                MarketEvent(
+                    stream="gap",
+                    exchange="bybit",
+                    symbol=symbol,
+                    exchange_ts=since,
+                    recv_ts=now,
+                    seq=None,
+                    payload={
+                        "ts_from": since.isoformat(),
+                        "ts_to": now.isoformat(),
+                        "reason": reason,
+                    },
+                )
+            )
+            n += 1
+        return n
+
+    def _previous_last_trade(self, symbol: str) -> datetime | None:
+        if self.knowledge is None or not self.knowledge.available():
+            return None
+        raw = self.knowledge.meta("recorder_status")
+        if not raw:
+            return None
+        try:
+            prev = json.loads(raw)
+            stamp = (prev.get("last_trade_ts") or {}).get(symbol)
+            return None if not stamp else datetime.fromisoformat(str(stamp))
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+            return None
+
+    def mark_reconnects(self, *, now: datetime | None = None) -> int:
+        """Called from the main loop: every reconnect the socket counted since the last
+        call becomes a marked hole (ts_from = last trade before it)."""
+        count = getattr(self.ws, "reconnects", None)
+        if not isinstance(count, int) or count <= self._marked_reconnects:
+            return 0
+        self._marked_reconnects = count
+        return self.mark_time_gap(now=now or datetime.now(tz=UTC), reason="reconnect")
+
+    def _socket_connected(self) -> bool | None:
+        ws = self.ws
+        if ws is None or not hasattr(ws, "is_connected"):
+            return None
+        return bool(ws.is_connected())
+
     def publish_status(self, *, now: datetime | None = None, every_s: float = 1.0) -> bool:
         if self.knowledge is None or not self.knowledge.available():
             return False
@@ -202,23 +269,54 @@ class LiveRecorder:
         self.knowledge.set_meta("recorder_status", json.dumps(self.status(now), default=str))
         return True
 
+    INSTRUMENTS_EVERY_S = 3600.0
+
+    def publish_instruments(self, *, testnet: bool = False, force: bool = False) -> int | None:
+        """Public instruments-info → knowledge, hourly. Errors are recorded, not raised."""
+        if self.knowledge is None or not self.knowledge.available():
+            return None
+        mono = time.monotonic()
+        if not force and self._last_instruments is not None:
+            if mono - self._last_instruments < self.INSTRUMENTS_EVERY_S:
+                return None
+        self._last_instruments = mono
+        from capitalizator.recorder.public_rest import publish_instruments
+
+        try:
+            n = publish_instruments(self.knowledge, testnet=testnet)
+        except Exception as exc:  # network / venue: say why (type + code), keep recording
+            code = getattr(exc, "code", None)
+            self.knowledge.set_meta(
+                "instruments_error_recorder", type(exc).__name__ + (f" {code}" if code else "")
+            )
+            return None
+        self.knowledge.set_meta("instruments_error_recorder", "")
+        return n
+
     def run(
         self,
         *,
         should_stop: Callable[[], bool],
         idle_s: float = 0.05,
         sleep: Callable[[float], None] = time.sleep,
+        testnet: bool = False,
     ) -> None:
+        # the hole between the previous process's last trade and now is OURS to mark
+        self.mark_time_gap(now=datetime.now(tz=UTC), reason="start")
         self.start()
+        self.publish_instruments(testnet=testnet, force=True)
         try:
             while not should_stop():
                 n = self.drain()
+                self.mark_reconnects()
                 self.publish_status()
+                self.publish_instruments(testnet=testnet)
                 if n == 0 and idle_s:
                     sleep(idle_s)
         finally:
             assert self.sink is not None
             self.sink.flush()
+            self.sink.close()
             self.publish_status(every_s=0)
             ws = self.ws
             if ws is not None and hasattr(ws, "exit"):

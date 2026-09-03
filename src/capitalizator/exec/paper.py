@@ -80,11 +80,23 @@ class PaperPosition:
     stop_components: dict[str, str] = field(default_factory=dict)
     # Journal labels the trade was taken on (idea class stats, champion/calibrate.py).
     labels: dict[str, Any] = field(default_factory=dict)
+    # The stop the trade was *taken* with. 1R is |limit − initial_stop| and never
+    # changes when the stop trails (audit D-10: MAE/MFE in R drifted after a trail).
+    initial_stop: Decimal | None = None
+    # Queue model: volume that traded at our limit *after* we were resting there.
+    # We are filled when it exceeds the depth that was ahead of us (see PaperEngine).
+    queue_ahead: Decimal | None = None
+    queue_traded: Decimal = Decimal("0")
+
+    def __post_init__(self) -> None:
+        if self.initial_stop is None:
+            self.initial_stop = self.stop
 
     # --- geometry -----------------------------------------------------------
     @property
     def r_px(self) -> Decimal:
-        return abs(self.limit_px - self.stop)
+        base = self.initial_stop if self.initial_stop is not None else self.stop
+        return abs(self.limit_px - base)
 
     def _favorable(self, px: Decimal) -> Decimal:
         assert self.entry_px is not None
@@ -120,6 +132,39 @@ class PaperPosition:
             else None
         )
         return out
+
+    _DECIMALS = frozenset(
+        {
+            "limit_px", "qty", "stop", "tp", "tick", "risk_usdt", "entry_px", "qty_open",
+            "half_px", "realized", "fees", "funding", "mae_px", "mfe_px", "exit_px",
+            "trailing_distance", "structural", "initial_stop", "queue_ahead", "queue_traded",
+        }
+    )
+    _DATETIMES = frozenset(
+        {"created_at", "valid_until", "filled_at", "naive_fill_at", "half_at", "closed_at"}
+    )
+
+    @classmethod
+    def from_payload(cls, raw: Mapping[str, Any]) -> PaperPosition:
+        """Inverse of `to_payload` for the open/pending twins that survive a restart."""
+        kwargs: dict[str, Any] = {}
+        for f in cls.__dataclass_fields__:
+            if f not in raw:
+                continue
+            v = raw[f]
+            if f in cls._DECIMALS:
+                kwargs[f] = None if v in (None, "") else Decimal(str(v))
+            elif f in cls._DATETIMES:
+                kwargs[f] = None if v in (None, "") else datetime.fromisoformat(str(v))
+            elif f == "max_hold":
+                kwargs[f] = timedelta(seconds=float(v))
+            elif f == "stop_moves":
+                kwargs[f] = [tuple(x) for x in (v or [])]
+            elif f in {"stop_components", "labels"}:
+                kwargs[f] = dict(v or {})
+            else:
+                kwargs[f] = v
+        return cls(**kwargs)
 
     # --- results ------------------------------------------------------------
     def pnl_net(self) -> Decimal:
@@ -188,9 +233,12 @@ class PaperEngine:
         structural: Decimal | None = None,
         stop_components: dict[str, str] | None = None,
         labels: Mapping[str, Any] | None = None,
+        queue_ahead: Decimal | None = None,
     ) -> PaperPosition:
         if qty <= 0 or limit_px <= 0 or stop <= 0 or tick <= 0:
             raise ValueError("qty/limit/stop/tick must be > 0")
+        if queue_ahead is not None and queue_ahead < 0:
+            raise ValueError("queue_ahead must be >= 0")
         if side == "buy" and stop >= limit_px:
             raise ValueError("buy stop must be below limit")
         if side == "sell" and stop <= limit_px:
@@ -218,10 +266,32 @@ class PaperEngine:
             structural=structural,
             stop_components=dict(stop_components or {}),
             labels=dict(labels or {}),
+            queue_ahead=queue_ahead,
         )
         self.positions[paper_id] = pos
         self.n_submitted += 1
         return pos
+
+    # --- persistence (twins survive a desk restart) ------------------------------
+    def snapshot(self) -> list[dict[str, Any]]:
+        return [p.to_payload() for p in self.positions.values()]
+
+    def restore(self, rows: Iterable[Mapping[str, Any]]) -> int:
+        """Load pending/open twins written by `snapshot`. Closed rows are ignored."""
+        n = 0
+        done = {p.paper_id for p in self.closed}
+        for raw in rows:
+            if raw.get("state") == "closed":
+                continue
+            pos = PaperPosition.from_payload(raw)
+            if pos.paper_id in self.positions or pos.paper_id in done:
+                continue
+            self.positions[pos.paper_id] = pos
+            n += 1
+        return n
+
+    def open_symbols(self) -> list[str]:
+        return sorted({p.symbol for p in self.positions.values()})
 
     # --- tape -----------------------------------------------------------------
     def on_print(self, trade: MarketEvent) -> list[PaperPosition]:
@@ -233,10 +303,19 @@ class PaperEngine:
         except (KeyError, ArithmeticError):
             return []
         taker = str(trade.payload.get("side") or "").lower()
+        try:
+            qty_print = Decimal(str(trade.payload.get("qty") or trade.payload.get("size") or "0"))
+        except ArithmeticError:
+            qty_print = Decimal("0")
         when = require_utc(trade.exchange_ts)
         changed: list[PaperPosition] = []
         for pos in list(self.positions.values()):
             if pos.symbol != trade.symbol:
+                continue
+            # A print older than the twin belongs to the tape replayed after a restart,
+            # not to this trade: it can neither fill nor stop it (audit A2 — restored
+            # twins were stopped out by history and the venue position flattened).
+            if when < pos.created_at or (pos.filled_at is not None and when < pos.filled_at):
                 continue
             pos.prints_seen += 1
             if pos.state == "pending":
@@ -246,7 +325,7 @@ class PaperEngine:
                     continue
                 if pos.naive_fill_at is None and self._touches(pos, px):
                     pos.naive_fill_at = when
-                if self._fills(pos, px, taker):
+                if self._fills(pos, px, taker, qty_print):
                     self._fill(pos, when)
                     changed.append(pos)
                     # the same print cannot also stop us out
@@ -259,10 +338,13 @@ class PaperEngine:
                     self._exit(pos, when, self._stop_fill_px(pos), "stop", role="taker")
                     changed.append(pos)
                     continue
-                if not pos.half_taken and pos.r_now(px) is not None and pos.r_now(px) >= 1:
+                # Exits are resting limits too: the tape must trade THROUGH them, or at
+                # them with the taker on the other side — the same queue rule as the
+                # entry (audit: touch-fills on exits inflated paper R).
+                if not pos.half_taken and self._level_filled(pos, self._half_px(pos), px, taker):
                     self._take_half(pos, when)
                     changed.append(pos)
-                if pos.tp is not None and self._tp_hit(pos, px):
+                if pos.tp is not None and self._level_filled(pos, pos.tp, px, taker):
                     self._exit(pos, when, pos.tp, "tp", role="maker")
                     changed.append(pos)
                     continue
@@ -351,20 +433,46 @@ class PaperEngine:
         return px <= pos.limit_px if pos.side == "buy" else px >= pos.limit_px
 
     @staticmethod
-    def _fills(pos: PaperPosition, px: Decimal, taker: str) -> bool:
-        """Conservative queue: trade through the limit, or at it against us."""
+    def _fills(pos: PaperPosition, px: Decimal, taker: str, qty_print: Decimal) -> bool:
+        """Queue model for the entry.
+
+        Through the limit → filled (everything at our level was taken).
+        At the limit with the taker against us → we are in the queue: filled when the
+        volume traded at our price since we rested exceeds the depth that was ahead of
+        us (`queue_ahead`, from the book at submit). Without a queue figure the rule
+        degrades to the old conservative one (first print at the level fills us).
+        """
         if pos.side == "buy":
-            return px < pos.limit_px or (px == pos.limit_px and taker == "sell")
-        return px > pos.limit_px or (px == pos.limit_px and taker == "buy")
+            through = px < pos.limit_px
+            at_level = px == pos.limit_px and taker == "sell"
+        else:
+            through = px > pos.limit_px
+            at_level = px == pos.limit_px and taker == "buy"
+        if through:
+            return True
+        if not at_level:
+            return False
+        if pos.queue_ahead is None:
+            return True
+        pos.queue_traded += qty_print
+        return pos.queue_traded > pos.queue_ahead
+
+    @staticmethod
+    def _level_filled(pos: PaperPosition, level: Decimal, px: Decimal, taker: str) -> bool:
+        """A resting exit at `level` (half / TP) fills when the tape trades through it,
+        or at it with the taker on the other side of our order."""
+        if pos.side == "buy":  # we sell at level
+            return px > level or (px == level and taker == "buy")
+        return px < level or (px == level and taker == "sell")
+
+    @staticmethod
+    def _half_px(pos: PaperPosition) -> Decimal:
+        assert pos.entry_px is not None
+        return pos.entry_px + pos.r_px if pos.side == "buy" else pos.entry_px - pos.r_px
 
     @staticmethod
     def _stop_hit(pos: PaperPosition, px: Decimal) -> bool:
         return px <= pos.stop if pos.side == "buy" else px >= pos.stop
-
-    @staticmethod
-    def _tp_hit(pos: PaperPosition, px: Decimal) -> bool:
-        assert pos.tp is not None
-        return px >= pos.tp if pos.side == "buy" else px <= pos.tp
 
     def _stop_fill_px(self, pos: PaperPosition) -> Decimal:
         slip = pos.tick * self.slippage_ticks
@@ -406,8 +514,7 @@ class PaperEngine:
         pos.last_funding_slot = slot
 
     def _take_half(self, pos: PaperPosition, when: datetime) -> None:
-        assert pos.entry_px is not None
-        px = pos.entry_px + pos.r_px if pos.side == "buy" else pos.entry_px - pos.r_px
+        px = self._half_px(pos)
         part = pos.qty_open * HALF
         pos.realized += pos._favorable(px) * part
         pos.fees += part * px * self.fees.rate("maker")

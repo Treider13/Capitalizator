@@ -85,7 +85,16 @@ def _bar(close_ts: datetime, *, close: str = "100.6", low: str = "100.2") -> Bar
     )
 
 
+def _seed_churn_norm(desk: DeskLoop, symbol: str = "BTCUSDT", share: str = "0.05") -> None:
+    """A mature churn norm for the symbol: quiet market making (5% of adds vanish).
+    Without it the Shadow's spoof/layering is provisional and never a veto."""
+    passport = desk.oko.passport_for(symbol)
+    for _ in range(30):
+        passport.observe_churn(Decimal(share))
+
+
 def _touch_then_wall(desk: DeskLoop, *, wall: str, back: str = "20") -> None:
+    _seed_churn_norm(desk)
     desk.on_event(_snapshot(WINDOW))
     desk.on_event(_trade(WINDOW), [ZONE])
     desk.on_event(_diff(WINDOW + timedelta(seconds=1), seq=2, bid=wall))
@@ -119,7 +128,9 @@ def test_silent_bid_wall_under_the_print_is_spoof_and_veto(tmp_path: Path) -> No
         journal["oko_fingerprint"] and journal["oko_fingerprint"].count("-") == 12
     )  # 10 Shadow + 3 Footprint
     assert journal["jury"] == "VETO"
-    assert journal["zlg_label"] == "DEFEND"  # the book *looked* defended; ОКО saw the pull
+    # The +25 was shown and pulled inside the window: survived liquidity is ~0, so the
+    # gesture itself is SILENCE now (it used to say DEFEND on the flash). ОКО names the spoof.
+    assert journal["zlg_label"] == "SILENCE"
 
 
 def test_wall_that_is_eaten_is_not_a_spoof(tmp_path: Path) -> None:
@@ -366,6 +377,7 @@ def test_b_veto_does_not_blind_oko(tmp_path: Path) -> None:
     from capitalizator.card.live import CardLive
 
     desk = _desk(tmp_path)
+    _seed_churn_norm(desk)
     veto = CardLive(
         symbol="BTCUSDT",
         bearing_verdict="veto",
@@ -390,3 +402,48 @@ def test_b_veto_does_not_blind_oko(tmp_path: Path) -> None:
     assert journal["oko_footprint"] == "NONE"
     assert journal["oko_voice"] == "VETO"  # ОКО judged the same touch
     assert journal["jury"] == "VETO"
+
+
+def test_forecast_class_key_matches_between_judge_and_samples(tmp_path: Path) -> None:
+    """Audit B7: `judge` keyed the class WITH the footprint axis, `_oko_samples` WITHOUT it
+    → the keys never matched and n_class stayed 0 for the life of the desk."""
+    from capitalizator.oko.forecast import class_key
+
+    desk = _desk(tmp_path)
+    desk.on_event(_snapshot(WINDOW))
+    desk.on_event(_trade(WINDOW), [ZONE])
+    desk.on_event(_diff(WINDOW + timedelta(seconds=2), seq=2, bid="30"))
+    desk.tick(WINDOW + timedelta(seconds=8))
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    assert row is not None and row["oko_footprint"] is not None
+    # resolve the touch so it becomes a sample (journal path)
+    desk.registry._patch(touch_id=row["touch_id"], overwrite=True, outcome="bounce")
+    row["outcome"] = "bounce"
+    desk.knowledge.put_journal_touch(row["touch_id"], row)
+    samples = desk._oko_samples()
+    assert samples, "a resolved touch must become a forecast sample"
+    judge_key = class_key(
+        idea=row["idea"], cav=row["cav_label"], zlg=row["zlg_label"],
+        regime=row["oko_regime"], footprint=row["oko_footprint"],
+    )
+    assert samples[0].class_key == judge_key
+    assert not samples[0].class_key.endswith("× ?")
+
+
+def test_without_a_churn_norm_the_shadow_is_provisional_not_a_veto(tmp_path: Path) -> None:
+    """Live fact 2026-09-03: 4/4 first windows on BTC/ETH were LAYERING — normal quote churn
+    of a liquid book read as manipulation, before any norm existed. No norm → no veto:
+    the label is written, size is halved, the eye learns the symbol's churn."""
+    desk = _desk(tmp_path)
+    desk.on_event(_snapshot(WINDOW))
+    desk.on_event(_trade(WINDOW), [ZONE])
+    desk.on_event(_diff(WINDOW + timedelta(seconds=1), seq=2, bid="45"))
+    desk.on_event(_diff(WINDOW + timedelta(seconds=3), seq=3, bid="20"))
+    desk.tick(WINDOW + timedelta(seconds=8))
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    journal = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    assert journal["oko_voice"] == 0 and journal["oko_label"] == "SPOOF"
+    assert "provisional" in journal["oko_reason"]
+    assert Decimal(journal["oko_size_mult"]) <= Decimal("0.5")
+    assert desk.oko.passport_for("BTCUSDT").churn.n == 1  # the window taught the norm

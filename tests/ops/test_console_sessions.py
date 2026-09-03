@@ -48,14 +48,13 @@ def test_universe_view_and_apply_through_console(tmp_path: Path, monkeypatch: py
     kn = open_knowledge(vault)
     view = universe_view(kn)
     assert "BTCUSDT" in view["current"] and view["proposal"] is None
-    # a proposal stored by the signer; apply targets a temp copy of the yaml
-    import capitalizator.screener.refresh as refresh
-    import capitalizator.screener.universe as universe_mod
+    # a proposal stored by the signer; apply writes the vault's universe.yaml (the image
+    # is read-only and every process mounts the data dir — CAP_USERDIR points there)
+    from capitalizator.screener.universe import default_desk_path, load_desk_universe
 
-    target = tmp_path / "universe.yaml"
-    target.write_text("exchange: bybit\ncategory: linear\nsymbols: [BTCUSDT, ETHUSDT]\n")
-    monkeypatch.setattr(universe_mod, "default_desk_path", lambda: target)
-    monkeypatch.setattr(refresh, "default_desk_path", lambda: target)
+    monkeypatch.setenv("CAP_USERDIR", str(vault.root))
+    monkeypatch.delenv("CAP_UNIVERSE", raising=False)
+    target = vault.root / "universe.yaml"
     kn.set_meta(META_PROPOSAL, json.dumps({"proposal_id": "abc", "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"]}))
     kn.close()
     app = ConsoleApp(vault)
@@ -66,6 +65,11 @@ def test_universe_view_and_apply_through_console(tmp_path: Path, monkeypatch: py
     out = app.apply_universe("abc", ack=True)
     assert out["universe"] == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     assert "SOLUSDT" in target.read_text()
+    # every reader now resolves to the applied file; week0 still wins when asked for
+    assert default_desk_path() == target and "SOLUSDT" in load_desk_universe().symbols
+    monkeypatch.setenv("CAP_UNIVERSE", "week0")
+    assert list(load_desk_universe().symbols) == ["BTCUSDT", "ETHUSDT"]
+    monkeypatch.delenv("CAP_UNIVERSE")
     got = _api_get(vault, "/api/universe", {})
     assert got["applied"]["proposal_id"] == "abc"
 

@@ -10,8 +10,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from decimal import Decimal
 
+from capitalizator.stats import n_min
+
 KAPPA = Decimal("20")
-N_MIN = 20
+N_MIN = n_min()
 
 
 def channel_weight(n: int, hit: Decimal, *, kappa: Decimal = KAPPA) -> Decimal:

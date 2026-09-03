@@ -97,7 +97,7 @@ def test_http_get_and_post_readonly(tmp_path: Path) -> None:
             "POST",
             "/api/contour",
             body='{"action":"on"}',
-            headers={"Content-Type": "application/json"},
+            headers={"X-Ack-Token": app.csrf_token, "Content-Type": "application/json"},
         )
         resp = conn.getresponse()
         assert resp.status == 409
@@ -246,7 +246,7 @@ def test_http_enable_after_hours24(tmp_path: Path) -> None:
             "POST",
             "/api/contour",
             body='{"action":"on"}',
-            headers={"Content-Type": "application/json"},
+            headers={"X-Ack-Token": app.csrf_token, "Content-Type": "application/json"},
         )
         resp = conn.getresponse()
         assert resp.status == 200
@@ -287,7 +287,7 @@ def test_http_form_enable_redirects(tmp_path: Path) -> None:
             "POST",
             "/contour",
             body="action=on",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={"X-Ack-Token": app.csrf_token, "Content-Type": "application/x-www-form-urlencoded"},
         )
         resp = conn.getresponse()
         assert resp.status == 303
@@ -305,7 +305,7 @@ def test_http_form_enable_redirects(tmp_path: Path) -> None:
             "POST",
             "/contour",
             body="action=off",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={"X-Ack-Token": app.csrf_token, "Content-Type": "application/x-www-form-urlencoded"},
         )
         bad = conn.getresponse()
         assert bad.status == 400
@@ -331,7 +331,7 @@ def test_http_form_without_hours24_is_409_html(tmp_path: Path) -> None:
             "POST",
             "/contour",
             body="action=on",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={"X-Ack-Token": app.csrf_token, "Content-Type": "application/x-www-form-urlencoded"},
         )
         resp = conn.getresponse()
         assert resp.status == 409
@@ -364,7 +364,7 @@ def test_http_unknown_contour_meta_is_plain_500(tmp_path: Path) -> None:
             "POST",
             "/api/contour",
             body='{"action":"on"}',
-            headers={"Content-Type": "application/json"},
+            headers={"X-Ack-Token": app.csrf_token, "Content-Type": "application/json"},
         )
         resp = conn.getresponse()
         assert resp.status == 500
@@ -419,13 +419,14 @@ def test_chronos_api_empty_shapes(tmp_path: Path) -> None:
         status = json.loads(conn.getresponse().read().decode())
         conn.close()
         assert "last_price" in status
-        assert status["session_window"]["start"] == "16:30"
+        assert status["session_window"]["tz"] == "UTC" and "name" in status["session_window"]
         assert status["last_jury"] == {}
         conn = HTTPConnection(host, port, timeout=3)
         conn.request("GET", "/api/hello/status")
         hello = json.loads(conn.getresponse().read().decode())
         conn.close()
-        assert hello == {"hello_ok": False, "real": False}
+        assert hello["hello_ok"] is False and hello["real"] is False
+        assert hello["cred_present"] is False
         conn = HTTPConnection(host, port, timeout=3)
         conn.request("GET", "/api/bars?symbol=BTCUSDT")
         bars = json.loads(conn.getresponse().read().decode())
@@ -603,7 +604,8 @@ def test_chronos_api_reads_vault_not_examples(tmp_path: Path) -> None:
         assert llm["trade_advice"] is False
 
         hello = _json_get(host, port, "/api/hello/status")
-        assert hello == {"hello_ok": False, "real": False}
+        assert hello["hello_ok"] is False and hello["real"] is False
+        assert hello["cred_present"] is False
 
         gates = _json_get(host, port, "/api/gates")
         assert gates["n_touches"] == 1
@@ -651,3 +653,96 @@ def test_chronos_api_reads_vault_not_examples(tmp_path: Path) -> None:
     finally:
         server2.shutdown()
         server2.server_close()
+
+
+def test_hello_without_keys_is_403_and_does_not_set_the_flag(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    app = ConsoleApp(vault)
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/hello",
+            body=json.dumps({"ack_token": app.csrf_token}),
+            headers={"Content-Type": "application/json", "X-Ack-Token": app.csrf_token},
+        )
+        resp = conn.getresponse()
+        assert resp.status == 403
+        assert resp.read() == b"no keys"
+        conn.close()
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/hello",
+            body="{}",
+            headers={"Content-Type": "application/json"},
+        )
+        assert conn.getresponse().status == 403
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+    from capitalizator.ops.product import hello_recorded
+
+    assert hello_recorded(vault) is False
+
+
+def test_hello_with_keys_records_a_real_venue_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from capitalizator.ops.product import hello_recorded
+    from capitalizator.ops.settings import Settings
+
+    vault = init_vault(tmp_path / "desk")
+    Settings(vault).update(
+        {"bybit.api_key": "testkey12", "bybit.api_secret": "testsecret", "bybit.mode": "demo"},
+        ack=True,
+    )
+
+    class FakeGW:
+        def __init__(self, session: object, mode: str = "demo") -> None:
+            self.mode = mode
+
+        def hello(self, *, probe_order: bool = False) -> dict:
+            return {"ok": True, "fee_rate": {"ok": True, "value": ["0.0002", "0.00055"]}}
+
+    monkeypatch.setattr("capitalizator.gateway.BybitGateway", FakeGW)
+    monkeypatch.setattr("capitalizator.gateway.bybit.make_session", lambda keys: object())
+    app = ConsoleApp(vault)
+    out = app.prove_hello(ack=True)
+    assert out["hello_ok"] is True and out["real"] is True
+    assert hello_recorded(vault) is True
+    from capitalizator.ops.chronos_data import hello_status
+
+    snap = hello_status(vault)
+    assert snap["hello_ok"] is True and snap["real"] is True and snap["cred_present"] is True
+
+
+def test_failed_venue_hello_does_not_set_the_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from capitalizator.ops.chronos_data import hello_status
+    from capitalizator.ops.product import hello_recorded
+    from capitalizator.ops.settings import Settings
+
+    vault = init_vault(tmp_path / "desk")
+    Settings(vault).update(
+        {"bybit.api_key": "testkey12", "bybit.api_secret": "testsecret", "bybit.mode": "demo"},
+        ack=True,
+    )
+
+    class FakeGW:
+        def __init__(self, session: object, mode: str = "demo") -> None:
+            self.mode = mode
+
+        def hello(self, *, probe_order: bool = False) -> dict:
+            return {"ok": False, "wallet_equity": {"ok": False, "error": "refused"}}
+
+    monkeypatch.setattr("capitalizator.gateway.BybitGateway", FakeGW)
+    monkeypatch.setattr("capitalizator.gateway.bybit.make_session", lambda keys: object())
+    out = ConsoleApp(vault).prove_hello(ack=True)
+    assert out["hello_ok"] is False and out["real"] is False
+    assert hello_recorded(vault) is False
+    snap = hello_status(vault)
+    assert snap["hello_ok"] is False and snap["real"] is False and snap["cred_present"] is True
+

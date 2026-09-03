@@ -11,7 +11,6 @@ observer: it writes, it does not vote. `die` teaches nothing and is not stored.
 
 from __future__ import annotations
 
-import math
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -19,12 +18,14 @@ from datetime import datetime
 from typing import Any
 
 from capitalizator.oko.footprint import FINGERPRINT_LEN
+from capitalizator.oko.shadow import FINGERPRINT_LEN as SHADOW_FP_LEN
+from capitalizator.stats import Z95_F, n_min, wilson_lower_f
 from capitalizator.types import require_utc
 
-N_MIN = 20
+N_MIN = n_min()
 MAX_DISTANCE = 1
 MAX_RECORDS = 5000
-Z_95 = 1.959963984540054
+Z_95 = Z95_F
 TRAP_LOWER_BOUND = 0.5
 # spring (exec/ideas): wick through, close inside, traded WITH the zone — bounce family.
 IDEA_FAMILY = {
@@ -75,13 +76,7 @@ def is_trap(*, idea: str, outcome: str) -> bool | None:
 
 
 def wilson_lower(k: int, n: int, *, z: float = Z_95) -> float:
-    if n <= 0 or k < 0 or k > n:
-        raise ValueError("wilson needs 0 <= k <= n, n > 0")
-    p = k / n
-    denom = 1.0 + z * z / n
-    centre = p + z * z / (2.0 * n)
-    adj = z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))
-    return max(0.0, (centre - adj) / denom)
+    return wilson_lower_f(k, n, z=z)
 
 
 def hamming(a: Sequence[int], b: Sequence[int]) -> int:
@@ -98,6 +93,8 @@ class ImmuneMemory:
             raise ValueError("max_records must be >= N_MIN")
         self.symbol = symbol
         self.records: deque[Antigen] = deque(maxlen=max_records)
+        self.migrated = 0
+        self.skipped = 0
 
     @property
     def n(self) -> int:
@@ -152,19 +149,37 @@ class ImmuneMemory:
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> ImmuneMemory:
+        """Load persisted antigens. Rows written before the Footprint organ carry the
+        10-int Shadow fingerprint only; they are not comparable with 13-int probes and
+        are dropped, counted in `migrated` (the desk shows the count). Anything else
+        malformed is skipped and counted in `skipped` — a desk restart must never die
+        on its own memory (audit B7)."""
         out = cls(str(raw.get("symbol") or ""))
         rows = raw.get("records") or []
         if not isinstance(rows, list):
             raise ValueError("memory records must be a list")
+        out.migrated = 0
+        out.skipped = 0
         for row in rows:
             if not isinstance(row, dict):
-                raise ValueError("memory record must be a mapping")
-            out.records.append(
-                Antigen(
-                    fingerprint=tuple(int(v) for v in row["f"]),
-                    family=str(row["family"]),
-                    trap=bool(row["trap"]),
-                    ts=str(row["ts"]),
+                out.skipped += 1
+                continue
+            try:
+                fp = tuple(int(v) for v in row["f"])
+                if len(fp) == SHADOW_FP_LEN:
+                    # A 10-int antigen has no Footprint axes; padding them with zeros
+                    # inflates the Hamming distance to every real 13-int probe, so the
+                    # row would never match anyway (audit B18). Counted, not kept.
+                    out.migrated += 1
+                    continue
+                out.records.append(
+                    Antigen(
+                        fingerprint=fp,
+                        family=str(row["family"]),
+                        trap=bool(row["trap"]),
+                        ts=str(row["ts"]),
+                    )
                 )
-            )
+            except (KeyError, TypeError, ValueError):
+                out.skipped += 1
         return out

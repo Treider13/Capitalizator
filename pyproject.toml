@@ -54,6 +54,12 @@ select = ["E", "F", "I", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E501"]
+# Russian operator texts (labels, hints) are long human sentences.
+"src/capitalizator/ops/i18n_ru.py" = ["E501"]
+"src/capitalizator/ops/settings.py" = ["E501"]
+"src/capitalizator/ops/settings_page.py" = ["E501"]
+"src/capitalizator/ops/ops_page.py" = ["E501"]
+"src/capitalizator/ops/gen_status.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -69,4 +75,8 @@ files = [
     "src/capitalizator/screener/refresh.py",
     "src/capitalizator/exec/smart_stop.py",
     "src/capitalizator/gateway/keys.py",
+    "src/capitalizator/ops/uptime.py",
+    "src/capitalizator/ops/healthz.py",
+    "src/capitalizator/ops/alerts.py",
+    "src/capitalizator/ops/ops_page.py",
 ]

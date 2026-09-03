@@ -308,7 +308,9 @@ def test_two_parquet_writers_do_not_corrupt(tmp_path: Path) -> None:
     assert sink_a.accepted_count + sink_b.accepted_count == 10
 
 
-def test_btc_same_side_is_plus_one_not_zero() -> None:
+def test_btc_same_side_is_permission_and_break_against_is_veto() -> None:
+    """BTC is a filter (jury §3.1): the same side is permission (0), never evidence (+1);
+    a break against the alt idea is VETO."""
     voices = voices_for_bounce(
         cav="REJECT",
         n_cav=20,
@@ -318,7 +320,12 @@ def test_btc_same_side_is_plus_one_not_zero() -> None:
         btc_regime="long",
         btc_same_side=True,
     )
-    assert voices.btc == 1
+    assert voices.btc == 0
+    against = voices_for_bounce(
+        cav="REJECT", n_cav=20, zlg="DEFEND", n_zlg=20, tape_eaten=False,
+        btc_regime="long", btc_break_against=True,
+    )
+    assert against.btc == "VETO"
 
 
 def test_console_html_has_plan_screen(tmp_path: Path) -> None:
@@ -329,7 +336,7 @@ def test_console_html_has_plan_screen(tmp_path: Path) -> None:
     page = render_html(vault)
     assert "BTCUSDT" in page
     assert "SOLUSDT" in page
-    assert "CAV × ZLG × outcome" in page
+    assert "Свеча (CAV) × Книга (ZLG) × Исход" in page
     assert "Жюри дня" in page
     assert "n касаний" in page
     assert "День учёбы" in page
@@ -418,25 +425,25 @@ def test_signer_serve_loop_drains_queue(tmp_path: Path) -> None:
         },
         created_ts=WINDOW.isoformat(),
     )
-    sent: list[dict] = []
     n = {"i": 0}
 
     def should_stop() -> bool:
         n["i"] += 1
         return n["i"] >= 2
 
+    # No key → the row is parked as `no_gateway` (never "failed"): the desk keeps
+    # the idea and the row is re-queued when a gateway appears.
     serve_loop(
         knowledge=knowledge,
         vault=vault,
-        send=lambda row: sent.append(row) or {"status": "sent"},
-        cancel_all=lambda: None,
         should_stop=should_stop,
         idle_s=0,
         now=WINDOW,
     )
+    parked = knowledge.intents_with_status("no_gateway")
+    assert len(parked) == 1 and parked[0]["payload"]["symbol"] == "BTCUSDT"
+    assert knowledge.pending_intents() == []
     knowledge.close()
-    assert sent
-    assert sent[0]["symbol"] == "BTCUSDT"
 
 
 def test_desk_screener_accepts_sol(tmp_path: Path) -> None:
@@ -783,18 +790,36 @@ def test_ticker_emits_mark_with_funding_and_oi() -> None:
     assert mark.payload["mark"] == "65000.1"
 
 
-def test_minutes_cli_announces_24_symbol_subscribe(tmp_path: Path, capsys) -> None:
-    """§2 / wave 2: --minutes without jsonl is live; subscribe covers 24 symbols."""
-    import json
+def test_live_ws_subscribes_the_whole_universe_including_liquidations(tmp_path: Path) -> None:
+    """§2 / wave 2: the live recorder covers all 24 symbols × 4 public streams. The old
+    `--minutes` path printed `"live": true` after writing nothing and is refused now."""
+    import pytest
 
     from capitalizator.recorder.app import main
+    from capitalizator.recorder.live_ws import LiveRecorder
+    from capitalizator.screener.universe import load_desk_universe
 
-    assert main(["--minutes", "1", "--data-root", str(tmp_path)]) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["live"] is True
-    assert payload["n_symbols"] == 24
-    assert payload["subscribe"]["op"] == "subscribe"
-    assert len(payload["subscribe"]["args"]) == 24 * 5  # + allLiquidation (ОКО След)
+    with pytest.raises(SystemExit, match="live-ws"):
+        main(["--minutes", "1", "--data-root", str(tmp_path)])
+
+    class Spy:
+        def __init__(self) -> None:
+            self.topics: list[str] = []
+
+        def trade_stream(self, syms, cb): self.topics += [f"publicTrade.{s}" for s in syms]
+        def orderbook_stream(self, depth, syms, cb): self.topics += [f"orderbook.{depth}.{s}" for s in syms]
+        def ticker_stream(self, syms, cb): self.topics += [f"tickers.{s}" for s in syms]
+        def liquidation_stream(self, syms, cb): self.topics += [f"allLiquidation.{s}" for s in syms]
+        def start(self): ...
+
+    spy = Spy()
+    symbols = list(load_desk_universe().symbols)
+    rec = LiveRecorder(symbols=symbols, data_root=tmp_path, ws_factory=lambda: spy,
+                       fetch_snapshot=lambda s: None)
+    rec.start()
+    assert len(symbols) == 24
+    assert len(spy.topics) == 24 * 4
+    assert sum(1 for t in spy.topics if t.startswith("allLiquidation.")) == 24
 
 
 def test_rest_ticker_is_funding_oi_mark() -> None:

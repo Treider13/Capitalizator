@@ -18,6 +18,8 @@ from capitalizator.screener.universe import Universe, default_week0_path, load_u
 Side = Literal["buy", "sell"]
 PaperVenue = Literal["demo", "testnet"]
 PAPER_VENUES = frozenset({"demo", "testnet"})
+Venue = Literal["demo", "testnet", "live_sub", "live_main"]
+VENUES = frozenset({"demo", "testnet", "live_sub", "live_main"})
 
 
 class UnsignedIntent(BaseModel):
@@ -30,7 +32,7 @@ class UnsignedIntent(BaseModel):
     stop_px: Decimal
     tp_px: Decimal | None = None
     reduce_only_stop: bool = True
-    trading_mode: PaperVenue
+    trading_mode: Venue
 
 
 class Order(BaseModel):
@@ -43,7 +45,7 @@ class Order(BaseModel):
     stop_px: Decimal
     tp_px: Decimal | None = None
     reduce_only_stop: bool = True
-    trading_mode: PaperVenue
+    trading_mode: Venue
 
 
 class Signer:
@@ -51,8 +53,8 @@ class Signer:
         self.universe = universe or load_universe(default_week0_path())
 
     def validate(self, unsigned: UnsignedIntent) -> Order:
-        if unsigned.trading_mode not in PAPER_VENUES:
-            raise ValueError("signer accepts demo|testnet only")
+        if unsigned.trading_mode not in VENUES:
+            raise ValueError(f"venue must be one of {sorted(VENUES)}")
         if unsigned.symbol not in self.universe.symbols:
             raise ValueError(f"symbol not in week0 universe: {unsigned.symbol}")
         if unsigned.qty <= 0 or unsigned.limit_px <= 0 or unsigned.stop_px <= 0:

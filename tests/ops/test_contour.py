@@ -548,16 +548,18 @@ def test_enable_reread_hours24_red_does_not_write(
     vault = init_vault(tmp_path / "desk")
     open_knowledge(vault).close()
     _write_hours24(vault.tape)
-    calls = {"n": 0}
-    real = hours24
+    from capitalizator.ops import uptime as uptime_mod
 
-    def flaky(events: object, *, symbol: str = "BTCUSDT") -> tuple[bool, float | None]:
+    calls = {"n": 0}
+    real = uptime_mod.hours24_from_state
+
+    def flaky(state: object, *, symbol: str, hours: float = 24.0) -> tuple:
         calls["n"] += 1
         if calls["n"] >= 2:
-            return False, 86400.0
-        return real(events, symbol=symbol)  # type: ignore[arg-type]
+            return False, 86400.0, {"reason": "went red between status and enable"}
+        return real(state, symbol=symbol, hours=hours)  # type: ignore[arg-type]
 
-    monkeypatch.setattr("capitalizator.ops.contour.hours24", flaky)
+    monkeypatch.setattr(uptime_mod, "hours24_from_state", flaky)
     with pytest.raises(ContourNotReady, match="hours24"):
         enable(vault)
     assert contour_state(vault) == "off"

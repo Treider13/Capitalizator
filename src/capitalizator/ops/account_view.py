@@ -13,6 +13,7 @@ from typing import Any
 
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.risk.config import load_risk_config
+from capitalizator.stats import wilson_interval
 
 STALE_DESK_S = 5.0
 STALE_RECORDER_S = 10.0
@@ -58,12 +59,8 @@ def paper_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     ci = None
     if n:
         # Wilson 95% interval — how sure we are about the winrate at this n
-        z = Decimal("1.96")
-        p = winrate or Decimal("0")
-        denom = 1 + z * z / n
-        centre = (p + z * z / (2 * n)) / denom
-        half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** Decimal("0.5")) / denom
-        ci = [str(max(Decimal("0"), centre - half)), str(min(Decimal("1"), centre + half))]
+        lo, hi = wilson_interval(len(wins), n)
+        ci = [str(lo), str(hi)]
     return {
         "n": n,
         "n_unfilled": len(rows) - len(filled),
@@ -249,6 +246,7 @@ def sessions_view(knowledge: Knowledge, *, now: datetime | None = None) -> dict[
             "blackouts": list(policy.active_blackouts(when)),
         },
         "windows": windows,
+        "daily_budget_cap": policy.daily_budget_cap(),
         "blackouts": [
             {
                 "name": b.name,

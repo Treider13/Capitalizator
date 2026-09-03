@@ -152,6 +152,12 @@ def verdict(
         if cap is not None:
             voice = 0
             reasons.append(cap)
+    if not shadow.calibrated and shadow.book_trust is not None:
+        # churn norm not mature yet: the label is provisional — written, sized down,
+        # never a veto (INVENTION-OKO: no norm, no judgement)
+        reasons.append("churn norm immature: shadow provisional")
+        if shadow.book_trust < TRUST_VETO:
+            size *= HALF
     if shadow.book_trust is not None and shadow.book_trust < TRUST_SIZE_CUT:
         size *= HALF
         reasons.append(f"book_trust {shadow.book_trust:.2f}")
@@ -203,7 +209,11 @@ def _veto_reason(
 ) -> str | None:
     if shadow.cascade:
         return "cascade through the zone"
-    if shadow.book_trust is not None and shadow.book_trust < TRUST_VETO:
+    if (
+        shadow.calibrated
+        and shadow.book_trust is not None
+        and shadow.book_trust < TRUST_VETO
+    ):
         side = shadow.spoof_side or "book"
         return f"{shadow.label.lower()} on {side} side, book_trust {shadow.book_trust:.2f}"
     if recognition.recognised:

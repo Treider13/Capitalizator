@@ -55,3 +55,45 @@ def test_old_payload_without_short_reading_defaults_to_none() -> None:
     back = CardLive.from_payload(raw)
     assert back.fib_zone_short == "none"
     assert back.context_ok(side="sell") is False
+
+
+def test_sweep_is_read_for_the_side_of_the_trade() -> None:
+    """Audit §6: a swept swing HIGH is fuel for a short, not for a long."""
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+
+    from capitalizator.card.live import CardLive
+    from capitalizator.card.sweep import sweep_status_for
+    from capitalizator.zones.model import Bar
+
+    t0 = datetime(2026, 9, 1, tzinfo=UTC)
+
+    def bar(i: int, lo: str, hi: str, close: str) -> Bar:
+        return Bar(
+            symbol="BTCUSDT", tf="15m", open_ts=t0 + timedelta(minutes=15 * i),
+            close_ts=t0 + timedelta(minutes=15 * (i + 1)),
+            open=Decimal(close), high=Decimal(hi), low=Decimal(lo), close=Decimal(close),
+            volume=Decimal("10"),
+        )
+
+    # swing high at bar 2 (105), swing low at bar 6 (95); tester sweeps the HIGH and closes back
+    bars = [
+        bar(0, "99", "102", "100"), bar(1, "100", "103", "101"), bar(2, "101", "105", "102"),
+        bar(3, "100", "103", "101"), bar(4, "99", "101", "100"), bar(5, "97", "100", "98"),
+        bar(6, "95", "99", "97"), bar(7, "96", "100", "99"), bar(8, "98", "101", "100"),
+        bar(9, "99", "106", "103"),  # wick above 105, close 103 → high swept and back
+    ]
+    assert sweep_status_for(bars, "sell") == "done"
+    assert sweep_status_for(bars, "buy") == "none"  # the low at 95 was never taken
+    card = CardLive(
+        symbol="BTCUSDT", bearing_verdict="propose", known_at=t0 + timedelta(hours=3),
+        fib_zone="OTE", fib_zone_short="OTE", fvg_status="filled",
+        sweep_status="done", sweep_long="none", sweep_short="done",
+        pluses=("a", "b", "c", "d"), minuses=("e",),
+    )
+    assert card.sweep_for("sell") == "done" and card.sweep_for("buy") == "none"
+    assert card.mark_green("sell")["sweep"] is True and card.mark_green("buy")["sweep"] is False
+    assert card.context_ok("sell") is True and card.context_ok("buy") is False
+    # an old card without side-aware labels falls back to the legacy reading
+    legacy = CardLive.from_payload({**card.to_payload(), "sweep_long": None, "sweep_short": None})
+    assert legacy.sweep_for("buy") == "done"

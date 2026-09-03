@@ -9,6 +9,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from capitalizator.book.reconstruct import Book
 from capitalizator.desk.loop import DeskLoop
 from capitalizator.memory.registry import Touch
@@ -244,7 +246,10 @@ def test_window_drift_halves_size_until_released(tmp_path: Path) -> None:
     # the flag survives a desk restart
     desk_b = DeskLoop(knowledge=desk.knowledge, user_mode="demo", tick_size=TICK)
     assert "overlap" in desk_b._window_drift
-    desk.knowledge.push_command({"kind": "drift_release", "symbol": "ALL"})
+    desk.knowledge.enqueue_command(
+        "drift_release", {"kind": "drift_release", "symbol": "ALL"},
+        created_ts="2026-01-05T12:00:00+00:00",
+    )
     out = desk.tick(OVERLAP + timedelta(seconds=10))
     assert {"event": "drift_release", "windows": ["overlap"]} in out
     assert desk._window_drift == {} and desk.window_size_mult(window) == Decimal("1.0")
@@ -258,17 +263,20 @@ def test_window_drift_halves_size_until_released(tmp_path: Path) -> None:
     assert desk_c._window_drift == {} and desk_c._drift_ack_n == {"overlap": 120}
 
 
-def test_command_queue_push_and_pop_are_single_transactions(tmp_path: Path) -> None:
+def test_command_queue_is_one_table_with_claims(tmp_path: Path) -> None:
+    """One queue for console → desk/signer: rows are claimed atomically, never popped
+    from a JSON blob; a corrupt meta value cannot exist because there is none."""
     kn = open_knowledge(init_vault(tmp_path / "v"))
-    assert kn.pop_commands() == []
-    assert kn.push_command({"kind": "pause_entries", "symbol": None}) == 1
-    assert kn.push_command({"kind": "resume_entries", "symbol": None}) == 2
-    got = kn.pop_commands()
+    assert kn.claim_commands() == []
+    ts = "2026-01-05T12:00:00+00:00"
+    assert kn.enqueue_command("pause_entries", {"kind": "pause_entries"}, created_ts=ts) == 1
+    assert kn.enqueue_command("resume_entries", {"kind": "resume_entries"}, created_ts=ts) == 2
+    got = kn.claim_commands(("pause_entries", "resume_entries"))
     assert [c["kind"] for c in got] == ["pause_entries", "resume_entries"]
-    assert kn.pop_commands() == [] and kn.meta("desk_commands") == "[]"
-    # a corrupt queue is not a crash: it is treated as empty and replaced
-    kn.set_meta("desk_commands", "{not json")
-    assert kn.push_command({"kind": "pause_entries"}) == 1
+    assert kn.claim_commands() == []  # claimed rows are not handed out twice
+    assert {c["status"] for c in kn.commands(limit=10)} == {"claimed"}
+    with pytest.raises(ValueError, match="unknown command kind"):
+        kn.enqueue_command("withdraw_all", {"kind": "withdraw_all"}, created_ts=ts)
     kn.close()
 
 

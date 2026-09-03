@@ -112,6 +112,7 @@ def from_news(
         )
         if spot_acked:
             bearing = "propose"
+            pluses = (*pluses, "operator_spot_ack")  # the ack is a recorded fact, not padding
             minuses = ("not_in_universe",)
         else:
             bearing = "hold"
@@ -143,9 +144,12 @@ def from_news(
             minuses = (*minuses, "pre_event_24h")
 
     n = len(pluses) + len(minuses)
-    while n < 5:
-        pluses = (*pluses, f"atom_{n}")
-        n = len(pluses) + len(minuses)
+    if n < 5 and bearing != "hold":
+        # Too little evidence for a bearing verdict: the card holds and says why —
+        # never padded with `atom_N` placeholders (audit: fake atoms).
+        bearing = "hold"
+        macro = Decimal("1")
+        minuses = (*minuses, "insufficient_atoms")
     if n > 7:
         pluses = pluses[: max(0, 7 - len(minuses))]
 
@@ -160,6 +164,9 @@ def from_news(
         gex_bg=gex_bg if gex_bg is not None else labels.gex_bg,
         fvg_status=_pick(fvg_status, labels.fvg_status, "none"),  # type: ignore[arg-type]
         sweep_status=_pick(sweep_status, labels.sweep_status, "none"),  # type: ignore[arg-type]
+        # explicit `sweep_status` (tests / manual cards) applies to both sides
+        sweep_long=(sweep_status or labels.sweep_long or "none"),  # type: ignore[arg-type]
+        sweep_short=(sweep_status or labels.sweep_short or "none"),  # type: ignore[arg-type]
         ob_status=ob_status if ob_status is not None else labels.ob_status,
         bos_status=bos_status if bos_status is not None else labels.bos_status,
         market_regime="range" if vol.vah and vol.val else "none",
@@ -184,6 +191,11 @@ def timedelta_hours(later: datetime, now: datetime) -> float:
     return (later - now).total_seconds() / 3600.0
 
 
+NEGATIVE_TOKENS = ("hack", "exploit", "sec ", "lawsuit", "ban", "halt", "delist", "outage", "neg")
+
+
 def _negative(row: NewsRow) -> bool:
+    """A coin-specific row that names a bad class. `OTHER` alone is not negative
+    (audit: every unclassified headline became a veto)."""
     text = f"{row.notes} {row.size_rule} {row.event_class}".lower()
-    return any(token in text for token in ("hack", "sec", "ban", "halt", "neg", "other"))
+    return any(token in text for token in NEGATIVE_TOKENS)

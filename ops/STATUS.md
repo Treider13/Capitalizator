@@ -1,4 +1,10 @@
-# Статус шагов (честно)
+# Статус шагов (ручной журнал; счётчики устарели)
+
+**С 2026-09-03 актуальный статус генерируется:** `python -m capitalizator.ops.gen_status` →
+`ops/STATUS-GENERATED.md` (тесты, ruff, достижимость модулей, процессы, живые факты userdir).
+Таблица ниже — исторический журнал шагов PHASE-BUILD по состоянию на 2026-09-02; строки о
+`phase=off → None`, «1444 passed», «DeadMan/Reconciler» устарели (см. PR #25).
+
 
 **2026-09-03, релиз «sessions» (`docs/SESSIONS.md`):** локально **1677+ passed, 2 skipped**, `ruff` чисто,
 `mypy --strict` на модулях релиза чисто (`pyproject.toml [tool.mypy].files`). Отправка демо/лайв — по

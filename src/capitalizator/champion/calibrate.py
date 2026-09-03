@@ -2,11 +2,8 @@
 
 `n_cav >= 20` in the jury is a frequency count — it says a label happened 20
 times, not that it predicted anything. This module reads closed, filled shadow
-paper trades grouped by class and computes the Wilson 95% interval of the net
-winrate. A class is *refuted* when the interval's UPPER bound is below the
-break-even winrate the EV gate already computes for a 2R target
-((R + costs) / 3R). Refuted classes are not sent live; they keep trading on
-paper, so the verdict can flip when the data changes.
+paper trades grouped by class and asks one question per class: does it make
+money net of costs?
 
 Class dimensions (sessions release): `idea | CAV | ZLG | window | symbol_group`.
 Two views are kept — the full key and the window aggregate (`idea|cav|zlg|window|*`) —
@@ -20,6 +17,16 @@ for a human to open. Nothing here opens anything by itself.
 in ten alive. The desk takes max(configured, calibrated) — the calibrator widens,
 never narrows.
 
+Refutation (audit B6): the statistic is the *mean net R* with a one-sided upper
+confidence bound (mean + z·s/√n). A class is refuted when n ≥ mature_n and even
+that optimistic bound is ≤ 0. The old rule compared the share of `r_net > 0`
+(which counts a +0.3R trail exit as a win) with a break-even winrate written
+for a 2R target, and double-counted fees — a class could pass while losing money.
+The Wilson interval of the winrate is kept for display.
+
+Refuted classes are not sent live; they keep trading on paper, so the verdict can
+flip when the data changes. No class is ever promoted here.
+
 Wilson (1927) is used instead of a normal approximation because n is small.
 """
 
@@ -31,11 +38,12 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-MIN_N = 30  # below this the interval is too wide to refute anything
+from capitalizator.stats import Z95, Z95_ONE_SIDED, mature_n, wilson_interval
+
+MIN_N = mature_n()  # below this the interval is too wide to refute anything
 ELIGIBLE_MIN_N = 40  # below this a closed window cannot ask to be opened
 K_ATR_MIN_N = 30
 K_ATR_PERCENTILE = Decimal("0.9")
-Z95 = Decimal("1.959964")
 ANY = "*"
 
 
@@ -48,6 +56,9 @@ class ClassStat:
     lower: Decimal | None
     upper: Decimal | None
     avg_r_net: Decimal | None
+    sd_r_net: Decimal | None = None
+    # one-sided 95% upper bound of the mean net R: mean + z·s/√n
+    upper_r_net: Decimal | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -58,18 +69,13 @@ class ClassStat:
             "lower": None if self.lower is None else str(self.lower),
             "upper": None if self.upper is None else str(self.upper),
             "avg_r_net": None if self.avg_r_net is None else str(self.avg_r_net),
+            "sd_r_net": None if self.sd_r_net is None else str(self.sd_r_net),
+            "upper_r_net": None if self.upper_r_net is None else str(self.upper_r_net),
         }
 
 
 def wilson(wins: int, n: int, *, z: Decimal = Z95) -> tuple[Decimal, Decimal]:
-    if n <= 0:
-        raise ValueError("n must be > 0")
-    p = Decimal(wins) / Decimal(n)
-    nn = Decimal(n)
-    denom = 1 + z * z / nn
-    centre = (p + z * z / (2 * nn)) / denom
-    half = z * ((p * (1 - p) / nn + z * z / (4 * nn * nn)) ** Decimal("0.5")) / denom
-    return max(Decimal(0), centre - half), min(Decimal(1), centre + half)
+    return wilson_interval(wins, n, z=z)
 
 
 def class_key(
@@ -135,6 +141,13 @@ def _stat(key: str, rs: list[Decimal]) -> ClassStat:
     n = len(rs)
     wins = sum(1 for r in rs if r > 0)
     lo, hi = wilson(wins, n)
+    mean = sum(rs, Decimal(0)) / Decimal(n)
+    sd: Decimal | None = None
+    upper_mean: Decimal | None = None
+    if n >= 2:
+        var = sum(((r - mean) ** 2 for r in rs), Decimal(0)) / Decimal(n - 1)
+        sd = var.sqrt()
+        upper_mean = mean + Z95_ONE_SIDED * sd / Decimal(n).sqrt()
     return ClassStat(
         key=key,
         n=n,
@@ -142,7 +155,9 @@ def _stat(key: str, rs: list[Decimal]) -> ClassStat:
         winrate=Decimal(wins) / Decimal(n),
         lower=lo,
         upper=hi,
-        avg_r_net=sum(rs, Decimal(0)) / Decimal(n),
+        avg_r_net=mean,
+        sd_r_net=sd,
+        upper_r_net=upper_mean,
     )
 
 
@@ -178,11 +193,17 @@ def lookup(stats: Mapping[str, ClassStat], key: str) -> ClassStat | None:
     return None
 
 
-def refuted(stat: ClassStat | None, *, breakeven: Decimal, min_n: int = MIN_N) -> bool:
-    """True only when there is enough data AND even the optimistic bound loses money."""
-    if stat is None or stat.n < min_n or stat.upper is None:
+def refuted(
+    stat: ClassStat | None, *, breakeven: Decimal | None = None, min_n: int | None = None
+) -> bool:
+    """True only when there is enough data AND even the optimistic bound of the mean
+    net R is ≤ 0. `breakeven` is accepted for callers that still pass it; the verdict
+    no longer depends on a winrate target."""
+    del breakeven
+    limit = MIN_N if min_n is None else min_n
+    if stat is None or stat.n < limit or stat.upper_r_net is None:
         return False
-    return stat.upper < breakeven
+    return stat.upper_r_net <= 0
 
 
 def eligible(stat: ClassStat | None, *, breakeven: Decimal, min_n: int = ELIGIBLE_MIN_N) -> bool:

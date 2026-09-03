@@ -16,7 +16,7 @@ from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.product import mark_hello
 from capitalizator.ops.vault import init_vault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
-from capitalizator.risk.session import in_desk_window
+from capitalizator.risk.sessions import SessionPolicy
 from capitalizator.types import MarketEvent
 from capitalizator.zones.model import Bar, Zone
 
@@ -506,11 +506,13 @@ def test_desk_btc_same_side_uses_bus_labels() -> None:
 
 
 def test_send_uses_bar_close_clock_not_touch_print(tmp_path: Path) -> None:
-    """Touch 19:20 MSK is inside; jury at 19:35 MSK is outside. Send follows close."""
-    touch_ts = datetime(2026, 8, 31, 16, 20, tzinfo=UTC)
-    close_ts = datetime(2026, 8, 31, 16, 35, tzinfo=UTC)
-    assert in_desk_window(touch_ts) is True
-    assert in_desk_window(close_ts) is False
+    """The touch prints inside an open window; the jury closes the bar in the next
+    window, which is closed (sessions.yaml). Send follows the CLOSE clock."""
+    policy = SessionPolicy.load()
+    touch_ts = datetime(2026, 8, 31, 20, 50, tzinfo=UTC)
+    close_ts = datetime(2026, 8, 31, 21, 5, tzinfo=UTC)
+    open_w, next_w = policy.window(touch_ts), policy.window(close_ts)
+    assert open_w.budget > 0 and next_w.budget == 0  # us → night
     vault = init_vault(tmp_path / "desk")
     mark_hello(vault, ok=True)
     desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="demo", tick_size=TICK)

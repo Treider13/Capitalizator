@@ -106,8 +106,14 @@ def ticker_events(frame: dict[str, Any], *, recv_ts: datetime) -> list[MarketEve
                     payload=funding_payload(item),
                 )
             )
-        if item.get("openInterest") is not None or item.get("openInterestValue") is not None:
-            oi = item.get("openInterest", item.get("openInterestValue"))
+        # `openInterest` is contracts; `openInterestValue` is USD — a ticker DELTA frame
+        # may carry only the value, and mixing the two put 4.3e9 next to 55e3 in the OI
+        # history (live, 2026-09-03). Only the contract figure is the OI series; the
+        # value rides along as an extra field.
+        if item.get("openInterest") is not None:
+            payload: dict[str, str] = {"oi": str(item["openInterest"])}
+            if item.get("openInterestValue") is not None:
+                payload["oi_value"] = str(item["openInterestValue"])
             out.append(
                 MarketEvent(
                     stream="oi",
@@ -115,7 +121,7 @@ def ticker_events(frame: dict[str, Any], *, recv_ts: datetime) -> list[MarketEve
                     symbol=symbol,
                     exchange_ts=exchange_ts,
                     recv_ts=when,
-                    payload={"oi": str(oi)},
+                    payload=payload,
                 )
             )
         mark_px = item.get("markPrice") or item.get("mark_price")

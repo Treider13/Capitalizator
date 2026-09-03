@@ -328,7 +328,6 @@ def test_p2_eth_negative_flattens() -> None:
     row = observe(reg, _observe_in(card=card, symbol="ETHUSDT"), contour_on=True)[0]
     assert row.jury == "VETO"
     mgr = TradeManager()
-    mgr.remaining = Decimal("1")
     assert mgr.on_refute(load_bearing=True, verdict="veto").action == "flatten"
 
 
@@ -426,15 +425,9 @@ def test_p6_positive_rvol_accord_and_trail() -> None:
     )
     assert intent is not None
     assert intent.qty is None
-    mgr = TradeManager()
-    one_r = intent.entry + (intent.entry - intent.stop)
-    reduced = mgr.on_fill(side="buy", entry=intent.entry, stop=intent.stop, fill_px=one_r)
-    assert reduced is not None
-    assert reduced.action == "reduce"
-    assert reduced.fraction == Decimal("0.5")
-    trailed = mgr.trail_stop(Decimal("100.15"))
-    assert trailed == Decimal("100.15")
-    assert trailed != intent.entry
+    # +1R half and the structure trail are executed by the paper engine / trail engine
+    # (tests/exec/test_partial_1r.py); the intent itself carries no size (qty is sized later)
+    assert intent.stop < intent.entry
 
 
 def test_p6_cut_size_applies_macro() -> None:

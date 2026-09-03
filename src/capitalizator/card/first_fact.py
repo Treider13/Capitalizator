@@ -11,7 +11,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
-N_MIN = 20
+from capitalizator.stats import n_min
+
+N_MIN = n_min()
 _HORIZON = re.compile(r"^(\d+)(s|m|h|d)$")
 _UNIT_S = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 

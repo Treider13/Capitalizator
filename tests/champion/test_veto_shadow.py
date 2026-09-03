@@ -12,5 +12,5 @@ def test_two_rows_no_orders_no_promote() -> None:
     rows = book.report()
     assert [row["veto"] for row in rows] == [True, False]
     assert all(row["orders"] is False for row in rows)
-    with pytest.raises(ValueError, match="15-20"):
+    with pytest.raises(ValueError, match="no auto promote"):
         book.promote()

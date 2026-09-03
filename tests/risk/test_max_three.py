@@ -1,4 +1,8 @@
-"""Fourth session intent is reject. Does not chase frequency."""
+"""Fourth session intent is reject. Does not chase frequency.
+
+The budget is spent by the desk once an intent has passed sizing and the EV gate
+(a refused proposal must not burn an entry). Here the gates are simulated by
+spending the budget after each accepted proposal."""
 
 from __future__ import annotations
 
@@ -44,8 +48,34 @@ def test_fourth_bounce_is_rejected() -> None:
         budget=SessionBudget(),
         require_card=False,
     )
-    assert strat.propose(snap) is not None
-    assert strat.propose(snap) is not None
-    assert strat.propose(snap) is not None
+    for _ in range(3):
+        assert strat.propose(snap) is not None
+        strat.budget.on_intent()  # the desk's gates accepted → one entry spent
     assert strat.propose(snap) is None
     assert strat.budget.n == 3
+
+
+def test_refused_proposal_does_not_burn_the_budget() -> None:
+    """Audit B3: three EV refusals used to exhaust the day's three entries."""
+    zone = _zone()
+    snap = BounceSnapshot(
+        now=datetime(2026, 8, 31, 14, 10, tzinfo=UTC),
+        symbol="BTCUSDT",
+        price=Decimal("100.5"),
+        tick=Decimal("0.1"),
+        trading_mode="demo",
+        zone=zone,
+        zones=(zone,),
+        spread_frac=Decimal("0.001"),
+        typical_move=Decimal("0.01"),
+    )
+    strat = BounceStrategy(
+        risk=RiskEngine(),
+        halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
+        budget=SessionBudget(),
+        require_card=False,
+    )
+    for _ in range(5):
+        assert strat.propose(snap) is not None  # proposed, but no gate accepted it
+    assert strat.budget.n == 0

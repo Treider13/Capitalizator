@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--userdir", default=None)
     parser.add_argument("--testnet", action="store_true")
+    parser.add_argument(
+        "--universe",
+        choices=("week0", "desk"),
+        default=os.environ.get("CAP_UNIVERSE", "week0"),
+        help="week0 = BTC+ETH (PHASE-BUILD canon until 24h of tape); desk = the 24-symbol list",
+    )
     args = parser.parse_args(argv)
     app = RecorderApp()
     if args.live_ws:
@@ -80,7 +87,11 @@ def main(argv: list[str] | None = None) -> int:
         from capitalizator.ops.knowledge import open_knowledge
         from capitalizator.ops.vault import load_vault
         from capitalizator.recorder.live_ws import LiveRecorder, make_public_ws
-        from capitalizator.screener.universe import load_desk_universe
+        from capitalizator.screener.universe import (
+            default_week0_path,
+            load_desk_universe,
+            load_universe,
+        )
 
         knowledge = None
         data_root = Path(args.data_root) if args.data_root else None
@@ -96,17 +107,26 @@ def main(argv: list[str] | None = None) -> int:
 
         signal.signal(signal.SIGINT, _stop)
         signal.signal(signal.SIGTERM, _stop)
+        if args.universe == "week0":
+            universe = load_universe(default_week0_path())
+        else:
+            universe = load_desk_universe()  # honours CAP_UNIVERSE / the applied file too
         rec = LiveRecorder(
-            symbols=list(load_desk_universe().symbols),
+            symbols=list(universe.symbols),
             data_root=data_root,
             ws_factory=lambda: make_public_ws(testnet=args.testnet),
             knowledge=knowledge,
         )
         app.recording = True
-        hello = {"live_ws": True, "n_symbols": len(rec.symbols), "data_root": str(data_root)}
+        hello = {
+            "live_ws": True,
+            "universe": args.universe,
+            "n_symbols": len(rec.symbols),
+            "data_root": str(data_root),
+        }
         print(json.dumps(hello), flush=True)
         try:
-            rec.run(should_stop=lambda: stopped["v"])
+            rec.run(should_stop=lambda: stopped["v"], testnet=args.testnet)
         finally:
             if knowledge is not None:
                 knowledge.close()
@@ -134,36 +154,12 @@ def main(argv: list[str] | None = None) -> int:
             server.serve_forever()
         return 0
     if args.minutes and args.minutes > 0:
-        if not args.data_root:
-            raise SystemExit("--data-root is required with --minutes")
-        from capitalizator.recorder.live import LIVE_STREAMS, run_live, subscribe_desk
-        from capitalizator.screener.universe import load_desk_universe
-
-        uni = load_desk_universe()
-        subscribe = subscribe_desk(uni.symbols)
-        accepted = run_live(
-            app,
-            minutes=args.minutes,
-            symbol=args.symbol,
-            data_root=Path(args.data_root),
-            stream=args.stream,
-            symbols=list(uni.symbols),
-            streams=list(LIVE_STREAMS),
+        # `--minutes` had no socket behind it: it printed `"live": true` after writing
+        # zero events (audit §4). A timed live run is `--live-ws` with a deadline.
+        raise SystemExit(
+            "--minutes has no socket: use --live-ws --data-root DIR (add --testnet for the "
+            "testnet host) and stop it with SIGINT/SIGTERM or a supervisor timeout"
         )
-        print(
-            json.dumps(
-                {
-                    "accepted": accepted,
-                    "recording": app.recording,
-                    "readyz": app.readyz(),
-                    "symbol": args.symbol,
-                    "live": True,
-                    "n_symbols": len(uni.symbols),
-                    "subscribe": subscribe,
-                }
-            )
-        )
-        return 0
     if args.serve:
         server = HTTPServer((args.host, args.port), _handler(app))
         server.serve_forever()

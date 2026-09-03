@@ -7,7 +7,6 @@ from decimal import Decimal
 from typing import Any
 
 from capitalizator.authors.ingest import AuthorsIngest
-from capitalizator.authors.sources import default_sources_path, load_sources
 from capitalizator.desk.bars import TF_MINUTES, closed_bars_from_trades
 from capitalizator.desk.tape import load_tape
 from capitalizator.llm.daily_summary import DailySummary
@@ -16,7 +15,7 @@ from capitalizator.ops.daily_map_report import contains_advice
 from capitalizator.ops.gates_from_sqlite import gates_from_sqlite
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import Vault
-from capitalizator.risk.session import MSK, load_time_config
+from capitalizator.risk.session import MSK
 from capitalizator.zones.config import load_registry
 from capitalizator.zones.engine import MAP_VOTE_METHODS, ZoneEngine
 from capitalizator.zones.model import Bar
@@ -29,12 +28,26 @@ def _safe(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def session_window() -> dict[str, Any]:
-    cfg = load_time_config()
+def session_window(now: datetime | None = None) -> dict[str, Any]:
+    """The SessionPolicy window that holds `now` (one calendar for the whole desk; the
+    old time.yaml Moscow window next to it was a second, contradicting clock)."""
+    from capitalizator.risk.sessions import SessionPolicy
+
+    policy = SessionPolicy.load()
+    when = now or datetime.now(tz=UTC)
+    state = policy.window(when)
+    win = next((w for w in (*policy.windows, policy.weekend) if w.name == state.name), None)
+    start = end = None
+    if win is not None and win.name != "weekend":
+        start = win.start.isoformat(timespec="minutes")
+        end = "24:00" if win.end_is_midnight else win.end.isoformat(timespec="minutes")
     return {
-        "tz": str(cfg["session_tz"]),
-        "start": str(cfg["session_start"]),
-        "end": str(cfg["session_end"]),
+        "tz": "UTC",
+        "name": state.name,
+        "start": start,
+        "end": end,
+        "weekend": state.weekend,
+        "closed": win is None or not win.ideas or win.budget <= 0 or win.size_mult <= 0,
     }
 
 
@@ -267,14 +280,26 @@ def news_rows() -> list[dict[str, Any]]:
     ]
 
 
-def author_sources() -> list[dict[str, Any]]:
+def author_sources(vault: Vault) -> list[dict[str, Any]]:
+    """The ONE source registry (SQLite `intel_sources`, edited in Настройки). The old
+    `infra/authors/sources.yaml` next to it was a second list with its own vocabulary."""
+    from capitalizator.ops.settings import load_sources as load_intel_sources
+
+    knowledge = open_knowledge(vault, create=False)
     try:
-        book = load_sources(default_sources_path())
-    except FileNotFoundError:
-        return []
+        rows = load_intel_sources(knowledge)
+    finally:
+        knowledge.close()
     return [
-        {"id": src.source_id, "kind": src.kind, "url": src.url}
-        for src in book.sources
+        {
+            "id": r.get("id"),
+            "kind": r.get("kind"),
+            "url": r.get("value"),
+            "enabled": bool(r.get("enabled")),
+            "last_ok": r.get("last_ok"),
+            "last_error": r.get("last_error"),
+        }
+        for r in rows
     ]
 
 
@@ -308,21 +333,23 @@ def llm_summary(vault: Vault) -> dict[str, Any]:
 
 
 def dashboard(vault: Vault) -> dict[str, Any]:
+    from capitalizator.ops.phase import load_phase
+    from capitalizator.risk.config import load_risk_config
+
     knowledge = open_knowledge(vault, create=False)
     try:
         gates = gates_from_sqlite(knowledge)
-        taps_risk = {
-            "max_lev": None,
-            "target_risk": None,
-        }
+        cfg = load_risk_config(knowledge)
     finally:
         knowledge.close()
-    from capitalizator.ops.phase import load_phase
-
     phase = load_phase()
+    # the operator's risk menu (what the desk sizes with) next to the phase ceilings
+    # it may not exceed — the dashboard used to show only the ceiling as "риск"
     taps_risk = {
-        "max_lev": int(phase["max_lev"]),
-        "target_risk": float(phase["target_risk"]),
+        "max_lev": str(cfg.max_lev),
+        "target_risk": str(cfg.target_risk_pct),
+        "ceiling_max_lev": int(phase["max_lev"]),
+        "ceiling_target_risk": float(phase["target_risk"]),
     }
     counts = session_counts(vault)
     latest = latest_touch(vault)
@@ -340,6 +367,31 @@ def dashboard(vault: Vault) -> dict[str, Any]:
 
 
 def hello_status(vault: Vault) -> dict[str, Any]:
-    from capitalizator.ops.product import hello_recorded
+    """Flag plus whether the last hello actually talked to the venue. GET does not ping."""
+    import json
 
-    return {"hello_ok": hello_recorded(vault), "real": False}
+    from capitalizator.ops.handoff import experience_snapshot
+    from capitalizator.ops.knowledge import open_knowledge
+    from capitalizator.ops.product import cred_present, hello_recorded
+
+    hello_ok = hello_recorded(vault)
+    result: dict[str, Any] | None = None
+    knowledge = open_knowledge(vault, create=False)
+    try:
+        raw = knowledge.meta("hello_result") if knowledge.available() else None
+        if raw:
+            try:
+                loaded = json.loads(raw)
+            except json.JSONDecodeError:
+                loaded = None
+            if isinstance(loaded, dict):
+                result = {"ok": bool(loaded.get("ok"))}
+        experience = experience_snapshot(knowledge)
+    finally:
+        knowledge.close()
+    return {
+        "hello_ok": hello_ok,
+        "real": bool(result and result.get("ok")),
+        "cred_present": cred_present(vault),
+        "experience": experience,
+    }
