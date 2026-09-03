@@ -33,7 +33,9 @@ def test_exam_fails_on_too_few_or_no_edge_and_passes_on_a_better_challenger() ->
     rep3 = exam(champ + strong, now=T0)
     assert rep3.passed is True and rep3.challenger.lower_r is not None and rep3.challenger.lower_r > 0
     assert rep3.challenger.max_dd_r is not None and rep3.challenger.max_dd_r <= rep3.champion.max_dd_r
-    assert rep3.to_payload()["challenger"]["n"] == 42
+    payload = rep3.to_payload()
+    assert payload["challenger"]["n"] == 42
+    assert payload["hostile"]["n"] == 40 + 42
 
 
 def test_promote_without_ack_still_refuses_and_with_ack_returns_the_report() -> None:

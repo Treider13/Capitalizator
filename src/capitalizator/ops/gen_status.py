@@ -38,6 +38,7 @@ ENTRY_POINTS = (
     "capitalizator.ops.day_episodes",
     "capitalizator.ops.skip_log",
     "capitalizator.recorder.scan_keys",
+    "capitalizator.ops.healthz",
 )
 
 

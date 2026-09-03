@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -158,3 +159,21 @@ def test_sole_whale_intel_holds_card(tmp_path: Path) -> None:
     card = desk.publish_card("BTCUSDT", NOW)
     assert card.bearing_verdict == "hold"
     assert "whale_only" in card.minuses
+
+
+def test_author_weights_fill_jury_b(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    kn.set_meta(
+        "author_weights",
+        json.dumps(
+            {
+                "at": NOW.isoformat(),
+                "authors": {"a1": {"hits": 3, "n": 8, "weight": "0.1"}},
+            }
+        ),
+    )
+    desk = DeskLoop(knowledge=kn, user_mode="off")
+    card = desk.publish_card("BTCUSDT", NOW)
+    assert card.jury_b_n == 8
+    assert card.jury_b_for == 3

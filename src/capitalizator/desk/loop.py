@@ -45,6 +45,7 @@ from capitalizator.champion.shadow_day import (
     row_day_utc,
 )
 from capitalizator.desk.bars import TF_MINUTES, BarBuilder
+from capitalizator.desk.paper_gates import snapshot as paper_gates_snapshot
 from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.exec.ev_gate import evaluate as ev_evaluate
 from capitalizator.exec.failed_break import sweep_wick
@@ -745,6 +746,8 @@ class DeskLoop:
             volume=vol,
             bars=bars,
         )
+        card = self._apply_author_pump(card, symbol, now, vol)
+        card = self._apply_author_weights(card)
         if self.knowledge.available():
             since = (now - timedelta(hours=48)).isoformat()
             claims = claims_from_intel(self.knowledge.intel_items(since=since, limit=400))
@@ -760,6 +763,87 @@ class DeskLoop:
                 )
         self.knowledge.put_card_live(symbol, card.to_payload())
         return card
+
+    def _apply_author_pump(
+        self, card: CardLive, symbol: str, now: datetime, vol: Any
+    ) -> CardLive:
+        """Allow-list pump. Hold only when a listed source actually hit."""
+        if not self.knowledge.available():
+            return card
+        try:
+            from capitalizator.authors.pump import FetchedItem
+            from capitalizator.authors.pump import pump as author_pump
+            from capitalizator.authors.sources import load_sources as load_author_book
+
+            book = load_author_book()
+        except (ValueError, FileNotFoundError, OSError):
+            return card
+        if not book.sources:
+            return card
+        allowed = {row.source_id: row for row in book.sources}
+        since = (now - timedelta(hours=48)).isoformat()
+        fetched: list[Any] = []
+        for item in self.knowledge.intel_items(since=since, limit=200):
+            sid = str(item.get("source_id") or "")
+            if sid not in allowed:
+                continue
+            kind = allowed[sid].kind
+            url = str(item.get("url") or allowed[sid].url)
+            try:
+                known = datetime.fromisoformat(str(item["known_at"]).replace("Z", "+00:00"))
+            except (KeyError, ValueError, TypeError):
+                continue
+            fetched.append(
+                FetchedItem(
+                    source_id=sid,
+                    kind=kind,
+                    url=url,
+                    title=str(item.get("text") or ""),
+                    body="",
+                    known_at=known,
+                )
+            )
+        if not fetched:
+            return card
+        try:
+            pumped = author_pump(symbol=symbol, now=now, book=book, fetched=fetched, volume=vol)
+        except ValueError:
+            return card
+        if pumped is not None and pumped.bearing_verdict == "hold":
+            return replace(
+                card,
+                bearing_verdict="hold",
+                macro_multiplier=Decimal("1"),
+                pluses=tuple(dict.fromkeys((*card.pluses, *pumped.pluses))),
+                minuses=tuple(dict.fromkeys((*card.minuses, *pumped.minuses))),
+            )
+        return card
+
+    def _apply_author_weights(self, card: CardLive) -> CardLive:
+        if not self.knowledge.available():
+            return card
+        raw = self.knowledge.meta("author_weights")
+        if not raw:
+            return card
+        try:
+            weights = json.loads(raw)
+        except json.JSONDecodeError:
+            return card
+        if not isinstance(weights, dict) or not weights:
+            return card
+        block = weights.get("authors")
+        if not isinstance(block, dict):
+            block = weights
+        n = 0
+        hits = 0
+        for row in block.values():
+            if not isinstance(row, dict):
+                continue
+            n += int(row.get("n") or 0)
+            hits += int(row.get("hits") or 0)
+        if n <= 0:
+            return card
+        return replace(card, jury_b_n=n, jury_b_for=hits)
 
     def btc_same_side(self, idea_side: str) -> bool:
         """Is this idea on BTC's side? A box is neutral ground for both sides; a trend
@@ -1701,6 +1785,7 @@ class DeskLoop:
             "shadow_would_no_marks": shadow_would_no_marks,
             "shadow_would_marks": shadow_would_marks,
             "decision_ms": (closed_at - touch.ts).total_seconds() * 1000.0,
+            "paper_gates": paper_gates_snapshot(n_zlg=n_zlg, gesture=row.gesture),
         }
         payload_row = {**journal, **extra}
         payload_row["challenger_would"] = challenger_on(payload_row)

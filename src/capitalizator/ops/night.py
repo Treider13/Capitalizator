@@ -29,6 +29,8 @@ from capitalizator.memory.revive import (
     zone_from_journal,
     zone_from_payload,
 )
+from capitalizator.news_macro.from_intel import calendar_from_intel
+from capitalizator.news_macro.store import NewsStore
 from capitalizator.ops.daily_map_report import daily_map_report
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.settings import load_sources
@@ -117,6 +119,10 @@ def run_night(knowledge: Knowledge, *, day: str, now: datetime) -> dict[str, Any
     knowledge.set_meta("oko_night", json.dumps({"at": when.isoformat(), **oko}, sort_keys=True))
 
     weights_raw = knowledge.meta("author_weights")
+    news_pit = NewsStore(calendar_from_intel(knowledge, now=when)).query(
+        "SELECT class, count(*) AS n FROM news GROUP BY class ORDER BY class",
+        as_of=when,
+    )
     intel = {
         "at": when.isoformat(),
         "sources": [
@@ -126,6 +132,8 @@ def run_night(knowledge: Knowledge, *, day: str, now: datetime) -> dict[str, Any
         ],
         "author_weights": json.loads(weights_raw) if weights_raw else None,
         "intel_items": len(knowledge.intel_items(limit=1_000_000)),
+        "news_pit": news_pit,
+        "news_pit_n": sum(int(r["n"]) for r in news_pit),
     }
     knowledge.set_meta("intel_night", json.dumps(intel, sort_keys=True, default=str))
 
@@ -141,6 +149,7 @@ def run_night(knowledge: Knowledge, *, day: str, now: datetime) -> dict[str, Any
         "exam_reasons": list(report.reasons),
         "oko": oko,
         "intel_sources": len(intel["sources"]),
+        "news_pit_n": intel["news_pit_n"],
     }
     # the console's «Управление» page shows the last night run without the report body
     knowledge.set_meta(

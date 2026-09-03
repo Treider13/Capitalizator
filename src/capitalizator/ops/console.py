@@ -1156,7 +1156,14 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     self._sse_desk()
                     return
                 if path == "/healthz":
-                    body, code, ctype = b"ok", 200, "text/plain; charset=utf-8"
+                    from capitalizator.ops.healthz import heartbeat_age_s
+
+                    age = heartbeat_age_s(app.vault.root, "desk_heartbeat")
+                    if age is None:
+                        body = b"ok"
+                    else:
+                        body = f"ok {age:.0f}s".encode()
+                    code, ctype = 200, "text/plain; charset=utf-8"
                 elif path == "/api/status":
                     payload = desk_snapshot(app.vault)
                     body = json.dumps(payload, ensure_ascii=False).encode()

@@ -166,6 +166,45 @@ def test_run_loop_stops_flushes_and_exits_socket(tmp_path: Path) -> None:
     assert rec.status()["streams"]["trades"]["events"] == 5
 
 
+def test_rest_ticker_fallback_uses_injected_opener(tmp_path: Path) -> None:
+    payload = {
+        "retCode": 0,
+        "result": {
+            "category": "linear",
+            "list": [
+                {
+                    "symbol": "BTCUSDT",
+                    "fundingRate": "0.0001",
+                    "openInterest": "12",
+                    "markPrice": "65000.1",
+                    "ts": 1725024600000,
+                }
+            ],
+        },
+    }
+    hits: list[str] = []
+
+    def opener(url: str) -> dict:
+        hits.append(url)
+        return payload
+
+    (tmp_path / "tape").mkdir()
+    rec = LiveRecorder(
+        symbols=["BTCUSDT"],
+        data_root=tmp_path / "tape",
+        ws_factory=FakeWs,
+        rest_fallback=True,
+        rest_opener=opener,
+        fetch_snapshot=lambda s: (_ for _ in ()).throw(RuntimeError("no rest")),
+    )
+    now = datetime(2026, 9, 2, tzinfo=UTC)
+    n = rec.poll_rest_tickers(now=now)
+    assert n == 3
+    assert hits and "tickers" in hits[0] and "BTCUSDT" in hits[0]
+    rec.stats["ticker"].last_at = now
+    assert rec.poll_rest_tickers(now=now) == 0
+
+
 def test_restart_and_reconnect_write_marked_time_gaps(tmp_path: Path) -> None:
     """F0 law: a recorder restart or a socket reconnect is a MARKED hole (gap event
     with ts_from/ts_to). Unmarked holes are what the 24h gate refuses."""

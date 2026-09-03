@@ -434,6 +434,11 @@ class BounceStrategy:
         if prs_cut(snap.prs_y, threshold=Decimal("3")).action == "reject":
             return self._refuse("prs:thin_book")
         if idea == "breakout":
+            from capitalizator.exec.breakout_gesture import skip_reason as fake_defend
+
+            fake = fake_defend(gesture=snap.zlg_label or "", close_beyond=snap.close_beyond)
+            if fake:
+                return self._refuse(f"breakout:{fake}")
             if not BreakoutClose.allow(
                 enabled=snap.allow_break,
                 close_beyond=snap.close_beyond,
@@ -547,6 +552,11 @@ class BounceStrategy:
         # ОКО only cuts (INVENTION-OKO §5): min, never max.
         if snap.oko_size_mult < size:
             size = snap.oko_size_mult
+        from capitalizator.risk.nmin import size_mult as nmin_mult
+
+        nmin = nmin_mult(n=snap.n_zlg, gesture=snap.zlg_label, phase="f1")
+        if nmin < size:
+            size = nmin
         # Combined B+calendar multiplier lives on size_mult only.
         # Signer does qty * size_mult; stuffing the cut into qty would double-cut.
         intent = Intent(

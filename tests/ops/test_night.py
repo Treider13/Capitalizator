@@ -39,6 +39,27 @@ def test_night_records_facts_and_never_promotes(tmp_path: Path) -> None:
     assert knowledge.meta("champion") is None  # the night never flips the champion
     oko = json.loads(knowledge.meta("oko_night"))
     assert oko["passports"] == {} and oko["mirror"] is None
+    intel = json.loads(knowledge.meta("intel_night"))
+    assert intel["news_pit"] == []
+    assert intel["news_pit_n"] == 0
+    assert out["news_pit_n"] == 0
+    knowledge.close()
+
+
+def test_night_news_store_sees_intel_calendar(tmp_path: Path) -> None:
+    knowledge = open_knowledge(init_vault(tmp_path / "desk"))
+    knowledge.put_intel_item(
+        "rss-hack",
+        kind="rss",
+        source_id="rss:https://announce.bybit.com",
+        known_at=NOW.isoformat(),
+        payload={"text": "Hot wallet hack", "event_class": "HACK", "url": "https://announce.bybit.com"},
+    )
+    out = run_night(knowledge, day="2026-08-31", now=NOW)
+    intel = json.loads(knowledge.meta("intel_night"))
+    assert out["news_pit_n"] == 1
+    assert intel["news_pit_n"] == 1
+    assert intel["news_pit"] == [{"class": "HACK", "n": 1}]
     knowledge.close()
 
 

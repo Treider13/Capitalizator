@@ -36,6 +36,7 @@ from capitalizator.recorder.normalize import TradesNormalizer
 from capitalizator.recorder.public_ws import is_control_frame
 from capitalizator.recorder.raw_ws import RawPublicWs
 from capitalizator.recorder.rest_snapshot import BookSnapshot, RestSnapshot
+from capitalizator.recorder.rest_ticker import RestTicker
 from capitalizator.recorder.sink_parquet import BufferedParquetSink
 from capitalizator.recorder.ws_book import BybitBookWs
 from capitalizator.types import MarketEvent
@@ -80,6 +81,9 @@ class LiveRecorder:
     last_trade_ts: dict[str, datetime] = field(default_factory=dict)
     _marked_reconnects: int = 0
     _last_instruments: float | None = None
+    rest_ticker: RestTicker | None = None
+    rest_opener: Callable[[str], Any] | None = None
+    rest_fallback: bool = False
 
     def __post_init__(self) -> None:
         if not self.symbols:
@@ -98,6 +102,8 @@ class LiveRecorder:
         if self.fetch_snapshot is None:
             rest = RestSnapshot()
             self.fetch_snapshot = rest.fetch
+        if self.rest_ticker is None:
+            self.rest_ticker = RestTicker()
         for name in ("trades", "book", "ticker", "liquidation"):
             self.stats[name] = StreamStat()
 
@@ -175,7 +181,33 @@ class LiveRecorder:
             n += 1
         assert self.sink is not None
         self.sink.maybe_flush(time.monotonic())
+        if self.rest_fallback:
+            self.poll_rest_tickers(now=datetime.now(tz=UTC))
         return n
+
+    def poll_rest_tickers(self, *, now: datetime) -> int:
+        """REST funding/OI/mark when the public ticker socket is quiet."""
+        if self.rest_ticker is None or self.sink is None:
+            return 0
+        ticker = self.stats.get("ticker")
+        if ticker is not None and ticker.last_at is not None:
+            if (now - ticker.last_at).total_seconds() < 60:
+                return 0
+        written = 0
+        for symbol in self.symbols:
+            try:
+                events = self.rest_ticker.fetch(
+                    symbol, recv_ts=now, opener=self.rest_opener
+                )
+            except (ValueError, OSError, json.JSONDecodeError):
+                continue
+            for event in events:
+                self.sink.write(event)
+                written += 1
+        if written and ticker is not None:
+            ticker.last_at = now
+            ticker.events += written
+        return written
 
     def handle(self, stream: str, frame: Frame, *, recv_ts: datetime) -> list[MarketEvent]:
         stat = self.stats[stream]

@@ -116,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             data_root=data_root,
             ws_factory=lambda: make_public_ws(testnet=args.testnet),
             knowledge=knowledge,
+            rest_fallback=True,
         )
         app.recording = True
         hello = {

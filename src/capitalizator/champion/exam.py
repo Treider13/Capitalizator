@@ -24,6 +24,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from capitalizator.patterns.exam import ExamCase, hostile_exam
 from capitalizator.stats import Z95_ONE_SIDED, mature_n
 
 CHAMPION_SOURCES = frozenset({"shadow", "demo"})
@@ -62,6 +63,7 @@ class ExamReport:
     n_min: int
     passed: bool
     reasons: tuple[str, ...] = field(default_factory=tuple)
+    hostile: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -71,6 +73,7 @@ class ExamReport:
             "n_min": self.n_min,
             "passed": self.passed,
             "reasons": list(self.reasons),
+            "hostile": dict(self.hostile),
         }
 
 
@@ -139,4 +142,30 @@ def exam(
         n_min=limit,
         passed=not reasons,
         reasons=tuple(reasons),
+        hostile=_hostile(rows),
     )
+
+
+def _hostile(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    cases: list[ExamCase] = []
+    for row in rows:
+        entry = row.get("entry_px")
+        if entry in (None, ""):
+            continue
+        actual = row.get("exit_px") or row.get("close_px") or entry
+        try:
+            cases.append(
+                ExamCase(
+                    pred=Decimal(str(entry)),
+                    last=Decimal(str(entry)),
+                    actual=Decimal(str(actual)),
+                )
+            )
+        except (ArithmeticError, ValueError):
+            continue
+    got = hostile_exam(cases)
+    return {
+        "n": got.n,
+        "beat_last_price": None if got.beat_last_price is None else str(got.beat_last_price),
+        "direction_hit": None if got.direction_hit is None else str(got.direction_hit),
+    }
