@@ -76,7 +76,13 @@ def iter_regular_files(
             path = base / name
             if path.is_symlink():
                 raise VaultError(f"symlink: {path}")
-            st = path.lstat()
+            try:
+                st = path.lstat()
+            except FileNotFoundError:
+                # a writer's temp file renamed away between the listing and the stat
+                # (recorder `*.parquet.<hex>.tmp` → atomic replace): not ours, not an
+                # error — it killed the desk on the VPS (2026-09-03)
+                continue
             if not stat.S_ISREG(st.st_mode):
                 raise VaultError(f"not a regular file: {path}")
             if st.st_nlink > 1:

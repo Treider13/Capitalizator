@@ -271,3 +271,31 @@ def test_tape_replay_is_bounded_per_pass_and_resumes(tmp_path: Path) -> None:
         if not cur2.backlog:
             break
     assert seqs == list(range(300))
+
+
+def test_tape_walk_survives_a_writer_temp_file_vanishing(tmp_path: Path) -> None:
+    """The recorder writes `hour=HH.<n>.parquet.<hex>.tmp` and renames it; the desk's
+    walk saw the name and then stat() failed → the desk process died (VPS 2026-09-03)."""
+    import os
+
+    from capitalizator.ops import vault as vault_mod
+
+    part = tmp_path / "BTCUSDT" / "trades" / "date=2026-09-03"
+    part.mkdir(parents=True)
+    (part / "hour=20.000001.parquet").write_bytes(b"x")
+    (part / "hour=20.000002.parquet.ab12.tmp").write_bytes(b"y")
+    real_is_symlink = Path.is_symlink
+
+    def racy(self: Path) -> bool:
+        out = real_is_symlink(self)
+        if self.name.endswith(".tmp") and self.exists():
+            os.unlink(self)  # the writer renamed it away between the check and the stat
+        return out
+
+    orig = vault_mod.Path.is_symlink
+    vault_mod.Path.is_symlink = racy  # type: ignore[method-assign]
+    try:
+        got = [p.name for p in vault_mod.iter_regular_files(tmp_path)]
+    finally:
+        vault_mod.Path.is_symlink = orig  # type: ignore[method-assign]
+    assert got == ["hour=20.000001.parquet"]
