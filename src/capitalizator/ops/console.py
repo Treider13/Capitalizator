@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from capitalizator.ops import chronos_data
+from capitalizator.ops import chronos_data, i18n_ru
 from capitalizator.ops.contour import ContourNotReady
 from capitalizator.ops.contour import enable as enable_contour
 from capitalizator.ops.contour import status as contour_status
@@ -28,6 +28,14 @@ from capitalizator.ops.product import (
     read_user_mode,
     set_user_mode,
 )
+from capitalizator.ops.settings import (
+    Settings,
+    add_source,
+    load_sources,
+    remove_source,
+    set_source_enabled,
+)
+from capitalizator.ops.settings_page import render_settings_html
 from capitalizator.ops.touch_screen import latest as latest_touch
 from capitalizator.ops.touch_screen import render_html as render_touch_html
 from capitalizator.ops.vault import (
@@ -142,8 +150,13 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     try:
         money = account_view(knowledge)
         queue = queue_view(knowledge, limit=50)
+        raw_blocked = knowledge.meta("entries_blocked") if knowledge.available() else None
     finally:
         knowledge.close()
+    try:
+        entries_blocked = json.loads(raw_blocked) if raw_blocked else []
+    except json.JSONDecodeError:
+        entries_blocked = []
     if report_body is None:
         report_body = daily_map_report(day=report_day or "нет даты", rows=[])
         report_day = report_day or "нет даты"
@@ -193,6 +206,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
             "overlay": overlays,
         },
         "taps": _desk_taps(),
+        "entries_blocked": entries_blocked if isinstance(entries_blocked, list) else [],
         "touch": touch_snap,
         "last_price": chronos_data.last_prices(vault),
         "session_window": chronos_data.session_window(),
@@ -232,28 +246,34 @@ def _page(snap: dict[str, Any]) -> str:
             '<button type="submit" disabled>Включить контур</button>'
             "</form>"
         )
+    def _term(code: object) -> str:
+        """Русское название + код, подсказка по наведению."""
+        title = html.escape(i18n_ru.hint(code))
+        return f'<span title="{title}">{html.escape(i18n_ru.ru(code))}</span>'
+
+
     cav_rows = snap.get("cav_zlg") or []
     if cav_rows:
         cav_html = "".join(
             (
                 "<tr>"
-                f"<td>{html.escape(str(r['cav']))}</td>"
-                f"<td>{html.escape(str(r['zlg']))}</td>"
-                f"<td>{html.escape(str(r['outcome']))}</td>"
+                f"<td>{_term(r['cav'])}</td>"
+                f"<td>{_term(r['zlg'])}</td>"
+                f"<td>{_term(r['outcome'])}</td>"
                 f"<td>{int(r['n'])}</td>"
                 "</tr>"
             )
             for r in cav_rows
         )
     else:
-        cav_html = '<tr><td colspan="4" class="empty">CAV×ZLG×outcome пусто</td></tr>'
+        cav_html = '<tr><td colspan="4" class="empty">Свеча × Книга × Исход — пока пусто</td></tr>'
     jury_rows = snap.get("jury_today") or []
     if jury_rows:
         jury_html = "".join(
-            f"<li>{html.escape(str(r['jury']))}: {int(r['n'])}</li>" for r in jury_rows
+            f"<li>{_term(r['jury'])}: {int(r['n'])}</li>" for r in jury_rows
         )
     else:
-        jury_html = '<li class="empty">жюри дня пусто</li>'
+        jury_html = '<li class="empty">решений жюри сегодня нет</li>'
     vs = snap.get("shadow_vs_demo_vs_live") or {}
     learn_n = snap.get("learn_n_days")
     learn_txt = "—" if learn_n is None else str(learn_n)
@@ -293,6 +313,9 @@ def _page(snap: dict[str, Any]) -> str:
         return html.escape(str(value))
 
     halt_txt = _e(acct.get("halt_reason") or "открыт")
+    blocked_txt = _e(
+        ", ".join(i18n_ru.ru(b) for b in (snap.get("entries_blocked") or [])) or "не заблокированы"
+    )
     queue_txt = _e(json.dumps(snap.get("queue_counts") or {}, ensure_ascii=False))
     money_block = f"""<h2>Счёт</h2>
       <p>{equity_line}</p>
@@ -309,9 +332,11 @@ def _page(snap: dict[str, Any]) -> str:
       <h2>Предупреждения</h2><ul>{banner_items}</ul>"""
     service = f"""<div id="service">
       {money_block}
-      <h2>CAV × ZLG × outcome</h2>
+      <h2>Свеча (CAV) × Книга (ZLG) × Исход</h2>
       <table><tbody>{cav_html}</tbody></table>
       <h2>Жюри дня</h2><ul>{jury_html}</ul>
+      <p><a href="/settings">Настройки: ключи и источники</a>
+      · <a href="/api/glossary">Словарь кодов (JSON)</a> · входы: {blocked_txt}</p>
       <p>n касаний {int(snap.get("n_touches") or 0)}</p>
       <p>День учёбы {html.escape(learn_txt)}</p>
       <p>Дыры ленты {int(snap.get("tape_holes") or 0)}</p>
@@ -384,7 +409,21 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
             return gates_from_sqlite(knowledge)
         finally:
             knowledge.close()
-    if path in {"/api/account", "/api/queue", "/api/paper", "/api/risk"}:
+    if path == "/api/glossary":
+        return {"terms": i18n_ru.glossary(), "columns": i18n_ru.COLUMNS}
+    if path == "/api/settings":
+        knowledge = open_knowledge(vault, create=False)
+        try:
+            return {"fields": Settings(vault).view(), "sources": load_sources(knowledge)}
+        finally:
+            knowledge.close()
+    if path == "/api/sources":
+        knowledge = open_knowledge(vault, create=False)
+        try:
+            return {"sources": load_sources(knowledge)}
+        finally:
+            knowledge.close()
+    if path in {"/api/account", "/api/queue", "/api/paper", "/api/risk", "/api/commands"}:
         from capitalizator.ops.account_view import account_view, queue_view
         from capitalizator.risk.config import load_risk_config
 
@@ -401,6 +440,8 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
                         source=source, limit=_int_arg(qs, "limit", 200)
                     )
                 }
+            if path == "/api/commands":
+                return {"commands": knowledge.commands(limit=_int_arg(qs, "limit", 100))}
             return {"risk_config": load_risk_config(knowledge).to_payload()}
         finally:
             knowledge.close()
@@ -467,6 +508,34 @@ class ConsoleApp:
             nxt = current.with_changes(**typed)
             save_risk_config(knowledge, nxt, ack=True)
             return {"risk_config": nxt.to_payload(), "previous_id": current.config_id}
+        finally:
+            knowledge.close()
+
+    def settings_post(self, path: str, payload: dict[str, Any], *, ack: bool) -> dict[str, Any]:
+        """/api/settings: {field: value, ...} (empty value deletes). /api/sources:
+        {action: add|enable|disable|remove, kind, value, label | id}."""
+        knowledge = open_knowledge(self.vault, create=True)
+        try:
+            if path == "/api/settings":
+                changes = {str(k): str(v) for k, v in payload.items()}
+                return Settings(self.vault).update(changes, knowledge=knowledge, ack=ack)
+            action = str(payload.get("action") or "add")
+            if action == "add":
+                return add_source(
+                    knowledge,
+                    kind=str(payload.get("kind") or ""),
+                    value=str(payload.get("value") or ""),
+                    label=str(payload.get("label") or ""),
+                    ack=ack,
+                )
+            if action in {"enable", "disable"}:
+                ok = set_source_enabled(
+                    knowledge, str(payload.get("id") or ""), action == "enable", ack=ack
+                )
+                return {"updated": ok}
+            if action == "remove":
+                return {"removed": remove_source(knowledge, str(payload.get("id") or ""), ack=ack)}
+            raise ValueError(f"unknown action {action!r}")
         finally:
             knowledge.close()
 
@@ -616,6 +685,32 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                         return
                     self._set_mode(payload, redirect=path == "/mode")
                     return
+                if path in {"/api/settings", "/api/sources"}:
+                    if not _is_local(self):
+                        self._send(403, b"localhost only", "text/plain; charset=utf-8")
+                        return
+                    try:
+                        payload = _read_body(self)
+                    except (ValueError, json.JSONDecodeError):
+                        self._send(400, b"bad-json", "text/plain; charset=utf-8")
+                        return
+                    raw_ack = payload.pop("ack_token", payload.pop("ack", None))
+                    ack = raw_ack in {True, "true", "1", 1, "yes"}
+                    redirect = payload.pop("redirect", None) in {"1", "true", True}
+                    try:
+                        out = app.settings_post(path, payload, ack=ack)
+                    except ValueError as exc:
+                        code = 403 if "ack" in str(exc) else 400
+                        self._send(code, str(exc).encode(), "text/plain; charset=utf-8")
+                        return
+                    if redirect:
+                        self._send(
+                            303, b"", "text/plain; charset=utf-8", extra={"Location": "/settings"}
+                        )
+                        return
+                    body = json.dumps(out, ensure_ascii=False, default=str).encode()
+                    self._send(200, body, "application/json; charset=utf-8")
+                    return
                 if path in {"/api/risk", "/api/command"}:
                     if not _is_local(self):
                         self._send(403, b"localhost only", "text/plain; charset=utf-8")
@@ -717,6 +812,15 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 elif path == "/touch":
                     snap = desk_snapshot(app.vault)
                     body = render_touch_html(snap.get("touch")).encode()
+                    code, ctype = 200, "text/html; charset=utf-8"
+                elif path == "/settings":
+                    knowledge = open_knowledge(app.vault, create=False)
+                    try:
+                        body = render_settings_html(
+                            Settings(app.vault).view(), load_sources(knowledge)
+                        ).encode()
+                    finally:
+                        knowledge.close()
                     code, ctype = 200, "text/html; charset=utf-8"
                 elif path == "/api/touch":
                     snap = desk_snapshot(app.vault)

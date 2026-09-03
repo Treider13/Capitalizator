@@ -336,7 +336,7 @@ def test_console_html_has_plan_screen(tmp_path: Path) -> None:
     page = render_html(vault)
     assert "BTCUSDT" in page
     assert "SOLUSDT" in page
-    assert "CAV × ZLG × outcome" in page
+    assert "Свеча (CAV) × Книга (ZLG) × Исход" in page
     assert "Жюри дня" in page
     assert "n касаний" in page
     assert "День учёбы" in page

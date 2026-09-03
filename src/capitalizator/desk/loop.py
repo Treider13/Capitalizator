@@ -762,8 +762,8 @@ class DeskLoop:
         if self.knowledge.available():
             # Gateway watchdog reads this: a silent desk cancels entry orders (§7 / Н-4).
             self._ui_put("desk_heartbeat", when.isoformat())
-            if self.refused_symbols:
-                self._ui_put("refused_symbols", json.dumps(self.refused_symbols, sort_keys=True))
+            # Always written: a symbol that gained instrument facts must leave the banner.
+            self._ui_put("refused_symbols", json.dumps(self.refused_symbols, sort_keys=True))
             if force_flush:
                 out.extend(self._consume_commands(when))
                 self._reload_risk_config()

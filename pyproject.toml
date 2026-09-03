@@ -52,3 +52,7 @@ select = ["E", "F", "I", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E501"]
+# Russian operator texts (labels, hints) are long human sentences.
+"src/capitalizator/ops/i18n_ru.py" = ["E501"]
+"src/capitalizator/ops/settings.py" = ["E501"]
+"src/capitalizator/ops/settings_page.py" = ["E501"]
