@@ -168,7 +168,7 @@ def test_halts_day_halt_lifts_on_new_day_peak_needs_release() -> None:
 
 def test_account_roll_budget_and_persistence(tmp_path: Path) -> None:
     kn = open_knowledge(init_vault(tmp_path / "d"))
-    cfg = RiskConfig(max_intents_per_session=2)
+    cfg = RiskConfig(max_intents_per_session=2, max_open_positions=1)
     acct = Account.load(kn, cfg, now=NOW)
     assert acct.equity == cfg.paper_equity
     b = acct.budget(NOW)

@@ -10,6 +10,7 @@ from capitalizator.ops.phase import phase_path, trading_mode
 from capitalizator.ops.product import (
     USER_MODES,
     HelloRequired,
+    KeysRequired,
     hello_recorded,
     mark_hello,
     read_user_mode,
@@ -64,6 +65,14 @@ def test_unknown_mode_rejected(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "user")
     with pytest.raises(ValueError, match="unknown user_mode"):
         set_user_mode(vault, "grid", ack=True)
+
+
+def test_live_requires_keys_and_an_override_when_phase_is_not_live(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "user")
+    mark_hello(vault, ok=True)
+    with pytest.raises(KeysRequired):
+        set_user_mode(vault, "live", ack=True, override_reason="owner after F4 review")
+    assert read_user_mode(vault) == "off"
 
 
 def test_hello_default_false(tmp_path: Path) -> None:

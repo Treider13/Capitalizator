@@ -14,6 +14,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from capitalizator.gateway.keys import PAPER_MODES
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.product import read_user_mode
 from capitalizator.ops.vault import init_vault, load_vault
@@ -99,8 +100,19 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.once or not args.serve:
             blocked = json.loads(knowledge.meta("entries_blocked") or "[]")
-            if mode in {"demo", "live"} and gateway_mode_ok(mode, gateway.mode) and not blocked:
-                drain_validated(knowledge, gateway.send, user_mode=mode, now=datetime.now(tz=UTC))
+            if mode in {"demo", "live"}:
+                if not gateway_mode_ok(mode, gateway.mode):
+                    print(json.dumps({**payload, "error": "user mode / key mode mismatch"}))
+                    return 3
+                if not blocked:
+                    venue = gateway.mode if gateway.mode in PAPER_MODES else "demo"
+                    drain_validated(
+                        knowledge,
+                        gateway.send,
+                        user_mode=mode,
+                        now=datetime.now(tz=UTC),
+                        venue=venue,
+                    )
             print(json.dumps({**payload, "entries_blocked": blocked}, ensure_ascii=False))
             return 0
         print(json.dumps({**payload, "serve": True}, ensure_ascii=False), flush=True)

@@ -6,6 +6,16 @@
 `phase=off → None`, «1444 passed», «DeadMan/Reconciler» устарели (см. PR #25).
 
 
+**2026-09-03, релиз «sessions» (`docs/SESSIONS.md`):** локально **1677+ passed, 2 skipped**, `ruff` чисто,
+`mypy --strict` на модулях релиза чисто (`pyproject.toml [tool.mypy].files`). Отправка демо/лайв — по
+таблице окон UTC `infra/sessions.yaml` (`risk/sessions.py`), а не по единственному окну 16:30–19:30 МСК;
+тень 24/7 размечена окном/группой; калибратор считает классы `idea|CAV|ZLG|window|group`, расширяет `k_atr`
+по MAE и флагует закрытые окна с доказанным краем (`eligible_windows`, открывает человек). Стоп — с
+кластерами ликвидаций и потолком `max_stop_atr`; фандинг-интервал живой из тикера; бюджеты по окнам;
+до 3 позиций по корреляционным группам; `participating_share`. Шлюз: режим **Bybit Demo Trading**
+(`demo`, pybit `demo=True`), testnet — legacy. Живой ленты / VPS / hello **по-прежнему нет**
+(среда без egress). `allow_night` удалён (не читался). `desk/session_name.py` удалён.
+
 **2026-09-02, аудит кода:** локально **1444 passed, 2 skipped**, `ruff` чисто. Что нашли и что исправили —
 `docs/AUDIT-2026-09-02.md` (направление спринга, комиссия vs R, риск подключён, бумажное исполнение тени,
 стоп/трейл, шлюз Bybit на pybit, живой WS-рекордер, консоль с деньгами). Живой ленты/testnet по-прежнему нет:

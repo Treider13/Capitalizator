@@ -32,7 +32,7 @@ SETTINGS_FILE = "settings.json"
 FIELDS: dict[str, tuple[str, str, bool, str]] = {
     "bybit.api_key": ("Биржа", "API-ключ Bybit", True, "Сабаккаунт, права Read+Trade, без Withdraw, IP-whitelist = IP сервера."),
     "bybit.api_secret": ("Биржа", "API-секрет Bybit", True, "Хранится только в secrets/settings.json с правами 0600."),
-    "bybit.mode": ("Биржа", "Режим ключа", False, "testnet | live_sub | live_main. demo работает только с testnet, live — только с live_*."),
+    "bybit.mode": ("Биржа", "Режим ключа", False, "demo | testnet | live_sub | live_main. Учебный счёт — demo (Bybit Demo Trading). live — только live_*."),
     "llm.provider": ("Модель (ИИ-аналитик)", "Провайдер", False, "anthropic | openai | none. Модель читает новости/посты и извлекает утверждения; ключей биржи не видит."),
     "llm.model": ("Модель (ИИ-аналитик)", "Имя модели", False, "Например claude-sonnet-4-5 или gpt-4.1-mini. Ответ строго по JSON-схеме; совет о сделке невозможен."),
     "llm.api_key": ("Модель (ИИ-аналитик)", "Ключ провайдера", True, "Используется только процессом intel-sandbox."),
@@ -134,8 +134,10 @@ class Settings:
         touched: list[str] = []
         for key, value in changes.items():
             value = str(value).strip()
-            if key == "bybit.mode" and value and value not in {"testnet", "live_sub", "live_main"}:
-                raise ValueError("bybit.mode must be testnet|live_sub|live_main")
+            if key == "bybit.mode" and value and value not in {
+                "demo", "testnet", "live_sub", "live_main",
+            }:
+                raise ValueError("bybit.mode must be demo|testnet|live_sub|live_main")
             if key == "llm.provider" and value and value not in {"anthropic", "openai", "none"}:
                 raise ValueError("llm.provider must be anthropic|openai|none")
             if key == "llm.monthly_budget_usd" and value:

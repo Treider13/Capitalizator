@@ -103,7 +103,23 @@ def test_risk_menu_and_commands_reach_the_desk(tmp_path: Path) -> None:
         app.set_risk({"target_risk_pct": "0.02"}, ack=True)
     with pytest.raises(ValueError, match="phase.yaml"):
         app.set_risk({"max_lev": "5"}, ack=True)
-    out = app.set_risk({"target_risk_pct": "0.005", "max_open_positions": 2, "allow_night": "true"}, ack=True)
+    try:
+        app.set_risk({"allow_night": "true"}, ack=True)
+    except ValueError as exc:
+        assert "unknown risk keys" in str(exc)  # removed knob: it was read by nothing
+    out = app.set_risk(
+        {
+            "target_risk_pct": "0.005",
+            "max_open_positions": 2,
+            "require_ict_marks": "false",
+            "max_stop_atr": "null",
+            "participating_share": "0.3",
+        },
+        ack=True,
+    )
+    assert out["risk_config"]["require_ict_marks"] is False
+    assert out["risk_config"]["max_stop_atr"] is None
+    assert out["risk_config"]["participating_share"] == "0.3"
     assert out["risk_config"]["target_risk_pct"] == "0.005" and out["risk_config"]["version"] == 2
     kn = open_knowledge(vault)
     desk = DeskLoop(knowledge=kn, user_mode="off")

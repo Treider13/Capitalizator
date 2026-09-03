@@ -48,6 +48,8 @@ def test_secrets_are_0600_masked_and_feed_the_signer(tmp_path: Path) -> None:
     # empty value deletes; bad mode refused
     with pytest.raises(ValueError, match="bybit.mode"):
         app.settings_post("/api/settings", {"bybit.mode": "mainnet"}, ack=True)
+    app.settings_post("/api/settings", {"bybit.mode": "demo"}, ack=True)
+    assert load_keys(vault, env={}) is not None and load_keys(vault, env={}).mode == "demo"
     app.settings_post("/api/settings", {"bybit.api_key": "", "bybit.api_secret": ""}, ack=True)
     assert load_keys(vault, env={}) is None
     # knowledge records field names only

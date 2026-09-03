@@ -39,7 +39,7 @@ from hashlib import blake2s
 from time import sleep as _sleep
 from typing import Any, Literal
 
-from capitalizator.gateway.keys import Keys
+from capitalizator.gateway.keys import MODES, Keys
 
 CATEGORY = "linear"
 
@@ -120,8 +120,11 @@ def make_session(keys: Keys) -> Any:
     """Real pybit session. Imported lazily so the desk never loads pybit."""
     from pybit.unified_trading import HTTP
 
+    # demo=True → api-demo.bybit.com (Bybit Demo Trading, mainnet data, simulated
+    # funds); testnet=True → api-testnet.bybit.com; both False → mainnet (live keys).
     return HTTP(
         testnet=keys.testnet,
+        demo=keys.demo,
         api_key=keys.api_key,
         api_secret=keys.api_secret,
         recv_window=5000,
@@ -156,8 +159,8 @@ class BybitGateway:
         settle_reads: int = 3,
         settle_wait_s: float = 0.3,
     ) -> None:
-        if mode not in {"testnet", "live_sub", "live_main"}:
-            raise ValueError("mode must be testnet|live_sub|live_main")
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {sorted(MODES)}")
         self.s = session
         self.mode = mode
         self.category = category
@@ -222,6 +225,11 @@ class BybitGateway:
         if not rows:
             raise GatewayError("instrument", msg=f"{symbol} not listed", kind="local")
         return dict(rows[0])
+
+    def tickers(self) -> list[dict[str, Any]]:
+        """GET /v5/market/tickers for the whole category: turnover24h, funding, OI, price."""
+        res = self._call("get_tickers", what="tickers", category=self.category)
+        return list(res.get("list") or [])
 
     def last_price(self, symbol: str) -> Decimal:
         res = self._call("get_tickers", what="tickers", category=self.category, symbol=symbol)

@@ -24,7 +24,10 @@ from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
 from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.phase import load_phase, trading_mode
 from capitalizator.ops.product import (
+    HelloRequired,
+    KeysRequired,
     LiveGateClosed,
+    cred_present,
     hello_recorded,
     read_user_mode,
     set_user_mode,
@@ -536,6 +539,19 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
             return {"risk_config": load_risk_config(knowledge).to_payload()}
         finally:
             knowledge.close()
+    if path in {"/api/universe", "/api/sessions", "/api/preview"}:
+        from capitalizator.ops.account_view import preview_view, sessions_view, universe_view
+
+        knowledge = open_knowledge(vault, create=False)
+        try:
+            if path == "/api/universe":
+                return universe_view(knowledge)
+            if path == "/api/sessions":
+                return sessions_view(knowledge)
+            touch_id = (qs.get("touch_id") or [None])[0]
+            return preview_view(knowledge, touch_id=touch_id)
+        finally:
+            knowledge.close()
     return None
 
 
@@ -574,6 +590,35 @@ class ConsoleApp:
             self.vault, mode, ack=ack, learn_n_days=learn_n_days, override_reason=override_reason
         )
 
+    def prove_hello(self, *, ack: bool, probe_order: bool = False) -> dict[str, Any]:
+        """Talk to the venue (wallet, instruments). Sets the hello flag only on success."""
+        if not ack:
+            raise ValueError("ack required")
+        from capitalizator.gateway.keys import load_keys
+
+        keys = load_keys(self.vault)
+        if keys is None:
+            raise HelloRequired("no keys")
+        from capitalizator.gateway import BybitGateway
+        from capitalizator.gateway.bybit import make_session
+
+        gateway = BybitGateway(make_session(keys), mode=keys.mode)
+        result = gateway.hello(probe_order=probe_order)
+        from capitalizator.ops.product import mark_hello
+
+        mark_hello(self.vault, ok=bool(result.get("ok")))
+        knowledge = open_knowledge(self.vault, create=True)
+        try:
+            knowledge.set_meta("hello_result", json.dumps(result, default=str))
+            fee = result.get("fee_rate") or {}
+            if fee.get("ok") and isinstance(fee.get("value"), list) and len(fee["value"]) == 2:
+                knowledge.set_meta(
+                    "fee_rate", json.dumps({"maker": fee["value"][0], "taker": fee["value"][1]})
+                )
+        finally:
+            knowledge.close()
+        return {"hello": result, "hello_ok": bool(result.get("ok")), "real": True}
+
     def set_risk(self, changes: dict[str, Any], *, ack: bool) -> dict[str, Any]:
         """Operator risk menu (D-12). Validated by RiskConfig; applies to new intents."""
         from capitalizator.risk.config import load_risk_config, save_risk_config
@@ -582,25 +627,20 @@ class ConsoleApp:
             raise ValueError("ack required")
         knowledge = open_knowledge(self.vault, create=True)
         try:
+            from capitalizator.risk.config import RiskConfig
+
             current = load_risk_config(knowledge)
             allowed = set(current.to_payload()) - {"version", "config_id"}
             bad = set(changes) - allowed
             if bad:
                 raise ValueError(f"unknown risk keys: {sorted(bad)}")
-            typed = {}
-            for key, value in changes.items():
-                sample = getattr(current, key)
-                if isinstance(sample, bool):
-                    typed[key] = value in {True, "true", "1", 1, "yes"}
-                elif isinstance(sample, int):
-                    typed[key] = int(value)
-                elif isinstance(sample, str):
-                    typed[key] = str(value)
-                else:
-                    from decimal import Decimal
-
-                    typed[key] = Decimal(str(value))
-            nxt = current.with_changes(**typed)
+            # Typing lives in RiskConfig.from_payload (Decimal / int / bool words /
+            # nullable max_stop_atr) — one parser for the console and the snapshot.
+            merged = current.to_payload()
+            merged.update(changes)
+            merged.pop("config_id", None)
+            merged["version"] = current.version + 1
+            nxt = RiskConfig.from_payload(merged)
             save_risk_config(knowledge, nxt, ack=True)
             return {"risk_config": nxt.to_payload(), "previous_id": current.config_id}
         finally:
@@ -634,10 +674,32 @@ class ConsoleApp:
         finally:
             knowledge.close()
 
+    def apply_universe(self, proposal_id: str, *, ack: bool) -> dict[str, Any]:
+        """Human step: the weekly top-N proposal becomes infra/universe.yaml."""
+        from capitalizator.screener.refresh import apply_universe
+
+        if not ack:
+            raise ValueError("ack required")
+        if not proposal_id:
+            raise ValueError("proposal_id required")
+        knowledge = open_knowledge(self.vault, create=True)
+        try:
+            universe = apply_universe(
+                knowledge, proposal_id=proposal_id, ack=True, now=datetime.now(tz=UTC)
+            )
+            return {
+                "universe": list(universe.symbols),
+                "proposal_id": proposal_id,
+                "takes_effect": "on desk/recorder restart",
+            }
+        finally:
+            knowledge.close()
+
     def command(
         self, kind: str, *, symbol: str | None, ack: bool, reason: str = ""
     ) -> dict[str, Any]:
-        """flatten | release_halts | pause_entries | resume_entries → picked up by the desk tick."""
+        """flatten | release_halts | pause_entries | resume_entries | drift_release
+        → picked up by the desk tick. drift_release takes a window name in `symbol` (or ALL)."""
         if not ack:
             raise ValueError("ack required")
         if kind not in Knowledge.COMMAND_KINDS:
@@ -773,6 +835,9 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
             if mode in {"demo", "live"} and not hello_recorded(app.vault):
                 self._send(403, b"hello required", "text/plain; charset=utf-8")
                 return
+            if mode == "live" and not cred_present(app.vault):
+                self._send(403, b"cred required", "text/plain; charset=utf-8")
+                return
             reason = payload.get("override_reason")
             try:
                 out = app.set_mode(
@@ -781,6 +846,12 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 )
             except LiveGateClosed as exc:
                 self._send(409, str(exc).encode(), "text/plain; charset=utf-8")
+                return
+            except KeysRequired:
+                self._send(403, b"cred required", "text/plain; charset=utf-8")
+                return
+            except HelloRequired:
+                self._send(403, b"hello required", "text/plain; charset=utf-8")
                 return
             except ValueError as exc:
                 self._send(400, str(exc).encode(), "text/plain; charset=utf-8")
@@ -810,6 +881,30 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                         return
                     self._set_mode(payload, redirect=path == "/mode")
                     return
+                if path == "/api/hello":
+                    try:
+                        payload = _read_body(self)
+                    except (ValueError, json.JSONDecodeError):
+                        self._send(400, b"bad-json", "text/plain; charset=utf-8")
+                        return
+                    if not _token_ok(app, self, payload):
+                        self._send(403, b"ack required", "text/plain; charset=utf-8")
+                        return
+                    probe = payload.get("probe_order") in {"1", "true", True}
+                    try:
+                        out = app.prove_hello(ack=True, probe_order=probe)
+                    except HelloRequired:
+                        self._send(403, b"no keys", "text/plain; charset=utf-8")
+                        return
+                    except ImportError:
+                        self._send(503, b"gateway extra not installed", "text/plain; charset=utf-8")
+                        return
+                    except Exception:
+                        self._send(502, b"hello failed", "text/plain; charset=utf-8")
+                        return
+                    body = json.dumps(out, ensure_ascii=False, default=str).encode()
+                    self._send(200, body, "application/json; charset=utf-8")
+                    return
                 if path in {"/api/settings", "/api/sources"}:
                     try:
                         payload = _read_body(self)
@@ -834,7 +929,7 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     body = json.dumps(out, ensure_ascii=False, default=str).encode()
                     self._send(200, body, "application/json; charset=utf-8")
                     return
-                if path in {"/api/risk", "/api/command"}:
+                if path in {"/api/risk", "/api/command", "/api/universe"}:
                     try:
                         payload = _read_body(self)
                     except (ValueError, json.JSONDecodeError):
@@ -846,6 +941,10 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     try:
                         if path == "/api/risk":
                             out = app.set_risk(payload, ack=ack)
+                        elif path == "/api/universe":
+                            out = app.apply_universe(
+                                str(payload.get("proposal_id") or ""), ack=ack
+                            )
                         else:
                             out = app.command(
                                 str(payload.get("kind") or ""),

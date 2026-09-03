@@ -1,7 +1,9 @@
-"""0.4.4 — unsigned intent → paper order. Testnet only. No key. No send.
+"""0.4.4 — unsigned intent → paper order. Paper venues only. No key. No send.
 
-Week-0 whitelist is BTCUSDT/ETHUSDT. Mainnet mode is rejected.
-This does not place a testnet order.
+Week-0 whitelist is BTCUSDT/ETHUSDT. Live modes are rejected here: this validator
+serves the demo drain; the live drain has its own key gate in the gateway.
+`trading_mode` names the paper venue: `demo` (Bybit Demo Trading, mainnet data) or
+`testnet` (legacy). This does not place an order.
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ from pydantic import BaseModel, ConfigDict
 from capitalizator.screener.universe import Universe, default_week0_path, load_universe
 
 Side = Literal["buy", "sell"]
+PaperVenue = Literal["demo", "testnet"]
+PAPER_VENUES = frozenset({"demo", "testnet"})
 
 
 class UnsignedIntent(BaseModel):
@@ -26,7 +30,7 @@ class UnsignedIntent(BaseModel):
     stop_px: Decimal
     tp_px: Decimal | None = None
     reduce_only_stop: bool = True
-    trading_mode: Literal["testnet"]
+    trading_mode: PaperVenue
 
 
 class Order(BaseModel):
@@ -39,7 +43,7 @@ class Order(BaseModel):
     stop_px: Decimal
     tp_px: Decimal | None = None
     reduce_only_stop: bool = True
-    trading_mode: Literal["testnet"]
+    trading_mode: PaperVenue
 
 
 class Signer:
@@ -47,8 +51,8 @@ class Signer:
         self.universe = universe or load_universe(default_week0_path())
 
     def validate(self, unsigned: UnsignedIntent) -> Order:
-        if unsigned.trading_mode != "testnet":
-            raise ValueError("signer accepts testnet only")
+        if unsigned.trading_mode not in PAPER_VENUES:
+            raise ValueError("signer accepts demo|testnet only")
         if unsigned.symbol not in self.universe.symbols:
             raise ValueError(f"symbol not in week0 universe: {unsigned.symbol}")
         if unsigned.qty <= 0 or unsigned.limit_px <= 0 or unsigned.stop_px <= 0:
@@ -67,5 +71,5 @@ class Signer:
             stop_px=unsigned.stop_px,
             tp_px=unsigned.tp_px,
             reduce_only_stop=True,
-            trading_mode="testnet",
+            trading_mode=unsigned.trading_mode,
         )

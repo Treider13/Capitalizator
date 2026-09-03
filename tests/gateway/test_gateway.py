@@ -184,8 +184,12 @@ def _gw(session: FakeSession | None = None, mode: str = "testnet", clock=None) -
 def test_keys_from_env_and_file(tmp_path: Path) -> None:
     assert load_keys(None, env={}) is None
     k = load_keys(None, env={"BYBIT_API_KEY": "abcd1234", "BYBIT_API_SECRET": "SECRET-zz9"})
-    assert k is not None and k.mode == "testnet" and k.testnet
+    # a missing mode flag is Demo Trading — a paper venue, never live
+    assert k is not None and k.mode == "demo" and k.demo and not k.testnet and not k.live
     assert "SECRET-zz9" not in repr(k)
+    t = load_keys(None, env={"BYBIT_API_KEY": "abcd1234", "BYBIT_API_SECRET": "SECRET-zz9",
+                             "BYBIT_MODE": "testnet"})
+    assert t is not None and t.testnet and not t.demo
     with pytest.raises(ValueError):
         Keys(api_key="a", api_secret="b", mode="mainnet")
     vault = init_vault(tmp_path / "v")
@@ -196,7 +200,7 @@ def test_keys_from_env_and_file(tmp_path: Path) -> None:
         load_keys(vault, env={})
     os.chmod(f, 0o600)
     got = load_keys(vault, env={})
-    assert got is not None and got.mode == "live_sub" and not got.testnet
+    assert got is not None and got.mode == "live_sub" and not got.testnet and got.live
 
 
 # --- pybit exception mapping -----------------------------------------------------------
@@ -333,10 +337,53 @@ def test_ret_code_dict_and_raised_error_are_both_gateway_errors() -> None:
         assert exc.value.code == 10003
 
 
-def test_mode_pairing_demo_testnet_live_live() -> None:
-    assert gateway_mode_ok("demo", "testnet") and not gateway_mode_ok("demo", "live_sub")
+def test_mode_pairing_demo_paper_live_live() -> None:
+    assert gateway_mode_ok("demo", "demo") and gateway_mode_ok("demo", "testnet")
+    assert not gateway_mode_ok("demo", "live_sub")
     assert gateway_mode_ok("live", "live_main") and not gateway_mode_ok("live", "testnet")
-    assert not gateway_mode_ok("off", "testnet")
+    assert not gateway_mode_ok("live", "demo")
+    assert not gateway_mode_ok("off", "testnet") and not gateway_mode_ok("off", "demo")
+
+
+def test_demo_keys_build_demo_hosts_never_mainnet() -> None:
+    """pybit routes by flags: demo → api-demo / stream-demo; testnet → api-testnet;
+    neither → mainnet. A demo key must never produce a mainnet session."""
+    pybit = pytest.importorskip("pybit")
+    from pybit import _http_manager
+
+    from capitalizator.gateway.bybit import make_session
+    from capitalizator.gateway.ws import make_private_ws
+
+    assert pybit is not None
+    demo = make_session(Keys(api_key="k1234567", api_secret="s", mode="demo"))
+    assert isinstance(demo, _http_manager._V5HTTPManager)
+    assert demo.demo is True and demo.testnet is False
+    assert "api-demo" in demo.endpoint and "api-testnet" not in demo.endpoint
+    tn = make_session(Keys(api_key="k1234567", api_secret="s", mode="testnet"))
+    assert tn.testnet is True and tn.demo is False and "api-testnet" in tn.endpoint
+    live = make_session(Keys(api_key="k1234567", api_secret="s", mode="live_sub"))
+    assert live.testnet is False and live.demo is False and live.endpoint == "https://api.bybit.com"
+    # pybit's private WebSocket connects inside __init__, so the factory is checked
+    # against a stand-in that records the flags; pybit maps demo=True to stream-demo.
+    from pybit import _websocket_stream as ws_mod
+
+    assert ws_mod.DEMO_SUBDOMAIN_MAINNET == "stream-demo"
+    captured: dict = {}
+
+    class FakeWs:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import pybit.unified_trading as ut
+
+    real = ut.WebSocket
+    ut.WebSocket = FakeWs  # type: ignore[misc,assignment]
+    try:
+        make_private_ws(Keys(api_key="k1234567", api_secret="s", mode="demo"))
+    finally:
+        ut.WebSocket = real  # type: ignore[misc]
+    assert captured["demo"] is True and captured["testnet"] is False
+    assert captured["channel_type"] == "private"
     with pytest.raises(ValueError):
         _gw(mode="mainnet")
 

@@ -19,6 +19,8 @@ dependencies = [
 dev = [
     "pytest>=8.3,<9",
     "ruff>=0.6,<1",
+    "mypy>=1.11,<2",
+    "types-PyYAML>=6,<7",
 ]
 # Exchange gateway (signer/recorder only; the desk never imports it).
 # bybit-exchange/pybit — official Bybit v5 HTTP + WebSocket connector.
@@ -57,3 +59,19 @@ select = ["E", "F", "I", "UP"]
 "src/capitalizator/ops/settings.py" = ["E501"]
 "src/capitalizator/ops/settings_page.py" = ["E501"]
 "src/capitalizator/ops/gen_status.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+# Strict scope = the sessions release modules. Legacy packages are added file by file
+# (CI runs `mypy` on exactly this list; see .github/workflows/lint.yml).
+files = [
+    "src/capitalizator/risk/sessions.py",
+    "src/capitalizator/risk/correlation.py",
+    "src/capitalizator/champion/calibrate.py",
+    "src/capitalizator/recorder/ticker_fields.py",
+    "src/capitalizator/screener/refresh.py",
+    "src/capitalizator/exec/smart_stop.py",
+    "src/capitalizator/gateway/keys.py",
+]

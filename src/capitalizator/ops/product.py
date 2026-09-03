@@ -31,6 +31,10 @@ class HelloRequired(ValueError):
     """demo/live asked for before a green `hello` (key, wallet, instruments, probe order)."""
 
 
+class KeysRequired(ValueError):
+    """live asked for before secrets/bybit.json (or the env pair) exists."""
+
+
 def user_mode_from_knowledge(knowledge: Knowledge) -> str:
     raw = knowledge.meta(META_USER_MODE)
     if raw is None:
@@ -75,15 +79,24 @@ def set_user_mode(
     phase_before = phase_path().read_bytes()
     trading_before = trading_mode()
     if mode in {"demo", "live"} and not hello_recorded(vault):
-        raise HelloRequired("run `signer --hello` with a working key before demo/live")
+        raise HelloRequired(
+            "prove the key on the venue (Chronos hello or signer --hello) before demo/live"
+        )
     if mode == "live" and trading_before != "live":
         if not override_reason or len(override_reason.strip()) < 8:
             raise LiveGateClosed(
                 f"phase.yaml trading_mode is {trading_before!r}: the F4 gate has not been "
                 "passed; give an explicit override_reason (≥ 8 chars) to force live"
             )
+    if mode == "live" and not cred_present(vault):
+        raise KeysRequired("save Bybit keys (Settings / secrets/bybit.json) before live")
     knowledge = open_knowledge(vault, create=True)
     try:
+        prev = user_mode_from_knowledge(knowledge)
+        if mode == "live" and prev == "demo":
+            from capitalizator.ops.handoff import stamp_demo_to_live
+
+            stamp_demo_to_live(knowledge)
         knowledge.set_meta(META_USER_MODE, mode)
         knowledge.set_meta(META_ACK, ack_ts)
         if mode == "learn" and learn_n_days is not None:
@@ -94,6 +107,9 @@ def set_user_mode(
                 "" if trading_before == "live" else str(override_reason).strip(),
             )
         out_mode = user_mode_from_knowledge(knowledge)
+        from capitalizator.ops.handoff import experience_snapshot
+
+        experience = experience_snapshot(knowledge)
     finally:
         knowledge.close()
     if phase_path().read_bytes() != phase_before:
@@ -102,13 +118,22 @@ def set_user_mode(
         raise RuntimeError("product must not change trading_mode yaml")
     return {
         "user_mode": out_mode,
+        "from_mode": prev,
         "ack": True,
         "learn_n_days": learn_n_days,
         "trading_mode_yaml": trading_before,
         "live_override": (
             None if mode != "live" or trading_before == "live" else str(override_reason).strip()
         ),
+        "experience": experience,
     }
+
+
+def cred_present(vault: Vault) -> bool:
+    """True when the gateway can load a key pair. Never returns the secret."""
+    from capitalizator.gateway.keys import load_keys
+
+    return load_keys(vault) is not None
 
 
 def hello_recorded(vault: Vault) -> bool:

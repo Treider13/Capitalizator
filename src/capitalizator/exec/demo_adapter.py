@@ -1,8 +1,9 @@
-"""1.5.5 — paper path to the testnet signer. No mainnet host.
+"""1.5.5 — paper path to the paper-venue signer. No mainnet host.
 
 trading_mode must be demo. Current infra/phase.yaml is off → reject.
 Default submit is {status: not_sent}. A real POST is only the injected
-`post` callable (testnet hello / signer process). Host is never hardcoded.
+`post` callable (Demo Trading / testnet hello or the signer process). Host is never
+hardcoded; the unsigned intent names its paper venue (demo | testnet).
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from collections.abc import Callable
 from typing import Any
 
 from capitalizator.ops.phase import trading_mode as phase_trading_mode
-from capitalizator.signer.validate import Order, Signer, UnsignedIntent
+from capitalizator.signer.validate import PAPER_VENUES, Order, Signer, UnsignedIntent
 
 PostFn = Callable[[Order], dict[str, Any]]
 
@@ -31,12 +32,13 @@ class DemoAdapter:
     def submit(self, unsigned: UnsignedIntent) -> dict[str, Any]:
         if self.trading_mode != "demo":
             raise ValueError(f"trading_mode={self.trading_mode!r} is not demo; not sending")
-        if unsigned.trading_mode != "testnet":
-            raise ValueError("demo adapter talks to testnet signer only")
+        if unsigned.trading_mode not in PAPER_VENUES:
+            raise ValueError("demo adapter talks to a paper venue (demo|testnet) only")
         order = self.signer.validate(unsigned)
         if self._post is None:
             return {
                 "mode": "demo",
+                "venue": order.trading_mode,
                 "status": "not_sent",
                 "symbol": order.symbol,
                 "stop_px": str(order.stop_px),
@@ -45,6 +47,7 @@ class DemoAdapter:
         status = str(result.get("status") or "sent")
         return {
             "mode": "demo",
+            "venue": order.trading_mode,
             "status": status,
             "symbol": order.symbol,
             "stop_px": str(order.stop_px),

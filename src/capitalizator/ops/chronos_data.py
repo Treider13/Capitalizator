@@ -340,6 +340,31 @@ def dashboard(vault: Vault) -> dict[str, Any]:
 
 
 def hello_status(vault: Vault) -> dict[str, Any]:
-    from capitalizator.ops.product import hello_recorded
+    """Flag plus whether the last hello actually talked to the venue. GET does not ping."""
+    import json
 
-    return {"hello_ok": hello_recorded(vault), "real": False}
+    from capitalizator.ops.handoff import experience_snapshot
+    from capitalizator.ops.knowledge import open_knowledge
+    from capitalizator.ops.product import cred_present, hello_recorded
+
+    hello_ok = hello_recorded(vault)
+    result: dict[str, Any] | None = None
+    knowledge = open_knowledge(vault, create=False)
+    try:
+        raw = knowledge.meta("hello_result") if knowledge.available() else None
+        if raw:
+            try:
+                loaded = json.loads(raw)
+            except json.JSONDecodeError:
+                loaded = None
+            if isinstance(loaded, dict):
+                result = {"ok": bool(loaded.get("ok"))}
+        experience = experience_snapshot(knowledge)
+    finally:
+        knowledge.close()
+    return {
+        "hello_ok": hello_ok,
+        "real": bool(result and result.get("ok")),
+        "cred_present": cred_present(vault),
+        "experience": experience,
+    }

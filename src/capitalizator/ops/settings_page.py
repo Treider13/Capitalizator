@@ -122,8 +122,8 @@ def render_settings_html(
         "(нужен bearer выше). Hyperliquid — адрес кошелька; учитывается только когорта, не один кит. "
         "TradingView — только свой аккаунт (sessionid выше).</div></div>"
     )
-    parts.append("<p class='note'>Ключи биржи можно задать и без консоли: переменные окружения "
-                 "<code>BYBIT_API_KEY / BYBIT_API_SECRET / BYBIT_MODE</code> у процесса signer или файл "
+    parts.append("<p class='note'>Ключи биржи можно задать и без консоли: переменные из "
+                 "<code>.env.example</code> у процесса signer или файл "
                  "<code>secrets/bybit.json</code> (0600). Эта страница пишет тот же файл.</p>")
     parts.append("</body></html>")
     return "".join(parts)

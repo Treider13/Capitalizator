@@ -16,6 +16,7 @@ from capitalizator.recorder.app import RecorderApp
 from capitalizator.recorder.normalize import TradesNormalizer
 from capitalizator.recorder.public_ws import is_control_frame, subscribe_many
 from capitalizator.recorder.sink_parquet import ParquetSink
+from capitalizator.recorder.ticker_fields import funding_payload
 from capitalizator.recorder.ws_book import BybitBookWs
 from capitalizator.types import MarketEvent, require_utc
 
@@ -102,7 +103,7 @@ def ticker_events(frame: dict[str, Any], *, recv_ts: datetime) -> list[MarketEve
                     symbol=symbol,
                     exchange_ts=exchange_ts,
                     recv_ts=when,
-                    payload={"funding": str(item["fundingRate"])},
+                    payload=funding_payload(item),
                 )
             )
         # `openInterest` is contracts; `openInterestValue` is USD — a ticker DELTA frame
