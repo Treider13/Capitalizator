@@ -29,8 +29,12 @@ ssh -i ~/.ssh/id_rsa -L 8082:127.0.0.1:8082 trader@91.229.105.226
 | `http://127.0.0.1:8082/api/glossary` | Словарь кодов с подсказками |
 | `/api/account`, `/api/queue`, `/api/paper`, `/api/risk`, `/api/commands`, `/api/settings`, `/api/sources` | JSON для скриптов |
 
-Все действия (режим, риск, команды, ключи) требуют поля `ack_token` — любое непустое слово,
-подтверждающее, что вы понимаете, что меняете. Принимаются только с localhost (через туннель).
+Все действия (режим, риск, команды, ключи) требуют токена подтверждения `ack_token`. В страницах
+консоли он подставляется сам (скрытое поле формы / заголовок `X-Ack-Token`); вы отмечаете галочку
+«Подтверждаю». Токен случайный, живёт пока живёт процесс консоли — чужая вкладка браузера или
+сайт не смогут отправить команду от вашего имени (защита от CSRF и DNS-rebinding: проверяются
+`Host`/`Origin`). Для скриптов: `curl -s http://127.0.0.1:8082/api/csrf` → `{"ack_token": ...}`,
+далее заголовок `X-Ack-Token: <токен>`. Записи принимаются только с localhost (через туннель).
 
 ## 3. Куда вставить API-ключ Bybit
 
@@ -59,7 +63,7 @@ docker compose run --rm signer python -m capitalizator.signer --userdir /data --
 1. Ключ с `bybit.mode = live_sub` (п. 3).
 2. `infra/phase.yaml` на сервере: `trading_mode: "live"` — правит человек после зелёного гейта
    `python -m capitalizator.ops.gates f4` (или с явной причиной оверрайда в консоли — она записывается).
-3. В консоли режим `live` + `ack_token`; без hello режим не включится.
+3. В консоли кнопка `live` (токен подставляется сам); без записанного hello режим не включится.
 4. Пары режимов: `demo ↔ testnet`, `live ↔ live_sub/live_main`.
 
 ## 5. Управление
@@ -69,12 +73,17 @@ cd /srv/capitalizator/app/infra/deploy
 docker compose ps                         # состояние процессов
 docker compose logs -f --tail 100 desk    # логи (recorder | desk | signer | intel | console | night)
 docker compose restart signer             # перезапуск одного процесса
-sudo -u trader bash deploy.sh             # обновление кода и перезапуск изменившихся сервисов
+bash deploy.sh                            # (под trader) обновление кода и перезапуск изменившихся сервисов
 ```
 
 Где данные: `/srv/capitalizator/userdir/knowledge/desk.sqlite` (журнал, память ОКО, настройки риска,
 интенты, бумага, intel), `/srv/capitalizator/userdir/tape/` (лента: jsonl живой + parquet архив),
 `/srv/capitalizator/userdir/secrets/` (только 0600), `/srv/capitalizator/backups/` (паки каждые 6 ч).
+
+Контейнеры работают с минимумом прав: файловая система образа только на чтение, все capabilities
+сброшены, `no-new-privileges`; `desk` и `night` вообще без сети; в образе нет ключей, тестов и
+`.git`. Здоровье `desk`/`signer` = свежий heartbeat в SQLite (`docker compose ps` → `healthy`).
+У `trader` нет sudo без пароля — для деплоя достаточно группы `docker`.
 
 ## 6. Безопасность после установки
 

@@ -1,10 +1,10 @@
 # STATUS (сгенерировано)
 
-Дата: 2026-09-03T06:31:03+00:00. Этот файл пишет `python -m capitalizator.ops.gen_status`; руками не редактировать.
+Дата: 2026-09-03T07:52:10+00:00. Этот файл пишет `python -m capitalizator.ops.gen_status`; руками не редактировать.
 
-- Тесты: **1627 passed, 2 skipped in 32.04s**
+- Тесты: **1639 passed, 2 skipped in 33.87s**
 - Ruff: **чисто**
-- Модулей достижимо из точек входа: **199**; недостижимо: **5**
+- Модулей достижимо из точек входа: **200**; недостижимо: **6**
 
 ## Процессы (infra/deploy/compose.yml)
 
@@ -21,6 +21,7 @@
 
 - `capitalizator.exec.breakout_gesture`
 - `capitalizator.news_macro.sentiment`
+- `capitalizator.ops.healthz`
 - `capitalizator.patterns.exam`
 - `capitalizator.recorder.rest_ticker`
 - `capitalizator.risk.nmin`

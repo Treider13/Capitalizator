@@ -28,7 +28,7 @@ curl -s -o /dev/null -w 'testnet %{http_code} %{time_total}s\n' https://api-test
 curl -fsSL https://raw.githubusercontent.com/Treider13/Capitalizator/main/infra/deploy/install.sh -o install.sh
 bash install.sh "ssh-ed25519 AAAA... ваш_публичный_ключ" <IP_вашего_ноутбука>
 ```
-Что делает: пользователь `trader` (sudo, docker), UTC + chrony, UFW (22 только с вашего IP), fail2ban,
+Что делает: пользователь `trader` (группа docker, без sudo), UTC + chrony, UFW (22 только с вашего IP), fail2ban,
 Docker, каталоги, клон репозитория. **Парольный вход не выключает**: сначала убедитесь, что
 `ssh trader@<vps>` работает по ключу, затем `CAP_HARDEN=1 bash install.sh` — выключит пароль и root.
 
@@ -49,7 +49,7 @@ BYBIT_MODE=testnet        # testnet | live_sub | live_main
 ## Шаг 3 — запуск / обновление
 
 ```bash
-sudo -u trader bash /srv/capitalizator/app/infra/deploy/deploy.sh
+su - trader -c 'bash /srv/capitalizator/app/infra/deploy/deploy.sh'
 ```
 Собирает образ, поднимает стек. Повторный запуск = обновление кода (`git pull --ff-only`) и
 перезапуск изменившихся сервисов. Данные не трогаются.
