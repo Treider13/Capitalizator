@@ -14,7 +14,7 @@ The old global `tick_size=0.1` survives only as `Instrument.fixture(...)` for te
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
@@ -200,6 +200,21 @@ class InstrumentRegistry:
 
     def put(self, inst: Instrument) -> None:
         self._rows[inst.symbol] = inst
+
+    def set_funding_interval(self, symbol: str, minutes: int, *, source: str = "ticker") -> bool:
+        """Live `fundingIntervalHour` from the ticker overrides the instruments-info value.
+
+        Bybit switches a contract to hourly settlement when its rate pins the cap
+        (2025-10-30 announcement) and reverts without notice; instruments-info lags.
+        Returns True when the row changed. Unknown symbol / bad minutes → False.
+        """
+        if minutes <= 0 or minutes > 24 * 60 or symbol not in self._rows:
+            return False
+        row = self._rows[symbol]
+        if row.funding_interval_min == minutes:
+            return False
+        self._rows[symbol] = replace(row, funding_interval_min=minutes, source=source)
+        return True
 
     def symbols(self) -> list[str]:
         return sorted(self._rows)

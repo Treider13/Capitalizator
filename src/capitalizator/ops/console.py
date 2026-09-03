@@ -442,25 +442,20 @@ class ConsoleApp:
             raise ValueError("ack required")
         knowledge = open_knowledge(self.vault, create=True)
         try:
+            from capitalizator.risk.config import RiskConfig
+
             current = load_risk_config(knowledge)
             allowed = set(current.to_payload()) - {"version", "config_id"}
             bad = set(changes) - allowed
             if bad:
                 raise ValueError(f"unknown risk keys: {sorted(bad)}")
-            typed = {}
-            for key, value in changes.items():
-                sample = getattr(current, key)
-                if isinstance(sample, bool):
-                    typed[key] = value in {True, "true", "1", 1, "yes"}
-                elif isinstance(sample, int):
-                    typed[key] = int(value)
-                elif isinstance(sample, str):
-                    typed[key] = str(value)
-                else:
-                    from decimal import Decimal
-
-                    typed[key] = Decimal(str(value))
-            nxt = current.with_changes(**typed)
+            # Typing lives in RiskConfig.from_payload (Decimal / int / bool words /
+            # nullable max_stop_atr) — one parser for the console and the snapshot.
+            merged = current.to_payload()
+            merged.update(changes)
+            merged.pop("config_id", None)
+            merged["version"] = current.version + 1
+            nxt = RiskConfig.from_payload(merged)
             save_risk_config(knowledge, nxt, ack=True)
             return {"risk_config": nxt.to_payload(), "previous_id": current.config_id}
         finally:

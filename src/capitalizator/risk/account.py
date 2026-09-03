@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.risk.budget import SessionBudget
 from capitalizator.risk.config import RiskConfig
+from capitalizator.risk.correlation import CorrelationGuard
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import Intent, Position, RiskEngine
 from capitalizator.types import require_utc
@@ -72,6 +73,8 @@ class Account:
     open: dict[str, OpenIdea] = field(default_factory=dict)
     risk: RiskEngine = field(default_factory=RiskEngine)
     halts: Halts | None = None
+    # One idea per correlation group (risk/correlation.py). None = rule off (tests).
+    correlation: CorrelationGuard | None = None
     _budgets: dict[str, PersistentBudget] = field(default_factory=dict)
     _day: str | None = None
     _week: str | None = None
@@ -80,6 +83,8 @@ class Account:
         if self.equity <= 0:
             self.equity = self.config.paper_equity
         self.risk = RiskEngine(max_open=self.config.max_open_positions)
+        if self.correlation is None and self.config.max_open_positions > 1:
+            self.correlation = CorrelationGuard.load(threshold=self.config.corr_block_threshold)
         if self.halts is None:
             self.halts = Halts(
                 start_equity=self.equity,
@@ -109,17 +114,43 @@ class Account:
         if changed:
             self._persist()
 
-    def budget(self, now: datetime) -> PersistentBudget:
-        key = session_key(now)
-        got = self._budgets.get(key)
-        if got is None:
-            got = PersistentBudget(
-                key=key, max_n=self.config.max_intents_per_session, knowledge=self.knowledge
-            )
-            self._budgets[key] = got
-            for stale in [k for k in self._budgets if k < key]:
+    def budget(
+        self, now: datetime, *, key: str | None = None, max_n: int | None = None
+    ) -> PersistentBudget:
+        """Intent budget for a session key.
+
+        Legacy call (no key): one budget per Moscow calendar day, cap from RiskConfig.
+        Sessions release: the desk passes the window's `budget_key`
+        (`YYYY-MM-DD:window`) and the window's cap; the operator's
+        `max_intents_per_session` stays the ceiling for any single key. Stale keys
+        are dropped when a newer one appears (keys sort chronologically).
+        """
+        budget_key = key if key is not None else session_key(now)
+        cap = self.config.max_intents_per_session
+        if max_n is not None:
+            cap = max(0, min(cap, max_n))
+        got = self._budgets.get(budget_key)
+        if got is None or got.max_n != cap:
+            got = PersistentBudget(key=budget_key, max_n=cap, knowledge=self.knowledge)
+            self._budgets[budget_key] = got
+            day = budget_key.split(":", 1)[0]
+            for stale in [k for k in self._budgets if k.split(":", 1)[0] < day]:
                 del self._budgets[stale]
         return got
+
+    def daily_intents(self, now: datetime) -> int:
+        """Intents already spent today across every window key (UTC date prefix)."""
+        day = require_utc(now).date().isoformat()
+        total = 0
+        if self.knowledge is not None and self.knowledge.available():
+            for key, raw in self.knowledge.meta_prefix(f"budget:{day}").items():
+                if raw.isdigit():
+                    total += int(raw)
+            return total
+        for key, b in self._budgets.items():
+            if key.startswith(day):
+                total += b.n
+        return total
 
     # --- equity --------------------------------------------------------------
     def set_equity(self, equity: Decimal, *, source: str, now: datetime) -> None:
@@ -165,7 +196,15 @@ class Account:
             return False, "position_open_same_symbol"
         if len(self.open) >= self.config.max_open_positions:
             return False, "max_open_positions"
+        if self.correlation is not None and self.open:
+            blocked, why = self.correlation.blocks(symbol, self.open.keys())
+            if blocked:
+                return False, why
         return True, "ok"
+
+    def sizing_equity(self) -> Decimal:
+        """The slice the desk may size against (participating_share × equity)."""
+        return self.config.participating_equity(self.equity)
 
     def on_open(self, intent: Intent, *, now: datetime, intent_id: int | None = None) -> None:
         if intent.qty is None or intent.qty <= 0:

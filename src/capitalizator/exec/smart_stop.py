@@ -89,23 +89,38 @@ def initial_stop(
     cluster_ticks: int = CLUSTER_TICKS_DEFAULT,
     spread_mult: Decimal = SPREAD_MULT_DEFAULT,
     mode: str = "hybrid",
+    liq_levels: Sequence[Decimal] = (),
+    max_stop_atr: Decimal | None = None,
+    entry: Decimal | None = None,
 ) -> StopDecision:
     """Widen the structural stop by a volatility buffer and push it past clusters.
 
     mode: structural (no buffer, no push) | volatility (buffer only) | hybrid (all).
     The result is never tighter than `structural`.
+
+    `k_atr` is the window's buffer (sessions.yaml, widened by calibration).
+    `liq_levels` are liquidation clusters from the allLiquidation feed: magnets like
+    round numbers and zone edges (retail stops sit where leverage was flushed).
+    `max_stop_atr` with `entry`: the finished stop may not sit farther than this many
+    ATR from the entry — a setup whose invalidation is that far away is refused
+    (ValueError), it is not "fitted" by shrinking the buffer. Size follows the stop,
+    never the other way round.
     """
     if side not in {"buy", "sell"}:
         raise ValueError("side must be buy|sell")
     if tick <= 0 or structural <= 0:
         raise ValueError("tick/structural must be > 0")
+    if k_atr <= 0:
+        raise ValueError("k_atr must be > 0")
+    if max_stop_atr is not None and max_stop_atr <= 0:
+        raise ValueError("max_stop_atr must be > 0")
     comps: dict[str, str] = {"structural": str(structural), "mode": mode}
     buffer = Decimal("0")
     if mode in {"volatility", "hybrid"}:
         candidates = [tick]
+        comps["k_atr"] = str(k_atr)
         if atr is not None and atr > 0:
             candidates.append(k_atr * atr)
-            comps["k_atr"] = str(k_atr)
             comps["atr"] = str(atr)
         if spread is not None and spread > 0:
             candidates.append(spread * spread_mult)
@@ -119,6 +134,10 @@ def initial_stop(
         magnets: list[Decimal] = list(round_levels_near(stop, span=band, tick=tick))
         for z in zones:
             magnets.extend((z.lo, z.hi))
+        liq_near = [lvl for lvl in liq_levels if lvl > 0 and abs(lvl - stop) <= band]
+        if liq_near:
+            magnets.extend(liq_near)
+            comps["liq_levels_near"] = str(len(liq_near))
         # One push, measured from the buffered stop: past the farthest magnet inside
         # the band. Chaining pushes off the moved stop would walk away indefinitely.
         base = stop
@@ -140,6 +159,14 @@ def initial_stop(
     if stop <= 0:
         raise ValueError("stop would be <= 0")
     comps["buffer"] = str(buffer)
+    if max_stop_atr is not None and entry is not None and atr is not None and atr > 0:
+        dist_atr = abs(entry - stop) / atr
+        comps["stop_atr"] = str(dist_atr)
+        comps["max_stop_atr"] = str(max_stop_atr)
+        if dist_atr > max_stop_atr:
+            raise ValueError(
+                f"stop_too_wide: {dist_atr} ATR from entry > max {max_stop_atr} ATR"
+            )
     return StopDecision(
         stop=stop,
         structural=structural,
