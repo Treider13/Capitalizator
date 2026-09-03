@@ -96,13 +96,44 @@ def fetch_rss(url: str, *, now: datetime, get: Getter = default_get) -> list[Int
     return out
 
 
-# --- Reddit (public JSON) ----------------------------------------------------------------
+# --- Reddit ---------------------------------------------------------------------------
+# Reddit answers 403 "Blocked" to datacenter IPs on the public JSON (VPS, 2026-09-03).
+# With a script app (client id/secret from Настройки) we use OAuth client_credentials
+# and oauth.reddit.com, which is the supported path. Without credentials we still try
+# the public JSON and report the 403 honestly on the source row.
+def reddit_token(client_id: str, client_secret: str, *, post: Poster = default_post) -> str:
+    import base64
+
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    raw = post(
+        "https://www.reddit.com/api/v1/access_token",
+        b"grant_type=client_credentials",
+        {"Authorization": f"Basic {basic}", "Content-Type": "application/x-www-form-urlencoded"},
+    )
+    data = json.loads(raw.decode())
+    token = data.get("access_token")
+    if not token:
+        raise ValueError(f"reddit token refused: {data.get('error') or data}")
+    return str(token)
+
+
 def fetch_reddit(
-    sub: str, *, now: datetime, get: Getter = default_get, limit: int = 50
+    sub: str,
+    *,
+    now: datetime,
+    get: Getter = default_get,
+    limit: int = 50,
+    token: str | None = None,
 ) -> list[IntelItem]:
-    url = f"https://www.reddit.com/r/{sub}/new.json?{urlencode({'limit': limit, 'raw_json': 1})}"
+    query = urlencode({"limit": limit, "raw_json": 1})
+    if token:
+        url = f"https://oauth.reddit.com/r/{sub}/new?{query}"
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
+    else:
+        url = f"https://www.reddit.com/r/{sub}/new.json?{query}"
+        headers = {"Accept": "application/json"}
     _https(url)
-    data = json.loads(get(url, {"Accept": "application/json"}).decode("utf-8", errors="replace"))
+    data = json.loads(get(url, headers).decode("utf-8", errors="replace"))
     children = (((data or {}).get("data") or {}).get("children")) or []
     out: list[IntelItem] = []
     for child in children:

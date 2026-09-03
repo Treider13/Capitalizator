@@ -38,7 +38,7 @@ FIELDS: dict[str, tuple[str, str, bool, str]] = {
     "llm.api_key": ("Модель (ИИ-аналитик)", "Ключ провайдера", True, "Используется только процессом intel-sandbox."),
     "llm.monthly_budget_usd": ("Модель (ИИ-аналитик)", "Лимит расходов в месяц, $", False, "Процесс останавливает вызовы при превышении. 0 = без вызовов."),
     "x.bearer": ("Источники", "X (Twitter) API bearer", True, "Официальный API v2. Скрейпинг не используется. Пусто — источник выключен."),
-    "reddit.client_id": ("Источники", "Reddit client id", False, "Приложение Reddit (script). Публичный JSON работает и без него, с лимитами."),
+    "reddit.client_id": ("Источники", "Reddit client id", False, "Приложение Reddit (script, reddit.com/prefs/apps). Без него Reddit отвечает 403 с серверных IP."),
     "reddit.client_secret": ("Источники", "Reddit client secret", True, ""),
     "tradingview.session": ("Источники", "TradingView sessionid (свой аккаунт)", True, "Только собственный аккаунт: экспорт идей, без скрейпинга чужих страниц (ToS)."),
     "telegram.bot_token": ("Оповещения", "Telegram bot token", True, "Исходящие оповещения (инфо/критично). Чтение каналов запрещено каноном."),
@@ -241,7 +241,6 @@ def default_sources() -> list[dict[str, str]]:
         {"kind": "rss", "value": "https://www.theblock.co/rss.xml", "label": "The Block"},
         {"kind": "rss", "value": "https://www.federalreserve.gov/feeds/press_all.xml", "label": "Federal Reserve"},
         {"kind": "rss", "value": "https://www.sec.gov/news/pressreleases.rss", "label": "SEC"},
-        {"kind": "rss", "value": "https://announcements.bybit.com/en-US/rss/", "label": "Bybit announcements"},
         {"kind": "reddit", "value": "CryptoCurrency", "label": "r/CryptoCurrency"},
         {"kind": "reddit", "value": "Bitcoin", "label": "r/Bitcoin"},
     ]

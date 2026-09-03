@@ -62,6 +62,13 @@ def fetch_sources(
     rows = load_sources(knowledge)
     stored = 0
     hl_items: list[fetchers.IntelItem] = []
+    reddit_token: str | None = None
+    cid, csec = settings.get("reddit.client_id"), settings.get("reddit.client_secret")
+    if cid and csec and any(r.get("kind") == "reddit" and r.get("enabled") for r in rows):
+        try:
+            reddit_token = fetchers.reddit_token(cid, csec, post=post)
+        except Exception as exc:
+            knowledge.set_meta("reddit_auth_error", f"{type(exc).__name__}: {exc}"[:200])
     for row in rows:
         if not row.get("enabled"):
             continue
@@ -70,7 +77,7 @@ def fetch_sources(
             if kind == "rss":
                 items = fetchers.fetch_rss(value, now=now, get=get)
             elif kind == "reddit":
-                items = fetchers.fetch_reddit(value, now=now, get=get)
+                items = fetchers.fetch_reddit(value, now=now, get=get, token=reddit_token)
             elif kind == "x_account":
                 items = fetchers.fetch_x_account(
                     value, bearer=settings.get("x.bearer") or "", now=now, get=get
