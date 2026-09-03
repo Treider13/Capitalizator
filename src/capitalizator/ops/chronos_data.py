@@ -341,5 +341,10 @@ def dashboard(vault: Vault) -> dict[str, Any]:
 
 def hello_status(vault: Vault) -> dict[str, Any]:
     from capitalizator.ops.product import hello_recorded
+    from capitalizator.ops.user_keys import cred_present
 
-    return {"hello_ok": hello_recorded(vault), "real": False}
+    return {
+        "hello_ok": hello_recorded(vault),
+        "real": False,
+        "cred_present": cred_present(vault),
+    }

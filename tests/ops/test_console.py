@@ -425,7 +425,7 @@ def test_chronos_api_empty_shapes(tmp_path: Path) -> None:
         conn.request("GET", "/api/hello/status")
         hello = json.loads(conn.getresponse().read().decode())
         conn.close()
-        assert hello == {"hello_ok": False, "real": False}
+        assert hello == {"hello_ok": False, "real": False, "cred_present": False}
         conn = HTTPConnection(host, port, timeout=3)
         conn.request("GET", "/api/bars?symbol=BTCUSDT")
         bars = json.loads(conn.getresponse().read().decode())
@@ -603,7 +603,7 @@ def test_chronos_api_reads_vault_not_examples(tmp_path: Path) -> None:
         assert llm["trade_advice"] is False
 
         hello = _json_get(host, port, "/api/hello/status")
-        assert hello == {"hello_ok": False, "real": False}
+        assert hello == {"hello_ok": False, "real": False, "cred_present": False}
 
         gates = _json_get(host, port, "/api/gates")
         assert gates["n_touches"] == 1
@@ -651,3 +651,115 @@ def test_chronos_api_reads_vault_not_examples(tmp_path: Path) -> None:
     finally:
         server2.shutdown()
         server2.server_close()
+
+
+def _post_json(host: str, port: int, path: str, payload: dict) -> tuple[int, str]:
+    conn = HTTPConnection(host, port, timeout=3)
+    conn.request(
+        "POST",
+        path,
+        body=json.dumps(payload),
+        headers={"Content-Type": "application/json"},
+    )
+    resp = conn.getresponse()
+    body = resp.read().decode()
+    status = resp.status
+    conn.close()
+    return status, body
+
+
+def test_hello_and_live_cred_from_console(tmp_path: Path) -> None:
+    from capitalizator.ops.product import hello_recorded, read_user_mode
+    from capitalizator.ops.user_keys import cred_present, live_cred_path
+    from capitalizator.signer.cred import load_cred
+
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    app = ConsoleApp(vault)
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        status, body = _post_json(host, port, "/api/mode", {"mode": "demo", "ack": True})
+        assert status == 403
+        assert body == "hello required"
+
+        status, body = _post_json(host, port, "/api/hello", {"ack": False})
+        assert status == 403
+        assert body == "ack required"
+
+        status, body = _post_json(host, port, "/api/hello", {"ack": True})
+        assert status == 200
+        hello = json.loads(body)
+        assert hello == {"hello_ok": True, "real": False, "cred_present": False}
+        assert hello_recorded(vault) is True
+
+        status, body = _post_json(host, port, "/api/mode", {"mode": "demo", "ack": True})
+        assert status == 200
+        assert json.loads(body)["user_mode"] == "demo"
+
+        status, body = _post_json(host, port, "/api/mode", {"mode": "live", "ack": True})
+        assert status == 403
+        assert body == "cred required"
+        assert read_user_mode(vault) == "demo"
+
+        status, body = _post_json(host, port, "/api/live-cred", {"ack": True, "id": "", "seed": "s"})
+        assert status == 400
+
+        status, body = _post_json(
+            host,
+            port,
+            "/api/live-cred",
+            {"ack": True, "id": "pub-id", "seed": "priv-seed"},
+        )
+        assert status == 200
+        saved = json.loads(body)
+        assert saved == {"ok": True, "cred_present": True}
+        assert "priv-seed" not in body
+        assert "seed" not in saved
+        assert cred_present(vault) is True
+        path = live_cred_path(vault)
+        assert path.stat().st_mode & 0o077 == 0
+        cred = load_cred(path)
+        assert cred.public == "pub-id"
+        assert cred.seed == "priv-seed"
+
+        status = _json_get(host, port, "/api/status")
+        assert status["hello_ok"] is True
+        assert status["cred_present"] is True
+        blob = json.dumps(status)
+        assert "priv-seed" not in blob
+        assert "pub-id" not in blob
+
+        status, body = _post_json(host, port, "/api/mode", {"mode": "live", "ack": True})
+        assert status == 200
+        assert json.loads(body)["user_mode"] == "live"
+        conn = HTTPConnection(host, port, timeout=3)
+        conn.request("GET", "/")
+        page = conn.getresponse().read().decode()
+        conn.close()
+        assert 'id="ready-box"' in page
+        assert "priv-seed" not in page
+        assert "Сохранить ключ для live" in page
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_live_cred_post_is_405_on_wrong_path(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    app = ConsoleApp(vault)
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        status, _body = _post_json(
+            host, port, "/api/live-cred/extra", {"ack": True, "id": "a", "seed": "b"}
+        )
+        assert status == 405
+    finally:
+        server.shutdown()
+        server.server_close()

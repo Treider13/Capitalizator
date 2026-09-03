@@ -28,6 +28,14 @@ def cred_path_from_env() -> Path | None:
     return Path(str(raw).strip())
 
 
+def default_cred_file(userdir: Path) -> Path:
+    """Env override, else `{userdir}/live.cred` written by Chronos."""
+    env = cred_path_from_env()
+    if env is not None:
+        return env
+    return Path(userdir) / "live.cred"
+
+
 def load_cred(path: Path) -> Cred:
     if path.is_symlink():
         raise VaultError(f"symlink: {path}")

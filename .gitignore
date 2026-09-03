@@ -9,6 +9,8 @@ venv/
 .env
 .env.*
 !.env.example
+*.cred
+live.cred
 data/
 user_data/
 *.parquet

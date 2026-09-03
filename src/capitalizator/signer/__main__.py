@@ -11,7 +11,7 @@ from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.product import mark_hello, read_user_mode
 from capitalizator.ops.vault import init_vault, load_vault
 from capitalizator.signer.bybit_rest import MAIN_HOST, cancel_open, submit_limit
-from capitalizator.signer.cred import Cred, cred_path_from_env, load_cred
+from capitalizator.signer.cred import default_cred_file, load_cred
 from capitalizator.signer.process import (
     HEARTBEAT_S,
     RECONCILE_S,
@@ -22,21 +22,20 @@ from capitalizator.signer.process import (
 )
 
 
-def _load_optional_cred(path: Path | None) -> Cred | None:
-    if path is None:
-        return None
-    return load_cred(path)
+def _has_cred(path: Path | None) -> bool:
+    return path is not None and path.is_file() and not path.is_symlink()
 
 
-def build_send(cred: Cred | None, *, vault) -> object:
-    """live + cred → mainnet. demo stays paper. Missing cred on live fails."""
+def build_send(cred_path: Path | None, *, vault) -> object:
+    """live + cred file → mainnet. Reloads the file each send so Chronos can write it."""
 
     def send(row: dict) -> dict:
         mode = read_user_mode(vault)
         if mode != "live":
             return {"status": "not_sent", "reason": "not_live"}
-        if cred is None:
-            raise ValueError("live needs --cred-file")
+        if cred_path is None or not _has_cred(cred_path):
+            raise ValueError("live needs cred file")
+        cred = load_cred(cred_path)
         if str(row.get("trading_mode") or "") != "mainnet":
             raise ValueError("live sends mainnet only")
         return submit_limit(cred, row, host=MAIN_HOST)
@@ -44,14 +43,14 @@ def build_send(cred: Cred | None, *, vault) -> object:
     return send
 
 
-def build_cancel(cred: Cred | None, *, vault, sink: list[int]) -> object:
+def build_cancel(cred_path: Path | None, *, vault, sink: list[int]) -> object:
     def cancel() -> None:
         sink.append(1)
-        if cred is None:
+        if cred_path is None or not _has_cred(cred_path):
             return
         if read_user_mode(vault) != "live":
             return
-        cancel_open(cred, host=MAIN_HOST)
+        cancel_open(load_cred(cred_path), host=MAIN_HOST)
 
     return cancel
 
@@ -70,11 +69,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.mark_hello:
         mark_hello(vault, ok=True)
     knowledge = open_knowledge(vault)
-    cred_path = Path(args.cred_file) if args.cred_file else cred_path_from_env()
-    cred = _load_optional_cred(cred_path)
+    cred_path = Path(args.cred_file) if args.cred_file else default_cred_file(vault.root)
     cancels: list[int] = []
-    send = build_send(cred, vault=vault)
-    cancel = build_cancel(cred, vault=vault, sink=cancels)
+    send = build_send(cred_path, vault=vault)
+    cancel = build_cancel(cred_path, vault=vault, sink=cancels)
     try:
         dead, _recon = make_watchdogs(
             cancel_all=cancel,
@@ -82,13 +80,14 @@ def main(argv: list[str] | None = None) -> int:
             reconcile_s=RECONCILE_S,
         )
         mode = read_user_mode(vault)
+        ready = _has_cred(cred_path)
         payload = {
             "process": "signer",
             "heartbeat_s": dead.dead_man_s,
             "reconcile_s": RECONCILE_S,
             "user_mode": mode,
-            "has_cred": cred is not None,
-            "send": "mainnet" if mode == "live" and cred is not None else "not_sent",
+            "has_cred": ready,
+            "send": "mainnet" if mode == "live" and ready else "not_sent",
         }
         if args.once or not args.serve:
             if mode in {"demo", "live"}:

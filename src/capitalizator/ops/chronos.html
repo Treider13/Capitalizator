@@ -91,6 +91,13 @@
     }
     button:disabled, .dead { opacity: .5; cursor: not-allowed; }
     button:not(:disabled) { color: var(--text); cursor: pointer; }
+    input[type="text"], input[type="password"] {
+      background: #1e2329;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 4px 8px;
+    }
     #service { display: none; }
     footer { padding: 8px 14px 16px; color: var(--muted); font-size: 12px; }
   </style>
@@ -104,6 +111,7 @@
     <span id="price" class="pill">цена —</span>
     <span id="window" class="pill">окно —</span>
     <span id="hello" class="pill">hello —</span>
+    <span id="cred" class="pill">ключ —</span>
     <form id="mode-form">
       <input type="hidden" name="ack" value="1"/>
       <button type="submit" name="mode" value="off">off</button>
@@ -118,6 +126,21 @@
     <h2>Контур</h2>
     <div id="contour-status" class="empty">контур —</div>
     <div id="contour-action"></div>
+  </section>
+  <section id="ready-box" style="margin:8px;">
+    <h2>Демо и live с этой страницы</h2>
+    <p class="empty">Hello — флаг в SQLite, не биржа. Один раз. Потом demo или live.</p>
+    <p>
+      <button type="button" id="hello-on">Отметить hello</button>
+      <span id="mode-note" class="empty"></span>
+    </p>
+    <p class="empty">Ключ live пишется в файл live.cred (0600), не в журнал. Seed сюда не возвращается.</p>
+    <form id="cred-form">
+      <input type="text" name="id" placeholder="id" autocomplete="off" spellcheck="false"/>
+      <input type="password" name="seed" placeholder="seed" autocomplete="off"/>
+      <button type="submit">Сохранить ключ для live</button>
+    </form>
+    <p class="empty">Демо — бумага, те же правила. Live — сабаккаунт. Чемпион сам не повышается. Окно и ACCORD остаются. Кнопка ордер не рисует.</p>
   </section>
   <section id="exp-box" style="margin:8px;">
     <h2>Опыт демо → live</h2>
@@ -183,7 +206,7 @@
   </section>
   {{SERVICE}}
   <footer>
-    Стол. Торги с консоли нельзя. Сделок нет, пока нет ленты. Ключи сюда не попадают.
+    Стол. Торги с консоли нельзя. Сделок нет, пока нет ленты. Ключ — только файл live.cred, не журнал.
   </footer>
   <script>
     const BOOT = {{BOOT}};
@@ -302,6 +325,10 @@
       const helloEl = document.getElementById("hello");
       helloEl.textContent = h.hello_ok ? "флаг hello, не биржа" : "hello нет (флаг, не биржа)";
       helloEl.className = "pill " + (h.hello_ok ? "ok" : "bad");
+      const credOk = !!(h.cred_present || st.cred_present);
+      const credEl = document.getElementById("cred");
+      credEl.textContent = credOk ? "ключ есть (файл)" : "ключа нет";
+      credEl.className = "pill " + (credOk ? "ok" : "bad");
       const contour = st.contour || "off";
       const hours24 = !!st.hours24;
       const canEnable = !!st.can_enable;
@@ -391,11 +418,52 @@
     document.getElementById("mode-form").addEventListener("submit", async ev => {
       ev.preventDefault();
       const mode = ev.submitter && ev.submitter.value;
-      await fetch("/api/mode", {
+      const note = document.getElementById("mode-note");
+      if (mode === "demo" || mode === "live") {
+        await fetch("/api/hello", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ack: true})
+        });
+      }
+      const resp = await fetch("/api/mode", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({mode, ack: true, learn_n_days: mode === "learn" ? 14 : null})
       });
+      if (!resp.ok) {
+        note.textContent = await resp.text();
+      } else {
+        note.textContent = mode === "live" ? "live: те же правила, уже на сабаккаунте" : "";
+      }
+      refresh();
+    });
+    document.getElementById("hello-on").addEventListener("click", async () => {
+      const note = document.getElementById("mode-note");
+      const resp = await fetch("/api/hello", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ack: true})
+      });
+      note.textContent = resp.ok ? "hello отмечен (флаг, не биржа)" : await resp.text();
+      refresh();
+    });
+    document.getElementById("cred-form").addEventListener("submit", async ev => {
+      ev.preventDefault();
+      const note = document.getElementById("mode-note");
+      const data = new FormData(ev.target);
+      const resp = await fetch("/api/live-cred", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ack: true, id: data.get("id"), seed: data.get("seed")})
+      });
+      ev.target.reset();
+      if (!resp.ok) {
+        note.textContent = await resp.text();
+      } else {
+        const payload = await resp.json();
+        note.textContent = payload.cred_present ? "ключ записан в live.cred" : "ключ не записан";
+      }
       refresh();
     });
     refresh();

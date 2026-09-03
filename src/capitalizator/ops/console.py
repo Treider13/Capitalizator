@@ -1,7 +1,9 @@
-"""Laptop console. Bind 127.0.0.1. No orders. No keys.
+"""Laptop console. Bind 127.0.0.1. No orders.
 
 GET is the desk. POST /contour and POST /api/contour may turn the
-recording contour on after hours24. POST /order and every other write stay 405.
+recording contour on after hours24. POST /api/hello marks the SQLite flag.
+POST /api/live-cred writes `{userdir}/live.cred` (0600). Seed is never echoed.
+POST /order and every other write stay 405. Console does not import signer.
 """
 
 from __future__ import annotations
@@ -19,18 +21,21 @@ from capitalizator.ops.contour import ContourNotReady
 from capitalizator.ops.contour import enable as enable_contour
 from capitalizator.ops.contour import status as contour_status
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
+from capitalizator.ops.handoff import experience_snapshot
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.phase import load_phase, trading_mode
-from capitalizator.ops.handoff import experience_snapshot
 from capitalizator.ops.product import (
     hello_recorded,
+    mark_hello,
     read_user_mode,
     set_user_mode,
 )
 from capitalizator.ops.touch_screen import latest as latest_touch
 from capitalizator.ops.touch_screen import render_html as render_touch_html
+from capitalizator.ops.user_keys import cred_present, write_live_cred
 from capitalizator.ops.vault import (
     Vault,
+    VaultError,
     init_vault,
     iter_regular_files,
     load_vault,
@@ -154,9 +159,12 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     contour = contour_status(vault)
     user = read_user_mode(vault)
     hello_ok = hello_recorded(vault)
+    key_ok = cred_present(vault)
     banners: list[str] = []
     if not hello_ok:
         banners.append("Демо: нет hello")
+    if not key_ok:
+        banners.append("live: нет ключа")
     if n_touches < 20:
         banners.append("мало n")
     banner = " — ".join(banners)
@@ -165,6 +173,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         "trading_mode": mode,
         "user_mode": user,
         "hello_ok": hello_ok,
+        "cred_present": key_ok,
         "hello_banner": banner,
         "n_banner": "мало n" if n_touches < 20 else "",
         "symbols": symbols,
@@ -364,6 +373,22 @@ class ConsoleApp:
     ) -> dict[str, Any]:
         return set_user_mode(self.vault, mode, ack=ack, learn_n_days=learn_n_days)
 
+    def mark_hello_ack(self, *, ack: bool) -> dict[str, Any]:
+        if not ack:
+            raise ValueError("ack required")
+        mark_hello(self.vault, ok=True)
+        return {
+            "hello_ok": hello_recorded(self.vault),
+            "real": False,
+            "cred_present": cred_present(self.vault),
+        }
+
+    def save_live_cred(self, *, ack: bool, api_id: str, seed: str) -> dict[str, Any]:
+        if not ack:
+            raise ValueError("ack required")
+        write_live_cred(self.vault, api_id=api_id, seed=seed)
+        return {"ok": True, "cred_present": True}
+
 
 def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     raw_len = handler.headers.get("Content-Length", "0")
@@ -454,6 +479,9 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
             if mode in {"demo", "live"} and not hello_recorded(app.vault):
                 self._send(403, b"hello required", "text/plain; charset=utf-8")
                 return
+            if mode == "live" and not cred_present(app.vault):
+                self._send(403, b"cred required", "text/plain; charset=utf-8")
+                return
             try:
                 out = app.set_mode(mode, ack=True, learn_n_days=learn_n)
             except ValueError as exc:
@@ -482,6 +510,50 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                         self._send(400, b"bad-mode", "text/plain; charset=utf-8")
                         return
                     self._set_mode(payload, redirect=path == "/mode")
+                    return
+                if path == "/api/hello":
+                    if not _is_local(self):
+                        self._send(403, b"localhost only", "text/plain; charset=utf-8")
+                        return
+                    try:
+                        payload = _read_body(self)
+                    except (ValueError, json.JSONDecodeError):
+                        self._send(400, b"bad-hello", "text/plain; charset=utf-8")
+                        return
+                    raw_ack = payload.get("ack_token", payload.get("ack"))
+                    ack = raw_ack in {True, "true", "1", 1, "yes"}
+                    if not ack:
+                        self._send(403, b"ack required", "text/plain; charset=utf-8")
+                        return
+                    out = app.mark_hello_ack(ack=True)
+                    body = json.dumps(out, ensure_ascii=False).encode()
+                    self._send(200, body, "application/json; charset=utf-8")
+                    return
+                if path == "/api/live-cred":
+                    if not _is_local(self):
+                        self._send(403, b"localhost only", "text/plain; charset=utf-8")
+                        return
+                    try:
+                        payload = _read_body(self)
+                    except (ValueError, json.JSONDecodeError):
+                        self._send(400, b"bad-cred", "text/plain; charset=utf-8")
+                        return
+                    raw_ack = payload.get("ack_token", payload.get("ack"))
+                    ack = raw_ack in {True, "true", "1", 1, "yes"}
+                    if not ack:
+                        self._send(403, b"ack required", "text/plain; charset=utf-8")
+                        return
+                    try:
+                        out = app.save_live_cred(
+                            ack=True,
+                            api_id=str(payload.get("id") or payload.get("api_id") or ""),
+                            seed=str(payload.get("seed") or ""),
+                        )
+                    except (ValueError, VaultError) as exc:
+                        self._send(400, str(exc).encode(), "text/plain; charset=utf-8")
+                        return
+                    body = json.dumps(out, ensure_ascii=False).encode()
+                    self._send(200, body, "application/json; charset=utf-8")
                     return
                 if path not in {"/contour", "/api/contour"}:
                     self._reject_write()
