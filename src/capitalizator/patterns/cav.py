@@ -50,6 +50,22 @@ def label(
         return "NOISE"
     if bar.symbol != zone.symbol or bar.tf != zone.tf:
         return "NOISE"
+    return vote(zone, bar, t=when, htf_bias=htf_bias, closed_bars=closed_bars)
+
+
+def vote(
+    zone: Zone,
+    bar: Bar,
+    *,
+    t: datetime,
+    htf_bias: HtfBias,
+    closed_bars: Sequence[Bar] = (),
+) -> CavLabel:
+    """Geometry of a closed bar vs the zone band. Caller already checked symbol/close.
+
+    Used by CAV (`bar.tf == zone.tf`) and by the junior confirm of a senior level.
+    """
+    when = require_utc(t)
     if not _touches(bar, zone):
         return "NOISE"
     quality = classify_bar_quality(closed_bars, bar, t=when)

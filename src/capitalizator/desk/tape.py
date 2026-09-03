@@ -366,16 +366,13 @@ def zones_for_trade(
     flips or the Moscow session boundary passes — so it is cached on that key
     instead of being rebuilt on every print.
     """
-    tf = desk.config.working_tf
     st = desk.state_for(event.symbol)
-    work = [b for b in st.bars if b.tf == tf]
     live = card if card is not None else desk._card_for(event.symbol, event.exchange_ts)
     poc = _poc_from_card(live)
     when = event.exchange_ts
     local = when.astimezone(_MSK)
     key = (
-        len(work),
-        work[-1].close_ts if work else None,
+        tuple((b.tf, b.close_ts) for b in st.bars),
         poc,
         when.date(),
         local.hour * 60 + local.minute >= 16 * 60 + 30,
@@ -385,7 +382,7 @@ def zones_for_trade(
     if cached is not None and cached[0] == key:
         return list(extra_zones) + list(cached[1])
     engine = ZoneEngine(tick_size=desk.tick_for(event.symbol), config=desk.config)
-    built = engine.build(event.symbol, when, work, poc=poc)
+    built = engine.build(event.symbol, when, st.bars, poc=poc)
     desk.zone_cache[event.symbol] = (key, tuple(built))
     return list(extra_zones) + built
 
@@ -403,7 +400,7 @@ def _poc_from_card(card: object) -> Decimal | None:
 
 
 def close_due_bars(desk: DeskLoop, symbol: str, now: datetime) -> list[dict[str, Any]]:
-    """Close working TF first, then H4 and D1. CAV is the 15m vote (§6.3/§6.5).
+    """Close working TF first, then 1h / H4 / D1. Senior levels vote on the junior TF."""
 
     Live path is the incremental BarBuilder (O(1) per print). The rescan over
     `st.trades` stays only for a state without a builder (old fixtures).
@@ -419,7 +416,7 @@ def close_due_bars(desk: DeskLoop, symbol: str, now: datetime) -> list[dict[str,
             out.extend(desk.on_bar_close(bar))
         st.bars_seeded = len(st.bars)
         return out
-    tfs = (desk.config.working_tf, desk.config.htf, desk.config.htf_d1)
+    tfs = desk.config.structure_tfs
     for tf in tfs:
         already = {b.open_ts for b in st.bars if b.tf == tf}
         for bar in closed_bars_from_trades(

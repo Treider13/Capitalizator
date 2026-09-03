@@ -2,6 +2,8 @@
 epsilon_ticks: 2
 bounce_away_ticks: 8
 working_tf: "15m"
+# Mid TF between the 15m vote and H4. Senior levels pair with the next TF down.
+mid_tf: "1h"
 htf: "4h"
 htf_d1: "1d"
 mid_band_ticks: 2

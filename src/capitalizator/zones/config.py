@@ -9,10 +9,13 @@ from typing import Any
 
 import yaml
 
+KNOWN_TFS = frozenset({"15m", "1h", "4h", "1d"})
+
 REQUIRED = (
     "epsilon_ticks",
     "bounce_away_ticks",
     "working_tf",
+    "mid_tf",
     "htf",
     "htf_d1",
     "mid_band_ticks",
@@ -39,8 +42,18 @@ class RegistryConfig:
     epsilon_ticks: int
     bounce_away_ticks: int
     working_tf: str
+    mid_tf: str
     htf: str
     htf_d1: str
+
+    @property
+    def structure_tfs(self) -> tuple[str, ...]:
+        """Working → mid → H4 → D1, unique. Every senior level pairs with the next down."""
+        seen: list[str] = []
+        for tf in (self.working_tf, self.mid_tf, self.htf, self.htf_d1):
+            if tf not in seen:
+                seen.append(tf)
+        return tuple(seen)
     mid_band_ticks: int
     touch_pending_timeout_h: int
     die_no_touch_h: int
@@ -77,12 +90,13 @@ def load_registry(path: Path | None = None) -> RegistryConfig:
     extra = sorted(set(raw) - set(REQUIRED))
     if extra:
         raise RegistryConfigError(f"unknown keys (do not tune): {extra}")
-    return RegistryConfig(
+    cfg = RegistryConfig(
         epsilon_ticks=_int(raw, "epsilon_ticks"),
         bounce_away_ticks=_int(raw, "bounce_away_ticks"),
-        working_tf=str(raw["working_tf"]),
-        htf=str(raw["htf"]),
-        htf_d1=str(raw["htf_d1"]),
+        working_tf=_tf(raw, "working_tf"),
+        mid_tf=_tf(raw, "mid_tf"),
+        htf=_tf(raw, "htf"),
+        htf_d1=_tf(raw, "htf_d1"),
         mid_band_ticks=_int(raw, "mid_band_ticks"),
         touch_pending_timeout_h=_int(raw, "touch_pending_timeout_h"),
         die_no_touch_h=_int(raw, "die_no_touch_h"),
@@ -96,6 +110,9 @@ def load_registry(path: Path | None = None) -> RegistryConfig:
         wall_min_notional=_positive_decimal(raw, "wall_min_notional"),
         wall_depth_mult=_positive_decimal(raw, "wall_depth_mult"),
     )
+    if len(cfg.structure_tfs) != 4:
+        raise RegistryConfigError("working_tf/mid_tf/htf/htf_d1 must be four distinct TFs")
+    return cfg
 
 
 def _positive_decimal(raw: dict[str, Any], key: str) -> Decimal:
@@ -112,4 +129,11 @@ def _int(raw: dict[str, Any], key: str) -> int:
     value = raw[key]
     if isinstance(value, bool) or not isinstance(value, int):
         raise RegistryConfigError(f"{key} must be an int")
+    return value
+
+
+def _tf(raw: dict[str, Any], key: str) -> str:
+    value = str(raw[key])
+    if value not in KNOWN_TFS:
+        raise RegistryConfigError(f"{key} must be one of {sorted(KNOWN_TFS)}")
     return value

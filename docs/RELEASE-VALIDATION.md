@@ -129,7 +129,7 @@ tests/product/test_acceptance.py::test_set_mode_with_ack_does_not_write_phase PA
 
 Константы: `MAX_SYMBOLS = 10`. `infra/universe.yaml` — топ-10 линейных USDT-перпов. 11-й — отказ (`test_16`).
 
-`infra/registry.yaml`: есть `htf_d1`, `mid_band_ticks`. Лишний ключ — `RegistryConfigError` (`test_extra_key_rejected`).
+`infra/registry.yaml`: есть `mid_tf` (1h), `htf_d1`, `mid_band_ticks`. Лишний ключ — `RegistryConfigError` (`test_extra_key_rejected`).
 
 ---
 

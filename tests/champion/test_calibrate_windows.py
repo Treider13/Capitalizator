@@ -32,34 +32,34 @@ def _row(r: str, *, window: str | None = "overlap", group: str | None = "majors"
             "mae_px": mae, "labels": labels}
 
 
-def test_keys_have_five_parts_and_aggregate_with_star() -> None:
+def test_keys_have_six_parts_and_aggregate_with_star() -> None:
     full = class_key(idea="bounce", cav="REJECT", zlg="DEFEND", window="asia", group="rest")
-    assert full == "bounce|REJECT|DEFEND|asia|rest"
-    assert window_key(full) == "bounce|REJECT|DEFEND|asia|*"
-    assert legacy_key(full) == "bounce|REJECT|DEFEND|*|*"
-    assert class_key(idea="bounce", cav="REJECT", zlg="DEFEND") == "bounce|REJECT|DEFEND|*|*"
+    assert full == "bounce|REJECT|DEFEND|asia|rest|*"
+    assert window_key(full) == "bounce|REJECT|DEFEND|asia|*|*"
+    assert legacy_key(full) == "bounce|REJECT|DEFEND|*|*|*"
+    assert class_key(idea="bounce", cav="REJECT", zlg="DEFEND") == "bounce|REJECT|DEFEND|*|*|*"
 
 
 def test_stats_are_kept_at_three_granularities() -> None:
     rows = [_row("1")] * 3 + [_row("-1", group="top10")] * 2 + [_row("1", window=None, group=None)]
     stats = class_stats(rows)
-    assert stats["bounce|REJECT|DEFEND|overlap|majors"].n == 3
-    assert stats["bounce|REJECT|DEFEND|overlap|top10"].n == 2
-    assert stats["bounce|REJECT|DEFEND|overlap|*"].n == 5
-    assert stats["bounce|REJECT|DEFEND|*|*"].n == 6  # rows without a window only feed legacy
+    assert stats["bounce|REJECT|DEFEND|overlap|majors|*"].n == 3
+    assert stats["bounce|REJECT|DEFEND|overlap|top10|*"].n == 2
+    assert stats["bounce|REJECT|DEFEND|overlap|*|*"].n == 5
+    assert stats["bounce|REJECT|DEFEND|*|*|*"].n == 6  # rows without a window only feed legacy
 
 
 def test_lookup_prefers_the_most_specific_class_with_enough_data() -> None:
     rows = [_row("-1")] * 10 + [_row("1", group="top10")] * 25
     stats = class_stats(rows)
-    key = "bounce|REJECT|DEFEND|overlap|majors"
+    key = "bounce|REJECT|DEFEND|overlap|majors|*"
     # majors has 10 (< MIN_N) → fall back to the window aggregate (35)
     assert lookup(stats, key).n == 35 and lookup(stats, key).key == window_key(key)
     # a class never seen at all → None
-    assert lookup(stats, "spring|THROUGH|RETREAT|asia|rest") is None
+    assert lookup(stats, "spring|THROUGH|RETREAT|asia|rest|*") is None
     # a thin full class with nothing bigger → the thin one is returned (not refutable)
     thin = class_stats([_row("-1", window="night", group="rest")] * 5)
-    got = lookup(thin, "bounce|REJECT|DEFEND|night|rest")
+    got = lookup(thin, "bounce|REJECT|DEFEND|night|rest|*")
     assert got is not None and got.n == 5
     assert refuted(got, breakeven=Decimal("0.4")) is False
 
@@ -67,15 +67,15 @@ def test_lookup_prefers_the_most_specific_class_with_enough_data() -> None:
 def test_eligible_needs_forty_and_a_winning_lower_bound() -> None:
     breakeven = Decimal("0.4")
     good = class_stats([_row("1", window="night")] * 32 + [_row("-1", window="night")] * 8)
-    stat = good["bounce|REJECT|DEFEND|night|*"]
+    stat = good["bounce|REJECT|DEFEND|night|*|*"]
     assert stat.n == ELIGIBLE_MIN_N == 40 and stat.lower > breakeven
     assert eligible(stat, breakeven=breakeven) is True
     coin = class_stats([_row("1", window="night")] * 20 + [_row("-1", window="night")] * 20)
-    assert eligible(coin["bounce|REJECT|DEFEND|night|*"], breakeven=breakeven) is False
+    assert eligible(coin["bounce|REJECT|DEFEND|night|*|*"], breakeven=breakeven) is False
     thin = class_stats([_row("1", window="night")] * 39)
-    assert eligible(thin["bounce|REJECT|DEFEND|night|*"], breakeven=breakeven) is False
+    assert eligible(thin["bounce|REJECT|DEFEND|night|*|*"], breakeven=breakeven) is False
     flagged = eligible_windows(good, breakeven=breakeven, closed_windows=["night", "weekend"])
-    assert flagged == {"night": ["bounce|REJECT|DEFEND|night|*"]}
+    assert flagged == {"night": ["bounce|REJECT|DEFEND|night|*|*"]}
     # an open window is never "eligible" — it is already trading
     assert eligible_windows(good, breakeven=breakeven, closed_windows=["asia"]) == {}
 

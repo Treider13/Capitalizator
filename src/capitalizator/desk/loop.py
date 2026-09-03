@@ -121,6 +121,7 @@ from capitalizator.zones.config import load_registry
 from capitalizator.zones.engine import MAP_VOTE_METHODS
 from capitalizator.zones.map import ZoneMap
 from capitalizator.zones.model import Bar, Zone
+from capitalizator.zones.pair import confirm_label, vote_tf
 
 State = Literal["IDLE", "ARM_ZLG", "LABEL_ZLG", "JURY"]
 _IDEAS = frozenset({"bounce", "spring", "breakout", "failed_break"})
@@ -354,7 +355,7 @@ class DeskLoop:
                 book=Book(tick_size=str(self.tick_for(symbol))),
                 bar_builder=BarBuilder(
                     symbol=symbol,
-                    tfs=(self.config.working_tf, self.config.htf, self.config.htf_d1),
+                    tfs=self.config.structure_tfs,
                 ),
             )
         return self.symbols[symbol]
@@ -691,7 +692,7 @@ class DeskLoop:
         if bar.symbol == "BTCUSDT":
             self.btc.bars.append(bar)
             self._publish_btc_bus(st, bar)
-        if bar.tf in {self.config.htf, self.config.htf_d1}:
+        if bar.tf in {self.config.mid_tf, self.config.htf, self.config.htf_d1}:
             self.publish_card(bar.symbol, bar.close_ts)
         elif bar.tf == self.config.working_tf and self.calendar:
             # D-21: TTL is 60s, so publishing only on 4h/1d closes left the card
@@ -701,15 +702,16 @@ class DeskLoop:
         trail_events: list[dict[str, Any]] = []
         if bar.tf == self.config.working_tf:
             trail_events = self._trail_on_bar(st, bar)
-        if st.last_touch is None:
-            return trail_events
-        if bar.tf != self.config.working_tf:
-            return []
-        # Plan: LABEL_ZLG (8s) then CAV on a closed bar, then JURY.
-        # A working bar can close inside the 8s window — wait for the tick.
-        if st.state != "LABEL_ZLG":
-            return trail_events
-        return self._eval_cav_and_jury(st, bar) + trail_events
+        jury_events: list[dict[str, Any]] = []
+        if st.last_touch is not None and st.state == "LABEL_ZLG":
+            zone = self.registry._zone_any(st.last_touch.zone_id)
+            if zone is not None and bar.tf == vote_tf(zone.tf, self.config.structure_tfs):
+                # Senior level votes on its junior TF; a 15m zone votes on 15m.
+                jury_events = self._eval_cav_and_jury(st, bar)
+        retired = self._retire_invalidated(st, bar)
+        if bar.tf == self.config.working_tf or jury_events:
+            return jury_events + trail_events + retired
+        return retired
 
     def publish_card(self, symbol: str, now: datetime) -> CardLive:
         """Compute B labels and write claim b_card:SYMBOL. Never sends."""
@@ -873,6 +875,25 @@ class DeskLoop:
         return out
 
     ZONE_RETIRE_EVERY_S = 60.0
+
+    def _retire_invalidated(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
+        """Own-TF close through the band takes the level off the map."""
+        if st.symbol != bar.symbol:
+            return []
+        closed_at = bar.close_ts + timedelta(microseconds=1)
+        gone = self.registry.invalidate_broken(now=closed_at, bars=(bar,))
+        if not gone:
+            return []
+        for zone in gone:
+            if self.knowledge.available():
+                self.knowledge.drop_zone(zone.zone_id)
+            self.zone_cache.pop(zone.symbol, None)
+            self._persisted_zone_ids.pop(zone.symbol, None)
+        return [
+            {"event": "zone_invalidated", "zone_id": z.zone_id, "symbol": z.symbol,
+             "tf": z.tf, "method": z.method}
+            for z in gone
+        ]
 
     def _retire_zones(self, now: datetime) -> list[dict[str, Any]]:
         """PHASE-BUILD `die_no_touch_h`: zones nobody trades and the engine no longer
@@ -1274,7 +1295,17 @@ class DeskLoop:
             htf = d1
         elif h4 not in {"unknown", "box"} and h4 != bounce_side:
             htf = h4
-        cav = cav_label(zone, bar, t=closed_at, htf_bias=htf, closed_bars=st.bars)
+        if bar.tf == zone.tf:
+            cav = cav_label(zone, bar, t=closed_at, htf_bias=htf, closed_bars=st.bars)
+        else:
+            cav = confirm_label(
+                zone,
+                bar,
+                t=closed_at,
+                htf_bias=htf,
+                closed_bars=st.bars,
+                ladder=self.config.structure_tfs,
+            )
         compress_before = prior_compress(
             zone, bar, t=closed_at, htf_bias=htf, closed_bars=st.bars
         )
@@ -1485,7 +1516,7 @@ class DeskLoop:
             card_id=card_id,
             htf_h4=h4,
             htf_d1=d1,
-            cav_tf=zone.tf,
+            cav_tf=bar.tf,
             btc_break_against=break_against,
             btc_state=row.btc_regime,
             session_name=self.policy.clock_name(row.ts),
@@ -1621,6 +1652,7 @@ class DeskLoop:
             "zone_lo": str(zone.lo),
             "zone_hi": str(zone.hi),
             "zone_tf": zone.tf,
+            "confirm_tf": vote_tf(zone.tf, self.config.structure_tfs),
             "zone_method": zone.method,
             "zone_created_as_of": zone.created_as_of.isoformat(),
             "wick_extreme": str(wick_extreme),
@@ -2388,6 +2420,8 @@ class DeskLoop:
             ),
             "liq_dist_atr": liq_dist_atr,
             "turnover_rank": None if rank is None else rank.get(symbol),
+            "zone_tf": zone.tf,
+            "cav_tf": row.cav_tf or zone.tf,
         }
 
     def symbol_group(self, symbol: str, rank: Mapping[str, int] | None) -> str:
@@ -2998,6 +3032,7 @@ class DeskLoop:
             zlg=labels.get("zlg_label"),
             window=labels.get("window"),
             group=labels.get("symbol_group"),
+            tf=labels.get("zone_tf"),
         )
         stat = calibration_lookup(self._calibration, key)
         info["calibration"] = None if stat is None else stat.to_payload()

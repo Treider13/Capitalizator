@@ -190,7 +190,8 @@ def zones_for(vault: Vault, *, symbol: str, now: datetime | None = None) -> list
         stored = knowledge.list_zones(symbol=symbol) if knowledge.available() else []
     finally:
         knowledge.close()
-    vote = load_registry().working_tf
+    cfg = load_registry()
+    vote = cfg.working_tf
 
     def _stale_map(row: dict[str, Any]) -> bool:
         return (
@@ -204,9 +205,11 @@ def zones_for(vault: Vault, *, symbol: str, now: datetime | None = None) -> list
         return stored
     when = now or datetime.now(tz=UTC)
     events = [e for e in load_tape(vault.tape) if e.symbol == symbol and e.stream == "trades"]
-    raw_bars = closed_bars_from_trades(
-        events, symbol=symbol, tf=vote, now=when, already=set()
-    )
+    raw_bars: list[Bar] = []
+    for tf in cfg.structure_tfs:
+        raw_bars.extend(
+            closed_bars_from_trades(events, symbol=symbol, tf=tf, now=when, already=set())
+        )
     built = ZoneEngine(tick_size=Decimal("0.1")).build(symbol, when, raw_bars)
     rebuilt = [
         {

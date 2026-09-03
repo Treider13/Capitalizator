@@ -6,12 +6,17 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from capitalizator.patterns.bar_quality import atr
 from capitalizator.types import require_utc
 from capitalizator.zones.config import RegistryConfig, load_registry
 from capitalizator.zones.model import Bar, Zone, ZoneMethod, ZoneSide
+from capitalizator.zones.pair import invalidated
 
 # Levels whose price comes from a day/session/card, but CAV votes working_tf.
 MAP_VOTE_METHODS = frozenset({"prior_day_hl", "prior_session_hl", "vp_hyp"})
+# Half-width of an S/R band as a fraction of that TF's ATR (noise envelope).
+# Tick epsilon stays the floor when ATR is unmeasured — never an invented move.
+ZONE_ATR_K = Decimal("0.25")
 
 
 class ZoneEngine:
@@ -54,11 +59,34 @@ class ZoneEngine:
         out.extend(self._rounds(symbol, when, visible))
         out.extend(self._cluster(symbol, visible))
         out.extend(self._poc_from_card(symbol, when, visible, poc))
+        out = [z for z in out if not invalidated(z, visible, t=when)]
         out.sort(key=lambda z: (z.created_as_of, z.method, z.side, z.lo))
         return out
 
-    def _band(self, level: Decimal, side: ZoneSide) -> tuple[Decimal, Decimal]:
-        width = self.tick_size * self.config.epsilon_ticks
+    def _width(self, bars: Sequence[Bar], tf: str, created_as_of: datetime) -> Decimal:
+        """PIT envelope at created_as_of: max(tick epsilon, k × ATR of this TF)."""
+        floor = self.tick_size * self.config.epsilon_ticks
+        series = [b for b in bars if b.tf == tf and b.close_ts < created_as_of]
+        if len({b.symbol for b in series}) != 1:
+            return floor
+        try:
+            value = atr(series)
+        except ValueError:
+            value = None
+        if value is None or value <= 0:
+            return floor
+        return max(floor, value * ZONE_ATR_K)
+
+    def _band(
+        self,
+        level: Decimal,
+        side: ZoneSide,
+        *,
+        bars: Sequence[Bar],
+        tf: str,
+        created_as_of: datetime,
+    ) -> tuple[Decimal, Decimal]:
+        width = self._width(bars, tf, created_as_of)
         if side == "support":
             return level, level + width
         return level - width, level
@@ -76,20 +104,30 @@ class ZoneEngine:
         vote_tf = self.config.working_tf
         return [
             self._zone(
-                symbol, vote_tf, "support", *self._band(low, "support"), "prior_day_hl", created
+                symbol,
+                vote_tf,
+                "support",
+                *self._band(low, "support", bars=visible, tf=vote_tf, created_as_of=created),
+                "prior_day_hl",
+                created,
             ),
             self._zone(
                 symbol,
                 vote_tf,
                 "resistance",
-                *self._band(high, "resistance"),
+                *self._band(high, "resistance", bars=visible, tf=vote_tf, created_as_of=created),
                 "prior_day_hl",
                 created,
             ),
         ]
 
     def _swings(self, symbol: str, visible: list[Bar]) -> list[Zone]:
-        work = [b for b in visible if b.tf == self.config.working_tf]
+        out: list[Zone] = []
+        for tf in self.config.structure_tfs:
+            out.extend(self._swings_tf(symbol, [b for b in visible if b.tf == tf]))
+        return out
+
+    def _swings_tf(self, symbol: str, work: list[Bar]) -> list[Zone]:
         if len(work) < 3:
             return []
         out: list[Zone] = []
@@ -103,7 +141,9 @@ class ZoneEngine:
                     symbol,
                     mid.tf,
                     "resistance",
-                    *self._band(mid.high, "resistance"),
+                    *self._band(
+                        mid.high, "resistance", bars=work, tf=mid.tf, created_as_of=created
+                    ),
                     "swing",
                     created,
                 )
@@ -112,7 +152,9 @@ class ZoneEngine:
                     symbol,
                     mid.tf,
                     "support",
-                    *self._band(mid.low, "support"),
+                    *self._band(
+                        mid.low, "support", bars=work, tf=mid.tf, created_as_of=created
+                    ),
                     "swing",
                     created,
                 )
@@ -152,7 +194,7 @@ class ZoneEngine:
                 symbol,
                 vote_tf,
                 "support",
-                *self._band(low, "support"),
+                *self._band(low, "support", bars=visible, tf=vote_tf, created_as_of=created),
                 "prior_session_hl",
                 created,
             ),
@@ -160,7 +202,7 @@ class ZoneEngine:
                 symbol,
                 vote_tf,
                 "resistance",
-                *self._band(high, "resistance"),
+                *self._band(high, "resistance", bars=visible, tf=vote_tf, created_as_of=created),
                 "prior_session_hl",
                 created,
             ),
@@ -179,13 +221,18 @@ class ZoneEngine:
             return []
         return [
             self._zone(
-                symbol, last.tf, "support", *self._band(level, "support"), "round", created
+                symbol,
+                last.tf,
+                "support",
+                *self._band(level, "support", bars=work, tf=last.tf, created_as_of=created),
+                "round",
+                created,
             ),
             self._zone(
                 symbol,
                 last.tf,
                 "resistance",
-                *self._band(level, "resistance"),
+                *self._band(level, "resistance", bars=work, tf=last.tf, created_as_of=created),
                 "round",
                 created,
             ),
@@ -201,7 +248,7 @@ class ZoneEngine:
         lo = lows[len(lows) // 2]
         hi = highs[len(highs) // 2]
         created = window[-1].close_ts
-        width = self.tick_size * self.config.epsilon_ticks
+        width = self._width(work, window[-1].tf, created)
         if hi - lo > width * 20:
             return []
         return [
@@ -238,8 +285,8 @@ class ZoneEngine:
         created = visible[-1].close_ts
         if created >= t:
             return []
-        width = self.tick_size * self.config.epsilon_ticks
         vote_tf = self.config.working_tf
+        width = self._width(visible, vote_tf, created)
         return [
             self._zone(symbol, vote_tf, "support", poc, poc + width, "vp_hyp", created),
             self._zone(symbol, vote_tf, "resistance", poc - width, poc, "vp_hyp", created),

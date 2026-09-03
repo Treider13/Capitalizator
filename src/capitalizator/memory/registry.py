@@ -1,7 +1,7 @@
 """0.3.3 — print in a pre-drawn zone → touch. Outcome later, never same millisecond.
 
-bounce: last price left ≥ bounce_away_ticks, working TF did not close beyond.
-break: working TF close beyond the zone.
+bounce: last price left ≥ bounce_away_ticks, own TF did not close beyond.
+break: the zone's own TF close beyond the band (junior close does not break a senior level).
 die: pending longer than touch_pending_timeout_h.
 Zone created_as_of ≥ print time is invisible (no lookahead).
 Does not open size.
@@ -22,6 +22,7 @@ from capitalizator.tape.classify import TapeClassifier
 from capitalizator.types import MarketEvent, require_utc
 from capitalizator.zones.config import RegistryConfig, load_registry
 from capitalizator.zones.model import Bar, Zone
+from capitalizator.zones.pair import invalidated
 
 TouchOutcome = Literal["pending", "bounce", "break", "die"]
 
@@ -251,6 +252,21 @@ class Registry:
             ]
         return gone
 
+    def invalidate_broken(self, *, now: datetime, bars: Sequence[Bar]) -> list[Zone]:
+        """Own-TF close through the band retires the level. Pending touches stay
+        for `_decide` (they become `break` on that same close). Junior closes do
+        not retire a senior level."""
+        when = require_utc(now)
+        gone: list[Zone] = []
+        for zone_id, zone in list(self._zones.items()):
+            if not invalidated(zone, bars, t=when):
+                continue
+            del self._zones[zone_id]
+            self._zone_seen.pop(zone_id, None)
+            self.retired_zones[zone_id] = zone
+            gone.append(zone)
+        return gone
+
     def on_trade(self, trade: MarketEvent, zones: Sequence[Zone]) -> list[Touch]:
         if trade.stream != "trades":
             raise ValueError("on_trade expects stream=trades")
@@ -338,14 +354,14 @@ class Registry:
         bars: Sequence[Bar],
         last_px: Decimal,
     ) -> Touch:
-        work = [
+        own = [
             b
             for b in bars
-            if b.tf == self.config.working_tf
+            if b.tf == zone.tf
             and touch.ts < b.close_ts < now
             and b.symbol == zone.symbol
         ]
-        for bar in work:
+        for bar in own:
             if zone.side == "support" and bar.close < zone.lo:
                 return replace(touch, outcome="break")
             if zone.side == "resistance" and bar.close > zone.hi:
