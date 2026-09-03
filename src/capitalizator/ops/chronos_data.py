@@ -7,7 +7,6 @@ from decimal import Decimal
 from typing import Any
 
 from capitalizator.authors.ingest import AuthorsIngest
-from capitalizator.authors.sources import default_sources_path, load_sources
 from capitalizator.desk.bars import TF_MINUTES, closed_bars_from_trades
 from capitalizator.desk.tape import load_tape
 from capitalizator.llm.daily_summary import DailySummary
@@ -281,14 +280,26 @@ def news_rows() -> list[dict[str, Any]]:
     ]
 
 
-def author_sources() -> list[dict[str, Any]]:
+def author_sources(vault: Vault) -> list[dict[str, Any]]:
+    """The ONE source registry (SQLite `intel_sources`, edited in Настройки). The old
+    `infra/authors/sources.yaml` next to it was a second list with its own vocabulary."""
+    from capitalizator.ops.settings import load_sources as load_intel_sources
+
+    knowledge = open_knowledge(vault, create=False)
     try:
-        book = load_sources(default_sources_path())
-    except FileNotFoundError:
-        return []
+        rows = load_intel_sources(knowledge)
+    finally:
+        knowledge.close()
     return [
-        {"id": src.source_id, "kind": src.kind, "url": src.url}
-        for src in book.sources
+        {
+            "id": r.get("id"),
+            "kind": r.get("kind"),
+            "url": r.get("value"),
+            "enabled": bool(r.get("enabled")),
+            "last_ok": r.get("last_ok"),
+            "last_error": r.get("last_error"),
+        }
+        for r in rows
     ]
 
 
@@ -322,21 +333,23 @@ def llm_summary(vault: Vault) -> dict[str, Any]:
 
 
 def dashboard(vault: Vault) -> dict[str, Any]:
+    from capitalizator.ops.phase import load_phase
+    from capitalizator.risk.config import load_risk_config
+
     knowledge = open_knowledge(vault, create=False)
     try:
         gates = gates_from_sqlite(knowledge)
-        taps_risk = {
-            "max_lev": None,
-            "target_risk": None,
-        }
+        cfg = load_risk_config(knowledge)
     finally:
         knowledge.close()
-    from capitalizator.ops.phase import load_phase
-
     phase = load_phase()
+    # the operator's risk menu (what the desk sizes with) next to the phase ceilings
+    # it may not exceed — the dashboard used to show only the ceiling as "риск"
     taps_risk = {
-        "max_lev": int(phase["max_lev"]),
-        "target_risk": float(phase["target_risk"]),
+        "max_lev": str(cfg.max_lev),
+        "target_risk": str(cfg.target_risk_pct),
+        "ceiling_max_lev": int(phase["max_lev"]),
+        "ceiling_target_risk": float(phase["target_risk"]),
     }
     counts = session_counts(vault)
     latest = latest_touch(vault)

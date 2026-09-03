@@ -429,7 +429,7 @@
       whyBox(latest);
       if (dash && dash.risk) {
         const risk = document.querySelectorAll("#why article")[7];
-        if (risk) risk.innerHTML = `<b>риск</b><div>плечо ${esc(dash.risk.max_lev)} · доля ${esc(dash.risk.target_risk)}</div>`;
+        if (risk) risk.innerHTML = `<b>риск (меню)</b><div>плечо ${esc(dash.risk.max_lev)} · риск на сделку ${esc(dash.risk.target_risk)}</div><div class="empty">потолок фазы: ${esc(dash.risk.ceiling_max_lev)}x · ${esc(dash.risk.ceiling_target_risk)}</div>`;
         const refusals = document.querySelectorAll("#why article")[8];
         if (refusals && dash.today) {
           refusals.innerHTML = `<b>отказы дня</b><div>касаний ${dash.today.n_touches} · теней ${dash.today.n_shadow} · пропусков ${dash.today.n_skip} · без ТВХ ${dash.today.n_no_tvh || 0}</div>`;

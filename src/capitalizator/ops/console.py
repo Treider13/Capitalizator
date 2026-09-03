@@ -497,7 +497,7 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
     if path == "/api/authors":
         return {
             "posts": chronos_data.author_rows(vault),
-            "sources": chronos_data.author_sources(),
+            "sources": chronos_data.author_sources(vault),
         }
     if path == "/api/llm_summary":
         return chronos_data.llm_summary(vault)
