@@ -783,18 +783,36 @@ def test_ticker_emits_mark_with_funding_and_oi() -> None:
     assert mark.payload["mark"] == "65000.1"
 
 
-def test_minutes_cli_announces_24_symbol_subscribe(tmp_path: Path, capsys) -> None:
-    """§2 / wave 2: --minutes without jsonl is live; subscribe covers 24 symbols."""
-    import json
+def test_live_ws_subscribes_the_whole_universe_including_liquidations(tmp_path: Path) -> None:
+    """§2 / wave 2: the live recorder covers all 24 symbols × 4 public streams. The old
+    `--minutes` path printed `"live": true` after writing nothing and is refused now."""
+    import pytest
 
     from capitalizator.recorder.app import main
+    from capitalizator.recorder.live_ws import LiveRecorder
+    from capitalizator.screener.universe import load_desk_universe
 
-    assert main(["--minutes", "1", "--data-root", str(tmp_path)]) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["live"] is True
-    assert payload["n_symbols"] == 24
-    assert payload["subscribe"]["op"] == "subscribe"
-    assert len(payload["subscribe"]["args"]) == 24 * 5  # + allLiquidation (ОКО След)
+    with pytest.raises(SystemExit, match="live-ws"):
+        main(["--minutes", "1", "--data-root", str(tmp_path)])
+
+    class Spy:
+        def __init__(self) -> None:
+            self.topics: list[str] = []
+
+        def trade_stream(self, syms, cb): self.topics += [f"publicTrade.{s}" for s in syms]
+        def orderbook_stream(self, depth, syms, cb): self.topics += [f"orderbook.{depth}.{s}" for s in syms]
+        def ticker_stream(self, syms, cb): self.topics += [f"tickers.{s}" for s in syms]
+        def liquidation_stream(self, syms, cb): self.topics += [f"allLiquidation.{s}" for s in syms]
+        def start(self): ...
+
+    spy = Spy()
+    symbols = list(load_desk_universe().symbols)
+    rec = LiveRecorder(symbols=symbols, data_root=tmp_path, ws_factory=lambda: spy,
+                       fetch_snapshot=lambda s: None)
+    rec.start()
+    assert len(symbols) == 24
+    assert len(spy.topics) == 24 * 4
+    assert sum(1 for t in spy.topics if t.startswith("allLiquidation.")) == 24
 
 
 def test_rest_ticker_is_funding_oi_mark() -> None:
