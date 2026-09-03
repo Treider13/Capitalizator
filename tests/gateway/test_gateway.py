@@ -581,7 +581,7 @@ def test_gateway_loop_publishes_instruments_for_the_desk(tmp_path: Path) -> None
     bad = FakeSession()
     bad.fail_next = "get_instruments_info"
     _run_loop(kn, vault, _gw(bad), PositionTracker(), now=NOW, iterations=1)
-    assert "boom" in kn.meta("instruments_error")
+    assert kn.meta("instruments_error_signer") == "GatewayError 408"  # type + code, never the text
     kn.close()
 
 

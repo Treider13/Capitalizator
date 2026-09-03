@@ -26,7 +26,12 @@ from capitalizator.authors.score import weight as author_weight
 from capitalizator.intel import fetchers
 from capitalizator.intel.llm import BudgetExceeded, LLMClient
 from capitalizator.ops.knowledge import Knowledge, open_knowledge
-from capitalizator.ops.settings import Settings, ensure_default_sources, load_sources, save_sources
+from capitalizator.ops.settings import (
+    Settings,
+    ensure_default_sources,
+    load_sources,
+    update_source_health,
+)
 from capitalizator.ops.vault import Vault, init_vault, load_vault
 from capitalizator.screener.universe import default_week0_path, load_universe
 from capitalizator.types import require_utc
@@ -60,6 +65,7 @@ def fetch_sources(
     post: fetchers.Poster = fetchers.default_post,
 ) -> dict[str, Any]:
     rows = load_sources(knowledge)
+    health: dict[str, tuple[str | None, str | None]] = {}
     stored = 0
     hl_items: list[fetchers.IntelItem] = []
     reddit_token: str | None = None
@@ -68,7 +74,7 @@ def fetch_sources(
         try:
             reddit_token = fetchers.reddit_token(cid, csec, post=post)
         except Exception as exc:
-            knowledge.set_meta("reddit_auth_error", f"{type(exc).__name__}: {exc}"[:200])
+            knowledge.set_meta("reddit_auth_error", type(exc).__name__)
     for row in rows:
         if not row.get("enabled"):
             continue
@@ -97,11 +103,14 @@ def fetch_sources(
                     payload=item.payload(),
                 ):
                     stored += 1
-            row["last_ok"] = now.isoformat()
-            row["last_error"] = None
+            health[str(row.get("id"))] = (now.isoformat(), None)
         except Exception as exc:  # one dead source must not stop the others
-            row["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
-    save_sources(knowledge, rows)
+            # type + status only: an HTTPError text may carry a URL with credentials
+            code = getattr(exc, "code", None) or getattr(exc, "status", None)
+            health[str(row.get("id"))] = (
+                row.get("last_ok"), f"{type(exc).__name__}" + (f" {code}" if code else "")
+            )
+    update_source_health(knowledge, health)
     if hl_items:
         knowledge.set_meta(
             "hl_cohort",
@@ -179,7 +188,7 @@ def extract_claims(
             )
             break
         except Exception as exc:
-            knowledge.set_meta("llm_last_error", f"{type(exc).__name__}: {exc}"[:300])
+            knowledge.set_meta("llm_last_error", type(exc).__name__)
             continue
         payload_base = {
             "item_id": item["id"],
@@ -190,14 +199,17 @@ def extract_claims(
             "text": str(item["text"])[:1000],
             "extraction": None if ext is None else ext.payload(),
         }
-        if ext is None or not ext.claims:
+        usable = [] if ext is None else [
+            c for c in ext.claims if c.side != "none" and c.horizon is not None
+        ]
+        if not usable:
+            # recorded as parsed-without-a-call, so the item is not re-sent every cycle
             knowledge.put_author_call(
                 f"{item['id']}:none", {**payload_base, "claims": [], "horizon": None}
             )
             continue
-        for i, claim in enumerate(ext.claims):
-            if claim.side == "none" or claim.horizon is None:
-                continue
+        assert ext is not None
+        for i, claim in enumerate(usable):
             knowledge.put_author_call(
                 f"{item['id']}:{i}",
                 {
@@ -231,12 +243,16 @@ def resolve_calls(knowledge: Knowledge, *, now: datetime) -> dict[str, Any]:
         if px_now is None:
             continue
         if ref is None:
-            row["ref_px"] = str(px_now)  # first sighting: the reference is our price now
+            # first sighting: the reference is our price now, and the horizon starts NOW
+            # (a post found after its horizon would otherwise resolve at once with move≈0
+            # and punish slow sources — audit B10)
+            row["ref_px"] = str(px_now)
+            row["ref_ts"] = now.isoformat()
             knowledge.put_author_call(_call_id(row), row)
             continue
         call = AuthorCall(
             author_id=str(row["author_id"]),
-            ts=datetime.fromisoformat(str(row["ts"]).replace("Z", "+00:00")),
+            ts=datetime.fromisoformat(str(row.get("ref_ts") or row["ts"]).replace("Z", "+00:00")),
             source=str(row["source"]),
             text=str(row.get("text") or ""),
             known_at=datetime.fromisoformat(str(row["known_at"])),
@@ -289,7 +305,8 @@ def cycle(
     llm: LLMClient | None = None,
 ) -> dict[str, Any]:
     when = require_utc(now or datetime.now(tz=UTC))
-    settings = Settings(vault)
+    # this process has the internet; it must never hold exchange keys in memory
+    settings = Settings(vault, exclude_prefixes=("bybit.",))
     ensure_default_sources(knowledge)
     out = {"at": when.isoformat()}
     out["fetch"] = fetch_sources(knowledge, settings, now=when, get=get, post=post)

@@ -12,8 +12,9 @@ import math
 from decimal import Decimal
 from functools import lru_cache
 
-Z95 = Decimal("1.959963984540054")
+Z95 = Decimal("1.959963984540054")  # two-sided 95% (Wilson intervals)
 Z95_F = 1.959963984540054
+Z95_ONE_SIDED = Decimal("1.6448536269514722")  # one-sided 95% bounds of a mean
 
 
 def wilson_interval(wins: int, n: int, *, z: Decimal = Z95) -> tuple[Decimal, Decimal]:

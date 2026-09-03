@@ -215,9 +215,10 @@ class OkoEye:
     def load(self, store: MetaStore) -> int:
         """Rebuild organs from meta. Returns the number of keys read.
 
-        One corrupt organ is dropped and reported in `load_errors` (the desk shows
-        it); it never stops the desk from starting — the organ simply starts empty
-        and learns again. Memory rows from before the Footprint organ are migrated.
+        One corrupt organ is dropped and reported in `load_errors` (the desk publishes
+        them as meta `oko_load_errors` for the console); it never stops the desk from
+        starting — the organ simply starts empty and learns again. Memory rows from
+        before the Footprint organ are dropped and counted.
         """
         if not store.available():
             return 0

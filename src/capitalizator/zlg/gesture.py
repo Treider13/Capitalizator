@@ -67,23 +67,27 @@ PRINT_GRACE_MS = 250
 def survived_adds(
     adds: Sequence[BookAdd],
     pulls: Sequence[BookPull],
-    prints: Sequence[tuple[datetime, Decimal]],
+    prints: Sequence[tuple[datetime, Decimal] | tuple[datetime, Decimal, Decimal]],
     *,
     t0: datetime,
     t1: datetime,
     min_alive_s: float = MIN_ALIVE_S,
 ) -> list[tuple[BookAdd, Decimal]]:
     """Net adds against pulls per (side, price), LIFO (the freshest quote is the one a
-    spoofer pulls), skip pulls explained by a print at that price, then weight what is
-    left by time alive. Returns (add, effective_qty) for adds with effective_qty > 0."""
+    spoofer pulls); a pull is explained by prints at that price within ±PRINT_GRACE_MS
+    only up to the printed VOLUME (a 0.01 print does not launder a 500-lot pull —
+    audit B7); what is left is weighted by time alive. Prints may be (ts, px) — legacy,
+    treated as unbounded volume — or (ts, px, qty)."""
     window = (t1 - t0).total_seconds()
     if window <= 0:
         return []
     in_adds = [a for a in adds if t0 < require_utc(a.ts) <= t1]
     in_pulls = [p for p in pulls if t0 < require_utc(p.ts) <= t1]
-    print_ts_by_px: dict[Decimal, list[datetime]] = {}
-    for ts, px in prints:
-        print_ts_by_px.setdefault(px, []).append(require_utc(ts))
+    prints_by_px: dict[Decimal, list[tuple[datetime, Decimal | None]]] = {}
+    for row in prints:
+        ts, px = row[0], row[1]
+        qty = row[2] if len(row) > 2 else None  # type: ignore[misc]
+        prints_by_px.setdefault(px, []).append((require_utc(ts), qty))
     remaining: dict[int, Decimal] = {i: a.qty for i, a in enumerate(in_adds)}
     by_level: dict[tuple[str, Decimal], list[tuple[datetime, int]]] = {}
     for i, a in enumerate(in_adds):
@@ -91,10 +95,16 @@ def survived_adds(
     grace = timedelta(milliseconds=PRINT_GRACE_MS)
     for pull in sorted(in_pulls, key=lambda p: p.ts):
         pts = require_utc(pull.ts)
-        if any(pts - grace <= t <= pts for t in print_ts_by_px.get(pull.px, ())):
-            continue  # executed, not pulled
+        near = [
+            q for t, q in prints_by_px.get(pull.px, ()) if pts - grace <= t <= pts + grace
+        ]
+        if any(q is None for q in near):
+            continue  # legacy prints without volume: executed, not pulled
+        executed = sum(near, Decimal("0"))
+        left = pull.qty - executed  # only the unexplained part is a pull
+        if left <= 0:
+            continue
         stack = [(ts, i) for ts, i in by_level.get((pull.side, pull.px), ()) if ts <= pts]
-        left = pull.qty
         for _ts, i in sorted(stack, key=lambda x: x[0], reverse=True):
             if left <= 0:
                 break

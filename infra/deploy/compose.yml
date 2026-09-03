@@ -16,10 +16,17 @@ x-base: &base
   restart: unless-stopped
   init: true
   stop_grace_period: 20s
+  # Least privilege: no capabilities, no privilege escalation, immutable image FS
+  # (only /data and a tmpfs /tmp are writable).
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  read_only: true
+  tmpfs: ["/tmp:size=64m,mode=1777"]
   volumes:
     - ${CAP_DATA:-/srv/capitalizator/userdir}:/data
   environment:
     TZ: UTC
+    PYTHONDONTWRITEBYTECODE: "1"
   logging:
     driver: json-file
     options: { max-size: "50m", max-file: "5" }
@@ -44,7 +51,13 @@ services:
   desk:
     <<: *base
     depends_on: { init: { condition: service_completed_successfully } }
+    network_mode: none  # tape + SQLite only; the desk never talks to the internet
     command: ["python", "-m", "capitalizator.desk", "--userdir", "/data", "--serve"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "capitalizator.ops.healthz", "--userdir", "/data", "--heartbeat", "desk_heartbeat", "--max-age-s", "120"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
 
   signer:
     <<: *base
@@ -55,6 +68,11 @@ services:
       - path: ./.env
         required: false
     command: ["python", "-m", "capitalizator.signer", "--userdir", "/data", "--serve"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "capitalizator.ops.healthz", "--userdir", "/data", "--heartbeat", "signer_heartbeat", "--max-age-s", "120"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
 
   intel:
     <<: *base
@@ -74,16 +92,22 @@ services:
   night:
     <<: *base
     depends_on: { init: { condition: service_completed_successfully } }
-    # Night contour once a day at 00:30 UTC (replay, challengers, report) and tape
+    network_mode: none
+    # Night contour once a day after 00:30 UTC (replay, challengers, report) and tape
     # compaction at every :05 (hourly parts → one file, old live feeds pruned).
-    # Loop in-container so no host cron is needed.
+    # A marker in /data records the last day reported, so a restart at 00:30 does
+    # not skip a day: the report runs at the first tick after 00:30 with no marker.
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        marker=/data/night/.last_report_day
+        mkdir -p /data/night
         while true; do
-          now=$$(date -u +%H%M)
-          if [ "$$now" = "0030" ]; then
-            python -m capitalizator.ops.night --userdir /data --day "$$(date -u -d yesterday +%F)" || true
+          now=$$(date -u +%H%M); today=$$(date -u +%F)
+          if [ "$$now" \> "0029" ] && [ "$$(cat $$marker 2>/dev/null)" != "$$today" ]; then
+            if python -m capitalizator.ops.night --userdir /data --day "$$(date -u -d yesterday +%F)"; then
+              echo "$$today" > "$$marker"
+            fi
             sleep 60
           fi
           if [ "$${now#??}" = "05" ]; then

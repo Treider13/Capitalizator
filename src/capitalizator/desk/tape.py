@@ -86,14 +86,16 @@ class TapeCursor:
 
     RECENT_DAYS = 2
 
-    def __init__(self, *, recent_days: int | None = None) -> None:
+    def __init__(self, *, recent_days: int | None = None, replay_all_first: bool = True) -> None:
         self._pos: dict[Path, tuple[int, int, int]] = {}
         self._tail: dict[Path, int] = {}  # jsonl → bytes consumed
         self._partial: dict[Path, str] = {}  # jsonl → unfinished last line
         self.files_scanned = 0
         self.files_read = 0
         self.recent_days = self.RECENT_DAYS if recent_days is None else recent_days
-        self._first_pass_done = False
+        # a 24/7 desk restarting on a month of tape must not replay the month:
+        # `replay_all_first=False` makes even the first pass recent-only (audit A2/E)
+        self._first_pass_done = not replay_all_first
 
     def _recent(self, path: Path, now: datetime | None) -> bool:
         if not self._first_pass_done or now is None or self.recent_days <= 0:
@@ -111,7 +113,12 @@ class TapeCursor:
         if tape.is_symlink() or not tape.is_dir():
             return []
         try:
-            paths = [p for p in iter_regular_files(tape) if self._recent(p, now)]
+            # prune old `date=` subtrees during the walk, not after it
+            paths = [
+                p
+                for p in iter_regular_files(tape, keep_dir=lambda d: self._recent(d, now))
+                if self._recent(p, now)
+            ]
         except VaultError:
             return []
         self._first_pass_done = True

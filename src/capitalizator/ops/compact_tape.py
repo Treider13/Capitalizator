@@ -92,7 +92,18 @@ def compact(
         if pq.ParquetFile(tmp).metadata.num_rows != expected:
             tmp.unlink(missing_ok=True)
             continue
+        # durable before the parts go: fsync the file, replace, fsync the directory
+        fd = os.open(tmp, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         os.replace(tmp, target)
+        dfd = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
         for part in parts:
             if part != target:
                 part.unlink(missing_ok=True)

@@ -338,6 +338,13 @@ def _page(snap: dict[str, Any], *, token: str = "") -> str:
         f"{'пройдено' if oko_n.get('mirror_passed') else 'не пройдено / нет'} · "
         f"сентимент (F&G): {_e(learn.get('sentiment', '—'))} · intel-элементов: "
         f"{_e(learn.get('intel_items', 0))}</p>"
+        + (
+            "<p class='warn'>ОКО: органы, не прочитанные при старте (начали с нуля): "
+            + _e(", ".join(sorted(learn.get("oko_load_errors") or {})))
+            + "</p>"
+            if learn.get("oko_load_errors")
+            else ""
+        )
     )
     money_block = f"""{learn_block}<h2>Счёт</h2>
       <p>{equity_line}</p>
@@ -387,6 +394,15 @@ def _page(snap: dict[str, Any], *, token: str = "") -> str:
     return page
 
 
+def _json_or(raw: str | None, default: Any) -> Any:
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return default
+
+
 def _learning_snapshot(vault: Vault) -> dict[str, Any]:
     """Contour C / ОКО facts for the operator: drift, calibration, exam, passports."""
     knowledge = open_knowledge(vault, create=False)
@@ -433,6 +449,7 @@ def _learning_snapshot(vault: Vault) -> dict[str, Any]:
             },
             "sentiment": sentiment.get("value") if isinstance(sentiment, dict) else None,
             "intel_items": len(knowledge.intel_items(limit=100_000)),
+            "oko_load_errors": _json_or(knowledge.meta("oko_load_errors"), {}),
         }
     finally:
         knowledge.close()

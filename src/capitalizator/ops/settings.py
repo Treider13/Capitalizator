@@ -49,6 +49,31 @@ SOURCE_KINDS = ("rss", "reddit", "x_account", "hl_wallet", "tradingview_own")
 FORBIDDEN_SOURCE_KINDS = ("telegram", "scrape", "tip")
 
 
+def _write_secret_file(path: Path, text: str) -> None:
+    """0600, no symlink following, fsync, atomic replace (audit B14): a reader never
+    sees a truncated file and `settings.tmp → /etc/x` cannot be overwritten."""
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    if tmp.is_symlink():
+        tmp.unlink()
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    dfd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
 def mask(value: str | None) -> str:
     if not value:
         return ""
@@ -58,9 +83,11 @@ def mask(value: str | None) -> str:
 
 
 class Settings:
-    def __init__(self, vault: Vault) -> None:
+    def __init__(self, vault: Vault, *, exclude_prefixes: tuple[str, ...] = ()) -> None:
         self.vault = vault
         self.path = vault.secrets / SETTINGS_FILE
+        # a process that must not see some keys (intel: no `bybit.*`) never loads them
+        self.exclude_prefixes = exclude_prefixes
 
     # --- secrets file (0600) ------------------------------------------------------------
     def load(self) -> dict[str, str]:
@@ -70,17 +97,18 @@ class Settings:
         if stat.S_IMODE(st.st_mode) & 0o077:
             raise ValueError(f"{self.path} must be 0600 (group/other readable)")
         raw = json.loads(self.path.read_text(encoding="utf-8"))
-        return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            str(k): str(v)
+            for k, v in raw.items()
+            if not str(k).startswith(self.exclude_prefixes)
+        }
 
     def save(self, values: Mapping[str, str]) -> None:
         self.vault.secrets.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.vault.secrets, 0o700)
-        tmp = self.path.with_suffix(".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(dict(sorted(values.items())), fh, ensure_ascii=False, indent=1)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, self.path)
+        _write_secret_file(self.path, json.dumps(dict(sorted(values.items())), ensure_ascii=False, indent=1))
         self._sync_bybit_json(values)
 
     def _sync_bybit_json(self, values: Mapping[str, str]) -> None:
@@ -92,10 +120,7 @@ class Settings:
                 target.unlink()
             return
         body = {"api_key": key, "api_secret": secret, "mode": values.get("bybit.mode") or "testnet"}
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(body, fh)
-        os.chmod(target, 0o600)
+        _write_secret_file(target, json.dumps(body))
 
     def update(
         self, changes: Mapping[str, str], *, knowledge: Knowledge | None = None, ack: bool
@@ -168,6 +193,21 @@ def load_sources(knowledge: Knowledge) -> list[dict[str, Any]]:
 
 def save_sources(knowledge: Knowledge, rows: list[dict[str, Any]]) -> None:
     knowledge.set_meta("intel_sources", json.dumps(rows, ensure_ascii=False, sort_keys=True))
+
+
+def update_source_health(
+    knowledge: Knowledge, health: Mapping[str, tuple[str | None, str | None]]
+) -> None:
+    """Write `last_ok`/`last_error` per source id onto the CURRENT list. The fetch cycle
+    takes tens of seconds; saving the list it loaded before would overwrite sources the
+    operator added or removed meanwhile (audit D: read-modify-write race)."""
+    rows = load_sources(knowledge)
+    for row in rows:
+        got = health.get(str(row.get("id")))
+        if got is None:
+            continue
+        row["last_ok"], row["last_error"] = got
+    save_sources(knowledge, rows)
 
 
 def add_source(

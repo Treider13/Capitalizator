@@ -400,6 +400,12 @@ def serve_gateway_loop(
                 sticky = {str(k): str(v) for k, v in loaded.items()}
         except json.JSONDecodeError:
             sticky = {}
+    raw_ack = knowledge.meta("acknowledged_positions")
+    if raw_ack:
+        try:
+            tracker.acknowledged.update(str(x) for x in json.loads(raw_ack))
+        except (json.JSONDecodeError, TypeError):
+            pass
     if feed is not None:
         feed.start()
     requeued = requeue_no_gateway(knowledge)
@@ -417,21 +423,33 @@ def serve_gateway_loop(
             try:
                 publish_instruments(knowledge, gateway, now=when)
             except Exception as exc:  # venue/network: keep the last snapshot, say why
-                knowledge.set_meta("instruments_error", str(exc))
+                knowledge.set_meta("instruments_error_signer", _note(exc))
             last_instruments = when
         # --- operator commands addressed to the signer -------------------------
         for cmd in knowledge.claim_commands(("release_signer", "ack_position")):
             try:
                 if cmd["kind"] == "release_signer":
+                    # unknown positions must be acknowledged first: releasing with a
+                    # stranger still on the venue would re-block on the next reconcile
+                    still = [s for s in tracker.unknown_symbols() if s not in tracker.acknowledged]
+                    if still:
+                        knowledge.mark_command(
+                            cmd["id"], "failed",
+                            {"error": "acknowledge unknown positions first", "unknown": still},
+                        )
+                        continue
                     released = sorted(sticky)
                     sticky.clear()
                     knowledge.mark_command(cmd["id"], "done", {"released": released})
                 else:
                     sym = str(cmd["payload"].get("symbol") or "")
                     ok = tracker.acknowledge(sym)
+                    if ok:
+                        acked = sorted(tracker.acknowledged)
+                        knowledge.set_meta("acknowledged_positions", json.dumps(acked))
                     knowledge.mark_command(cmd["id"], "done", {"acknowledged": ok, "symbol": sym})
             except Exception as exc:
-                knowledge.mark_command(cmd["id"], "failed", {"error": str(exc)})
+                knowledge.mark_command(cmd["id"], "failed", {"error": _note(exc)})
         # --- liveness ------------------------------------------------------------
         if feed is not None:
             feed.drain(now=when)
@@ -453,21 +471,21 @@ def serve_gateway_loop(
                 dead.beat("rest", when)
             if state.get("mismatches"):
                 sticky.setdefault("reconcile_mismatch", when.isoformat())
-            if state.get("unknown_positions"):
-                sticky.setdefault(
-                    "unknown_position:" + ",".join(state["unknown_positions"]), when.isoformat()
-                )
-            if state.get("stop_missing"):
-                sticky.setdefault(
-                    "stop_missing:" + ",".join(state["stop_missing"]), when.isoformat()
-                )
+            for sym in state.get("unknown_positions") or []:
+                sticky.setdefault(f"unknown_position:{sym}", when.isoformat())
+            for sym in state.get("stop_missing") or []:
+                sticky.setdefault(f"stop_missing:{sym}", when.isoformat())
             resolve_unknown_intents(knowledge, gateway, now=when)
             last_recon = when
         stale = dead.check(when)
         blocked = sorted(set(stale) | set(sticky))
-        knowledge.set_meta("entries_blocked", json.dumps(blocked))
-        knowledge.set_meta("entries_blocked_since", json.dumps(sticky, sort_keys=True))
-        knowledge.set_meta("signer_heartbeat", when.isoformat())
+        knowledge.set_meta_many(
+            {
+                "entries_blocked": json.dumps(blocked),
+                "entries_blocked_since": json.dumps(sticky, sort_keys=True),
+                "signer_heartbeat": when.isoformat(),
+            }
+        )
         if mode in {"demo", "live"} and gateway_mode_ok(mode, gateway.mode):
             # OMS first: protecting an open position beats opening a new one.
             drain_oms(knowledge, gateway, now=when)
@@ -477,6 +495,13 @@ def serve_gateway_loop(
             sleep(idle_s)
 
 
+def _note(exc: BaseException) -> str:
+    """Exception → short service note: type + code, never the raw text (which may carry
+    URLs with credentials or words the advice filter refuses) — audit B15/F."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    return f"{type(exc).__name__}" + (f" {code}" if code is not None else "")
+
+
 def _cancel_entries_safely(knowledge: Knowledge, gateway: Any, reason: str) -> None:
     """Watchdog callback: cancel entry orders; a venue error is recorded, not raised."""
     try:
@@ -484,5 +509,5 @@ def _cancel_entries_safely(knowledge: Knowledge, gateway: Any, reason: str) -> N
         knowledge.set_meta("dead_man_last", json.dumps({"reason": reason, "ok": True}))
     except Exception as exc:
         knowledge.set_meta(
-            "dead_man_last", json.dumps({"reason": reason, "ok": False, "error": str(exc)})
+            "dead_man_last", json.dumps({"reason": reason, "ok": False, "error": _note(exc)})
         )

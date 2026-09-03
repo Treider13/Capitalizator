@@ -224,13 +224,14 @@ class DeskLoop:
         self.trail = TrailEngine(mode=self.risk_config.trail_mode)
         self._trails: dict[str, TrailState] = {}
         self._half_sent: set[str] = set()
-        self.entries_paused = False
+        self.entries_paused = knowledge.available() and knowledge.meta("entries_paused") == "1"
         self._instruments_seen: str | None = None
         self._calibration: dict[str, ClassStat] = {}
         self._calibration_at: datetime | None = None
         self.drift_active = False
         self._sentiment_at: datetime | None = None
         self._sentiment_mult = Decimal("1")
+        self._oko_samples_cache: tuple[Any, list[OkoSample], set[str]] | None = None
         self.oko = OkoEye(working_tf=self.config.working_tf)
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
@@ -240,6 +241,11 @@ class DeskLoop:
         self._paper_dirty = False
         if knowledge.available():
             self.oko.load(knowledge)
+            # a corrupt organ is dropped, and the operator sees which one (Учёба block)
+            knowledge.set_meta(
+                "oko_load_errors",
+                json.dumps(self.oko.load_errors, ensure_ascii=False, sort_keys=True),
+            )
             # Twins (pending/open paper positions) survive a restart: the position the
             # venue still holds keeps its trail / half / stop logic (audit B3).
             raw_twins = knowledge.meta("paper_open")
@@ -764,17 +770,20 @@ class DeskLoop:
         if self.knowledge.available():
             # Gateway watchdog reads this: a silent desk cancels entry orders (§7 / Н-4).
             self._ui_put("desk_heartbeat", when.isoformat())
-            # Always written: a symbol that gained instrument facts must leave the banner.
-            self._ui_put("refused_symbols", json.dumps(self.refused_symbols, sort_keys=True))
+            if force_flush:
+                # Always written on a clock tick: a symbol that gained facts leaves the banner.
+                self._ui_put("refused_symbols", json.dumps(self.refused_symbols, sort_keys=True))
             if force_flush:
                 out.extend(self._consume_commands(when))
                 self._reload_risk_config()
                 self._reload_instruments()
                 self._refresh_calibration(when)
                 out.extend(self._sync_exchange_state(when))
-            # Twins and venue proof survive a restart (audit B3).
-            self._ui_put("paper_open", json.dumps(self.paper.snapshot(), sort_keys=True))
-            self._ui_put("venue_seen", json.dumps(sorted(self._venue_seen)))
+            if force_flush:
+                # Twins and venue proof survive a restart (audit B3); once per clock tick,
+                # not per print (audit E).
+                self._ui_put("paper_open", json.dumps(self.paper.snapshot(), sort_keys=True))
+                self._ui_put("venue_seen", json.dumps(sorted(self._venue_seen)))
         self.flush_ui(when, force=force_flush)
         # Settling pending touches walks every touch; once per second of clock is
         # enough (outcomes are 15m closes / 8-tick moves / 6h timeouts).
@@ -944,10 +953,18 @@ class DeskLoop:
         )
 
     def _oko_samples(self) -> list[OkoSample]:
-        """Resolved touches as Forecast samples. Journal first, then unsaved rows."""
+        """Resolved touches as Forecast samples. Journal first, then unsaved rows.
+        The journal part is cached and rebuilt only when the journal grew (audit E:
+        a full journal scan on every jury)."""
+        rows = self.knowledge.journal_rows()
+        key = (len(rows), rows[-1].get("touch_id") if rows else None)
+        if self._oko_samples_cache is not None and self._oko_samples_cache[0] == key:
+            out = list(self._oko_samples_cache[1])
+            seen = set(self._oko_samples_cache[2])
+            return self._oko_samples_tail(out, seen)
         out: list[OkoSample] = []
         seen: set[str] = set()
-        for row in self.knowledge.journal_rows():
+        for row in rows:
             touch_id = str(row.get("touch_id") or "")
             outcome = row.get("outcome")
             idea = row.get("idea")
@@ -973,6 +990,21 @@ class DeskLoop:
                     outcome=str(outcome),
                 )
             )
+        self._oko_samples_cache = (key, list(out), set(seen))
+        return self._oko_samples_tail(out, seen)
+
+    def _queue_ahead(self, symbol: str, side: str, px: Decimal) -> Decimal | None:
+        """Resting size at our limit price on our side of the book at submit: the queue in
+        front of a paper order. None when the book has no such level (the fill model
+        then falls back to "first print at the level")."""
+        st = self.symbols.get(symbol)
+        if st is None or not st.book.ready:
+            return None
+        levels = st.book.levels("bid" if side == "buy" else "ask")
+        size = levels.get(px)
+        return Decimal(str(size)) if size is not None else None
+
+    def _oko_samples_tail(self, out: list[OkoSample], seen: set[str]) -> list[OkoSample]:
         for touch in self.registry.touches:
             if touch.touch_id in seen or touch.outcome == "pending" or touch.idea not in _IDEAS:
                 continue
@@ -1026,7 +1058,11 @@ class DeskLoop:
             opp_best = touch.trade_px
         t_end = touch.ts + timedelta(seconds=self.config.zlg_window_s)
         prints = [
-            (require_utc(t.exchange_ts), Decimal(str(t.payload["px"])))
+            (
+                require_utc(t.exchange_ts),
+                Decimal(str(t.payload["px"])),
+                Decimal(str(t.payload.get("qty") or "0")),
+            )
             for t in st.trades
             if t.stream == "trades" and "px" in t.payload
             and touch.ts <= require_utc(t.exchange_ts) <= t_end
@@ -1671,6 +1707,7 @@ class DeskLoop:
                             ),
                             source="demo",
                             tag=sized.tag,
+                            queue_ahead=self._queue_ahead(st.symbol, sized.side, sized.entry),
                             funding_interval_min=self._instrument_for(st.symbol).funding_interval_min,
                             labels={"cav_label": row.cav_label, "zlg_label": row.gesture,
                                     "symbol": st.symbol, "zone_side": zone.side},
@@ -1739,10 +1776,12 @@ class DeskLoop:
                     result = {"released": True}
                 elif kind == "pause_entries":
                     self.entries_paused = True
+                    self.knowledge.set_meta("entries_paused", "1")
                     out.append({"event": "pause_entries"})
                     result = {"paused": True}
                 elif kind == "resume_entries":
                     self.entries_paused = False
+                    self.knowledge.set_meta("entries_paused", "0")
                     out.append({"event": "resume_entries"})
                     result = {"paused": False}
                 else:  # promote — run the exam now; flip the label only on a pass
@@ -2056,6 +2095,7 @@ class DeskLoop:
             ),
             source=source,  # type: ignore[arg-type]
             tag=tag,
+            queue_ahead=self._queue_ahead(row_symbol, side, row.trade_px),
             funding_interval_min=inst.funding_interval_min,
             structural=structural,
             stop_components=smart.components,

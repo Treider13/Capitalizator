@@ -150,10 +150,10 @@ class ImmuneMemory:
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> ImmuneMemory:
         """Load persisted antigens. Rows written before the Footprint organ carry the
-        10-int Shadow fingerprint only; they are migrated by padding the Footprint
-        axes with the neutral bucket (0 = NONE / no OI / no liquidations) and counted
-        in `migrated`. Anything else malformed is skipped and counted in `skipped` —
-        a desk restart must never die on its own memory (audit B7)."""
+        10-int Shadow fingerprint only; they are not comparable with 13-int probes and
+        are dropped, counted in `migrated` (the desk shows the count). Anything else
+        malformed is skipped and counted in `skipped` — a desk restart must never die
+        on its own memory (audit B7)."""
         out = cls(str(raw.get("symbol") or ""))
         rows = raw.get("records") or []
         if not isinstance(rows, list):
@@ -167,8 +167,11 @@ class ImmuneMemory:
             try:
                 fp = tuple(int(v) for v in row["f"])
                 if len(fp) == SHADOW_FP_LEN:
-                    fp = fp + (0,) * (FINGERPRINT_LEN - SHADOW_FP_LEN)
+                    # A 10-int antigen has no Footprint axes; padding them with zeros
+                    # inflates the Hamming distance to every real 13-int probe, so the
+                    # row would never match anyway (audit B18). Counted, not kept.
                     out.migrated += 1
+                    continue
                 out.records.append(
                     Antigen(
                         fingerprint=fp,

@@ -145,6 +145,9 @@ CREATE TABLE IF NOT EXISTS desk_commands (
   payload TEXT NOT NULL,
   result TEXT
 );
+CREATE INDEX IF NOT EXISTS desk_commands_status ON desk_commands(status);
+CREATE INDEX IF NOT EXISTS intent_queue_status ON intent_queue(status);
+CREATE INDEX IF NOT EXISTS oms_commands_status ON oms_commands(status);
 """
 
 EPISODE_MODES = frozenset({"shadow", "demo", "micro", "live"})
@@ -814,6 +817,14 @@ class Knowledge:
         if self._cx is None:
             return []
         wanted = None if kinds is None else sorted(set(kinds))
+        # cheap read first: no writer lock when the queue is empty (it is, 99.9% of ticks)
+        probe = (
+            "SELECT 1 FROM desk_commands WHERE status = 'pending'"
+            + (" AND kind IN (" + ",".join("?" for _ in wanted) + ")" if wanted else "")
+            + " LIMIT 1"
+        )
+        if self._cx.execute(probe, tuple(wanted or ())).fetchone() is None:
+            return []
         self._cx.execute("BEGIN IMMEDIATE")
         try:
             if wanted:

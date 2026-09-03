@@ -62,6 +62,7 @@ class RawPublicWs:
         self._stop = threading.Event()
         self._connected = threading.Event()
         self.reconnects = 0
+        self._attempt = 0
         self.frames = 0
         self.last_frame_mono: float | None = None
         self.last_pong_mono: float | None = None
@@ -117,7 +118,7 @@ class RawPublicWs:
     def _run(self) -> None:
         import websocket  # websocket-client, pulled in by pybit
 
-        attempt = 0
+        self._attempt = 0
         while not self._stop.is_set():
             app = websocket.WebSocketApp(
                 self.url,
@@ -135,18 +136,32 @@ class RawPublicWs:
             if self._stop.is_set():
                 break
             self.reconnects += 1
-            delay = BACKOFF_S[min(attempt, len(BACKOFF_S) - 1)]
-            attempt += 1
+            delay = BACKOFF_S[min(self._attempt, len(BACKOFF_S) - 1)]
+            self._attempt += 1
             self._stop.wait(delay)
         self._app = None
 
     def _ping_loop(self) -> None:
         while not self._stop.wait(self.ping_interval_s):
-            if self._connected.is_set():
-                self._send({"op": "ping"})
+            if not self._connected.is_set():
+                continue
+            self._send({"op": "ping"})
+            # half-open TCP: frames stop but the socket "is connected". No frame (data or
+            # pong) for 2 intervals → close, run_forever returns, we reconnect (audit B11).
+            last = max(self.last_frame_mono or 0.0, self.last_pong_mono or 0.0)
+            if last and self._clock() - last > 2 * self.ping_interval_s:
+                self._report("stale socket: no frames for 2 ping intervals, reconnecting")
+                app = self._app
+                if app is not None:
+                    try:
+                        app.close()
+                    except Exception:
+                        pass
 
     def _on_open(self, _app: Any) -> None:
         self._connected.set()
+        self._attempt = 0  # a good connection resets the backoff (audit B11)
+        self.last_frame_mono = self._clock()
         if self._topics:
             self._send_subscribe(list(self._topics))
 

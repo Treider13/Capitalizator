@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from capitalizator.stats import Z95, mature_n, wilson_interval
+from capitalizator.stats import Z95, Z95_ONE_SIDED, mature_n, wilson_interval
 
 MIN_N = mature_n()  # below this the interval is too wide to refute anything
 
@@ -89,7 +89,7 @@ def class_stats(rows: Iterable[Mapping[str, Any]]) -> dict[str, ClassStat]:
         if n >= 2:
             var = sum(((r - mean) ** 2 for r in rs), Decimal(0)) / Decimal(n - 1)
             sd = var.sqrt()
-            upper_mean = mean + Z95 * sd / Decimal(n).sqrt()
+            upper_mean = mean + Z95_ONE_SIDED * sd / Decimal(n).sqrt()
         out[key] = ClassStat(
             key=key,
             n=n,

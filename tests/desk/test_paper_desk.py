@@ -87,7 +87,7 @@ def test_shadow_and_fade_trade_on_paper_in_off_mode(tmp_path: Path) -> None:
     assert shadow.stop_components["mode"] == "hybrid"
     # tape: seller hits our bid → filled; then +1R → half; then tp on the rest
     t = WINDOW + timedelta(minutes=6)
-    desk.on_trade(_trade(t, "100000.1", side="sell"), [ZONE])
+    desk.on_trade(_trade(t, "100000.1", side="sell", qty="50"), [ZONE])  # > 45 resting ahead
     assert shadow.state == "open"
     r = shadow.r_px
     desk.on_trade(_trade(t + timedelta(minutes=1), str(Decimal("100000.1") + r + 1)), [ZONE])
@@ -119,7 +119,7 @@ def test_demo_intent_is_paper_traded_and_moves_the_account(tmp_path: Path) -> No
     assert "BTCUSDT" in desk.account.open
     equity0 = desk.account.equity
     t = WINDOW + timedelta(minutes=6)
-    desk.on_trade(_trade(t, "100000.1", side="sell"), [ZONE])
+    desk.on_trade(_trade(t, "100000.1", side="sell", qty="50"), [ZONE])  # > 45 resting ahead
     assert demo.state == "open"
     desk.on_trade(_trade(t + timedelta(minutes=1), str(demo.stop - 1)), [ZONE])
     assert demo.state == "closed" and demo.exit_reason == "stop"
@@ -147,7 +147,7 @@ def test_desk_trails_open_paper_positions_on_bar_close(tmp_path: Path) -> None:
     row = desk.knowledge.get_journal_touch(ev["touch_id"])
     shadow = desk.paper.positions[row["paper_ids"]["shadow"]]
     t = WINDOW + timedelta(minutes=6)
-    desk.on_trade(_trade(t, "100000.1", side="sell"), [ZONE])
+    desk.on_trade(_trade(t, "100000.1", side="sell", qty="50"), [ZONE])  # > 45 resting ahead
     assert shadow.state == "open"
     stop0 = shadow.stop
     r = shadow.r_px
@@ -189,9 +189,24 @@ def test_flatten_command_closes_paper_positions(tmp_path: Path) -> None:
     ev = _arm_and_close(desk)
     row = desk.knowledge.get_journal_touch(ev["touch_id"])
     t = WINDOW + timedelta(minutes=6)
-    desk.on_trade(_trade(t, "100000.1", side="sell"), [ZONE])
+    desk.on_trade(_trade(t, "100000.1", side="sell", qty="50"), [ZONE])  # > 45 resting ahead
     out = desk.on_event({"kind": "flatten", "symbol": "BTCUSDT", "now": t + timedelta(minutes=1)})
     assert out[0]["paper_flattened"] == 2
     assert desk.paper.positions == {}
     shadow = next(p for p in desk.paper.closed if p.paper_id == row["paper_ids"]["shadow"])
     assert shadow.exit_reason == "flatten" and shadow.exit_px == Decimal("100000.1")
+
+
+def test_paper_entry_waits_its_turn_in_the_queue(tmp_path: Path) -> None:
+    """The book had 45 resting at our price when we joined: a 1-lot print at the level
+    does not fill us; 50 lots traded there do (queue model, fed from the live book)."""
+    desk = _desk(tmp_path, "demo")
+    ev = _arm_and_close(desk)
+    row = desk.knowledge.get_journal_touch(ev["touch_id"])
+    demo = desk.paper.positions[row["paper_ids"]["demo"]]
+    assert demo.queue_ahead == Decimal("45")
+    t = WINDOW + timedelta(minutes=6)
+    desk.on_trade(_trade(t, "100000.1", side="sell", qty="1"), [ZONE])
+    assert demo.state == "pending"
+    desk.on_trade(_trade(t + timedelta(seconds=1), "100000.1", side="sell", qty="45"), [ZONE])
+    assert demo.state == "open"

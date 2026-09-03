@@ -225,10 +225,13 @@ class LiveRecorder:
 
         try:
             n = publish_instruments(self.knowledge, testnet=testnet)
-        except Exception as exc:  # network / venue: say why, keep recording
-            self.knowledge.set_meta("instruments_error", f"recorder: {exc}")
+        except Exception as exc:  # network / venue: say why (type + code), keep recording
+            code = getattr(exc, "code", None)
+            self.knowledge.set_meta(
+                "instruments_error_recorder", type(exc).__name__ + (f" {code}" if code else "")
+            )
             return None
-        self.knowledge.set_meta("instruments_error", "")
+        self.knowledge.set_meta("instruments_error_recorder", "")
         return n
 
     def run(

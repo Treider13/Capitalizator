@@ -28,9 +28,14 @@ RES = Zone.create(symbol="ETHUSDT", tf="15m", side="resistance", lo=Decimal("399
                   hi=Decimal("4040"), method="prior_day_hl", created_as_of=CREATED)
 
 
-def _trade(ts: datetime, px: str, symbol: str = "BTCUSDT", side: str = "sell") -> MarketEvent:
+def _trade(
+    ts: datetime, px: str, symbol: str = "BTCUSDT", side: str = "sell", qty: str = "1000"
+) -> MarketEvent:
+    # default 1000 lots: more than whatever rests ahead of a paper order at the level in
+    # these fixtures, so a single print fills the twin (queue model); the arming touch
+    # itself is a 1-lot print
     return MarketEvent(stream="trades", exchange="bybit", symbol=symbol, exchange_ts=ts, recv_ts=ts,
-                       payload={"px": px, "qty": "1", "side": side})
+                       payload={"px": px, "qty": qty, "side": side})
 
 
 def _desk(tmp_path: Path, mode: str, zone: Zone, px: str) -> DeskLoop:
@@ -60,7 +65,7 @@ def _arm_and_close(desk: DeskLoop, zone: Zone, px: str, when: datetime = WINDOW)
     p = Decimal(px)
     tick = desk.tick_for(zone.symbol)
     taker = "sell" if zone.side == "support" else "buy"
-    desk.on_trade(_trade(when, px, zone.symbol, taker), [zone])
+    desk.on_trade(_trade(when, px, zone.symbol, taker, qty="1"), [zone])
     live = desk.state_for(zone.symbol).last_touch
     add_side = "b" if zone.side == "support" else "a"
     book = desk.state_for(zone.symbol).book

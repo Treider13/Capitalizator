@@ -14,7 +14,7 @@ Two kinds of voice (audit 2026-09-03, jury §3.1):
 Decision:
   any VETO                          → VETO
   cav == 0 and zlg == 0             → SILENCE
-  a +1 and a −1 among the voices    → SPLIT
+  any −1 among the voices           → SPLIT   (a lone −1 is a dispute too: no entry)
   a book fact == +1 and no −1       → ACCORD   (book fact: zlg, oko, or tape on a breakout;
                                                 the chart may be 0 — a plain bounce is DRIFT)
   otherwise                         → SILENCE  (chart alone never enters; the shadow learns)

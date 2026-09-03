@@ -182,7 +182,7 @@ def test_load_reports_bad_organs_instead_of_dying() -> None:
 
 def test_load_migrates_pre_footprint_memory_rows() -> None:
     """Antigens saved between 20:02 and 21:23 on 2026-09-02 carry 10 ints (Shadow only).
-    They are padded with the neutral Footprint bucket, not thrown away, not a crash."""
+    They are dropped (padding would inflate the Hamming distance), counted, never a crash."""
     from capitalizator.oko.footprint import FINGERPRINT_LEN
 
     store = DictStore()
@@ -197,7 +197,9 @@ def test_load_migrates_pre_footprint_memory_rows() -> None:
     eye = OkoEye(working_tf="15m")
     eye.load(store)
     mem = eye.memory_for("BTCUSDT")
-    assert mem.n == 2 and mem.migrated == 1 and mem.skipped == 1
+    # the 10-int row is counted and dropped (not comparable with 13-int probes), the
+    # malformed one skipped, the 13-int one kept
+    assert mem.n == 1 and mem.migrated == 1 and mem.skipped == 1
     assert all(len(r.fingerprint) == FINGERPRINT_LEN for r in mem.records)
     assert "migrated=1" in eye.load_errors["oko:memory:BTCUSDT"]
 

@@ -10,7 +10,7 @@ import errno
 import os
 import secrets
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,8 +54,12 @@ class Vault:
         return self.root / LAYOUT_NAME
 
 
-def iter_regular_files(root: Path) -> Iterator[Path]:
-    """List regular files only. Symlinks, fifos, devices, hardlinks are a hard reject."""
+def iter_regular_files(
+    root: Path, *, keep_dir: Callable[[Path], bool] | None = None
+) -> Iterator[Path]:
+    """List regular files only. Symlinks, fifos, devices, hardlinks are a hard reject.
+    `keep_dir` prunes subtrees before they are walked (the tape is hundreds of
+    thousands of files; the desk only needs the last days)."""
     if root.is_symlink():
         raise VaultError(f"symlink: {root}")
     if not root.is_dir():
@@ -66,6 +70,8 @@ def iter_regular_files(root: Path) -> Iterator[Path]:
             path = base / name
             if path.is_symlink():
                 raise VaultError(f"symlink: {path}")
+        if keep_dir is not None:
+            dirnames[:] = [n for n in dirnames if keep_dir(base / n)]
         for name in sorted(filenames):
             path = base / name
             if path.is_symlink():

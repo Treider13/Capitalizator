@@ -213,13 +213,17 @@ class BufferedParquetSink:
         if fh is None:
             mkdir_real_parents(self.data_root, live_path.parent)
             assert_no_symlink_components(self.data_root, live_path)
-            # one hour per file: close the others (an hour ago at most one is live)
+            # one open handle per partition (symbol × stream); close only the handles of
+            # OTHER hours of the same partition (audit B12: everything else was closed
+            # and reopened on every event of another symbol)
+            same_partition = live_path.parent.parent  # …/<stream>/
             for other, old in list(self._live.items()):
-                if other.parent != live_path.parent or other != live_path:
-                    try:
-                        old.close()
-                    finally:
-                        del self._live[other]
+                if other.parent.parent != same_partition or other == live_path:
+                    continue  # another symbol/stream keeps its handle
+                try:
+                    old.close()  # an older hour (or day) of this partition
+                finally:
+                    del self._live[other]
             fh = open(live_path, "a", encoding="utf-8", buffering=1)  # line-buffered
             self._live[live_path] = fh
         fh.write(json.dumps(live_row(row), separators=(",", ":")) + "\n")

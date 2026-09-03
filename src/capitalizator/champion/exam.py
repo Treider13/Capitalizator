@@ -24,10 +24,12 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from capitalizator.stats import Z95, mature_n
+from capitalizator.stats import Z95_ONE_SIDED, mature_n
 
 CHAMPION_SOURCES = frozenset({"shadow", "demo"})
-CHALLENGER_SOURCES = frozenset({"challenger", "fade"})
+# `fade` trades the OPPOSITE side of a spring and is not comparable with the champion's
+# series; it gets its own exam via `challenger_sources=frozenset({"fade"})`.
+CHALLENGER_SOURCES = frozenset({"challenger"})
 
 
 @dataclass(frozen=True)
@@ -90,7 +92,7 @@ def _series(role: str, rows: Iterable[Mapping[str, Any]]) -> Series:
     if n >= 2:
         var = sum(((r - mean) ** 2 for r in rs), Decimal(0)) / Decimal(n - 1)
         sd = var.sqrt()
-        lower = mean - Z95 * sd / Decimal(n).sqrt()
+        lower = mean - Z95_ONE_SIDED * sd / Decimal(n).sqrt()
     cum = Decimal(0)
     peak = Decimal(0)
     dd = Decimal(0)
