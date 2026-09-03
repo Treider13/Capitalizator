@@ -2,6 +2,12 @@
 
 Wick through a local high/low and close back → done.
 Through and close still beyond → pending.
+
+Side matters (audit §6): the "fuel" for a LONG is the liquidity *below* — stops
+under the last swing low taken and price back above it. A sweep of the last swing
+high is fuel for a SHORT and says nothing for a long. `sweep_status_for(side)`
+reads the relevant extreme; `sweep_status()` keeps the side-agnostic legacy
+reading (either extreme) for the journal column.
 """
 
 from __future__ import annotations
@@ -38,6 +44,33 @@ def sweep_status(
         if swept == "pending" or (swept is not None and status != "pending"):
             status = swept
     return status
+
+
+def sweep_status_for(
+    bars: Sequence[Bar],
+    side: str,
+    *,
+    lookback: int = SWEEP_LOOKBACK,
+    fractal_n: int = SWEEP_FRACTAL_N,
+) -> SweepStatus:
+    """Long ('buy'): the last confirmed swing LOW must have been swept (wick below,
+    close back above) → done; wick below and close still below → pending.
+    Short ('sell'): mirror on the last swing HIGH."""
+    if side not in {"buy", "sell"}:
+        raise ValueError("side must be buy|sell")
+    work = list(bars[-lookback:]) if lookback > 0 else list(bars)
+    if len(work) < fractal_n * 2 + 2:
+        return "none"
+    tester = work[-1]
+    body = work[:-1]
+    highs, lows = fractals(body, n=fractal_n)
+    if side == "buy":
+        if not lows:
+            return "none"
+        return _sweep_level(tester, body[lows[-1]].low, side="low") or "none"
+    if not highs:
+        return "none"
+    return _sweep_level(tester, body[highs[-1]].high, side="high") or "none"
 
 
 def fractals(bars: Sequence[Bar], *, n: int = SWEEP_FRACTAL_N) -> tuple[list[int], list[int]]:

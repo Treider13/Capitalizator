@@ -24,9 +24,11 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
+from capitalizator.stats import n_min
+
 OUTCOMES: tuple[str, ...] = ("bounce", "break", "die")
 KAPPA = 20.0
-N_MIN = 20
+N_MIN = n_min()
 ALPHA = 0.2
 
 

@@ -12,3 +12,6 @@ zlg_gamma: 0.25
 prs_alpha: 0.7
 prs_t_max_s: 8
 prs_delta_ticks: 5
+# Enough observations (one place for jury / ОКО / calibration / first fact).
+n_min: 20
+mature_n: 30

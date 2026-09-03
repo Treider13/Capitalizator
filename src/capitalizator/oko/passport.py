@@ -16,7 +16,9 @@ from collections.abc import Iterable, Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-MATURE_N = 30
+from capitalizator.stats import mature_n
+
+MATURE_N = mature_n()
 WINDOW = 400
 MAD_TO_SIGMA = Decimal("1.4826")
 EPS = Decimal("1e-9")

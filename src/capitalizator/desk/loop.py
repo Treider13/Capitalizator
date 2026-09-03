@@ -1814,6 +1814,8 @@ class DeskLoop:
                             sized.model_dump(mode="json"),
                             created_ts=row.ts.isoformat(),
                         )
+                        # Budget is spent here, on an intent that passed every gate.
+                        self.account.budget(closed_at).on_intent()
                         self.account.on_open(sized, now=closed_at, intent_id=intent_id)
                         # Demo accounting runs on paper until exchange fills replace it.
                         demo_pid = f"{row.touch_id}:demo"

@@ -22,6 +22,8 @@ REQUIRED = (
     "prs_alpha",
     "prs_t_max_s",
     "prs_delta_ticks",
+    "n_min",
+    "mature_n",
 )
 
 
@@ -44,6 +46,10 @@ class RegistryConfig:
     prs_alpha: float
     prs_t_max_s: int
     prs_delta_ticks: int
+    # "enough observations": a label/class may vote at n_min; a norm/interval is
+    # narrow enough to refute at mature_n. One place for the whole desk (stats.py).
+    n_min: int = 20
+    mature_n: int = 30
 
 
 def default_registry_path() -> Path:
@@ -78,6 +84,8 @@ def load_registry(path: Path | None = None) -> RegistryConfig:
         prs_alpha=float(raw["prs_alpha"]),
         prs_t_max_s=_int(raw, "prs_t_max_s"),
         prs_delta_ticks=_int(raw, "prs_delta_ticks"),
+        n_min=_int(raw, "n_min"),
+        mature_n=_int(raw, "mature_n"),
     )
 
 

@@ -72,6 +72,10 @@ class CardLive:
     # is always `forbidden_0_05` and no short can ever pass context_ok.
     fib_zone_short: FibZone = "none"
     fib_level_short: str | None = None
+    # Side-aware sweep (audit §6): a long needs the swing LOW swept, a short the HIGH.
+    # `sweep_status` stays the side-agnostic legacy reading for the journal.
+    sweep_long: SweepStatus = "none"
+    sweep_short: SweepStatus = "none"
 
     def __post_init__(self) -> None:
         require_utc(self.known_at)
@@ -91,6 +95,16 @@ class CardLive:
             return self.fib_zone_short
         return self.fib_zone
 
+    def sweep_for(self, side: str = "buy") -> SweepStatus:
+        """The sweep that is fuel for THIS side. Falls back to the legacy reading when
+        the side-aware labels were not computed (old cards)."""
+        chosen = self.sweep_short if side == "sell" else self.sweep_long
+        if chosen != "none":
+            return chosen
+        if self.sweep_long == "none" and self.sweep_short == "none":
+            return self.sweep_status
+        return "none"
+
     def mark_green(self, side: str = "buy") -> dict[str, bool | None]:
         """Required greens: fib / sweep / fvg / jury_b. GEX None does not vote.
 
@@ -99,7 +113,7 @@ class CardLive:
         """
         return {
             "fib": self.fib_for(side) in {"OTE", "in_05_1"},
-            "sweep": self.sweep_status == "done",
+            "sweep": self.sweep_for(side) == "done",
             "gex": gex_is_green(self.gex_bg),
             "fvg": self.fvg_status == "filled",
             "jury_b": self.jury_b_n == 0 or self.jury_b_for >= 3,
@@ -110,7 +124,7 @@ class CardLive:
 
     def context_ok(self, side: str = "buy") -> bool:
         """True when the four required marks are green for this side. GEX is optional."""
-        if self.fib_for(side) == "forbidden_0_05" or self.sweep_status == "pending":
+        if self.fib_for(side) == "forbidden_0_05" or self.sweep_for(side) == "pending":
             return False
         marks = self.mark_green(side)
         if any(marks[key] is not True for key in REQUIRED_MARKS):
@@ -163,6 +177,8 @@ class CardLive:
             "venue": self.venue,
             "fib_zone_short": self.fib_zone_short,
             "fib_level_short": self.fib_level_short,
+            "sweep_long": self.sweep_long,
+            "sweep_short": self.sweep_short,
         }
 
     @classmethod
@@ -210,6 +226,8 @@ class CardLive:
             venue=raw.get("venue") or "perp",  # type: ignore[arg-type]
             fib_zone_short=raw.get("fib_zone_short") or "none",  # type: ignore[arg-type]
             fib_level_short=raw.get("fib_level_short"),
+            sweep_long=raw.get("sweep_long") or "none",  # type: ignore[arg-type]
+            sweep_short=raw.get("sweep_short") or "none",  # type: ignore[arg-type]
         )
 
 

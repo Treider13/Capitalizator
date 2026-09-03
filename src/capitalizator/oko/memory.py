@@ -11,7 +11,6 @@ observer: it writes, it does not vote. `die` teaches nothing and is not stored.
 
 from __future__ import annotations
 
-import math
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -20,12 +19,13 @@ from typing import Any
 
 from capitalizator.oko.footprint import FINGERPRINT_LEN
 from capitalizator.oko.shadow import FINGERPRINT_LEN as SHADOW_FP_LEN
+from capitalizator.stats import Z95_F, n_min, wilson_lower_f
 from capitalizator.types import require_utc
 
-N_MIN = 20
+N_MIN = n_min()
 MAX_DISTANCE = 1
 MAX_RECORDS = 5000
-Z_95 = 1.959963984540054
+Z_95 = Z95_F
 TRAP_LOWER_BOUND = 0.5
 # spring (exec/ideas): wick through, close inside, traded WITH the zone — bounce family.
 IDEA_FAMILY = {
@@ -76,13 +76,7 @@ def is_trap(*, idea: str, outcome: str) -> bool | None:
 
 
 def wilson_lower(k: int, n: int, *, z: float = Z_95) -> float:
-    if n <= 0 or k < 0 or k > n:
-        raise ValueError("wilson needs 0 <= k <= n, n > 0")
-    p = k / n
-    denom = 1.0 + z * z / n
-    centre = p + z * z / (2.0 * n)
-    adj = z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))
-    return max(0.0, (centre - adj) / denom)
+    return wilson_lower_f(k, n, z=z)
 
 
 def hamming(a: Sequence[int], b: Sequence[int]) -> int:

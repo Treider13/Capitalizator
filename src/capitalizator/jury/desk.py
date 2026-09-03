@@ -27,12 +27,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from capitalizator.stats import n_min
+
 Voice = Literal[-1, 0, 1, "VETO"]
 VOICES = (-1, 0, 1, "VETO")
 JuryLabel = Literal["ACCORD", "SPLIT", "VETO", "SILENCE"]
 CAV_LABELS = frozenset({"REJECT", "THROUGH", "COMPRESS", "DRIFT", "NOISE"})
 ZLG_LABELS = frozenset({"DEFEND", "RETREAT", "IMPROVE", "FADE", "SILENCE"})
-N_MIN = 20
+N_MIN = n_min()
 
 
 @dataclass(frozen=True)

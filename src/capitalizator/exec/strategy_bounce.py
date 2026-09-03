@@ -510,5 +510,7 @@ class BounceStrategy:
             structural=structural,
             stop_components=dict(smart.components),
         )
-        self.budget.on_intent()
+        # The session budget is spent by the desk *after* sizing and the EV gate
+        # accept (`DeskLoop._size_and_gate`): a proposal the gates refuse must not
+        # burn one of the day's three entries (audit B3).
         return intent

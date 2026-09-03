@@ -11,7 +11,7 @@ from capitalizator.card.gex import OptionRow, gex_bg
 from capitalizator.card.live import FibZone, FvgStatus, SweepStatus, fib_zone_at
 from capitalizator.card.rsi import rsi_htf
 from capitalizator.card.smc import bos_status, ob_status
-from capitalizator.card.sweep import fractals, sweep_status
+from capitalizator.card.sweep import fractals, sweep_status, sweep_status_for
 from capitalizator.zones.model import Bar
 
 _STRUCTURE_TF = ("15m", "1h", "4h", "1d")
@@ -29,6 +29,9 @@ class BLabels:
     gex_bg: str | None = None
     fib_zone_short: FibZone = "none"
     fib_level_short: str | None = None
+    # Side-aware sweeps: fuel for a long is the swing LOW taken; for a short the HIGH.
+    sweep_long: SweepStatus = "none"
+    sweep_short: SweepStatus = "none"
 
 
 def compute_b_labels(
@@ -55,6 +58,8 @@ def compute_b_labels(
         gex_bg=gex_bg(spot=spot if spot is not None else px, chain=chain),
         fib_zone_short=fib_zone_short,
         fib_level_short=fib_level_short,
+        sweep_long=sweep_status_for(structure, "buy"),
+        sweep_short=sweep_status_for(structure, "sell"),
     )
 
 

@@ -160,6 +160,9 @@ def from_news(
         gex_bg=gex_bg if gex_bg is not None else labels.gex_bg,
         fvg_status=_pick(fvg_status, labels.fvg_status, "none"),  # type: ignore[arg-type]
         sweep_status=_pick(sweep_status, labels.sweep_status, "none"),  # type: ignore[arg-type]
+        # explicit `sweep_status` (tests / manual cards) applies to both sides
+        sweep_long=(sweep_status or labels.sweep_long or "none"),  # type: ignore[arg-type]
+        sweep_short=(sweep_status or labels.sweep_short or "none"),  # type: ignore[arg-type]
         ob_status=ob_status if ob_status is not None else labels.ob_status,
         bos_status=bos_status if bos_status is not None else labels.bos_status,
         market_regime="range" if vol.vah and vol.val else "none",

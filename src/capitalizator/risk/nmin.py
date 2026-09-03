@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-N_MIN = 20
+from capitalizator.stats import n_min
+
+N_MIN = n_min()
 NMIN_SIZE = Decimal("0")
 QUARTER = Decimal("0.25")
 
