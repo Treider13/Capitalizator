@@ -1,0 +1,76 @@
+# Capitalizator on one VPS. All processes share the vault volume; only `signer` sees keys.
+# Console binds to 127.0.0.1 — reach it through an SSH tunnel, never from the internet.
+#   ssh -L 8082:127.0.0.1:8082 trader@<vps>   →   http://127.0.0.1:8082
+name: capitalizator
+
+x-base: &base
+  build:
+    context: ../..
+    dockerfile: infra/deploy/Dockerfile
+  image: capitalizator:local
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 20s
+  volumes:
+    - ${CAP_DATA:-/srv/capitalizator/userdir}:/data
+  environment:
+    TZ: UTC
+  logging:
+    driver: json-file
+    options: { max-size: "50m", max-file: "5" }
+  healthcheck:
+    test: ["CMD", "python", "-c", "import capitalizator"]
+    interval: 60s
+    timeout: 10s
+    retries: 3
+
+services:
+  init:
+    <<: *base
+    restart: "no"
+    command: ["python", "-m", "capitalizator.desk", "--userdir", "/data", "--init"]
+
+  recorder:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    command: ["python", "-m", "capitalizator.recorder.app", "--live-ws", "--userdir", "/data"]
+
+  desk:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    command: ["python", "-m", "capitalizator.desk", "--userdir", "/data", "--serve"]
+
+  signer:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    # Keys: BYBIT_API_KEY / BYBIT_API_SECRET / BYBIT_MODE from .env (never in the image),
+    # or /data/secrets/bybit.json with mode 0600. Without them the signer parks intents.
+    env_file:
+      - path: ./.env
+        required: false
+    command: ["python", "-m", "capitalizator.signer", "--userdir", "/data", "--serve"]
+
+  console:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    # Host network so the console binds 127.0.0.1 on the VPS itself: its write
+    # endpoints accept localhost only, and an SSH tunnel arrives as 127.0.0.1.
+    network_mode: host
+    command: ["python", "-m", "capitalizator.ops.console", "--userdir", "/data", "--serve", "--host", "127.0.0.1", "--port", "8082"]
+
+  night:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    # Night contour once a day at 00:30 UTC: replay, challengers, report. Loop in-container
+    # so no host cron is needed; `date -d yesterday` keeps the day honest.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          now=$(date -u +%H%M)
+          if [ "$now" = "0030" ]; then
+            python -m capitalizator.ops.night --userdir /data --day "$(date -u -d yesterday +%F)" || true
+            sleep 60
+          fi
+          sleep 30
+        done
