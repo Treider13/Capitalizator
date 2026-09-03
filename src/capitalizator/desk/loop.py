@@ -103,7 +103,7 @@ from capitalizator.risk.sizing import size_position
 from capitalizator.tape.classify import TapeClassifier
 from capitalizator.tape.ofi import OFI
 from capitalizator.types import MarketEvent, require_utc
-from capitalizator.zlg.gesture import ZLG, BookAdd
+from capitalizator.zlg.gesture import ZLG, BookAdd, BookPull
 from capitalizator.zones.config import load_registry
 from capitalizator.zones.engine import MAP_VOTE_METHODS
 from capitalizator.zones.map import ZoneMap
@@ -124,6 +124,7 @@ class SymbolState:
     state: State = "IDLE"
     armed_at: datetime | None = None
     adds: list[BookAdd] = field(default_factory=list)
+    pulls: list[BookPull] = field(default_factory=list)
     trades: list[MarketEvent] = field(default_factory=list)
     bars: list[Bar] = field(default_factory=list)
     last_touch: Touch | None = None
@@ -497,11 +498,12 @@ class DeskLoop:
                 st.book = Book(tick_size=str(self.tick_for(st.symbol)))
                 return
             _record_adds_from_diff(st, event.exchange_ts, before, bids, asks)
-            if st.state == "IDLE" and len(st.adds) > 256:
-                # Adds only matter inside the 8s window after a touch; idle symbols
-                # must not accumulate hours of book activity.
+            if st.state == "IDLE" and (len(st.adds) > 256 or len(st.pulls) > 256):
+                # Adds/pulls only matter inside the 8s window after a touch; idle
+                # symbols must not accumulate hours of book activity.
                 keep_from = event.exchange_ts - timedelta(seconds=2 * self.config.zlg_window_s)
                 st.adds = [a for a in st.adds if a.ts >= keep_from]
+                st.pulls = [a for a in st.pulls if a.ts >= keep_from]
             self._remember_book(st, event.exchange_ts)
             self._wall_for(st.symbol).on_book_and_trade(st.book, ts=event.exchange_ts)
             return
@@ -531,6 +533,7 @@ class DeskLoop:
                     st.state = "IDLE"
                     st.last_touch = None
                     st.adds.clear()
+                    st.pulls.clear()
                     st.trades.clear()
                     st.book_pre = None
                     st.oko_window = None
@@ -1011,6 +1014,13 @@ class DeskLoop:
         opp_best = ask if hit_side == "bid" else bid
         if opp_best is None:
             opp_best = touch.trade_px
+        t_end = touch.ts + timedelta(seconds=self.config.zlg_window_s)
+        prints = [
+            (require_utc(t.exchange_ts), Decimal(str(t.payload["px"])))
+            for t in st.trades
+            if t.stream == "trades" and "px" in t.payload
+            and touch.ts <= require_utc(t.exchange_ts) <= t_end
+        ]
         result = self.zlg.classify(
             touch,
             st.adds,
@@ -1020,6 +1030,8 @@ class DeskLoop:
             opp_best=opp_best,
             book_ready=book.ready,
             tick=self.tick_for(st.symbol),
+            book_pulls=st.pulls,
+            prints=prints,
         )
         self.registry.fill_gesture(gesture=result.gesture, touch_id=touch.touch_id)
         self.registry._patch(
@@ -2644,16 +2656,18 @@ def _record_adds_from_diff(
     bids: tuple[tuple[str, str], ...],
     asks: tuple[tuple[str, str], ...],
 ) -> None:
-    """Same law as `_record_adds`, O(diff) instead of O(book): a positive size delta
-    at a price the diff touched is a ZLG BookAdd; pulls are not adds."""
+    """O(diff): a positive size delta at a price the diff touched is a ZLG BookAdd; a
+    negative one is a BookPull. The gesture nets them (survived liquidity)."""
     for side, rows in (("bid", bids), ("ask", asks)):
         levels = st.book.levels(side)  # type: ignore[arg-type]
         for px_s, _sz in rows:
             px = Decimal(px_s)
             delta = levels.get(px, Decimal("0")) - before.get((side, px), Decimal("0"))
+            hit: Literal["bid", "ask"] = "bid" if side == "bid" else "ask"
             if delta > 0:
-                hit: Literal["bid", "ask"] = "bid" if side == "bid" else "ask"
                 st.adds.append(BookAdd(ts=ts, side=hit, px=px, qty=delta))
+            elif delta < 0:
+                st.pulls.append(BookPull(ts=ts, side=hit, px=px, qty=-delta))
 
 
 def _record_adds(

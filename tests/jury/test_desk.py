@@ -117,7 +117,7 @@ def test_btc_trend_is_not_a_break_veto() -> None:
     assert voices.btc == 0
 
 
-def test_btc_same_side_is_plus_one() -> None:
+def test_btc_same_side_is_permission_not_evidence() -> None:
     voices = voices_for_bounce(
         cav="REJECT",
         n_cav=20,
@@ -127,7 +127,37 @@ def test_btc_same_side_is_plus_one() -> None:
         btc_regime="long",
         btc_same_side=True,
     )
-    assert voices.btc == 1
+    assert voices.btc == 0  # filters never say +1
+
+
+def test_chart_alone_plus_non_events_is_silence_not_accord() -> None:
+    """The bare-chart entry: REJECT with n≥20, ZLG still learning (n<20), wall not eaten,
+    BTC in a box, card proposes. Before: ACCORD. Now: SILENCE — no first fact from the book."""
+    voices = voices_for_bounce(
+        cav="REJECT", n_cav=20, zlg="DEFEND", n_zlg=5, tape_eaten=False,
+        btc_regime="box", card_bearing_verdict="propose",
+    )
+    assert voices.tape == 0 and voices.btc == 0 and voices.card == 0
+    assert voices.cav == 1 and voices.zlg == 0
+    assert decide(voices) == "SILENCE"
+    # the same touch with the book fact mature → ACCORD
+    mature = voices_for_bounce(
+        cav="REJECT", n_cav=20, zlg="DEFEND", n_zlg=20, tape_eaten=False,
+        btc_regime="box", card_bearing_verdict="propose",
+    )
+    assert decide(mature) == "ACCORD"
+    # or with the eye as the book fact
+    assert decide(Voices(cav=1, zlg=0, tape=0, btc=0, card=0, oko=1)) == "ACCORD"
+    # book facts with a neutral chart (a plain bounce is DRIFT = 0) do enter: the book
+    # is the first fact, the chart is confirmation
+    assert decide(Voices(cav=0, zlg=1, tape=0, btc=0, card=0, oko=1)) == "ACCORD"
+    # a bare chart with a neutral book never enters
+    assert decide(Voices(cav=1, zlg=0, tape=0, btc=0, card=0, oko=0)) == "SILENCE"
+    # an eaten level is a real −1 against a bounce
+    eaten = voices_for_bounce(
+        cav="REJECT", n_cav=20, zlg="DEFEND", n_zlg=20, tape_eaten=True, btc_regime="box",
+    )
+    assert eaten.tape == -1 and decide(eaten) == "SPLIT"
 
 
 def test_btc_break_against_is_veto() -> None:

@@ -119,7 +119,9 @@ def test_silent_bid_wall_under_the_print_is_spoof_and_veto(tmp_path: Path) -> No
         journal["oko_fingerprint"] and journal["oko_fingerprint"].count("-") == 12
     )  # 10 Shadow + 3 Footprint
     assert journal["jury"] == "VETO"
-    assert journal["zlg_label"] == "DEFEND"  # the book *looked* defended; ОКО saw the pull
+    # The +25 was shown and pulled inside the window: survived liquidity is ~0, so the
+    # gesture itself is SILENCE now (it used to say DEFEND on the flash). ОКО names the spoof.
+    assert journal["zlg_label"] == "SILENCE"
 
 
 def test_wall_that_is_eaten_is_not_a_spoof(tmp_path: Path) -> None:

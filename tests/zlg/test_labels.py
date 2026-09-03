@@ -82,3 +82,30 @@ def test_mid_equals_print_is_silence() -> None:
 def test_add_before_print_ignored() -> None:
     early = BookAdd(ts=T0, side="bid", px=Decimal("100"), qty=Decimal("2"))
     assert _label(early) == "SILENCE"
+
+
+def test_survived_liquidity_ignores_flashed_quotes_and_keeps_executed_ones() -> None:
+    """Jury §3.2: a quote added and pulled inside the window is not a DEFEND; a quote
+    that traded (prints at its price) is not a pull; young survivors are pro-rated."""
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+
+    from capitalizator.zlg.gesture import BookAdd, BookPull, survived_adds
+
+    t0 = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    t1 = t0 + timedelta(seconds=8)
+    px = Decimal("100")
+    flash = BookAdd(ts=t0 + timedelta(seconds=1), side="bid", px=px, qty=Decimal("25"))
+    real = BookAdd(ts=t0 + timedelta(seconds=1, milliseconds=500), side="bid", px=Decimal("99.9"), qty=Decimal("10"))
+    late = BookAdd(ts=t0 + timedelta(seconds=7), side="bid", px=Decimal("99.8"), qty=Decimal("10"))
+    pull_flash = BookPull(ts=t0 + timedelta(seconds=3), side="bid", px=px, qty=Decimal("25"))
+    # `real` shrinks by 4 right after a print at 99.9 → executed, not pulled
+    eaten = BookPull(ts=t0 + timedelta(seconds=5), side="bid", px=Decimal("99.9"), qty=Decimal("4"))
+    prints = [(t0 + timedelta(seconds=4, milliseconds=900), Decimal("99.9"))]
+    out = dict(survived_adds([flash, real, late], [pull_flash, eaten], prints, t0=t0, t1=t1))
+    assert flash not in out  # shown and pulled → nothing survived
+    assert out[real] == Decimal("10")  # executed against, still counts in full (alive 6.5s ≥ 2s)
+    assert out[late] == Decimal("10") * Decimal("0.5")  # alive 1s of the 2s needed → half credit
+    # without prints the same shrink IS a pull
+    out2 = dict(survived_adds([real], [eaten], [], t0=t0, t1=t1))
+    assert out2[real] == Decimal("6")
