@@ -81,6 +81,23 @@ def test_hard_stop_uses_mark_when_known_last_wick_is_ignored() -> None:
     assert pos.exit_px == Decimal("98") - Decimal("0.1")
 
 
+def test_arming_trail_without_a_move_does_not_give_hard_sl_to_last() -> None:
+    """trailing_distance set, stop still the original → mark still owns the SL."""
+    eng = _engine()
+    pos = _buy(eng)
+    eng.on_print(_print(T0 + timedelta(seconds=1), "99.9"))
+    eng.on_mark(_mark(T0 + timedelta(seconds=2), "99.5"))
+    # last already back at 97.5: cand = 99.9 − 1 would fire now → follow refuses
+    eng.on_print(_print(T0 + timedelta(seconds=3), "97.5"))
+    assert pos.state == "open" and pos.stop == Decimal("98")
+    assert eng.arm_trailing("t1:shadow", Decimal("1"), reason="impulse", last_px=Decimal("97.5"))
+    assert pos.trailing_distance == Decimal("1") and pos.stop == Decimal("98")
+    eng.on_print(_print(T0 + timedelta(seconds=4), "97.4"))  # last through 98 again
+    assert pos.state == "open"
+    eng.on_mark(_mark(T0 + timedelta(seconds=5), "97.9"))  # mark through the hard SL
+    assert pos.state == "closed" and pos.exit_reason == "stop"
+
+
 def test_half_at_one_r_then_tp_on_remainder() -> None:
     eng = _engine()
     pos = _buy(eng)

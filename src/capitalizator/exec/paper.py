@@ -385,7 +385,7 @@ class PaperEngine:
         for pos in list(self.positions.values()):
             if pos.symbol != event.symbol or pos.state != "open":
                 continue
-            if pos.trailing_distance is not None:
+            if self._trailing_owns_stop(pos):
                 continue
             if when < pos.created_at or (pos.filled_at is not None and when < pos.filled_at):
                 continue
@@ -513,9 +513,24 @@ class PaperEngine:
         assert pos.entry_px is not None
         return pos.entry_px + pos.r_px if pos.side == "buy" else pos.entry_px - pos.r_px
 
+    def _trailing_owns_stop(self, pos: PaperPosition) -> bool:
+        """True only after the trail has actually pulled `pos.stop` to mfe ∓ distance.
+
+        Arming the venue trail must not switch the hard SL to last: a last wick
+        through the original stop would flatten the venue while MarkPrice is safe.
+        """
+        if pos.trailing_distance is None or pos.mfe_px is None:
+            return False
+        trail = (
+            pos.mfe_px - pos.trailing_distance
+            if pos.side == "buy"
+            else pos.mfe_px + pos.trailing_distance
+        )
+        return pos.stop == trail
+
     def _stop_trigger_px(self, pos: PaperPosition, last_px: Decimal) -> Decimal:
-        """Hard SL: mark when known. Exchange trailing: last (Bybit trailing is LTP)."""
-        if pos.trailing_distance is not None:
+        """Hard SL: mark when known. Last only once the exchange trail owns the stop."""
+        if self._trailing_owns_stop(pos):
             return last_px
         return self._marks.get(pos.symbol, last_px)
 
