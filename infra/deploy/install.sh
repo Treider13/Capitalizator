@@ -18,6 +18,7 @@ apt-get install -y -qq ufw fail2ban chrony unattended-upgrades git ca-certificat
 log "time: UTC + chrony"
 timedatectl set-timezone UTC
 systemctl enable --now chrony >/dev/null
+chronyc makestep >/dev/null 2>&1 || true   # the venue signs with a 5 s window; step the clock now
 
 log "user trader"
 id trader >/dev/null 2>&1 || adduser --disabled-password --gecos "" trader
@@ -84,7 +85,7 @@ S
   sshd -t && systemctl reload ssh
   echo "password login disabled; use: ssh trader@<vps>"
 else
-  echo "password login left ON. After you confirm `ssh trader@<vps>` works with your key: CAP_HARDEN=1 bash install.sh"
+  echo "password login left ON. After 'ssh trader@<vps>' works with your key: CAP_HARDEN=1 bash install.sh"
 fi
 
 log "unattended upgrades (no automatic reboot)"
