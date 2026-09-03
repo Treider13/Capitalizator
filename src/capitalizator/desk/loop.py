@@ -15,6 +15,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from capitalizator.book.reconstruct import Book, BookDirty
+from capitalizator.book.validate import validate
 from capitalizator.book.wall_watch import WallWatch, last_wall_kind, pulled_without_print
 from capitalizator.btc.break_def import Break
 from capitalizator.btc.regime import BtcRegime
@@ -118,7 +119,7 @@ from capitalizator.risk.sessions import SessionPolicy, WindowState
 from capitalizator.risk.sizing import size_position
 from capitalizator.screener.universe import load_desk_universe
 from capitalizator.tape.classify import TapeClassifier
-from capitalizator.tape.ofi import OFI
+from capitalizator.tape.liquidity import snapshot as liquidity_snapshot
 from capitalizator.types import MarketEvent, require_utc
 from capitalizator.whales.fragility import forbid_new_long, forbid_new_short
 from capitalizator.whales.no_single import sole_whale
@@ -1277,7 +1278,10 @@ class DeskLoop:
         # ОКО reads the frozen window on the same 8s clock (Retina + Shadow + Footprint).
         # A B verdict is a fact about the calendar, not about the book: the Passport
         # learns every window and the journal carries the facts either way.
-        self._oko_observe(st, touch, now)
+        # A crossed/locked book is not a quote — do not feed it to the Passport.
+        probe = st.book_pre or st.book
+        if validate(probe).ok:
+            self._oko_observe(st, touch, now)
         touch = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
         st.last_touch = touch
         book = st.book_pre or st.book
@@ -1786,6 +1790,7 @@ class DeskLoop:
             "shadow_would_marks": shadow_would_marks,
             "decision_ms": (closed_at - touch.ts).total_seconds() * 1000.0,
             "paper_gates": paper_gates_snapshot(n_zlg=n_zlg, gesture=row.gesture),
+            "liquidity": self._liquidity_of(st, row),
         }
         payload_row = {**journal, **extra}
         payload_row["challenger_would"] = challenger_on(payload_row)
@@ -1897,10 +1902,14 @@ class DeskLoop:
             and book.ready
             and session_verdict.allow
         ):
+            book_check = validate(book)
+            if not book_check.ok:
+                payload_row["send_skip"] = f"book:{book_check.reason}"
+                self.knowledge.put_journal_touch(row.touch_id, payload_row)
             spr = book.spread()
             bid, ask = book.best()
             mid_px = (bid + ask) / 2 if bid is not None and ask is not None else None
-            if spr is not None and mid_px is not None and mid_px > 0:
+            if book_check.ok and spr is not None and mid_px is not None and mid_px > 0:
                 fragility = self._fragility(st)
                 payload_row["fragility"] = fragility
                 typical_move, tm_source = self._typical_move(st, row.trade_px)
@@ -3301,16 +3310,22 @@ class DeskLoop:
         ]
         return prints, books
 
-    def _stamp_touch_interval(self, st: SymbolState, touch: Touch) -> None:
-        """OFI and PRS belong to the 8s touch window, not the last 8s before CAV."""
+    def _liquidity_of(self, st: SymbolState, touch: Touch) -> dict[str, Any]:
         prints, path = self._touch_window(st, touch, seconds=self.config.zlg_window_s)
-        ofi_val = None
         books = [copy for _, copy in path]
-        if len(books) >= 2:
-            try:
-                ofi_val = str(OFI().window(prints, books))
-            except ValueError:
-                ofi_val = None
+        live = next((t for t in self.registry.touches if t.touch_id == touch.touch_id), touch)
+        return liquidity_snapshot(
+            prints=prints,
+            books=books,
+            eaten=live.tape_eaten,
+            tick=self.tick_for(st.symbol),
+            probe=st.book_pre or st.book,
+        )
+
+    def _stamp_touch_interval(self, st: SymbolState, touch: Touch) -> None:
+        """OFI / CVD / phase belong to the 8s touch window, not the last 8s before CAV."""
+        prints, path = self._touch_window(st, touch, seconds=self.config.zlg_window_s)
+        liq = self._liquidity_of(st, touch)
         prs_tau = None
         src = next((trade for trade in prints if trade.exchange_ts == touch.ts), None)
         if src is not None and st.book_pre is not None and st.book_pre.ready:
@@ -3323,7 +3338,7 @@ class DeskLoop:
         self.registry._patch(
             touch_id=touch.touch_id,
             overwrite=True,
-            ofi=ofi_val,
+            ofi=liq["ofi"],
             prs_tau=prs_tau,
         )
 
