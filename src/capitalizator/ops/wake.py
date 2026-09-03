@@ -8,6 +8,7 @@ trips the Event immediately; the file is for the other process.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -51,12 +52,13 @@ class StampWake:
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             path.write_bytes(b"0")
-        self._mtime_ns = _mtime_ns(path)
+        self._token = _token(path)
 
     def notify(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        write_regular_bytes(self.path, str(time.time_ns()).encode())
-        self._mtime_ns = _mtime_ns(self.path)
+        payload = f"{time.time_ns()}:{os.getpid()}:{os.urandom(8).hex()}".encode()
+        write_regular_bytes(self.path, payload)
+        self._token = payload
         self._ev.set()
 
     def wait(self, timeout: float | None = None) -> bool:
@@ -72,7 +74,7 @@ class StampWake:
             slice_s = SLICE_S if remain is None else min(SLICE_S, remain)
             if self._ev.wait(slice_s):
                 self._ev.clear()
-                self._mtime_ns = _mtime_ns(self.path)
+                self._token = _token(self.path)
                 return True
             if self._changed():
                 return True
@@ -80,23 +82,23 @@ class StampWake:
     def _take_event(self) -> bool:
         if self._ev.is_set():
             self._ev.clear()
-            self._mtime_ns = _mtime_ns(self.path)
+            self._token = _token(self.path)
             return True
         return False
 
     def _changed(self) -> bool:
-        current = _mtime_ns(self.path)
-        if current != self._mtime_ns:
-            self._mtime_ns = current
+        current = _token(self.path)
+        if current != self._token:
+            self._token = current
             return True
         return False
 
 
-def _mtime_ns(path: Path) -> int:
+def _token(path: Path) -> bytes:
     try:
-        return path.stat().st_mtime_ns
+        return path.read_bytes()
     except FileNotFoundError:
-        return -1
+        return b""
 
 
 def stamp_path(root: Path, name: str) -> Path:

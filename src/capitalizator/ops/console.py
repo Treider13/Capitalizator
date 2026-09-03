@@ -23,7 +23,6 @@ from capitalizator.ops.contour import status as contour_status
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
 from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.latency import decision_report
-from capitalizator.ops.wake import desk_wake, idle
 from capitalizator.ops.phase import load_phase, trading_mode
 from capitalizator.ops.product import (
     HelloRequired,
@@ -51,6 +50,7 @@ from capitalizator.ops.vault import (
     load_vault,
     open_regular,
 )
+from capitalizator.ops.wake import desk_wake, idle
 from capitalizator.risk.session import load_time_config
 from capitalizator.screener.universe import load_desk_universe
 

@@ -72,20 +72,20 @@ def test_enqueue_intent_oms_command_touch_signer_stamp(tmp_path: Path) -> None:
     kn = open_knowledge(vault)
     stamp = vault.root / "wake" / "signer.stamp"
     assert stamp.exists()
-    before = stamp.stat().st_mtime_ns
+    before = stamp.read_bytes()
     kn.enqueue_intent(INTENT, created_ts=NOW.isoformat())
-    assert stamp.stat().st_mtime_ns != before
-    before = stamp.stat().st_mtime_ns
+    assert stamp.read_bytes() != before
+    before = stamp.read_bytes()
     kn.enqueue_oms(
         kind="flatten",
         symbol="BTCUSDT",
         payload={"reason": "test"},
         created_ts=NOW.isoformat(),
     )
-    assert stamp.stat().st_mtime_ns != before
-    before = stamp.stat().st_mtime_ns
+    assert stamp.read_bytes() != before
+    before = stamp.read_bytes()
     kn.enqueue_command("pause_entries", {"reason": "test"}, created_ts=NOW.isoformat())
-    assert stamp.stat().st_mtime_ns != before
+    assert stamp.read_bytes() != before
     kn.close()
 
 
@@ -142,41 +142,47 @@ def test_signer_serve_wakes_on_enqueue_without_full_idle(tmp_path: Path) -> None
     vault = init_vault(tmp_path / "desk")
     mark_hello(vault, ok=True)
     set_user_mode(vault, "demo", ack=True)
-    knowledge = open_knowledge(vault)
+    desk_kn = open_knowledge(vault)
     wake = signer_wake(vault)
     stop = {"v": False}
     started = threading.Event()
+    parked: list[object] = []
 
     def should_stop() -> bool:
         return stop["v"]
 
     def run() -> None:
+        kn = open_knowledge(vault)
+
         def _stop() -> bool:
-            if knowledge.meta("signer_heartbeat"):
+            if kn.meta("signer_heartbeat"):
                 started.set()
             return should_stop()
 
-        signer_serve(
-            knowledge=knowledge,
-            vault=vault,
-            should_stop=_stop,
-            idle_s=5.0,
-            now=NOW,
-            wake=wake,
-        )
+        try:
+            signer_serve(
+                knowledge=kn,
+                vault=vault,
+                should_stop=_stop,
+                idle_s=5.0,
+                now=NOW,
+                wake=wake,
+            )
+            parked.extend(kn.intents_with_status("no_gateway"))
+        finally:
+            kn.close()
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     assert started.wait(2.0)
-    knowledge.enqueue_intent(INTENT, created_ts=NOW.isoformat())
+    desk_kn.enqueue_intent(INTENT, created_ts=NOW.isoformat())
     deadline = time.monotonic() + 2.0
-    while knowledge.pending_intents() and time.monotonic() < deadline:
+    while desk_kn.pending_intents() and time.monotonic() < deadline:
         time.sleep(0.01)
-    pending = knowledge.pending_intents()
-    parked = knowledge.intents_with_status("no_gateway")
+    pending = desk_kn.pending_intents()
     stop["v"] = True
     wake.notify()
     thread.join(2.0)
-    knowledge.close()
+    desk_kn.close()
     assert pending == []
     assert len(parked) == 1
