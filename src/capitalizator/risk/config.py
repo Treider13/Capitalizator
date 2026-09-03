@@ -21,7 +21,7 @@ from typing import Any
 from capitalizator.ops.knowledge import Knowledge
 
 META_KEY = "risk_config"
-STOP_MODES = frozenset({"structural", "volatility", "hybrid"})
+STOP_MODES = frozenset({"structural", "volatility", "hybrid", "manual_bounded"})
 TRAIL_MODES = frozenset({"structure", "exchange_trailing", "both"})
 
 
@@ -32,16 +32,32 @@ class RiskConfig:
     # Fraction of equity lost if the stop is hit.
     target_risk_pct: Decimal = Decimal("0.01")
     max_lev: Decimal = Decimal("3")
-    max_open_positions: int = 1
-    max_intents_per_session: int = 3
+    # Sessions release: up to three ideas at once, one per correlation group
+    # (infra/corr_groups.yaml + rolling correlation), never two on the same symbol.
+    max_open_positions: int = 3
+    # Ceiling for ANY single budget key; the per-window caps live in sessions.yaml and
+    # are min()-ed with this. 8 = the overlap window's budget.
+    max_intents_per_session: int = 8
     day_halt: Decimal = Decimal("-0.03")
     week_halt: Decimal = Decimal("-0.06")
     peak_kill: Decimal = Decimal("-0.25")
     # A 1R win must be at least this many round-trip fees (EV gate).
     fee_multiple_min: Decimal = Decimal("5")
     stop_mode: str = "hybrid"
+    # manual_bounded: operator stop distance as a fraction of the entry price, bounded by
+    # the automatic hybrid stop (floor) and max_stop_atr (ceiling). Required in that mode.
+    manual_stop_frac: Decimal | None = None
     trail_mode: str = "both"
-    allow_night: bool = False
+    # Finished stop may not sit farther than this many working-TF ATR from the entry;
+    # a setup that needs more is refused, not fitted. None disables the ceiling.
+    max_stop_atr: Decimal | None = Decimal("2.5")
+    # Fraction of the account that takes part in sizing ("сколько депозита участвует").
+    # Sizing, EV and halts see min(equity, participating_share × equity); the rest of
+    # the wallet is invisible to the desk. 1 = the whole account.
+    participating_share: Decimal = Decimal("1")
+    # Two open ideas on the same side are refused when their 30-day return correlation
+    # exceeds this (or they share a static group). Symmetric for opposite sides.
+    corr_block_threshold: Decimal = Decimal("0.8")
     # Paper / demo equity used until a wallet is read from the exchange.
     paper_equity: Decimal = Decimal("100000")
     # D-19: ICT context marks (fib OTE / FVG / sweep) are informational by default —
@@ -67,8 +83,22 @@ class RiskConfig:
             raise ValueError("fee_multiple_min must be >= 1")
         if self.stop_mode not in STOP_MODES:
             raise ValueError(f"stop_mode must be one of {sorted(STOP_MODES)}")
+        if self.manual_stop_frac is not None and not (
+            Decimal("0.001") <= self.manual_stop_frac <= Decimal("0.2")
+        ):
+            raise ValueError("manual_stop_frac must be in [0.001, 0.2] or null")
+        if self.stop_mode == "manual_bounded" and self.manual_stop_frac is None:
+            raise ValueError("stop_mode manual_bounded needs manual_stop_frac")
         if self.trail_mode not in TRAIL_MODES:
             raise ValueError(f"trail_mode must be one of {sorted(TRAIL_MODES)}")
+        if self.max_stop_atr is not None and not (
+            Decimal("0.5") <= self.max_stop_atr <= Decimal("10")
+        ):
+            raise ValueError("max_stop_atr must be in [0.5, 10] or null")
+        if not (Decimal("0") < self.participating_share <= Decimal("1")):
+            raise ValueError("participating_share must be in (0, 1]")
+        if not (Decimal("0") < self.corr_block_threshold <= Decimal("1")):
+            raise ValueError("corr_block_threshold must be in (0, 1]")
         if self.paper_equity <= 0:
             raise ValueError("paper_equity must be > 0")
         if not self.config_id:
@@ -81,6 +111,10 @@ class RiskConfig:
     def to_payload(self) -> dict[str, Any]:
         return {k: (str(v) if isinstance(v, Decimal) else v) for k, v in asdict(self).items()}
 
+    def participating_equity(self, equity: Decimal) -> Decimal:
+        """The slice of the wallet the desk may size against."""
+        return equity * self.participating_share
+
     @classmethod
     def from_payload(cls, raw: dict[str, Any]) -> RiskConfig:
         dec = (
@@ -92,17 +126,25 @@ class RiskConfig:
             "peak_kill",
             "fee_multiple_min",
             "paper_equity",
+            "participating_share",
+            "corr_block_threshold",
         )
         kwargs: dict[str, Any] = {}
         for key, value in raw.items():
             if key in dec:
                 kwargs[key] = Decimal(str(value))
+            elif key in {"max_stop_atr", "manual_stop_frac"}:
+                kwargs[key] = None if value in (None, "", "null", "none") else Decimal(str(value))
             elif key in {"max_open_positions", "max_intents_per_session", "version"}:
                 kwargs[key] = int(value)
             elif key in {"stop_mode", "trail_mode", "config_id"}:
                 kwargs[key] = str(value)
-            elif key in {"allow_night", "require_ict_marks"}:
-                kwargs[key] = bool(value)
+            elif key == "require_ict_marks":
+                kwargs[key] = _as_bool(value)
+            elif key == "allow_night":
+                # Removed knob (sessions release): it was written by the console and read
+                # by nothing. Old snapshots still carry it; ignore, do not fail the load.
+                continue
             else:
                 raise ValueError(f"unknown risk_config key: {key}")
         return cls(**kwargs)
@@ -114,6 +156,20 @@ class RiskConfig:
     def implied_risk(self, *, lev: Decimal, stop_frac: Decimal) -> Decimal:
         """Law 8: what deposit_share × lev × stop% would risk."""
         return self.deposit_share_per_trade * lev * stop_frac
+
+
+def _as_bool(value: Any) -> bool:
+    """Console posts strings; `bool("false")` is True — parse the word, not the object."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError(f"not a boolean: {value!r}")
 
 
 def load_risk_config(knowledge: Knowledge) -> RiskConfig:

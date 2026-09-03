@@ -24,7 +24,19 @@ from capitalizator.card.draft import pending_card
 from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.card.live import CardLive, card_is_fresh, touch_line
 from capitalizator.card.volume import snapshot as volume_snapshot
-from capitalizator.champion.calibrate import ClassStat, class_key, class_stats, refuted, to_meta
+from capitalizator.champion.calibrate import (
+    ClassStat,
+    class_key,
+    class_stats,
+    eligible_windows,
+    k_atr_by_window,
+    loss_series_by_window,
+    median_hold_hours,
+    refuted,
+    to_meta,
+)
+from capitalizator.champion.calibrate import lookup as calibration_lookup
+from capitalizator.champion.drift import PageHinkley
 from capitalizator.champion.shadow_day import (
     challenger_on,
     challenger_tag,
@@ -33,7 +45,6 @@ from capitalizator.champion.shadow_day import (
 )
 from capitalizator.desk.bars import TF_MINUTES, BarBuilder
 from capitalizator.desk.pictures import needs_new_card, picture_for
-from capitalizator.desk.session_name import session_name
 from capitalizator.exec.ev_gate import evaluate as ev_evaluate
 from capitalizator.exec.failed_break import sweep_wick
 from capitalizator.exec.first_minute import FirstMinute
@@ -91,13 +102,10 @@ from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.risk.account import Account
 from capitalizator.risk.config import load_risk_config
+from capitalizator.risk.correlation import CorrelationGuard, returns_from_closes
 from capitalizator.risk.schema import Intent
-from capitalizator.risk.session import (
-    SessionWindow,
-    cpi_day,
-    in_desk_window,
-    us_data_known_at,
-)
+from capitalizator.risk.session import cpi_day, us_data_known_at
+from capitalizator.risk.sessions import SessionPolicy, WindowState
 from capitalizator.risk.sizing import size_position
 from capitalizator.tape.classify import TapeClassifier
 from capitalizator.tape.ofi import OFI
@@ -158,6 +166,7 @@ class DeskLoop:
         btc: BtcBus | None = None,
         unlocks: Unlocks | None = None,
         instruments: InstrumentRegistry | None = None,
+        policy: SessionPolicy | None = None,
     ) -> None:
         self.knowledge = knowledge
         self.user_mode = user_mode
@@ -176,7 +185,10 @@ class DeskLoop:
             tick_size=self.tick_size, config=self.config, tick_for=self.tick_for
         )
         self.shadow = ShadowWriter()
-        self.session = SessionWindow()
+        # Session policy (infra/sessions.yaml): which idea may be SENT in which UTC
+        # window, size multiplier, stop buffer k_atr, intent budget, symbol policy,
+        # blackouts, funding settlement guard. Shadow / fade twins ignore it (W3).
+        self.policy = policy if policy is not None else SessionPolicy.load()
         # D-09/D-10/D-13: one Account owns equity, open ideas, halts and the
         # per-session budget; RiskEngine/Halts are its members, not orphans.
         self.risk_config = load_risk_config(knowledge)
@@ -185,11 +197,14 @@ class DeskLoop:
         self.halts = self.account.halts
         self.funding: dict[str, Decimal] = {}
         self._funding_hist: dict[str, list[Decimal]] = {}
+        # Settlement clock and 24h turnover per symbol from the ticker stream.
+        self.next_funding: dict[str, datetime] = {}
+        self.turnover: dict[str, Decimal] = {}
         self.macro = MacroRules(enabled=True)
         self.strategy = BounceStrategy(
             risk=self.risk,
             halts=self.halts,
-            session=self.session,
+            session=self.policy,
             registry=self.config,
             desk_mode=user_mode if user_mode in {"demo", "live"} else "off",
             require_card=False,
@@ -221,6 +236,18 @@ class DeskLoop:
         self._instruments_seen: str | None = None
         self._calibration: dict[str, ClassStat] = {}
         self._calibration_at: datetime | None = None
+        self._k_atr_calibrated: dict[str, Decimal] = {}
+        self._hold_hours: dict[str, Decimal] = {}
+        # window → ISO time the drift was detected; cleared by the operator only.
+        # ack_n: loss-series length at the last release (detection restarts after it).
+        self._window_drift: dict[str, str] = {}
+        self._drift_ack_n: dict[str, int] = {}
+        self._drift = PageHinkley(delta=0.05, threshold=8.0)
+        # Day screen cache: (minute, frozenset) — the scan walks every symbol's bars.
+        self._screen_cache: tuple[datetime, frozenset[str]] | None = None
+        # Live funding intervals from the ticker; re-applied after an instruments-info merge.
+        self._live_funding_interval: dict[str, int] = {}
+        self._correlation_at: datetime | None = None
         self.oko = OkoEye(working_tf=self.config.working_tf)
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
@@ -255,6 +282,7 @@ class DeskLoop:
         self._last_settle: datetime | None = None
         if knowledge.available():
             self._reload_instruments()
+            self._load_drift()
 
     def tick_for(self, symbol: str) -> Decimal:
         """Instrument tick. Legacy mode falls back to the constructor tick."""
@@ -548,10 +576,7 @@ class DeskLoop:
             # OI / funding / liquidations are kept per symbol for the ОКО Footprint
             # (INVENTION-OKO §След). No journal row is written here.
             if event.stream == "funding":
-                try:
-                    self.funding[event.symbol] = Decimal(str(event.payload["funding"]))
-                except (KeyError, ArithmeticError):
-                    pass
+                self._on_funding_payload(event.symbol, event.payload)
             self._keep_feed(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream == "liquidation":
@@ -724,6 +749,7 @@ class DeskLoop:
                 self._reload_risk_config()
                 self._reload_instruments()
                 self._refresh_calibration(when)
+                self._refresh_correlation(when)
                 out.extend(self._sync_exchange_state(when))
         self.flush_ui(when, force=force_flush)
         # Settling pending touches walks every touch; once per second of clock is
@@ -1201,7 +1227,7 @@ class DeskLoop:
                 "touch_ts": touch.ts.isoformat(),
                 "trade_px": str(touch.trade_px),
                 "trade_qty": str(touch.trade_qty),
-                "session_name": session_name(touch.ts),
+                "session_name": self.policy.clock_name(touch.ts),
                 "session_hour_utc": touch.ts.hour,
                 "poc": card.volume.poc,
                 "vah": card.volume.vah,
@@ -1481,7 +1507,7 @@ class DeskLoop:
             cav_tf=zone.tf,
             btc_break_against=break_against,
             btc_state=row.btc_regime,
-            session_name=session_name(row.ts),
+            session_name=self.policy.clock_name(row.ts),
         )
         row = next(t for t in self.registry.touches if t.touch_id == row.touch_id)
         # A fast touch can resolve before its jury bar closes. _settle_shadows learns
@@ -1496,7 +1522,7 @@ class DeskLoop:
                 "touch_ts": row.ts.isoformat(),
                 "trade_px": str(row.trade_px),
                 "trade_qty": str(row.trade_qty),
-                "session_name": row.session_name or session_name(row.ts),
+                "session_name": row.session_name or self.policy.clock_name(row.ts),
                 "session_hour_utc": (
                     row.session_hour
                     if row.session_hour is not None
@@ -1631,6 +1657,23 @@ class DeskLoop:
                 for twin in twins:
                     self._oms(twin, "flatten", closed_at, reason="b_veto")
                 self.paper.flatten(st.symbol, px, closed_at, reason="b_veto")
+        # Session policy verdict is journalled for every touch, sent or not, so the
+        # per-window statistics can compare "would send" with "did send".
+        session_verdict = self.policy.decide(
+            closed_at,
+            self.calendar,
+            idea=idea,
+            symbol=st.symbol,
+            next_funding_at=self.next_funding.get(st.symbol),
+            rank=self.universe_rank(),
+            screened=self.screened_symbols(closed_at),
+        )
+        window: WindowState = session_verdict.state
+        payload_row["session_window"] = window.name
+        payload_row["session_weekend"] = window.weekend
+        payload_row["session_gate"] = session_verdict.reason
+        payload_row["session_size_mult"] = str(window.size_mult)
+        payload_row["session_k_atr"] = str(window.k_atr)
         self.knowledge.put_journal_touch(row.touch_id, payload_row)
         day = row_day_utc(payload_row)
         if day:
@@ -1668,8 +1711,7 @@ class DeskLoop:
             and self.user_mode in {"demo", "live"}
             and self.hello_ok()
             and book.ready
-            and in_desk_window(closed_at)
-            and self.session.allows(closed_at, self.calendar)[0]
+            and session_verdict.allow
         ):
             spr = book.spread()
             bid, ask = book.best()
@@ -1701,6 +1743,13 @@ class DeskLoop:
                     atr=self._atr_for(st),
                     spread_abs=spr,
                     stop_mode=self.risk_config.stop_mode,
+                    k_atr=self.k_atr_for(window, st.symbol),
+                    max_stop_atr=self.risk_config.max_stop_atr,
+                    manual_stop_frac=self.risk_config.manual_stop_frac,
+                    liq_levels=self.liquidation_levels(st, closed_at),
+                    next_funding_at=self.next_funding.get(st.symbol),
+                    universe_rank=self.universe_rank(),
+                    screened=self.screened_symbols(closed_at),
                     jury=jury,
                     cav_label=row.cav_label,
                     zlg_label=row.gesture,
@@ -1724,7 +1773,12 @@ class DeskLoop:
                     allow_break=breakout_enabled(),
                     card_bearing_verdict=row.bearing_verdict,
                     b_verdict=None if card is None else card.bearing_verdict,
-                    macro_multiplier=Decimal("1") if card is None else card.macro_multiplier,
+                    # Window multiplier and the card's macro multiplier: the smaller
+                    # wins (the strategy takes min with MacroRules / B / ОКО as well).
+                    macro_multiplier=min(
+                        Decimal("1") if card is None else card.macro_multiplier,
+                        self.window_size_mult(window),
+                    ),
                     b_marks_ok=(
                         True
                         if card is None or not self.risk_config.require_ict_marks
@@ -1741,12 +1795,17 @@ class DeskLoop:
                     oko_voice=oko.voice,
                     oko_size_mult=oko.size_mult,
                 )
-                self.strategy.budget = self.account.budget(closed_at)
+                self.strategy.budget = self.account.budget(
+                    closed_at, key=window.budget_key, max_n=window.budget
+                )
                 intent = self.strategy.propose(snap)
                 if intent is not None:
+                    trade_labels = self._trade_labels(
+                        row, zone, window=window, atr=snap.atr, spread=spr,
+                        liq_levels=snap.liq_levels, stop=intent.stop, now=closed_at,
+                    )
                     sized, gate_info = self._size_and_gate(
-                        intent, st.symbol, closed_at,
-                        labels={"cav_label": row.cav_label, "zlg_label": row.gesture},
+                        intent, st.symbol, closed_at, labels=trade_labels,
                     )
                     payload_row.update(gate_info)
                     self.knowledge.put_journal_touch(row.touch_id, payload_row)
@@ -1777,8 +1836,9 @@ class DeskLoop:
                             source="demo",
                             tag=sized.tag,
                             funding_interval_min=self._instrument_for(st.symbol).funding_interval_min,
-                            labels={"cav_label": row.cav_label, "zlg_label": row.gesture,
-                                    "symbol": st.symbol, "zone_side": zone.side},
+                            structural=sized.structural,
+                            stop_components=dict(sized.stop_components or {}),
+                            labels=trade_labels,
                         )
                         payload_row.setdefault("paper_ids", {})["demo"] = demo_pid
                         payload_row["intent_id"] = intent_id
@@ -1801,16 +1861,13 @@ class DeskLoop:
 
     # --- operator commands / config hot reload (D-37, D-12) -------------------------
     def _consume_commands(self, now: datetime) -> list[dict[str, Any]]:
-        raw = self.knowledge.meta("desk_commands")
-        if not raw:
+        # One transaction takes the queue and empties it: a console append that lands
+        # between "read" and "clear" is neither lost nor executed twice.
+        queue = self.knowledge.pop_commands()
+        if not queue:
             return []
-        try:
-            queue = json.loads(raw)
-        except json.JSONDecodeError:
-            queue = []
-        self.knowledge.set_meta("desk_commands", "[]")
         out: list[dict[str, Any]] = []
-        for cmd in queue if isinstance(queue, list) else []:
+        for cmd in queue:
             kind = str(cmd.get("kind") or "")
             symbol = cmd.get("symbol")
             if kind == "flatten":
@@ -1837,6 +1894,11 @@ class DeskLoop:
             elif kind == "resume_entries":
                 self.entries_paused = False
                 out.append({"event": "resume_entries"})
+            elif kind == "drift_release":
+                target = cmd.get("symbol")
+                window = None if target in (None, "", "ALL") else str(target)
+                cleared = self.release_drift(window)
+                out.append({"event": "drift_release", "windows": cleared})
         return out
 
     # --- exchange truth → account (live/demo) --------------------------------------
@@ -1910,6 +1972,11 @@ class DeskLoop:
 
     CALIBRATION_REFRESH_S = 600.0
 
+    # Break-even winrate of a 2R target at the worst cost the EV gate admits
+    # (costs = R / fee_multiple_min = R/5): p = (R + R/5) / 3R = 0.4. Used only to flag
+    # closed windows whose paper record clears it; the per-trade gate uses its own p.
+    BREAKEVEN_2R_MAKER = Decimal("0.4")
+
     def _refresh_calibration(self, now: datetime) -> None:
         """Per-class Wilson stats from filled shadow paper trades, every 10 minutes."""
         if (
@@ -1920,8 +1987,46 @@ class DeskLoop:
         self._calibration_at = now
         rows = self.knowledge.paper_trades(source="shadow")
         self._calibration = class_stats(rows)
+        # Stop buffer per window from the MAE of winning paper trades (widen only).
+        self._k_atr_calibrated = k_atr_by_window(rows)
+        # Expected hold per idea×window for the EV gate's funding term.
+        self._hold_hours = median_hold_hours(rows)
+        # Page-Hinkley on each window's loss series: a window whose loss rate rose is
+        # cut to half size until the operator releases it (drift_release command).
+        # A release records the series length; detection then runs only on trades
+        # closed after it, so the same old losses cannot re-flag the window at once.
+        changed = False
+        for window, bits in loss_series_by_window(rows).items():
+            if window in self._window_drift:
+                continue
+            fresh = bits[self._drift_ack_n.get(window, 0) :]
+            if len(fresh) < self.DRIFT_MIN_N:
+                continue
+            if self._drift.run(fresh).drift:
+                self._window_drift[window] = now.isoformat()
+                changed = True
+        if changed:
+            self._persist_drift()
         if self._calibration:
             self._ui_put("calibration", to_meta(self._calibration))
+        if self._k_atr_calibrated:
+            self._ui_put(
+                "k_atr_calibrated",
+                json.dumps({k: str(v) for k, v in sorted(self._k_atr_calibrated.items())}),
+            )
+        # Windows the operator keeps closed but whose paper lower bound clears the
+        # break-even of a 2R bounce after maker fees: flagged, never opened here.
+        closed = [
+            w.name
+            for w in self.policy.windows
+            if not w.ideas or w.budget <= 0 or w.size_mult <= 0
+        ]
+        if self.policy.weekend.budget <= 0 or not self.policy.weekend.ideas:
+            closed.append(self.policy.weekend.name)
+        flagged = eligible_windows(
+            self._calibration, breakeven=self.BREAKEVEN_2R_MAKER, closed_windows=closed
+        )
+        self._ui_put("eligible_windows", json.dumps(flagged, sort_keys=True))
 
     def _reload_instruments(self) -> None:
         """Signer refreshed instruments-info from the venue → registry rows (D-04)."""
@@ -1934,6 +2039,10 @@ class DeskLoop:
         except json.JSONDecodeError:
             return
         n = self.instruments.merge_snapshot(snap)
+        # instruments-info lags Bybit's dynamic settlement frequency; the ticker's
+        # live interval wins over the hourly snapshot we just merged.
+        for symbol, minutes in self._live_funding_interval.items():
+            self.instruments.set_funding_interval(symbol, minutes)
         for symbol in list(self.refused_symbols):
             if self.instruments.has(symbol):
                 del self.refused_symbols[symbol]
@@ -1948,6 +2057,18 @@ class DeskLoop:
         self.risk_config = cfg
         self.account.config = cfg
         self.account.risk.max_open = cfg.max_open_positions
+        # Correlation guard follows the slot count and threshold of the new config.
+        if cfg.max_open_positions > 1:
+            guard = self.account.correlation
+            if guard is None:
+                self.account.correlation = CorrelationGuard.load(
+                    threshold=cfg.corr_block_threshold
+                )
+                self._correlation_at = None  # refresh ρ on the next tick
+            elif guard.threshold != cfg.corr_block_threshold:
+                guard.threshold = cfg.corr_block_threshold
+        else:
+            self.account.correlation = None
         assert self.account.halts is not None
         self.account.halts.day_limit = cfg.day_halt
         self.account.halts.week_limit = cfg.week_halt
@@ -1974,6 +2095,9 @@ class DeskLoop:
         tick = inst.tick
         away = self.config.bounce_away_ticks
         st = self.state_for(row_symbol)
+        window = self.policy.window(now)
+        atr = self._atr_for(st)
+        liq_levels = self.liquidation_levels(st, now)
         try:
             if idea == "spring":
                 structural = stop_behind_wick(zone, wick_extreme, tick, away, side=side)
@@ -1984,12 +2108,22 @@ class DeskLoop:
                 side=side,
                 structural=structural,
                 tick=tick,
-                atr=self._atr_for(st),
+                atr=atr,
                 spread=spread,
                 zones=[z for z in known_zones if z.zone_id != zone.zone_id],
+                k_atr=self.k_atr_for(window, row_symbol),
+                # W3: the shadow measures, it does not filter — no max_stop_atr ceiling
+                # here (stop_atr is still recorded in the components for the data);
+                # the live path in _eval_cav_and_jury applies the ceiling.
+                max_stop_atr=None,
+                liq_levels=liq_levels,
+                entry=row.trade_px,
+                manual_frac=self.risk_config.manual_stop_frac,
                 mode=self.risk_config.stop_mode,
             )
             stop = smart.stop
+            if atr is not None and atr > 0:
+                smart.components["stop_atr"] = str(abs(row.trade_px - stop) / atr)
         except ValueError:
             return None
         if (side == "buy" and row.trade_px <= stop) or (side == "sell" and row.trade_px >= stop):
@@ -2002,7 +2136,7 @@ class DeskLoop:
         cfg = self.risk_config
         lev = min(cfg.max_lev, inst.max_lev)
         decision = size_position(
-            equity=self.account.equity,
+            equity=self.account.sizing_equity(),
             entry=row.trade_px,
             stop=stop,
             lev=lev,
@@ -2036,15 +2170,64 @@ class DeskLoop:
             funding_interval_min=inst.funding_interval_min,
             structural=structural,
             stop_components=smart.components,
-            labels={
-                "cav_label": row.cav_label,
-                "zlg_label": row.gesture,
-                "symbol": row_symbol,
-                "zone_side": zone.side,
-                "btc_regime": row.btc_regime,
-            },
+            labels=self._trade_labels(
+                row, zone, window=window, atr=atr, spread=spread, liq_levels=liq_levels,
+                stop=stop, now=now,
+            ),
         )
         return pid
+
+    def _trade_labels(
+        self,
+        row: Touch,
+        zone: Zone,
+        *,
+        window: WindowState,
+        atr: Decimal | None,
+        spread: Decimal | None,
+        liq_levels: tuple[Decimal, ...],
+        stop: Decimal,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Per-trade context the per-window statistics need (calibrate.py)."""
+        symbol = zone.symbol
+        rank = self.universe_rank()
+        nxt = self.next_funding.get(symbol)
+        liq_dist_atr: str | None = None
+        if liq_levels and atr is not None and atr > 0:
+            liq_dist_atr = str(min(abs(level - stop) for level in liq_levels) / atr)
+        return {
+            "cav_label": row.cav_label,
+            "zlg_label": row.gesture,
+            "symbol": symbol,
+            "zone_side": zone.side,
+            "btc_regime": row.btc_regime,
+            "window": window.name,
+            "weekend": window.weekend,
+            "symbol_group": self.symbol_group(symbol, rank),
+            "size_mult": str(window.size_mult),
+            "k_atr": str(self.k_atr_for(window, symbol)),
+            "atr": None if atr is None else str(atr),
+            "spread_bps": (
+                None
+                if spread is None or row.trade_px <= 0
+                else str((spread / row.trade_px) * Decimal(10_000))
+            ),
+            "next_funding_in_min": (
+                None if nxt is None else str((nxt - require_utc(now)).total_seconds() / 60)
+            ),
+            "liq_dist_atr": liq_dist_atr,
+            "turnover_rank": None if rank is None else rank.get(symbol),
+        }
+
+    def symbol_group(self, symbol: str, rank: Mapping[str, int] | None) -> str:
+        """majors | top10 | rest — the coarse dimension the calibrator aggregates on."""
+        if self.policy.is_major(symbol):
+            return "majors"
+        r = None if rank is None else rank.get(symbol)
+        if r is not None and r <= 10:
+            return "top10"
+        return "rest"
 
     def _oms(self, pos: PaperPosition, kind: str, now: datetime, **fields: Any) -> None:
         """Mirror a decision on a demo/live twin to the gateway via oms_commands.
@@ -2093,6 +2276,207 @@ class DeskLoop:
         work = [b for b in st.bars if b.tf == self.config.working_tf]
         return atr_of(work[-15:]) if len(work) >= 2 else None
 
+    # --- correlation guard: rolling ρ of HTF close returns, refreshed daily -------------
+    CORRELATION_REFRESH_S = 24 * 3600
+    CORRELATION_BARS = 180  # 30 days of 4h closes
+
+    def _refresh_correlation(self, now: datetime) -> None:
+        guard = self.account.correlation
+        if guard is None:
+            return
+        if (
+            self._correlation_at is not None
+            and (now - self._correlation_at).total_seconds() < self.CORRELATION_REFRESH_S
+        ):
+            return
+        self._correlation_at = now
+        series: dict[str, dict[datetime, Decimal]] = {}
+        for symbol, st in self.symbols.items():
+            htf = [b for b in st.bars if b.tf == self.config.htf and b.close_ts <= now]
+            if len(htf) < 2:
+                continue
+            closes = [(b.close_ts, b.close) for b in htf[-(self.CORRELATION_BARS + 1) :]]
+            series[symbol] = returns_from_closes(closes)
+        pairs = guard.refresh(series)
+        self._ui_put(
+            "correlation",
+            json.dumps(
+                {"pairs": pairs, "threshold": str(guard.threshold), "at": now.isoformat(),
+                 "rho": {"|".join(sorted(k)): str(v.quantize(Decimal("0.001")))
+                         for k, v in sorted(guard.rho.items(), key=lambda kv: sorted(kv[0]))}},
+                sort_keys=True,
+            ),
+        )
+
+    # --- session inputs: funding clock, universe rank, day screen, stop inputs ---------
+    def _on_funding_payload(self, symbol: str, payload: Mapping[str, Any]) -> None:
+        """Ticker funding row → rate, next settlement, live interval, 24h turnover."""
+        try:
+            self.funding[symbol] = Decimal(str(payload["funding"]))
+        except (KeyError, ArithmeticError):
+            pass
+        nxt = payload.get("next_funding_ts")
+        if nxt not in (None, ""):
+            try:
+                self.next_funding[symbol] = datetime.fromtimestamp(int(nxt) / 1000, tz=UTC)
+            except (TypeError, ValueError, OverflowError):
+                pass
+        interval = payload.get("interval_min")
+        if interval not in (None, ""):
+            try:
+                minutes = int(str(interval))
+            except (TypeError, ValueError):
+                minutes = 0
+            if 0 < minutes <= 24 * 60:
+                self._live_funding_interval[symbol] = minutes
+                self.instruments.set_funding_interval(symbol, minutes)
+        turnover = payload.get("turnover24h")
+        if turnover not in (None, ""):
+            try:
+                value = Decimal(str(turnover))
+            except ArithmeticError:
+                value = None
+            if value is not None and value >= 0:
+                self.turnover[symbol] = value
+
+    def universe_rank(self) -> dict[str, int] | None:
+        """1 = largest 24h turnover among symbols the desk has seen a ticker for.
+
+        None until at least one turnover is known: the policy then treats every
+        non-major as unranked (refused where rank matters) instead of guessing.
+        """
+        if not self.turnover:
+            return None
+        ordered = sorted(self.turnover.items(), key=lambda kv: (-kv[1], kv[0]))
+        return {symbol: i + 1 for i, (symbol, _) in enumerate(ordered)}
+
+    # Day screen: relative volume of the last closed working bar vs the bars kept in
+    # memory (same measure contour B publishes as `rvol`) and OI rising over the kept
+    # window (2h, _FEED_KEEP). A symbol is "in play" when both hold.
+    SCREEN_RVOL_MIN = Decimal("1.5")
+
+    def screened_symbols(self, now: datetime) -> frozenset[str]:
+        # Working bars close on a 15m grid; one scan per minute is exact enough and
+        # keeps the per-touch cost independent of the number of symbols.
+        minute = require_utc(now).replace(second=0, microsecond=0)
+        if self._screen_cache is not None and self._screen_cache[0] == minute:
+            return self._screen_cache[1]
+        out: set[str] = set()
+        for symbol, st in self.symbols.items():
+            work = [b for b in st.bars if b.tf == self.config.working_tf and b.close_ts <= now]
+            if len(work) < 20:
+                continue
+            last = work[-1]
+            if last.volume is None or last.volume <= 0:
+                continue
+            prior = [b.volume for b in work[-21:-1] if b.volume is not None and b.volume > 0]
+            if len(prior) < 10:
+                continue
+            mean = sum(prior, Decimal("0")) / len(prior)
+            if mean <= 0 or last.volume / mean < self.SCREEN_RVOL_MIN:
+                continue
+            if len(st.oi) < 2 or st.oi[-1][1] <= st.oi[0][1]:
+                continue
+            out.add(symbol)
+        result = frozenset(out)
+        self._screen_cache = (minute, result)
+        return result
+
+    DRIFT_MIN_N = 30
+    DRIFT_SIZE_MULT = Decimal("0.5")
+
+    def window_size_mult(self, window: WindowState) -> Decimal:
+        """Window multiplier, halved while the window's loss series is in drift."""
+        if window.name in self._window_drift:
+            return window.size_mult * self.DRIFT_SIZE_MULT
+        return window.size_mult
+
+    def release_drift(self, window: str | None = None) -> list[str]:
+        """Operator command: clear drift flags (all, or one window). Returns what was cleared.
+
+        The current length of each released window's loss series is remembered so the
+        detector restarts from the next closed trade, not from the losses already seen.
+        """
+        cleared = sorted(self._window_drift) if window is None else (
+            [window] if window in self._window_drift else []
+        )
+        if not cleared:
+            return []
+        series = loss_series_by_window(self.knowledge.paper_trades(source="shadow"))
+        for w in cleared:
+            del self._window_drift[w]
+            self._drift_ack_n[w] = len(series.get(w, []))
+        self._persist_drift()
+        return cleared
+
+    DRIFT_META = "window_drift_state"
+
+    def _persist_drift(self) -> None:
+        state = {"flagged": self._window_drift, "ack_n": self._drift_ack_n}
+        body = json.dumps(state, sort_keys=True)
+        if self.knowledge.available():
+            self.knowledge.set_meta(self.DRIFT_META, body)
+        self._ui_put("window_drift", json.dumps(self._window_drift, sort_keys=True))
+
+    def _load_drift(self) -> None:
+        raw = self.knowledge.meta(self.DRIFT_META) if self.knowledge.available() else None
+        if not raw:
+            return
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        flagged = state.get("flagged") if isinstance(state, dict) else None
+        ack = state.get("ack_n") if isinstance(state, dict) else None
+        if isinstance(flagged, dict):
+            self._window_drift = {str(k): str(v) for k, v in flagged.items()}
+        if isinstance(ack, dict):
+            self._drift_ack_n = {
+                str(k): int(v) for k, v in ack.items() if isinstance(v, int) and v >= 0
+            }
+
+    def hold_hours_for(self, idea: str, window: WindowState) -> Decimal:
+        """Median paper hold of idea×window when n ≥ 30, else the 2h EV default."""
+        return self._hold_hours.get(f"{idea}|{window.name}", Decimal("2"))
+
+    def k_atr_for(self, window: WindowState, symbol: str) -> Decimal:
+        """Window k_atr, widened (never narrowed) by the MAE calibration of this class."""
+        calibrated = self._k_atr_calibrated.get(window.name)
+        if calibrated is None:
+            return window.k_atr
+        return max(window.k_atr, calibrated)
+
+    LIQ_CLUSTER_MIN_ROWS = 20
+
+    def liquidation_levels(self, st: SymbolState, now: datetime) -> tuple[Decimal, ...]:
+        """Price levels where liquidations clustered in the kept window (allLiquidation).
+
+        Bucket = one tick·cluster_ticks grid; keep buckets whose USDT volume is at or
+        above the 90th percentile once ≥ 20 rows exist. Fewer rows → no levels (not a
+        guess). These are stop magnets (retail stops sit where leverage was flushed).
+        """
+        rows = [r for r in st.liquidations if require_utc(r.exchange_ts) <= now]
+        if len(rows) < self.LIQ_CLUSTER_MIN_ROWS:
+            return ()
+        tick = self.tick_for(st.symbol)
+        step = tick * 5
+        buckets: dict[Decimal, Decimal] = {}
+        for r in rows:
+            try:
+                px = Decimal(str(r.payload["px"]))
+                qty = Decimal(str(r.payload["qty"]))
+            except (KeyError, ArithmeticError):
+                continue
+            if px <= 0 or qty <= 0:
+                continue
+            key = (px / step).to_integral_value() * step
+            buckets[key] = buckets.get(key, Decimal("0")) + px * qty
+        if not buckets:
+            return ()
+        volumes = sorted(buckets.values())
+        p90 = volumes[min(len(volumes) - 1, int(0.9 * (len(volumes) - 1)))]
+        return tuple(sorted(px for px, vol in buckets.items() if vol >= p90))
+
     def _trail_state(self, pos: PaperPosition) -> TrailState:
         stt = self._trails.get(pos.paper_id)
         if stt is None:
@@ -2114,7 +2498,7 @@ class DeskLoop:
             if pos.state != "open":
                 continue
             if (
-                self.risk_config.stop_mode == "hybrid"
+                self.risk_config.stop_mode in {"hybrid", "manual_bounded"}
                 and pos.structural is not None
                 and soft_exit(side=pos.side, structural=pos.structural, bar=bar)
             ):
@@ -2236,7 +2620,7 @@ class DeskLoop:
             return None, info
         lev = min(cfg.max_lev, inst.max_lev)
         decision = size_position(
-            equity=self.account.equity,
+            equity=self.account.sizing_equity(),
             entry=intent.entry,
             stop=intent.stop,
             lev=lev,
@@ -2257,6 +2641,8 @@ class DeskLoop:
             "risk_frac": str(decision.risk_frac),
             "binding": decision.binding,
             "equity": str(self.account.equity),
+            "sizing_equity": str(self.account.sizing_equity()),
+            "participating_share": str(cfg.participating_share),
             "equity_source": self.account.equity_source,
             "config_id": cfg.config_id,
         }
@@ -2268,6 +2654,8 @@ class DeskLoop:
         if not qok:
             info["send_skip"] = f"size_mult:{qwhy}"
             return None, info
+        window_name = str(labels.get("window") or "")
+        hold = self._hold_hours.get(f"{intent.tag}|{window_name}", Decimal("2"))
         ev = ev_evaluate(
             qty=qty,
             entry=intent.entry,
@@ -2275,12 +2663,14 @@ class DeskLoop:
             tick=inst.tick,
             role="maker",
             funding_rate=self.funding.get(symbol),
+            hold_hours=hold,
             funding_interval_min=inst.funding_interval_min,
             fee_multiple_min=cfg.fee_multiple_min,
         )
         info["ev"] = {
             "ok": ev.ok,
             "reason": ev.reason,
+            "hold_hours": str(hold),
             "r_gross": str(ev.r_gross),
             "fees": str(ev.fees),
             "funding": str(ev.funding),
@@ -2299,8 +2689,14 @@ class DeskLoop:
         # D-03: a class the paper record has refuted (Wilson upper bound of its net
         # winrate below this trade's break-even) is not sent live. It keeps trading
         # on paper so the verdict can flip with data.
-        key = class_key(idea=intent.tag, cav=labels.get("cav_label"), zlg=labels.get("zlg_label"))
-        stat = self._calibration.get(key)
+        key = class_key(
+            idea=intent.tag,
+            cav=labels.get("cav_label"),
+            zlg=labels.get("zlg_label"),
+            window=labels.get("window"),
+            group=labels.get("symbol_group"),
+        )
+        stat = calibration_lookup(self._calibration, key)
         info["calibration"] = None if stat is None else stat.to_payload()
         if ev.breakeven_winrate is not None and refuted(stat, breakeven=ev.breakeven_winrate):
             info["send_skip"] = f"calib:{key}"

@@ -14,6 +14,7 @@ from decimal import Decimal
 from time import sleep as _sleep
 from typing import Any
 
+from capitalizator.gateway.keys import LIVE_MODES, PAPER_MODES
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.product import USER_MODES
 from capitalizator.screener.universe import Universe, load_desk_universe
@@ -31,7 +32,7 @@ RECONCILE_S = 60
 def unsigned_from_intent(
     payload: dict[str, Any],
     *,
-    trading_mode: str = "testnet",
+    trading_mode: str = "demo",
     allow_default_qty: bool = True,
 ) -> UnsignedIntent:
     """Map desk Intent dump onto the signer schema. Stop is mandatory.
@@ -75,9 +76,10 @@ def validate_queue_payload(
     payload: dict[str, Any],
     *,
     universe: Universe | None = None,
+    trading_mode: str = "demo",
 ) -> dict[str, Any]:
     """Desk 24-symbol universe. week0 stays the isolated Signer() default."""
-    raw = unsigned_from_intent(payload, allow_default_qty=False)
+    raw = unsigned_from_intent(payload, allow_default_qty=False, trading_mode=trading_mode)
     order = Signer(universe=universe or load_desk_universe()).validate(raw)
     return order.model_dump(mode="json")
 
@@ -188,11 +190,16 @@ def drain_validated(
     user_mode: str,
     now: datetime,
     universe: Universe | None = None,
+    venue: str = "demo",
 ) -> list[dict[str, Any]]:
-    """Drain pending intents after Signer.validate. Key stays in `send`."""
+    """Drain pending intents after Signer.validate. Key stays in `send`.
+
+    `venue` is the paper venue the gateway key belongs to (demo | testnet); it is
+    stamped on the signed order so the journal says which venue filled it.
+    """
 
     def checked(payload: dict[str, Any]) -> dict[str, Any]:
-        signed = validate_queue_payload(payload, universe=universe)
+        signed = validate_queue_payload(payload, universe=universe, trading_mode=venue)
         # Keep the desk fields the gateway needs (idempotency, staleness, leverage).
         for key in ("valid_until", "lev", "touch_id", "intent_id", "risk_config_id", "tag"):
             if key in payload and key not in signed:
@@ -203,11 +210,11 @@ def drain_validated(
 
 
 # --- gateway-driven serve loop (W4b) ------------------------------------------------------
-MODE_FOR_GATEWAY = {"demo": {"testnet"}, "live": {"live_sub", "live_main"}}
+MODE_FOR_GATEWAY = {"demo": set(PAPER_MODES), "live": set(LIVE_MODES)}
 
 
 def gateway_mode_ok(user_mode: str, gateway_mode: str) -> bool:
-    """demo talks to testnet only; live to a live key only. Never cross."""
+    """demo talks to a paper venue (Demo Trading or testnet); live to a live key. Never cross."""
     return gateway_mode in MODE_FOR_GATEWAY.get(user_mode, set())
 
 
@@ -282,6 +289,16 @@ def publish_exchange_state(
 INSTRUMENTS_REFRESH_S = 3600
 
 
+def publish_universe_proposal(knowledge: Knowledge, gateway: Any, *, now: datetime) -> int:
+    """Weekly top-N-by-turnover proposal → meta for the console. Human applies it."""
+    from capitalizator.screener.refresh import publish_proposal
+
+    proposal = publish_proposal(
+        knowledge, now=now, instruments=gateway.instruments(), tickers=gateway.tickers()
+    )
+    return len(proposal.symbols)
+
+
 def publish_instruments(knowledge: Knowledge, gateway: Any, *, now: datetime) -> int:
     """instruments-info from the venue → meta for the desk's InstrumentRegistry (D-04)."""
     from capitalizator.instruments import InstrumentRegistry, instrument_from_bybit
@@ -325,9 +342,12 @@ def serve_gateway_loop(
         dead_man_s=dead_man_s or HEARTBEAT_S,
         cancel_entries=lambda reason: gateway.cancel_entries(None, reason=reason),
     )
+    from capitalizator.screener.refresh import REFRESH_S as UNIVERSE_REFRESH_S
+
     recon_every = reconcile_s or RECONCILE_S
     last_recon: datetime | None = None
     last_instruments: datetime | None = None
+    last_universe: datetime | None = None
     if feed is not None:
         feed.start()
     while not should_stop():
@@ -344,6 +364,12 @@ def serve_gateway_loop(
             except Exception as exc:  # venue/network: keep the last snapshot, say why
                 knowledge.set_meta("instruments_error", str(exc))
             last_instruments = when
+        if last_universe is None or (when - last_universe).total_seconds() >= UNIVERSE_REFRESH_S:
+            try:
+                publish_universe_proposal(knowledge, gateway, now=when)
+            except Exception as exc:  # a proposal is advice; failing to write one blocks nothing
+                knowledge.set_meta("universe_proposal_error", str(exc))
+            last_universe = when
         if feed is not None:
             feed.drain(now=when)
             if feed.last_frame_at is not None:
@@ -368,6 +394,7 @@ def serve_gateway_loop(
             # OMS first: protecting an open position beats opening a new one.
             drain_oms(knowledge, gateway, now=when)
             if not blocked:
-                drain_validated(knowledge, gateway.send, user_mode=mode, now=when)
+                venue = gateway.mode if gateway.mode in PAPER_MODES else "demo"
+                drain_validated(knowledge, gateway.send, user_mode=mode, now=when, venue=venue)
         if idle_s:
             sleep(idle_s)

@@ -1,7 +1,16 @@
 """API keys: environment first, then vault/secrets/bybit.json (0600). Never logged.
 
-Modes: testnet | live_sub | live_main. A live key is refused unless the file /
-env says so explicitly — a testnet flag missing is not "live by default".
+Modes: demo | testnet | live_sub | live_main. A live key is refused unless the file /
+env says so explicitly — a mode flag missing is not "live by default".
+
+`demo` = Bybit Demo Trading (https://bybit-exchange.github.io/docs/v5/demo): mainnet
+infrastructure and mainnet public data with simulated funds. REST host
+api-demo.bybit.com, private WS stream-demo.bybit.com (pybit `demo=True`). It is the
+paper venue for the desk's demo phase: testnet prices do not match the mainnet tape
+the recorder writes, so a testnet fill says nothing about a mainnet decision.
+Demo limits the gateway must respect: no WebSocket Trade API (REST orders only —
+already the case), orders are kept 7 days (our journal is the record), custom
+`tpTriggerBy`/`slTriggerBy` are refused (we send MarkPrice only), default rate limit.
 """
 
 from __future__ import annotations
@@ -20,9 +29,12 @@ from capitalizator.ops.vault import Vault
 _PREFIX = "BYBIT_"
 ENV_KEY = _PREFIX + "API_" + "KEY"
 ENV_SECRET = _PREFIX + "API_" + "SECRET"
-ENV_MODE = _PREFIX + "MODE"  # testnet | live_sub | live_main
+ENV_MODE = _PREFIX + "MODE"  # demo | testnet | live_sub | live_main
 FILE_NAME = "bybit.json"
-MODES = frozenset({"testnet", "live_sub", "live_main"})
+MODES = frozenset({"demo", "testnet", "live_sub", "live_main"})
+PAPER_MODES = frozenset({"demo", "testnet"})
+LIVE_MODES = frozenset({"live_sub", "live_main"})
+DEFAULT_MODE = "demo"  # a missing flag is never live
 
 
 @dataclass(frozen=True)
@@ -41,6 +53,14 @@ class Keys:
     def testnet(self) -> bool:
         return self.mode == "testnet"
 
+    @property
+    def demo(self) -> bool:
+        return self.mode == "demo"
+
+    @property
+    def live(self) -> bool:
+        return self.mode in LIVE_MODES
+
     def __repr__(self) -> str:  # never print the secret
         return f"Keys(mode={self.mode!r}, api_key={self.api_key[:4]}…)"
 
@@ -50,7 +70,7 @@ def load_keys(vault: Vault | None = None, *, env: dict[str, str] | None = None) 
     key = source.get(ENV_KEY)
     secret = source.get(ENV_SECRET)
     if key and secret:
-        mode = source.get(ENV_MODE) or "testnet"
+        mode = source.get(ENV_MODE) or DEFAULT_MODE
         return Keys(api_key=key, api_secret=secret, mode=mode)
     if vault is None:
         return None
@@ -66,5 +86,5 @@ def load_keys(vault: Vault | None = None, *, env: dict[str, str] | None = None) 
     return Keys(
         api_key=str(raw.get("api_key") or ""),
         api_secret=str(raw.get("api_secret") or ""),
-        mode=str(raw.get("mode") or "testnet"),
+        mode=str(raw.get("mode") or DEFAULT_MODE),
     )

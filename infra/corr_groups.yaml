@@ -1,0 +1,15 @@
+# Static correlation groups for the one-idea-per-group rule (risk/correlation.py).
+# Two open ideas on the SAME side inside one group are one bet, not two; the second
+# is refused. Opposite sides inside a group are refused too (a hedge is not a thesis).
+# A rolling 30-day return correlation above RiskConfig.corr_block_threshold adds
+# pairs dynamically; this file is the floor that works before any bars are loaded.
+# Symbols absent here are their own group. Extra keys are rejected.
+groups:
+  majors: [BTCUSDT, ETHUSDT]
+  l1_alt: [SOLUSDT, AVAXUSDT, NEARUSDT, APTUSDT, SUIUSDT, ADAUSDT, DOTUSDT, ATOMUSDT, TIAUSDT, INJUSDT]
+  l2_eth: [ARBUSDT, OPUSDT]
+  defi: [UNIUSDT, AAVEUSDT, LINKUSDT]
+  payments: [XRPUSDT, LTCUSDT, BCHUSDT, TRXUSDT]
+  meme: [DOGEUSDT]
+  exchange: [BNBUSDT]
+  storage: [FILUSDT]

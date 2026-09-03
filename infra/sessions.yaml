@@ -1,0 +1,103 @@
+# Session policy: which idea may be SENT in which UTC window, with what size and stop
+# buffer. Shadow / fade paper twins run 24/7 regardless (desk W3); this file only
+# governs demo/live sends and the per-window intent budget.
+#
+# Provenance (measured, not folklore):
+#   * Asia 00–07Z: BTC spreads +15–30 %, depth −20–40 % vs US hours, peak perp spread
+#     at 02:00Z (LiquidView 2026; MDPI 2026 "Temporal Dynamics ... Perpetual Futures").
+#   * London–NY overlap 12–16Z: max volume / depth / price discovery for BTC and alts
+#     (QFA 2024 "crypto world trades at tea time"; RIBAF 2022; Amberdata).
+#   * US equity close 20:00Z and the 00:00Z daily open are behaviour switches.
+#   * Weekends: thin books, long wicks (Oyamori; VERDICT-SCALP-5PCT.md §1).
+#   * CME 24/7 since 2026-05-29; only the Sunday 22:00–23:00Z maintenance window is thin.
+#   * Funding settlement itself has no stable price anomaly (1 620-event study) but the
+#     ±5 min around it carries spread noise — entries wait.
+# Extra keys are rejected by capitalizator.risk.sessions. Times are UTC, windows must
+# tile the day exactly (no gap, no overlap). Numbers below are STARTING values; the
+# calibrator only widens k_atr from data and never raises size_mult on its own.
+tz: UTC
+majors: [BTCUSDT, ETHUSDT]
+windows:
+  asia:
+    start: "00:00"
+    end: "07:00"
+    ideas: [bounce, spring]
+    size_mult: "0.5"
+    k_atr: "0.8"
+    budget: 3
+    symbols: top5_plus_majors
+    lev_5x_ok: false
+  europe:
+    start: "07:00"
+    end: "12:00"
+    ideas: [bounce, spring, breakout]
+    size_mult: "0.75"
+    k_atr: "0.6"
+    budget: 5
+    symbols: top10_plus_screen
+    lev_5x_ok: false
+  overlap:
+    start: "12:00"
+    end: "16:30"
+    ideas: [bounce, spring, breakout]
+    size_mult: "1.0"
+    k_atr: "0.5"
+    budget: 8
+    symbols: all
+    lev_5x_ok: true
+  us:
+    start: "16:30"
+    end: "21:00"
+    ideas: [bounce, spring, breakout]
+    size_mult: "0.75"
+    k_atr: "0.6"
+    budget: 5
+    symbols: top10_plus_screen
+    lev_5x_ok: false
+  night:
+    start: "21:00"
+    end: "24:00"
+    ideas: []
+    size_mult: "0"
+    k_atr: "0.8"
+    budget: 0
+    symbols: none
+    lev_5x_ok: false
+weekend:
+  ideas: [bounce, spring]
+  size_mult: "0.5"
+  k_atr: "0.8"
+  budget: 3
+  symbols: majors
+  lev_5x_ok: false
+blackouts:
+  # First quarter hour after the UTC daily open: funding + daily candle + thin book.
+  - name: daily_open
+    kind: daily
+    start: "00:00"
+    end: "00:15"
+    applies_to: all
+  # Asian thin hours: stop hunts on alts (retail stops clustered, low depth).
+  - name: asia_thin_alts
+    kind: daily
+    start: "02:00"
+    end: "06:00"
+    applies_to: non_majors
+  # 15 minutes before the US equity close: index flows, behaviour switch.
+  - name: us_equity_close
+    kind: daily
+    start: "19:45"
+    end: "20:00"
+    applies_to: all
+  # CME Globex crypto maintenance (24/7 since 2026-05-29, this hour remains dark).
+  - name: cme_maintenance
+    kind: weekly
+    weekday: sun
+    start: "22:00"
+    end: "23:00"
+    applies_to: all
+# No new entry within ± this many minutes of the symbol's next funding settlement.
+funding_blackout_min: 5
+# On a US-data day (CPI/FOMC/NFP/PCE in America/New_York) these windows do not send.
+# The release itself is handled by news_macro.rules event_windows.
+us_data_day_block_windows: [asia]

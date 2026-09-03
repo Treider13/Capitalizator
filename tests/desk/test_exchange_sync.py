@@ -247,7 +247,8 @@ def test_refuted_class_is_not_sent_but_still_shadowed(tmp_path: Path) -> None:
     assert desk.knowledge.pending_intents() == []
     # the shadow and the fade keep trading on paper — the verdict can flip with data
     assert set(row["paper_ids"]) == {"shadow", "fade"}
-    assert json.loads(desk.knowledge.meta("calibration"))["spring|REJECT|DEFEND"]["n"] == 40
+    # rows without a window label feed the legacy aggregate `idea|cav|zlg|*|*`
+    assert json.loads(desk.knowledge.meta("calibration"))["spring|REJECT|DEFEND|*|*"]["n"] == 40
 
 
 def test_instruments_published_by_signer_are_loaded_by_desk(tmp_path: Path) -> None:

@@ -22,8 +22,11 @@ Frame = Mapping[str, Any]
 def make_private_ws(keys: Keys) -> Any:
     from pybit.unified_trading import WebSocket
 
+    # demo=True → wss://stream-demo.bybit.com (private streams of a Demo Trading
+    # account; public data stays on the mainnet stream the recorder reads).
     return WebSocket(
         testnet=keys.testnet,
+        demo=keys.demo,
         channel_type="private",
         api_key=keys.api_key,
         api_secret=keys.api_secret,

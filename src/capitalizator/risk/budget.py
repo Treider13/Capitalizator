@@ -10,8 +10,9 @@ MAX_SESSION_INTENTS = 3
 
 class SessionBudget:
     def __init__(self, *, max_n: int = MAX_SESSION_INTENTS) -> None:
-        if max_n <= 0:
-            raise ValueError("max_n must be > 0")
+        # 0 = a closed window (sessions.yaml night / weekend off): every entry refused.
+        if max_n < 0:
+            raise ValueError("max_n must be >= 0")
         self.max_n = max_n
         self.n = 0
 

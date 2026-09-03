@@ -72,8 +72,17 @@ def paper_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_r_net": None if n == 0 else str(sum(rs, Decimal("0")) / n),
         "sum_r_net": None if n == 0 else str(sum(rs, Decimal("0"))),
         "profit_factor": None if gross_loss == 0 else str(gross_win / gross_loss),
-        "pnl_net": str(sum((Decimal(str(r.get("realized") or 0)) - Decimal(str(r.get("fees") or 0))
-                            - Decimal(str(r.get("funding") or 0)) for r in filled), Decimal("0"))),
+        "pnl_net": str(
+            sum(
+                (
+                    Decimal(str(r.get("realized") or 0))
+                    - Decimal(str(r.get("fees") or 0))
+                    - Decimal(str(r.get("funding") or 0))
+                    for r in filled
+                ),
+                Decimal("0"),
+            )
+        ),
         "fees": str(sum((Decimal(str(r.get("fees") or 0)) for r in filled), Decimal("0"))),
         "funding": str(sum((Decimal(str(r.get("funding") or 0)) for r in filled), Decimal("0"))),
         "exit_reasons": _count(filled, "exit_reason"),
@@ -178,6 +187,159 @@ def account_view(knowledge: Knowledge, *, now: datetime | None = None) -> dict[s
         },
         "hello": hello,
         "banners": banners,
+    }
+
+
+def paper_stats_by_window(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Per-window paper stats from `labels.window`; rows without the label → `unlabelled`."""
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        labels = r.get("labels") if isinstance(r.get("labels"), dict) else {}
+        buckets.setdefault(str(labels.get("window") or "unlabelled"), []).append(r)
+    return {w: paper_stats(rs) for w, rs in sorted(buckets.items())}
+
+
+def sessions_view(knowledge: Knowledge, *, now: datetime | None = None) -> dict[str, Any]:
+    """Session policy as loaded, the current window, per-window paper stats, calibration
+    (k_atr widened from MAE, refuted / eligible classes) and the daily intent spend."""
+    from capitalizator.risk.sessions import SessionPolicy
+
+    when = now or datetime.now(tz=UTC)
+    policy = SessionPolicy.load()
+    state = policy.window(when)
+    windows = []
+    for w in (*policy.windows, policy.weekend):
+        windows.append(
+            {
+                "name": w.name,
+                "start": None if w.name == "weekend" else w.start.isoformat(timespec="minutes"),
+                "end": None
+                if w.name == "weekend"
+                else ("24:00" if w.end_is_midnight else w.end.isoformat(timespec="minutes")),
+                "ideas": sorted(w.ideas),
+                "size_mult": str(w.size_mult),
+                "k_atr": str(w.k_atr),
+                "budget": w.budget,
+                "symbols": w.symbols,
+                "lev_5x_ok": w.lev_5x_ok,
+                "closed": not w.ideas or w.budget <= 0 or w.size_mult <= 0,
+            }
+        )
+    paper_all = knowledge.paper_trades() if knowledge.available() else []
+    by_window = {
+        src: paper_stats_by_window([r for r in paper_all if r.get("source") == src])
+        for src in ("shadow", "demo")
+    }
+    spent: dict[str, int] = {}
+    if knowledge.available():
+        day = when.date().isoformat()
+        for key, raw in knowledge.meta_prefix(f"budget:{day}").items():
+            if raw.isdigit():
+                spent[key.split(":", 2)[-1]] = int(raw)
+    return {
+        "at": when.isoformat(),
+        "now": {
+            "window": state.name,
+            "weekend": state.weekend,
+            "clock_window": policy.clock_name(when),
+            "size_mult": str(state.size_mult),
+            "k_atr": str(state.k_atr),
+            "budget": state.budget,
+            "budget_key": state.budget_key,
+            "blackouts": list(policy.active_blackouts(when)),
+        },
+        "windows": windows,
+        "blackouts": [
+            {
+                "name": b.name,
+                "kind": b.kind,
+                "start": b.start.isoformat(timespec="minutes"),
+                "end": "24:00" if b.end_is_midnight else b.end.isoformat(timespec="minutes"),
+                "weekday": b.weekday,
+                "applies_to": b.applies_to,
+            }
+            for b in policy.blackouts
+        ],
+        "funding_blackout_min": int(policy.funding_blackout.total_seconds() // 60),
+        "us_data_day_block_windows": sorted(policy.us_data_block),
+        "budget_spent_today": spent,
+        "paper_by_window": by_window,
+        "k_atr_calibrated": _json(knowledge.meta("k_atr_calibrated"))
+        if knowledge.available()
+        else None,
+        "eligible_windows": _json(knowledge.meta("eligible_windows"))
+        if knowledge.available()
+        else None,
+        "calibration": _json(knowledge.meta("calibration")) if knowledge.available() else None,
+        "correlation": _json(knowledge.meta("correlation")) if knowledge.available() else None,
+    }
+
+
+def universe_view(knowledge: Knowledge) -> dict[str, Any]:
+    from capitalizator.screener.universe import load_desk_universe
+
+    current = load_desk_universe()
+    proposal = _json(knowledge.meta("universe_proposal")) if knowledge.available() else None
+    applied = _json(knowledge.meta("universe_applied")) if knowledge.available() else None
+    error = knowledge.meta("universe_proposal_error") if knowledge.available() else None
+    return {
+        "current": list(current.symbols),
+        "proposal": proposal,
+        "applied": applied,
+        "proposal_error": error,
+        "apply": (
+            "POST /api/universe {proposal_id, ack: true}; takes effect on desk/recorder restart"
+        ),
+    }
+
+
+def preview_view(knowledge: Knowledge, *, touch_id: str | None) -> dict[str, Any]:
+    """What the desk would send / did send for a touch: entry, stop and why it sits
+    there, target, qty, leverage, risk in USDT and %, EV, calibration, session verdict.
+    Nothing is recomputed: this is the journal row the desk already wrote."""
+    if not knowledge.available():
+        return {"touch_id": touch_id, "found": False, "reason": "no knowledge db"}
+    row: dict[str, Any] | None = None
+    if touch_id:
+        row = knowledge.get_journal_touch(touch_id)
+    else:
+        rows = [r for r in knowledge.journal_rows() if r.get("jury") == "ACCORD"]
+        rows.sort(key=lambda r: str(r.get("touch_ts") or ""))
+        row = rows[-1] if rows else None
+    if row is None:
+        return {"touch_id": touch_id, "found": False, "reason": "no such touch"}
+    intent: dict[str, Any] | None = None
+    intent_id = row.get("intent_id")
+    if intent_id is not None:
+        for r in knowledge.intent_rows(limit=500):
+            if r.get("id") == intent_id:
+                intent = r.get("payload") if isinstance(r.get("payload"), dict) else None
+                break
+    paper = row.get("paper") if isinstance(row.get("paper"), dict) else {}
+    return {
+        "touch_id": row.get("touch_id"),
+        "found": True,
+        "symbol": row.get("symbol"),
+        "idea": row.get("idea"),
+        "side": row.get("idea_side"),
+        "jury": row.get("jury"),
+        "skip_reason": row.get("skip_reason"),
+        "send_skip": row.get("send_skip"),
+        "sent": intent is not None,
+        "session": {
+            "window": row.get("session_window"),
+            "weekend": row.get("session_weekend"),
+            "gate": row.get("session_gate"),
+            "size_mult": row.get("session_size_mult"),
+            "k_atr": row.get("session_k_atr"),
+        },
+        "intent": intent,
+        "stop_components": None if intent is None else intent.get("stop_components"),
+        "sizing": row.get("sizing"),
+        "ev": row.get("ev"),
+        "calibration": row.get("calibration"),
+        "size_mult_applied": row.get("size_mult_applied"),
+        "paper": paper,
     }
 
 

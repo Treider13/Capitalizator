@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
+from capitalizator.recorder.ticker_fields import funding_payload
 from capitalizator.types import MarketEvent, require_utc
 
 
@@ -52,7 +53,7 @@ class RestTicker:
                         symbol=symbol,
                         exchange_ts=exchange_ts,
                         recv_ts=when,
-                        payload={"funding": str(item["fundingRate"])},
+                        payload=funding_payload(item),
                     )
                 )
             if item.get("openInterest") is not None or item.get("openInterestValue") is not None:

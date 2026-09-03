@@ -29,9 +29,15 @@ def test_valid_testnet_limit_and_stop() -> None:
     assert order.stop_px < order.limit_px
 
 
-def test_mainnet_mode_rejected() -> None:
-    with pytest.raises(Exception, match="testnet|literal"):
-        _intent(trading_mode="mainnet")
+def test_valid_demo_trading_venue() -> None:
+    order = Signer().validate(_intent(trading_mode="demo"))
+    assert order.trading_mode == "demo"
+
+
+@pytest.mark.parametrize("mode", ["mainnet", "live", "live_sub", "live_main"])
+def test_live_modes_rejected(mode: str) -> None:
+    with pytest.raises(Exception, match="demo|testnet|literal"):
+        _intent(trading_mode=mode)
 
 
 def test_symbol_outside_week0_rejected() -> None:

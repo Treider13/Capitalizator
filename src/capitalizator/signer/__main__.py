@@ -13,6 +13,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from capitalizator.gateway.keys import PAPER_MODES
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.product import read_user_mode
 from capitalizator.ops.vault import init_vault, load_vault
@@ -20,6 +21,7 @@ from capitalizator.signer.process import (
     HEARTBEAT_S,
     RECONCILE_S,
     drain_validated,
+    gateway_mode_ok,
     make_watchdogs,
     on_signer_exit,
     serve_gateway_loop,
@@ -105,7 +107,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.once or not args.serve:
             if mode in {"demo", "live"}:
-                drain_validated(knowledge, gateway.send, user_mode=mode, now=datetime.now(tz=UTC))
+                if not gateway_mode_ok(mode, gateway.mode):
+                    print(json.dumps({**payload, "error": "user mode / key mode mismatch"}))
+                    return 3
+                venue = gateway.mode if gateway.mode in PAPER_MODES else "demo"
+                drain_validated(
+                    knowledge, gateway.send, user_mode=mode, now=datetime.now(tz=UTC), venue=venue
+                )
             print(json.dumps(payload, ensure_ascii=False))
             return 0
         print(json.dumps({**payload, "serve": True}, ensure_ascii=False), flush=True)
