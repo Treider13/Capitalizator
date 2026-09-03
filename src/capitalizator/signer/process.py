@@ -18,7 +18,7 @@ unknown venue position blocks new entries until an operator posts
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from time import sleep as _sleep
@@ -36,6 +36,10 @@ from capitalizator.types import require_utc
 SendFn = Callable[[dict[str, Any]], dict[str, Any]]
 SENT = frozenset({"sent", "accepted", "ok"})
 PERSISTED = frozenset({"sent", "rejected", "unknown", "no_gateway"})
+# Bounded re-send after a transport failure whose order never landed. Same
+# orderLinkId: the venue de-duplicates (110072). After this many place_order
+# attempts the honest verdict is `not_on_venue_after_resend`.
+RESEND_MAX = 3
 
 
 def _clock_from_yaml() -> tuple[int, int]:
@@ -147,27 +151,98 @@ def drain_once(
     return out
 
 
+def _intent_stale(payload: Mapping[str, Any], now: datetime) -> bool:
+    """True when `valid_until` is present and already in the past. Missing deadline
+    is not stale — the desk always stamps one; a fixture without it is still live."""
+    raw = payload.get("valid_until")
+    if raw in (None, ""):
+        return False
+    deadline = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    return now > deadline
+
+
 def resolve_unknown_intents(
     knowledge: Knowledge, gateway: Any, *, now: datetime
 ) -> list[dict[str, Any]]:
-    """Rows whose transport failed after the order left: ask the venue by link id."""
+    """Rows whose transport failed after the order left: ask the venue by link id.
+
+    Absent on the venue is not a refusal. The same `orderLinkId` is re-sent a
+    bounded number of times (Bybit 110072 de-duplicates a retry of the same row).
+    A stale intent is rejected without a send. After `RESEND_MAX` place_order
+    attempts the honest verdict is `not_on_venue_after_resend` and the desk
+    frees the idea. A lookup that itself fails stays `unknown` and does not
+    increment the counter — we have not learned the order is absent.
+    """
     out: list[dict[str, Any]] = []
     for row in knowledge.intents_with_status("unknown"):
         res = row.get("result") or {}
+        payload = row["payload"]
         link = str(res.get("orderLinkId") or "")
-        symbol = str(row["payload"].get("symbol") or res.get("symbol") or "")
+        symbol = str(payload.get("symbol") or res.get("symbol") or "")
         if not link or not symbol:
             knowledge.mark_intent(row["id"], "failed", {"error": "unknown without link"})
             continue
+        try:
+            attempts = int(res.get("resend_attempts") or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        if attempts < 0:
+            attempts = 0
         verdict = gateway.resolve_unknown(symbol, link)
         status = str(verdict.get("status") or "unknown")
         if status == "unknown":
             out.append({"id": row["id"], "status": "unknown"})
             continue
-        knowledge.mark_intent(row["id"], status, verdict)
         if status == "sent":
+            knowledge.mark_intent(row["id"], "sent", verdict)
             knowledge.enqueue_order(verdict, created_ts=now.isoformat(), intent_id=row["id"])
-        out.append({"id": row["id"], "status": status})
+            out.append({"id": row["id"], "status": "sent"})
+            continue
+        reason = str(verdict.get("reason") or "")
+        if reason != "not_on_venue":
+            # Venue saw the order and killed it (Rejected / Cancelled / Deactivated).
+            knowledge.mark_intent(row["id"], "rejected", verdict)
+            out.append({"id": row["id"], "status": "rejected"})
+            continue
+        if _intent_stale(payload, now):
+            knowledge.mark_intent(
+                row["id"],
+                "rejected",
+                {"reason": "stale_intent", "orderLinkId": link, "resend_attempts": attempts},
+            )
+            out.append({"id": row["id"], "status": "rejected"})
+            continue
+        if attempts >= RESEND_MAX:
+            knowledge.mark_intent(
+                row["id"],
+                "rejected",
+                {
+                    "reason": "not_on_venue_after_resend",
+                    "orderLinkId": link,
+                    "resend_attempts": attempts,
+                },
+            )
+            out.append({"id": row["id"], "status": "rejected", "resend_attempts": attempts})
+            continue
+        # Same identity as the first send: the recorded link, not a new hash.
+        # The first drain injects `intent_id` at send time; the queue payload
+        # may not carry it. Passing the stored link keeps 110072 working.
+        sent = gateway.send({**payload, "intent_id": row["id"], "orderLinkId": link})
+        send_status = str(sent.get("status") or "")
+        nxt = attempts + 1
+        body = {**sent, "orderLinkId": sent.get("orderLinkId") or link, "resend_attempts": nxt}
+        if send_status in SENT:
+            knowledge.mark_intent(row["id"], "sent", body)
+            knowledge.enqueue_order(body, created_ts=now.isoformat(), intent_id=row["id"])
+            out.append({"id": row["id"], "status": "sent", "resend_attempts": nxt})
+            continue
+        if send_status == "unknown":
+            knowledge.mark_intent(row["id"], "unknown", body)
+            out.append({"id": row["id"], "status": "unknown", "resend_attempts": nxt})
+            continue
+        marked = "rejected" if send_status == "rejected" else "failed"
+        knowledge.mark_intent(row["id"], marked, body)
+        out.append({"id": row["id"], "status": marked, "resend_attempts": nxt})
     return out
 
 
