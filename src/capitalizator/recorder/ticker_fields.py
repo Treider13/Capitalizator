@@ -22,13 +22,13 @@ def funding_payload(item: Mapping[str, Any]) -> dict[str, str]:
     nxt = item.get("nextFundingTime")
     if nxt not in (None, ""):
         try:
-            out["next_funding_ts"] = str(int(nxt))
+            out["next_funding_ts"] = str(int(str(nxt)))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"nextFundingTime not an integer: {nxt!r}") from exc
     hours = item.get("fundingIntervalHour")
     if hours not in (None, ""):
         try:
-            ih = int(hours)
+            ih = int(str(hours))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"fundingIntervalHour not an integer: {hours!r}") from exc
         if ih <= 0:

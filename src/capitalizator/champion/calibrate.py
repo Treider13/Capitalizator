@@ -101,7 +101,7 @@ def legacy_key(key: str) -> str:
 
 
 def _row_key(row: Mapping[str, Any]) -> str:
-    labels = row.get("labels") if isinstance(row.get("labels"), Mapping) else {}
+    labels = _labels(row)
     return class_key(
         idea=row.get("tag"),
         cav=labels.get("cav_label"),
@@ -111,8 +111,15 @@ def _row_key(row: Mapping[str, Any]) -> str:
     )
 
 
-def _filled_closed(rows: Iterable[Mapping[str, Any]]) -> list[tuple[str, Decimal, Mapping]]:
-    out: list[tuple[str, Decimal, Mapping]] = []
+def _labels(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    raw = row.get("labels")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _filled_closed(
+    rows: Iterable[Mapping[str, Any]],
+) -> list[tuple[str, Decimal, Mapping[str, Any]]]:
+    out: list[tuple[str, Decimal, Mapping[str, Any]]] = []
     for row in rows:
         if row.get("entry_px") in (None, "") or row.get("r_net") in (None, ""):
             continue
@@ -219,7 +226,7 @@ def k_atr_by_window(
     for _key, r, row in _filled_closed(rows):
         if r <= 0:
             continue
-        labels = row.get("labels") if isinstance(row.get("labels"), Mapping) else {}
+        labels = _labels(row)
         window = labels.get("window")
         atr_raw = labels.get("atr")
         if not window or atr_raw in (None, ""):
@@ -247,7 +254,7 @@ def loss_series_by_window(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[i
     """window → chronological 0/1 series (1 = the filled trade lost) for drift detection."""
     dated: dict[str, list[tuple[str, int]]] = {}
     for _key, r, row in _filled_closed(rows):
-        labels = row.get("labels") if isinstance(row.get("labels"), Mapping) else {}
+        labels = _labels(row)
         window = labels.get("window")
         if not window:
             continue

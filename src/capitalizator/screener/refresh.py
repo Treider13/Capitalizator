@@ -92,7 +92,7 @@ def _launch(row: Mapping[str, Any]) -> datetime | None:
     if raw in (None, "", "0", 0):
         return None
     try:
-        return datetime.fromtimestamp(int(raw) / 1000, tz=UTC)
+        return datetime.fromtimestamp(int(str(raw)) / 1000, tz=UTC)
     except (TypeError, ValueError, OverflowError):
         return None
 
