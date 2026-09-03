@@ -30,15 +30,15 @@ def test_recorder_does_not_import_signer() -> None:
     assert "signer" not in recorder_pkg.__dict__
 
 
-def test_live_minutes_requires_data_root() -> None:
+def test_live_minutes_refuses_without_a_socket() -> None:
     from capitalizator.recorder.app import main
 
     try:
         main(["--minutes", "60"])
     except SystemExit as exc:
-        assert "data-root" in str(exc)
+        assert "live-ws" in str(exc)
         return
-    raise AssertionError("minutes without data-root must refuse")
+    raise AssertionError("minutes must refuse: there is no socket behind it")
 
 
 def test_http_healthz_readyz_on_real_port() -> None:

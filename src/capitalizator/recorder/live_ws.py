@@ -1,24 +1,19 @@
-"""Live public recorder on pybit's WebSocket (D-44). Streams, does not buffer an hour.
+"""Live public recorder on a raw Bybit v5 socket (D-44). Streams, does not buffer an hour.
 
-Before: no socket existed in the repo (`opener` had to be injected), `recv_ts`
-was stamped once per run, frames were collected into a list before any write,
-and the sink rewrote the hourly file on every event.
+Why raw and not pybit's `WebSocket` (audit B2, verified on pybit 5.17): pybit
+rebuilds the book locally and hands every callback `type="snapshot"` with the full
+book; the deltas the desk needs for the 8 s ZLG/ОКО window never arrive. Same for
+`tickers`. `recorder/raw_ws.py` passes frames through untouched.
 
-Now:
-  * pybit `WebSocket(channel_type="linear")` with ping 20s and auto-restart
-    (https://bybit-exchange.github.io/docs/v5/ws/connect: ping every 20s);
-  * `publicTrade.<sym>`, `orderbook.50.<sym>`, `tickers.<sym>` for the desk
-    universe. Bybit docs (ws/connect, "Public channel - Args limits"): one
-    connection's args may not exceed 21 000 characters; spot takes ≤10 args per
-    request, futures "no args limit for now". pybit sends one request per call
-    and does NOT batch, and `args size >10` rejections are reported in the wild
-    (tiagosiebler/bybit-api#174), so we subscribe in chunks of 10 ourselves;
-  * every frame gets its own `recv_ts` on arrival (callback thread), then is
-    parked in a queue; the main thread normalises with the existing
-    TradesNormalizer / BybitBookWs (gap → REST snapshot via RestSnapshot) /
-    ticker_events and writes through `BufferedParquetSink` (immutable parts);
-  * a status JSON (frames, last age per stream, gaps, dropped) is written for
-    the console every second — an honest "recorder silent for N s" banner.
+  * `publicTrade.<sym>`, `orderbook.<depth>.<sym>`, `tickers.<sym>`,
+    `allLiquidation.<sym>` for the desk universe (docs/v5/websocket/public/*);
+    subscribed in chunks of ≤10 args, re-subscribed after a reconnect;
+  * every frame gets its own `recv_ts` on arrival (socket thread), then is
+    parked in a queue; the main thread normalises with TradesNormalizer /
+    BybitBookWs (gap → REST snapshot via RestSnapshot) / ticker_events /
+    liquidation_events and writes through `BufferedParquetSink` (immutable parts);
+  * a status JSON (frames, last age per stream, gaps, dropped, socket state) is
+    written for the console every second — an honest "recorder silent for N s".
 """
 
 from __future__ import annotations
@@ -35,9 +30,10 @@ from typing import Any
 from capitalizator.book.reconstruct import BookDirty
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.recorder.gap import SeqFault
-from capitalizator.recorder.live import ticker_events
+from capitalizator.recorder.live import liquidation_events, ticker_events
 from capitalizator.recorder.normalize import TradesNormalizer
 from capitalizator.recorder.public_ws import is_control_frame
+from capitalizator.recorder.raw_ws import RawPublicWs
 from capitalizator.recorder.rest_snapshot import BookSnapshot, RestSnapshot
 from capitalizator.recorder.sink_parquet import BufferedParquetSink
 from capitalizator.recorder.ws_book import BybitBookWs
@@ -45,21 +41,13 @@ from capitalizator.types import MarketEvent
 
 Frame = Mapping[str, Any]
 WsFactory = Callable[[], Any]
-BOOK_DEPTH = 50  # docs: linear orderbook depth ∈ {1, 50, 200, 1000}
+BOOK_DEPTH = 200  # docs: linear orderbook depth ∈ {1, 50, 200, 500, 1000}; 200 = deltas + depth
 SUBSCRIBE_CHUNK = 10  # docs: spot ≤10 args/request; observed `args size >10` rejections
 
 
 def make_public_ws(*, testnet: bool = False) -> Any:
-    from pybit.unified_trading import WebSocket
-
-    return WebSocket(
-        testnet=testnet,
-        channel_type="linear",
-        ping_interval=20,
-        ping_timeout=10,
-        retries=200,
-        restart_on_error=True,
-    )
+    """Raw socket: deltas untouched. `start()` is called by LiveRecorder.start."""
+    return RawPublicWs(testnet=testnet)
 
 
 @dataclass
@@ -96,7 +84,7 @@ class LiveRecorder:
         if self.fetch_snapshot is None:
             rest = RestSnapshot()
             self.fetch_snapshot = rest.fetch
-        for name in ("trades", "book", "ticker"):
+        for name in ("trades", "book", "ticker", "liquidation"):
             self.stats[name] = StreamStat()
 
     # --- socket side (pybit thread) ----------------------------------------------------
@@ -108,6 +96,10 @@ class LiveRecorder:
             self.ws.trade_stream(chunk, self._cb("trades"))
             self.ws.orderbook_stream(BOOK_DEPTH, chunk, self._cb("book"))
             self.ws.ticker_stream(chunk, self._cb("ticker"))
+            if hasattr(self.ws, "liquidation_stream"):
+                self.ws.liquidation_stream(chunk, self._cb("liquidation"))
+        if hasattr(self.ws, "start"):
+            self.ws.start()
 
     def _cb(self, stream: str) -> Callable[[Frame], None]:
         def handle(frame: Frame) -> None:
@@ -159,6 +151,8 @@ class LiveRecorder:
                     stat.gaps += 1
             elif stream == "ticker":
                 events = ticker_events(frame, recv_ts=recv_ts)
+            elif stream == "liquidation":
+                events = liquidation_events(frame, recv_ts=recv_ts)
         except (ValueError, BookDirty, SeqFault, KeyError):
             stat.errors += 1
             return []
@@ -179,6 +173,8 @@ class LiveRecorder:
             "flushed_rows": self.sink.flushed_count,
             "parts_written": self.sink.parts_written,
             "started_at": self.started_at.isoformat() if self.started_at else None,
+            "socket_connected": self._socket_connected(),
+            "reconnects": getattr(self.ws, "reconnects", None),
             "streams": {},
         }
         for name, st in self.stats.items():
@@ -191,6 +187,12 @@ class LiveRecorder:
                 "last_age_s": age,
             }
         return out
+
+    def _socket_connected(self) -> bool | None:
+        ws = self.ws
+        if ws is None or not hasattr(ws, "is_connected"):
+            return None
+        return bool(ws.is_connected())
 
     def publish_status(self, *, now: datetime | None = None, every_s: float = 1.0) -> bool:
         if self.knowledge is None or not self.knowledge.available():

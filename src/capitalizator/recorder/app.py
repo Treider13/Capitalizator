@@ -134,36 +134,12 @@ def main(argv: list[str] | None = None) -> int:
             server.serve_forever()
         return 0
     if args.minutes and args.minutes > 0:
-        if not args.data_root:
-            raise SystemExit("--data-root is required with --minutes")
-        from capitalizator.recorder.live import LIVE_STREAMS, run_live, subscribe_desk
-        from capitalizator.screener.universe import load_desk_universe
-
-        uni = load_desk_universe()
-        subscribe = subscribe_desk(uni.symbols)
-        accepted = run_live(
-            app,
-            minutes=args.minutes,
-            symbol=args.symbol,
-            data_root=Path(args.data_root),
-            stream=args.stream,
-            symbols=list(uni.symbols),
-            streams=list(LIVE_STREAMS),
+        # `--minutes` had no socket behind it: it printed `"live": true` after writing
+        # zero events (audit §4). A timed live run is `--live-ws` with a deadline.
+        raise SystemExit(
+            "--minutes has no socket: use --live-ws --data-root DIR (add --testnet for the "
+            "testnet host) and stop it with SIGINT/SIGTERM or a supervisor timeout"
         )
-        print(
-            json.dumps(
-                {
-                    "accepted": accepted,
-                    "recording": app.recording,
-                    "readyz": app.readyz(),
-                    "symbol": args.symbol,
-                    "live": True,
-                    "n_symbols": len(uni.symbols),
-                    "subscribe": subscribe,
-                }
-            )
-        )
-        return 0
     if args.serve:
         server = HTTPServer((args.host, args.port), _handler(app))
         server.serve_forever()
