@@ -1534,6 +1534,16 @@ class DeskLoop:
             )
             if pid:
                 paper_ids["fade"] = pid
+        # Contour C challenger: the same idea WITHOUT the jury's accord (TVH only, no
+        # VETO). It never leaves paper; it exists so the exam and the class calibration
+        # see every class the champion refuses, not only the ones it takes.
+        if has_tvh and not shadow_would and jury != "VETO" and b_gate is None:
+            pid = self._submit_paper(
+                row, zone, known_zones, idea=idea, side=idea_side, wick_extreme=wick_extreme,
+                now=closed_at, source="challenger", tag=idea_shadow_tag(idea),
+            )
+            if pid:
+                paper_ids["challenger"] = pid
         if paper_ids:
             payload_row["paper_ids"] = paper_ids
             self.knowledge.put_journal_touch(row.touch_id, payload_row)
@@ -2110,11 +2120,15 @@ class DeskLoop:
             symbol = key.split(":", 1)[1]
             try:
                 rows = json.loads(raw)
-                self._oi_hist[symbol] = [
-                    (datetime.fromisoformat(ts), Decimal(str(lv))) for ts, lv in rows
-                ]
+                hist = [(datetime.fromisoformat(ts), Decimal(str(lv))) for ts, lv in rows]
             except (json.JSONDecodeError, ValueError, TypeError, ArithmeticError):
                 continue
+            # Samples from before the openInterest/openInterestValue split were USD
+            # figures mixed into a contracts series: drop anything 50× off the median.
+            if len(hist) >= 3:
+                med = sorted(lv for _t, lv in hist)[len(hist) // 2]
+                hist = [(t, lv) for t, lv in hist if med > 0 and lv <= med * 50 and lv * 50 >= med]
+            self._oi_hist[symbol] = hist
 
     def _oi_peak(self, symbol: str) -> bool | None:
         hist = self._oi_hist.get(symbol) or []

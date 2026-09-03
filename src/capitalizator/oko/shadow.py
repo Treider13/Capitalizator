@@ -90,6 +90,9 @@ class ShadowReport:
     tape_trust: float | None
     fingerprint: tuple[int, ...]
     evidence: dict[str, str]
+    # False before the Passport churn norm is mature: scores are raw, not a veto.
+    calibrated: bool = True
+    churn_share: float = 0.0
 
     def __post_init__(self) -> None:
         if self.label not in SHADOW_LABELS:
@@ -110,7 +113,28 @@ class ShadowReport:
         return "-".join(str(v) for v in self.fingerprint)
 
 
-def report(raw: RawWindow, frame: RetinaFrame) -> ShadowReport:
+# Churn above the symbol's norm by this many robust σ is abnormal; below it the
+# spoof/layering scores are damped to what exceeds the norm (a liquid book re-quotes
+# constantly and that is not a trap).
+CHURN_EXCESS_Z = 2.0
+CHURN_DAMP_Z = 4.0
+
+
+def churn_share(zone: SideScan, opp: SideScan) -> Decimal:
+    """This window's vanished-without-print share across both sides, in [0, 1]."""
+    added = zone.added_qty + opp.added_qty
+    if added <= 0:
+        return Decimal("0")
+    vanished = zone.vanished_qty + opp.vanished_qty
+    share = vanished / added
+    return max(Decimal("0"), min(Decimal("1"), share))
+
+
+def report(raw: RawWindow, frame: RetinaFrame, *, churn_z: Decimal | None = None) -> ShadowReport:
+    """`churn_z`: this window's churn vs the Passport norm (robust z), None before the
+    norm is mature. With a norm, spoof/layering scores are the EXCESS over normal
+    churn; without one they are raw and `calibrated` is False — the eyelid then
+    writes them but does not veto on them."""
     inside = [(ts, b) for ts, b in raw.book_path if raw.t0 < require_utc(ts) <= raw.t_end]
     prints = raw.prints()
     zone = _scan_side(raw, frame.depth_side_pre, raw.zone_side, inside, prints)
@@ -119,6 +143,17 @@ def report(raw: RawWindow, frame: RetinaFrame) -> ShadowReport:
     spoof_zone = _spoof_score(zone, frame.depth_side_pre)
     spoof_opp = _spoof_score(opp, frame.depth_opp_pre)
     layering, layered_levels = _layering(zone, opp)
+    calibrated = churn_z is not None
+    if calibrated:
+        z = float(churn_z)
+        if z < CHURN_EXCESS_Z:
+            # normal churn for this symbol: the window shows nothing beyond the norm
+            damp = max(0.0, z) / CHURN_DAMP_Z
+            spoof_zone = _clip(spoof_zone * damp)
+            spoof_opp = _clip(spoof_opp * damp)
+            layering = _clip(layering * damp)
+            if layering < LAYER_LABEL:
+                layered_levels = 0
     cascade = _cascade(frame)
     thin = frame.depth_side_rel is not None and frame.depth_side_rel < THIN_DEPTH_REL
     tape_trust = _tape_trust(raw, frame, prints)
@@ -170,6 +205,8 @@ def report(raw: RawWindow, frame: RetinaFrame) -> ShadowReport:
         "depth_side_pre": _dec(frame.depth_side_pre),
         "n_prints": str(frame.n_prints),
         "books_in_window": str(len(inside)),
+        "churn_share": _dec(churn_share(zone, opp)),
+        "churn_z": None if churn_z is None else f"{float(churn_z):.2f}",
     }
     return ShadowReport(
         label=label,
@@ -185,6 +222,8 @@ def report(raw: RawWindow, frame: RetinaFrame) -> ShadowReport:
         tape_trust=tape_trust,
         fingerprint=fingerprint,
         evidence=evidence,
+        calibrated=calibrated,
+        churn_share=float(churn_share(zone, opp)),
     )
 
 

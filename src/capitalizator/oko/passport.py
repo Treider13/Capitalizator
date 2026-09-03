@@ -26,7 +26,11 @@ EPS = Decimal("1e-9")
 CORE_FIELDS = ("depth", "spread_ticks", "print_qty", "prints_per_s", "range_ticks")
 # Footprint stats (INVENTION-OKO §След). Mature on their own; they never gate `mature`
 # — a symbol without an OI feed must still get its Shadow judged.
-EXTRA_FIELDS = ("oi_delta_frac", "oi_level", "funding")
+# `churn`: the share of added quotes that vanished without a print, per window — the
+# symbol's normal market-making noise. Spoof / layering are judged as an EXCESS over
+# it (a liquid book re-quotes constantly; 4/4 live windows were "LAYERING" on
+# 2026-09-03 before this norm existed).
+EXTRA_FIELDS = ("oi_delta_frac", "oi_level", "funding", "churn")
 FIELDS = CORE_FIELDS + EXTRA_FIELDS
 
 
@@ -111,6 +115,7 @@ class Passport:
         self.oi_delta_frac = RobustStat()
         self.oi_level = RobustStat()
         self.funding = RobustStat()
+        self.churn = RobustStat()
 
     def stats(self) -> dict[str, RobustStat]:
         return {name: getattr(self, name) for name in FIELDS}
@@ -135,6 +140,16 @@ class Passport:
 
     def observe_funding(self, rate: Decimal) -> None:
         self.funding.add(rate)
+
+    def observe_churn(self, share: Decimal) -> None:
+        """Vanished-without-print share of added quotes in one window, in [0, 1]."""
+        if share < 0 or share > 1:
+            raise ValueError("churn share must be in [0, 1]")
+        self.churn.add(share)
+
+    def churn_excess(self, share: Decimal) -> Decimal | None:
+        """Robust z of this window's churn against the norm; None before maturity."""
+        return self.churn.z(share)
 
     def oi_peak(self, level: Decimal) -> bool | None:
         """OI at or above every level in the window. None before 30 observations."""

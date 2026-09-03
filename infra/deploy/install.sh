@@ -46,6 +46,7 @@ usermod -aG docker trader
 
 log "data directory"
 install -d -m 750 -o trader -g trader "$DATA" "$DATA/userdir" "$DATA/backups" "$DATA/logs"
+install -d -m 700 -o trader -g trader "$DATA/userdir/secrets"
 
 log "repo"
 if [ -d "$DATA/app/.git" ]; then

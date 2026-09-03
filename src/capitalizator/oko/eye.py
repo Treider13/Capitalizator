@@ -103,9 +103,13 @@ class OkoEye:
     def observe_window(self, raw: RawWindow, *, touch_id: str, now: datetime) -> OkoWindow:
         passport = self.passport_for(raw.symbol)
         fr = frame(raw, passport)
-        sh = report(raw, fr)
+        # churn of THIS window vs the symbol's norm, then the window teaches the norm
+        probe = report(raw, fr)
+        share = Decimal(str(probe.churn_share))
+        sh = report(raw, fr, churn_z=passport.churn_excess(share))
         fp = footprint_report(raw, fr)
         observe_passport(raw, passport, fr)
+        passport.observe_churn(share)
         bucket = self.recent.setdefault(raw.symbol, deque(maxlen=RECENT_WINDOWS))
         bucket.append(raw)
         self._since_mirror += 1
