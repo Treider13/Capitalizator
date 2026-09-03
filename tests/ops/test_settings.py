@@ -116,6 +116,65 @@ def test_intel_is_runnable_as_a_module() -> None:
     assert (_P(pkg.__file__).parent / "__main__.py").is_file()
 
 
+def test_settings_html_form_does_not_treat_empty_or_confirm_as_fields(tmp_path: Path) -> None:
+    """The /settings page posts every input in the group. Its own copy says empty
+    means «не менять»; `confirm` is a checkbox, not a setting. Today both go into
+    Settings.update: confirm → 400 unknown settings; empty key/secret → wipe."""
+    import threading
+    from http.client import HTTPConnection
+    from http.server import HTTPServer
+    from urllib.parse import urlencode
+
+    from capitalizator.ops.console import _handler
+
+    vault = init_vault(tmp_path / "v")
+    app = ConsoleApp(vault)
+    app.settings_post(
+        "/api/settings",
+        {"bybit.api_key": "KEY123456789", "bybit.api_secret": "SECRETXYZ987", "bybit.mode": "demo"},
+        ack=True,
+    )
+    assert load_keys(vault, env={}) is not None
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    host, port = server.server_address[:2]
+    try:
+        body = urlencode(
+            {
+                "redirect": "1",
+                "bybit.api_key": "",
+                "bybit.api_secret": "",
+                "bybit.mode": "testnet",
+                "ack_token": app.csrf_token,
+                "confirm": "on",
+            }
+        )
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request(
+            "POST",
+            "/api/settings",
+            body=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": f"http://127.0.0.1:{port}",
+            },
+        )
+        resp = conn.getresponse()
+        status = resp.status
+        location = resp.getheader("Location")
+        err = resp.read().decode()
+        conn.close()
+        assert status == 303, err
+        assert location == "/settings"
+        keys = load_keys(vault, env={})
+        assert keys is not None
+        assert keys.api_key == "KEY123456789"
+        assert keys.mode == "testnet"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_console_writes_need_the_process_token_and_a_loopback_origin(tmp_path: Path) -> None:
     """Audit A8: a cross-site form from any browser tab used to pass with ack=yes."""
     import threading

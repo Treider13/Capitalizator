@@ -916,7 +916,15 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     ack = _token_ok(app, self, payload)
                     payload.pop("ack_token", None)
                     payload.pop("ack", None)
+                    payload.pop("confirm", None)  # settings page checkbox; not a field
                     redirect = payload.pop("redirect", None) in {"1", "true", True}
+                    # HTML form: empty input = leave unchanged (settings_page.py).
+                    # JSON still deletes on "" — that path is the explicit wipe API.
+                    ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+                    if path == "/api/settings" and ctype != "application/json":
+                        payload = {
+                            k: v for k, v in payload.items() if str(v).strip() != ""
+                        }
                     try:
                         out = app.settings_post(path, payload, ack=ack)
                     except ValueError as exc:
