@@ -61,7 +61,7 @@ def from_news(
     negative_coin = [
         row
         for row in hits
-        if symbol in row.assets
+        if (symbol in row.assets or not row.assets)
         and row.event_class in {"HACK", "SEC", "OTHER"}
         and _negative(row)
     ]

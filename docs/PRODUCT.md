@@ -29,6 +29,8 @@
 
 Стол и signer просыпаются по событию (штамп `vault/wake/*.stamp` + очередь), а не ждут секунду сна как путь решения. Консоль: `GET /api/stream` (SSE) будит Хронос; `latency_decision` — p50/p95 пути касание→жюри.
 
+Контур B читает живой intel: RSS-анонсы и классифицированные заголовки входят в календарь карточки (HACK/CPI/FOMC → veto/cut); один китовый тезис — hold. Месячный Fear & Greed режет размер через `news_macro.sentiment.decide`. Журнал несёт `DecisionTrace` (A/B/C + intel + sentiment + whales).
+
 ## Очередь
 
 SQLite: desk пишет `intent_queue`, signer читает и исполняет. Ключ только у signer.

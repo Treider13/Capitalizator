@@ -86,6 +86,24 @@ def _json(raw: str | None, default: Any) -> Any:
         return default
 
 
+def _decision_trace(raw: str | None) -> str:
+    parsed = _json(raw, None)
+    if not isinstance(parsed, dict):
+        return "нет"
+    parts = [
+        f"A {parsed.get('contour_a') or '—'}",
+        f"B {parsed.get('contour_b') or '—'}",
+        f"C {parsed.get('contour_c') or '—'}",
+    ]
+    if parsed.get("intel"):
+        parts.append(f"intel {parsed['intel']}")
+    if parsed.get("sentiment"):
+        parts.append(str(parsed["sentiment"]))
+    if parsed.get("whales"):
+        parts.append(f"киты {parsed['whales']}")
+    return " · ".join(parts)
+
+
 def _latency_decision(raw: str | None) -> str:
     parsed = _json(raw, None)
     if not isinstance(parsed, dict):
@@ -358,6 +376,7 @@ def render_ops_html(
         ("пульс стола", _age("desk_heartbeat")),
         ("пульс сигнера", _age("signer_heartbeat")),
         ("задержка решения p50/p95", _latency_decision(meta.get("latency_decision"))),
+        ("след решения", _decision_trace(meta.get("decision_trace"))),
         ("стол догоняет ленту", "да" if meta.get("desk_backlog") == "1" else "нет"),
         ("рекордер: сокет", "подключён" if rec_status.get("socket_connected") else _e(rec_status.get("socket_connected"))),
         ("рекордер: реконнектов", _e(rec_status.get("reconnects", "—"))),

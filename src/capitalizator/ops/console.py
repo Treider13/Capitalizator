@@ -593,7 +593,7 @@ def render_ops(app: ConsoleApp, *, message: str | None = None) -> str:
             "signer_heartbeat", "desk_backlog", "recorder_status", "dead_man_last",
             "signer_requeued", "instruments_error_signer", "instruments_error_recorder",
             "intel_status", "llm_last_error", "reddit_auth_error", "paper_restored",
-            "paper_open_error", "oko_load_errors", "latency_decision",
+            "paper_open_error", "oko_load_errors", "latency_decision", "decision_trace",
         )
         meta: dict[str, str | None] = dict.fromkeys(keys)
         if knowledge.available():

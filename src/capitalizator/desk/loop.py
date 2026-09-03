@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
@@ -82,8 +82,10 @@ from capitalizator.jury.desk import (
 from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
 from capitalizator.memory.revive import load_pending
+from capitalizator.news_macro.from_intel import calendar_from_intel, claims_from_intel
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
+from capitalizator.news_macro.sentiment import decide as sentiment_decide
 from capitalizator.news_macro.unlocks import Unlocks
 from capitalizator.oko.eye import OkoEye, OkoWindow
 from capitalizator.oko.footprint import FINGERPRINT_LEN as OKO_FINGERPRINT_LEN
@@ -91,6 +93,7 @@ from capitalizator.oko.forecast import Sample as OkoSample
 from capitalizator.oko.forecast import class_key as oko_class_key
 from capitalizator.oko.retina import RawWindow
 from capitalizator.oko.shadow import FINGERPRINT_LEN as OKO_SHADOW_FP_LEN
+from capitalizator.ops.decision_trace import DecisionTrace, intel_atom
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.latency import decision_report
 from capitalizator.ops.phase import breakout_enabled
@@ -117,6 +120,7 @@ from capitalizator.tape.classify import TapeClassifier
 from capitalizator.tape.ofi import OFI
 from capitalizator.types import MarketEvent, require_utc
 from capitalizator.whales.fragility import forbid_new_long, forbid_new_short
+from capitalizator.whales.no_single import sole_whale
 from capitalizator.zlg.gesture import ZLG, BookAdd, BookPull
 from capitalizator.zones.config import load_registry
 from capitalizator.zones.engine import MAP_VOTE_METHODS
@@ -251,6 +255,7 @@ class DeskLoop:
         self.drift_active = False
         self._sentiment_at: datetime | None = None
         self._sentiment_mult = Decimal("1")
+        self._sentiment_reason = "sentiment_ok"
         self._oko_samples_cache: tuple[Any, list[OkoSample], set[str]] | None = None
         self._k_atr_calibrated: dict[str, Decimal] = {}
         self._hold_hours: dict[str, Decimal] = {}
@@ -724,16 +729,35 @@ class DeskLoop:
         return retired
 
     def publish_card(self, symbol: str, now: datetime) -> CardLive:
-        """Compute B labels and write claim b_card:SYMBOL. Never sends."""
+        """Compute B labels and write claim b_card:SYMBOL. Never sends.
+
+        Live intel (RSS announcements, classified titles) is merged into the
+        calendar so a HACK/CPI/FOMC print can veto or cut. A sole whale claim
+        is a hold — whales never enter.
+        """
         bars = self.state_for(symbol).bars
         vol = volume_snapshot(bars)
+        intel_cal = calendar_from_intel(self.knowledge, now=now)
         card = card_from_news(
             symbol=symbol,
             now=now,
-            calendar=self.calendar,
+            calendar=tuple(self.calendar) + intel_cal,
             volume=vol,
             bars=bars,
         )
+        if self.knowledge.available():
+            since = (now - timedelta(hours=48)).isoformat()
+            claims = claims_from_intel(self.knowledge.intel_items(since=since, limit=400))
+            if sole_whale(claims) and card.bearing_verdict in {"propose", "cut_size"}:
+                pluses = tuple(dict.fromkeys((*card.pluses, "whale_seen")))
+                minuses = tuple(dict.fromkeys((*card.minuses, "whale_only")))
+                card = replace(
+                    card,
+                    bearing_verdict="hold",
+                    macro_multiplier=Decimal("1"),
+                    pluses=pluses,
+                    minuses=minuses,
+                )
         self.knowledge.put_card_live(symbol, card.to_payload())
         return card
 
@@ -1257,7 +1281,10 @@ class DeskLoop:
                 stored = None
             if stored is not None and card_is_fresh(stored, symbol=symbol, now=now):
                 return stored
-        if not self.calendar:
+        intel_cal = (
+            calendar_from_intel(self.knowledge, now=now) if self.knowledge.available() else ()
+        )
+        if not self.calendar and not intel_cal:
             return None
         return self.publish_card(symbol, now)
 
@@ -1707,6 +1734,32 @@ class DeskLoop:
         payload_row["session_gate"] = session_verdict.reason
         payload_row["session_size_mult"] = str(window.size_mult)
         payload_row["session_k_atr"] = str(window.k_atr)
+        self._sentiment_multiplier(closed_at)
+        frag = self._fragility(st)
+        if card is not None and "whale_only" in card.minuses:
+            whales = "whale_only"
+        elif frag.get("forbid_long") or frag.get("forbid_short"):
+            whales = "fragile"
+        else:
+            whales = "ok"
+        trace = DecisionTrace(
+            touch_id=row.touch_id,
+            symbol=st.symbol,
+            closed_at=closed_at.isoformat(),
+            contour_a=str(jury),
+            contour_b=b_gate or (card.bearing_verdict if card is not None else "none"),
+            contour_c=str(payload_row.get("challenger_tag") or "silent"),
+            intel=intel_atom(card.pluses, card.minuses) if card is not None else None,
+            sentiment=self._sentiment_reason,
+            whales=whales,
+            skip_reason=skip,
+            decision_ms=float(extra["decision_ms"]),
+        )
+        payload_row["decision_trace"] = trace.to_payload()
+        if self.knowledge.available():
+            self.knowledge.set_meta(
+                "decision_trace", json.dumps(trace.to_payload(), sort_keys=True)
+            )
         self.knowledge.put_journal_touch(row.touch_id, payload_row)
         self._publish_decision_latency()
         day = row_day_utc(payload_row)
@@ -2219,6 +2272,7 @@ class DeskLoop:
             return self._sentiment_mult
         self._sentiment_at = now
         self._sentiment_mult = Decimal("1")
+        self._sentiment_reason = "sentiment_ok"
         if not self.knowledge.available():
             return self._sentiment_mult
         since = (now - timedelta(days=30)).isoformat()
@@ -2229,10 +2283,11 @@ class DeskLoop:
             except (TypeError, ValueError):
                 continue
         # a month is ≥ 20 daily prints; fewer is not a monthly window
-        if (
-            len(values) >= 20
-            and sum(values) / len(values) >= self.risk_config.sentiment_greed
-        ):
+        monthly = len(values) >= 20
+        extreme = monthly and sum(values) / len(values) >= self.risk_config.sentiment_greed
+        verdict = sentiment_decide(window="month" if monthly else "hour", extreme_greed=extreme)
+        self._sentiment_reason = verdict.reason
+        if verdict.reason == "monthly_greed":
             self._sentiment_mult = self.risk_config.sentiment_mult
         return self._sentiment_mult
 
@@ -2509,11 +2564,32 @@ class DeskLoop:
 
     def _oi_peak(self, symbol: str) -> bool | None:
         hist = self._oi_hist.get(symbol) or []
-        if len(hist) < self.FUNDING_MIN_N:
+        if len(hist) >= self.FUNDING_MIN_N:
+            levels = sorted(lv for _ts, lv in hist)
+            p95 = levels[min(len(levels) - 1, int(0.95 * (len(levels) - 1)))]
+            return hist[-1][1] >= p95
+        return self._oi_peak_from_intel(symbol)
+
+    def _oi_peak_from_intel(self, symbol: str) -> bool | None:
+        """When the desk OI hist is short, intel bybit_public snapshots are the PIT series."""
+        if not self.knowledge.available():
             return None
-        levels = sorted(lv for _ts, lv in hist)
-        p95 = levels[min(len(levels) - 1, int(0.95 * (len(levels) - 1)))]
-        return hist[-1][1] >= p95
+        levels: list[Decimal] = []
+        for item in self.knowledge.intel_items(kind="bybit_public", limit=400):
+            if item.get("source_id") != f"bybit_public:{symbol}":
+                continue
+            raw = item.get("open_interest")
+            if raw is None:
+                continue
+            try:
+                levels.append(Decimal(str(raw)))
+            except (ValueError, ArithmeticError):
+                continue
+        if len(levels) < self.FUNDING_MIN_N:
+            return None
+        ordered = sorted(levels)
+        p95 = ordered[min(len(ordered) - 1, int(0.95 * (len(ordered) - 1)))]
+        return levels[0] >= p95
 
     def _funding_tail(self, symbol: str) -> tuple[bool | None, bool | None]:
         """(top-5% positive → longs pay, crowd long; bottom-5% → shorts pay, crowd short)."""
