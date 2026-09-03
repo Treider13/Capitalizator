@@ -606,7 +606,8 @@ class ConsoleApp:
         result = gateway.hello(probe_order=probe_order)
         from capitalizator.ops.product import mark_hello
 
-        mark_hello(self.vault, ok=bool(result.get("ok")))
+        ok = bool(result.get("ok"))
+        mark_hello(self.vault, ok=ok)
         knowledge = open_knowledge(self.vault, create=True)
         try:
             knowledge.set_meta("hello_result", json.dumps(result, default=str))
@@ -617,7 +618,8 @@ class ConsoleApp:
                 )
         finally:
             knowledge.close()
-        return {"hello": result, "hello_ok": bool(result.get("ok")), "real": True}
+        # `real` means the last venue hello succeeded — same as GET /api/hello/status.
+        return {"hello": result, "hello_ok": ok, "real": ok}
 
     def set_risk(self, changes: dict[str, Any], *, ack: bool) -> dict[str, Any]:
         """Operator risk menu (D-12). Validated by RiskConfig; applies to new intents."""

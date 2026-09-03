@@ -484,22 +484,35 @@
         headers: headers(),
         body: JSON.stringify({ack_token: BOOT.ack_token || ""})
       });
-      setNote(
-        resp.ok ? "биржа ответила. Дальше шаг 3 — demo или live." : await resp.text(),
-        true
-      );
+      if (!resp.ok) {
+        setNote(await resp.text(), true);
+      } else {
+        const payload = await resp.json();
+        setNote(
+          payload.hello_ok
+            ? "биржа ответила. Дальше шаг 3 — demo или live."
+            : "биржа не подтвердила ключ",
+          true
+        );
+      }
       refresh();
     });
     document.getElementById("cred-form").addEventListener("submit", async ev => {
       ev.preventDefault();
       const data = new FormData(ev.target);
+      const key = String(data.get("bybit.api_key") || "").trim();
+      const secret = String(data.get("bybit.api_secret") || "").trim();
+      if (!key || !secret) {
+        setNote("нужны ключ и секрет — пустая форма ключ не затирает", true);
+        return;
+      }
       const resp = await fetch("/api/settings", {
         method: "POST",
         headers: headers(),
         body: JSON.stringify({
           ack_token: BOOT.ack_token || "",
-          "bybit.api_key": data.get("bybit.api_key"),
-          "bybit.api_secret": data.get("bybit.api_secret"),
+          "bybit.api_key": key,
+          "bybit.api_secret": secret,
           "bybit.mode": data.get("bybit.mode") || "demo"
         })
       });

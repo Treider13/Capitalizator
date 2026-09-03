@@ -719,3 +719,30 @@ def test_hello_with_keys_records_a_real_venue_result(tmp_path: Path, monkeypatch
     snap = hello_status(vault)
     assert snap["hello_ok"] is True and snap["real"] is True and snap["cred_present"] is True
 
+
+def test_failed_venue_hello_does_not_set_the_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from capitalizator.ops.chronos_data import hello_status
+    from capitalizator.ops.product import hello_recorded
+    from capitalizator.ops.settings import Settings
+
+    vault = init_vault(tmp_path / "desk")
+    Settings(vault).update(
+        {"bybit.api_key": "testkey12", "bybit.api_secret": "testsecret", "bybit.mode": "demo"},
+        ack=True,
+    )
+
+    class FakeGW:
+        def __init__(self, session: object, mode: str = "demo") -> None:
+            self.mode = mode
+
+        def hello(self, *, probe_order: bool = False) -> dict:
+            return {"ok": False, "wallet_equity": {"ok": False, "error": "refused"}}
+
+    monkeypatch.setattr("capitalizator.gateway.BybitGateway", FakeGW)
+    monkeypatch.setattr("capitalizator.gateway.bybit.make_session", lambda keys: object())
+    out = ConsoleApp(vault).prove_hello(ack=True)
+    assert out["hello_ok"] is False and out["real"] is False
+    assert hello_recorded(vault) is False
+    snap = hello_status(vault)
+    assert snap["hello_ok"] is False and snap["real"] is False and snap["cred_present"] is True
+
