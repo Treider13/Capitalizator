@@ -495,12 +495,17 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
     if path == "/api/bars":
         tf = (qs.get("tf") or ["15m"])[0] or "15m"
         limit = _int_arg(qs, "limit", 200)
-        bars = chronos_data.bars_for(vault, symbol=symbol or "", tf=tf, limit=limit)
+        try:
+            bars = chronos_data.bars_for(vault, symbol=symbol or "", tf=tf, limit=limit)
+        except ValueError:
+            return {"symbol": symbol or "", "tf": tf, "bars": []}
         return {"symbol": symbol or "", "tf": tf, "bars": bars}
     if path == "/api/zones":
         return {"symbol": symbol or "", "zones": chronos_data.zones_for(vault, symbol=symbol or "")}
     if path == "/api/book":
         return chronos_data.book_for(vault, symbol=symbol or "")
+    if path == "/api/replay":
+        return chronos_data.replay_for(vault, symbol=symbol or "")
     if path == "/api/trades":
         limit = _int_arg(qs, "limit", 50)
         trades = chronos_data.trades_for(vault, symbol=symbol or "", limit=limit)

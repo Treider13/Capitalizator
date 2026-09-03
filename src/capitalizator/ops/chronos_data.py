@@ -7,14 +7,17 @@ from decimal import Decimal
 from typing import Any
 
 from capitalizator.authors.ingest import AuthorsIngest
+from capitalizator.book.reconstruct import BookDirty
 from capitalizator.desk.bars import TF_MINUTES, closed_bars_from_trades
 from capitalizator.desk.tape import load_tape
+from capitalizator.exec.replay import ReplayEngine
 from capitalizator.llm.daily_summary import DailySummary
 from capitalizator.news_macro.ingest import NewsIngest, default_macro_path
 from capitalizator.ops.daily_map_report import contains_advice
 from capitalizator.ops.gates_from_sqlite import gates_from_sqlite
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import Vault
+from capitalizator.recorder.gap import SeqFault
 from capitalizator.risk.session import MSK
 from capitalizator.zones.config import load_registry
 from capitalizator.zones.engine import MAP_VOTE_METHODS, ZoneEngine
@@ -234,6 +237,45 @@ def zones_for(vault: Vault, *, symbol: str, now: datetime | None = None) -> list
     return list(merged.values())
 
 
+def replay_for(vault: Vault, *, symbol: str) -> dict[str, Any]:
+    """Replay recorded snapshot+diff for one symbol. Empty tape is empty, not invented."""
+    events = [
+        e
+        for e in load_tape(vault.tape)
+        if e.symbol == symbol and e.stream in {"snapshot", "book_diff"}
+    ]
+    if not events:
+        return {
+            "symbol": symbol,
+            "n": 0,
+            "ok": True,
+            "last_bid": None,
+            "last_ask": None,
+            "last_seq": None,
+        }
+    try:
+        cps = ReplayEngine().run_events(events)
+    except (BookDirty, SeqFault, ValueError) as exc:
+        return {
+            "symbol": symbol,
+            "n": 0,
+            "ok": False,
+            "reason": str(exc),
+            "last_bid": None,
+            "last_ask": None,
+            "last_seq": None,
+        }
+    last = cps[-1] if cps else None
+    return {
+        "symbol": symbol,
+        "n": len(cps),
+        "ok": True,
+        "last_bid": None if last is None or last.best_bid is None else str(last.best_bid),
+        "last_ask": None if last is None or last.best_ask is None else str(last.best_ask),
+        "last_seq": None if last is None else last.seq,
+    }
+
+
 def book_for(vault: Vault, *, symbol: str) -> dict[str, Any]:
     knowledge = open_knowledge(vault, create=False)
     try:
@@ -353,6 +395,8 @@ def dashboard(vault: Vault) -> dict[str, Any]:
         "target_risk": str(cfg.target_risk_pct),
         "ceiling_max_lev": int(phase["max_lev"]),
         "ceiling_target_risk": float(phase["target_risk"]),
+        "deposit_share_per_trade": str(cfg.deposit_share_per_trade),
+        "max_stop_pct": str(cfg.max_stop_pct),
     }
     counts = session_counts(vault)
     latest = latest_touch(vault)

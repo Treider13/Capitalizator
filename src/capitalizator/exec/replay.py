@@ -11,6 +11,7 @@ the green of this step. Full VPS day stays off-git.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -19,6 +20,7 @@ from typing import Any
 
 from capitalizator.book.reconstruct import Book
 from capitalizator.recorder.book_diff import BookDiffNormalizer
+from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.recorder.ws_trades import BybitTradesWs
 from capitalizator.types import MarketEvent, require_utc
 
@@ -49,12 +51,56 @@ class ReplayEngine:
             checkpoints.append(BookCheckpoint(seq=book.seq, best_bid=bid, best_ask=ask))
         return checkpoints
 
+    def run_events(self, events: Sequence[MarketEvent]) -> list[BookCheckpoint]:
+        """Same reconstruct as `run`, from already-normalized tape events.
+
+        snapshot + book_diff only. Other streams are skipped. Empty → [].
+        A gap still raises — we do not invent a book.
+        """
+        book = Book()
+        checkpoints: list[BookCheckpoint] = []
+        for event in events:
+            if event.stream == "snapshot":
+                book.apply_snapshot(_event_snapshot(event))
+            elif event.stream == "book_diff":
+                snap = _event_snapshot(event)
+                book.apply_diff(snap.bids, snap.asks, seq=snap.seq)
+            else:
+                continue
+            bid, ask = book.best()
+            checkpoints.append(BookCheckpoint(seq=book.seq, best_bid=bid, best_ask=ask))
+        return checkpoints
+
     def tape(self, path: Path, *, recv_ts: datetime) -> list[MarketEvent]:
         """Replay recorded prints. Missing trades.jsonl → empty, not invented."""
         frames = _load_trade_frames(path)
         if not frames:
             return []
         return BybitTradesWs().run(frames, recv_ts=require_utc(recv_ts))
+
+
+def _event_snapshot(event: MarketEvent) -> BookSnapshot:
+    seq = event.seq if event.seq is not None else event.payload.get("u")
+    if seq is None:
+        raise ValueError("book event needs seq")
+    return BookSnapshot(
+        symbol=event.symbol,
+        exchange_ts=event.exchange_ts,
+        seq=int(seq),
+        bids=_levels(event.payload.get("bids") or event.payload.get("b") or []),
+        asks=_levels(event.payload.get("asks") or event.payload.get("a") or []),
+    )
+
+
+def _levels(rows: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(rows, list | tuple):
+        return ()
+    out: list[tuple[str, str]] = []
+    for row in rows:
+        if not isinstance(row, list | tuple) or len(row) < 2:
+            continue
+        out.append((str(row[0]), str(row[1])))
+    return tuple(out)
 
 
 def _load_book_frames(path: Path) -> list[dict[str, Any]]:
