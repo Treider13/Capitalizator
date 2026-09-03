@@ -90,6 +90,9 @@ class BounceSnapshot:
     n_zlg: int = 0
     btc_regime: str | None = None
     btc_broke: bool = False
+    # 3.15.5 fragility from the desk: OI peak × crowded funding × thin book, per side.
+    fragile_long: bool = False
+    fragile_short: bool = False
     btc_same_side: bool = False
     btc_zone_side: str = "support"
     prs_y: Decimal | None = None
@@ -258,8 +261,10 @@ class BounceStrategy:
         budget: SessionBudget | None = None,
         require_card: bool = True,
         check_load_bearing: bool = True,
-        check_tape: bool = True,
-        check_wall: bool = True,
+        # 2.10.1 / 2.10.2: off in isolated F1 fixtures (record only); the desk turns
+        # both on — an eaten level or a silent/pulled wall is not a bounce.
+        check_tape: bool = False,
+        check_wall: bool = False,
         require_jury: bool = False,
         macro: MacroRules | None = None,
     ) -> None:
@@ -344,28 +349,26 @@ class BounceStrategy:
             return None
         if not price_in_zone(snap.price, zone):
             return None
-        # F1 isolated tests: check_tape / check_wall record only.
-        # Desk require_jury: 2.10.1 — eaten or silent wall is not a bounce.
-        _ = (self.check_tape, self.check_wall)
         idea = snap.idea if snap.idea in _IDEAS else "bounce"
         if idea == _LEGACY_FADE and self.require_jury:
             # Desk law: a wick through + close inside is a held level (spring).
             # Fading it is a shadow challenger, never a sent order.
             return None
-        if (
-            idea in {"bounce", "spring"}
-            and self.require_jury
-            and (
-                snap.tape_eaten is True
-                or snap.wall_no_print is True
-                or snap.wall_state == "pulled"
-            )
+        # 2.10.1 / 2.10.2: an eaten level or a silent/pulled wall is not a bounce. The
+        # desk turns these checks on (check_tape / check_wall); F1 isolated fixtures
+        # leave them off and only record.
+        if idea in {"bounce", "spring"} and (
+            (self.check_tape and snap.tape_eaten is True)
+            or (self.check_wall and (snap.wall_no_print is True or snap.wall_state == "pulled"))
         ):
             return None
         side = "buy" if zone.side == "support" else "sell"
         if idea in _BREAK_IDEAS:
             # Desk idea_side: break of support is a short, break of resistance a long.
             side = "sell" if zone.side == "support" else "buy"
+        if (side == "buy" and snap.fragile_long) or (side == "sell" and snap.fragile_short):
+            # 3.15.5: no new entries on the crowded side at an OI peak with a thin book.
+            return None
         if snap.symbol != "BTCUSDT" and not self.btc_veto.allow(
             alt_side=side,
             btc_broke=snap.btc_broke,

@@ -307,3 +307,35 @@ def test_instruments_published_by_signer_are_loaded_by_desk(tmp_path: Path) -> N
     # a fresh desk picks the snapshot up at start
     desk2 = DeskLoop(knowledge=kn, user_mode="off")
     assert desk2.instruments.has("DOGEUSDT")
+
+
+def test_drift_in_the_shadow_error_series_cuts_the_live_target_risk(tmp_path: Path) -> None:
+    """Contour C wired (audit §2): Page-Hinkley on the champion's errors → 0.5% target.
+    Below 40 closed trades nothing is judged; a 30%→70% error shift is drift."""
+    import json
+    from datetime import UTC, datetime
+
+    desk = _desk(tmp_path, "demo", SUP, "100000.1")
+    assert desk.effective_target_risk() == desk.risk_config.target_risk_pct
+    t0 = datetime(2026, 8, 1, tzinfo=UTC)
+    rows = []
+    for i in range(120):
+        err = (i % 10 < 3) if i < 60 else (i % 10 < 7)
+        rows.append({
+            "paper_id": f"p{i}", "touch_id": f"t{i}", "source": "shadow", "symbol": "BTCUSDT",
+            "entry_px": "100", "r_net": "-1" if err else "1", "tag": "bounce",
+            "closed_at": (t0 + timedelta(minutes=i)).isoformat(),
+            "labels": {"cav_label": "REJECT", "zlg_label": "DEFEND"},
+        })
+    desk._refresh_drift(rows[:30], t0)
+    assert desk.drift_active is False  # too few
+    desk._refresh_drift(rows, t0)
+    assert desk.drift_active is True
+    assert desk.effective_target_risk() == Decimal("0.005")
+    desk.flush_ui(t0, force=True)
+    meta = json.loads(desk.knowledge.meta("drift"))
+    assert meta["drift"] is True and meta["target_risk"] == "0.005"
+    # a calm series clears it
+    calm = [{**r, "r_net": "1" if i % 10 >= 3 else "-1"} for i, r in enumerate(rows)]
+    desk._refresh_drift(calm, t0)
+    assert desk.drift_active is False and desk.effective_target_risk() == Decimal("0.01")

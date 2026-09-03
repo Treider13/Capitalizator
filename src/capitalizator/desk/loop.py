@@ -25,6 +25,7 @@ from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.card.live import CardLive, card_is_fresh, touch_line
 from capitalizator.card.volume import snapshot as volume_snapshot
 from capitalizator.champion.calibrate import ClassStat, class_key, class_stats, refuted, to_meta
+from capitalizator.champion.drift import PageHinkley
 from capitalizator.champion.shadow_day import (
     challenger_on,
     challenger_tag,
@@ -92,6 +93,7 @@ from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.risk.account import Account
 from capitalizator.risk.config import load_risk_config
+from capitalizator.risk.drift_cut import target_after_drift
 from capitalizator.risk.schema import Intent
 from capitalizator.risk.session import (
     SessionWindow,
@@ -103,6 +105,7 @@ from capitalizator.risk.sizing import size_position
 from capitalizator.tape.classify import TapeClassifier
 from capitalizator.tape.ofi import OFI
 from capitalizator.types import MarketEvent, require_utc
+from capitalizator.whales.fragility import forbid_new_long, forbid_new_short
 from capitalizator.zlg.gesture import ZLG, BookAdd, BookPull
 from capitalizator.zones.config import load_registry
 from capitalizator.zones.engine import MAP_VOTE_METHODS
@@ -187,6 +190,7 @@ class DeskLoop:
         self.halts = self.account.halts
         self.funding: dict[str, Decimal] = {}
         self._funding_hist: dict[str, list[Decimal]] = {}
+        self._oi_hist: dict[str, list[tuple[datetime, Decimal]]] = {}
         self.macro = MacroRules(enabled=True)
         self.strategy = BounceStrategy(
             risk=self.risk,
@@ -223,6 +227,7 @@ class DeskLoop:
         self._instruments_seen: str | None = None
         self._calibration: dict[str, ClassStat] = {}
         self._calibration_at: datetime | None = None
+        self.drift_active = False
         self.oko = OkoEye(working_tf=self.config.working_tf)
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
@@ -277,6 +282,7 @@ class DeskLoop:
         self._last_settle: datetime | None = None
         if knowledge.available():
             self._reload_instruments()
+            self._load_oi_history()
 
     def tick_for(self, symbol: str) -> Decimal:
         """Instrument tick. Legacy mode falls back to the constructor tick."""
@@ -851,6 +857,7 @@ class DeskLoop:
                 return
             st.oi.append((when, level))
             st.oi = [row for row in st.oi if row[0] >= keep_from]
+            self._sample_oi_history(st.symbol, when, level)
         elif event.stream == "funding":
             try:
                 rate = Decimal(str(event.payload["funding"]))
@@ -1541,6 +1548,8 @@ class DeskLoop:
             bid, ask = book.best()
             mid_px = (bid + ask) / 2 if bid is not None and ask is not None else None
             if spr is not None and mid_px is not None and mid_px > 0:
+                fragility = self._fragility(st)
+                payload_row["fragility"] = fragility
                 snap = BounceSnapshot(
                     now=closed_at,
                     symbol=st.symbol,
@@ -1606,6 +1615,8 @@ class DeskLoop:
                     spot_acked=False if card is None else self.spot.acked(st.symbol),
                     oko_voice=oko.voice,
                     oko_size_mult=oko.size_mult,
+                    fragile_long=bool(fragility["forbid_long"]),
+                    fragile_short=bool(fragility["forbid_short"]),
                 )
                 self.strategy.budget = self.account.budget(closed_at)
                 intent = self.strategy.propose(snap)
@@ -1823,6 +1834,51 @@ class DeskLoop:
         self._calibration = class_stats(rows)
         if self._calibration:
             self._ui_put("calibration", to_meta(self._calibration))
+        self._refresh_drift(rows, now)
+
+    # --- drift (4.19.2 / contour C): Page-Hinkley on the champion's error series --------
+    DRIFT_WINDOW = 200
+    DRIFT_MIN_N = 40
+
+    def _refresh_drift(self, rows: Sequence[Mapping[str, Any]], now: datetime) -> None:
+        """Errors = filled shadow trades with r_net ≤ 0, in close order. A detected
+        increase in the error rate is drift: the live target risk is cut to 0.5%
+        (`risk/drift_cut`) until the window clears. Never raises risk."""
+        closed = [
+            r for r in rows
+            if r.get("entry_px") not in (None, "") and r.get("r_net") not in (None, "")
+            and r.get("closed_at")
+        ]
+        closed.sort(key=lambda r: str(r["closed_at"]))
+        errors = [1 if Decimal(str(r["r_net"])) <= 0 else 0 for r in closed[-self.DRIFT_WINDOW:]]
+        was = self.drift_active
+        if len(errors) < self.DRIFT_MIN_N:
+            self.drift_active = False
+            result = None
+        else:
+            result = PageHinkley().run(errors)
+            self.drift_active = result.drift
+        if self.knowledge.available():
+            self._ui_put(
+                "drift",
+                json.dumps(
+                    {
+                        "at": now.isoformat(),
+                        "n": len(errors),
+                        "drift": self.drift_active,
+                        "t": None if result is None else result.t,
+                        "target_risk": str(self.effective_target_risk()),
+                    }
+                ),
+            )
+        if was != self.drift_active and self.knowledge.available():
+            self.knowledge.set_meta(
+                "drift_last_change",
+                json.dumps({"at": now.isoformat(), "drift": self.drift_active}),
+            )
+
+    def effective_target_risk(self) -> Decimal:
+        return target_after_drift(drift=self.drift_active, base=self.risk_config.target_risk_pct)
 
     def _reload_instruments(self) -> None:
         """Signer refreshed instruments-info from the venue → registry rows (D-04)."""
@@ -1907,7 +1963,7 @@ class DeskLoop:
             entry=row.trade_px,
             stop=stop,
             lev=lev,
-            target_risk=cfg.target_risk_pct,
+            target_risk=self.effective_target_risk(),
             deposit_share=cfg.deposit_share_per_trade,
             qty_step=inst.qty_step,
             min_qty=inst.min_qty,
@@ -1974,6 +2030,86 @@ class DeskLoop:
     # own observed |rate| once ≥ 20 prints exist; before that no rate is extreme
     # (unknown is not a veto). Provenance: data, self-calibrating.
     FUNDING_MIN_N = 20
+
+    # --- fragility (3.15.5): OI peak × crowded funding × thin book -----------------
+    OI_HIST_STEP = timedelta(minutes=5)
+    OI_HIST_KEEP = timedelta(days=30)
+    FRAGILITY_THIN_Z = Decimal("-1")
+
+    def _sample_oi_history(self, symbol: str, when: datetime, level: Decimal) -> None:
+        """One OI sample per 5 minutes per symbol, 30 days, persisted (meta oi_hist:*)."""
+        hist = self._oi_hist.setdefault(symbol, [])
+        if hist and when - hist[-1][0] < self.OI_HIST_STEP:
+            return
+        hist.append((when, level))
+        cutoff = when - self.OI_HIST_KEEP
+        while hist and hist[0][0] < cutoff:
+            hist.pop(0)
+        if self.knowledge.available():
+            self._ui_put(
+                f"oi_hist:{symbol}",
+                json.dumps([[ts.isoformat(), str(lv)] for ts, lv in hist]),
+            )
+
+    def _load_oi_history(self) -> None:
+        for key, raw in self.knowledge.meta_prefix("oi_hist:").items():
+            symbol = key.split(":", 1)[1]
+            try:
+                rows = json.loads(raw)
+                self._oi_hist[symbol] = [
+                    (datetime.fromisoformat(ts), Decimal(str(lv))) for ts, lv in rows
+                ]
+            except (json.JSONDecodeError, ValueError, TypeError, ArithmeticError):
+                continue
+
+    def _oi_peak(self, symbol: str) -> bool | None:
+        hist = self._oi_hist.get(symbol) or []
+        if len(hist) < self.FUNDING_MIN_N:
+            return None
+        levels = sorted(lv for _ts, lv in hist)
+        p95 = levels[min(len(levels) - 1, int(0.95 * (len(levels) - 1)))]
+        return hist[-1][1] >= p95
+
+    def _funding_tail(self, symbol: str) -> tuple[bool | None, bool | None]:
+        """(top-5% positive → longs pay, crowd long; bottom-5% → shorts pay, crowd short)."""
+        rate = self.funding.get(symbol)
+        hist = self._funding_hist.get(symbol) or []
+        if rate is None or len(hist) < self.FUNDING_MIN_N:
+            return None, None
+        xs = sorted(hist)
+        p95 = xs[min(len(xs) - 1, int(0.95 * (len(xs) - 1)))]
+        p5 = xs[max(0, int(0.05 * (len(xs) - 1)))]
+        return (rate >= p95 and rate > 0), (rate <= p5 and rate < 0)
+
+    def _thin_book(self, st: SymbolState) -> bool | None:
+        """Depth near the touch against the ОКО Passport norm (robust z < −1 = thin)."""
+        book = st.book_pre or st.book
+        if not book.ready or st.last_touch is None:
+            return None
+        passport = self.oko.passport_for(st.symbol)
+        px = str(st.last_touch.trade_px)
+        depth = book.depth_near("bid", px, self.config.prs_delta_ticks) + book.depth_near(
+            "ask", px, self.config.prs_delta_ticks
+        )
+        z = passport.depth.z(depth)
+        if z is None:
+            return None
+        return z < self.FRAGILITY_THIN_Z
+
+    def _fragility(self, st: SymbolState) -> dict[str, Any]:
+        oi_peak = self._oi_peak(st.symbol)
+        top5, bottom5 = self._funding_tail(st.symbol)
+        thin = self._thin_book(st)
+        return {
+            "oi_peak": oi_peak,
+            "funding_top5": top5,
+            "funding_bottom5": bottom5,
+            "thin_book": thin,
+            "forbid_long": forbid_new_long(oi_peak=oi_peak, funding_top5=top5, thin_book=thin),
+            "forbid_short": forbid_new_short(
+                oi_peak=oi_peak, funding_bottom5=bottom5, thin_book=thin
+            ),
+        }
 
     def _funding_extreme(self, symbol: str) -> bool:
         rate = self.funding.get(symbol)
@@ -2166,7 +2302,7 @@ class DeskLoop:
             entry=intent.entry,
             stop=intent.stop,
             lev=lev,
-            target_risk=cfg.target_risk_pct,
+            target_risk=self.effective_target_risk(),
             deposit_share=cfg.deposit_share_per_trade,
             qty_step=inst.qty_step,
             min_qty=inst.min_qty,
