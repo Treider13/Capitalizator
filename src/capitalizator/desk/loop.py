@@ -1756,6 +1756,7 @@ class DeskLoop:
                     stop_mode=self.risk_config.stop_mode,
                     k_atr=self.k_atr_for(window, st.symbol),
                     max_stop_atr=self.risk_config.max_stop_atr,
+                    max_stop_pct=self.risk_config.max_stop_pct,
                     manual_stop_frac=self.risk_config.manual_stop_frac,
                     liq_levels=self.liquidation_levels(st, closed_at),
                     next_funding_at=self.next_funding.get(st.symbol),
@@ -2311,6 +2312,8 @@ class DeskLoop:
             min_qty=inst.min_qty,
             min_notional=inst.min_notional,
             max_lev=cfg.max_lev,
+            side=side,
+            day_halt_room=self.account.halts.remaining_frac(self.account.sizing_equity())["day"],
         )
         qty = decision.qty if decision.action == "accept" else inst.min_qty
         pid = f"{row.touch_id}:{source}"
@@ -2907,6 +2910,7 @@ class DeskLoop:
             info["send_skip"] = why
             return None, info
         lev = min(cfg.max_lev, inst.max_lev)
+        room = self.account.halts.remaining_frac(self.account.sizing_equity())
         decision = size_position(
             equity=self.account.sizing_equity(),
             entry=intent.entry,
@@ -2918,6 +2922,9 @@ class DeskLoop:
             min_qty=inst.min_qty,
             min_notional=inst.min_notional,
             max_lev=cfg.max_lev,
+            max_stop_pct=cfg.max_stop_pct,
+            side=intent.side,
+            day_halt_room=room["day"],
         )
         info["sizing"] = {
             "action": decision.action,
@@ -2928,6 +2935,10 @@ class DeskLoop:
             "risk_usdt": str(decision.risk_usdt),
             "risk_frac": str(decision.risk_frac),
             "binding": decision.binding,
+            "risk_warning": decision.risk_warning,
+            "warning": decision.warning,
+            "max_stop_pct": str(cfg.max_stop_pct),
+            "day_halt_room": str(room["day"]),
             "equity": str(self.account.equity),
             "sizing_equity": str(self.account.sizing_equity()),
             "participating_share": str(cfg.participating_share),

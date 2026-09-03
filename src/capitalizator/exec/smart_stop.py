@@ -94,6 +94,7 @@ def initial_stop(
     max_stop_atr: Decimal | None = None,
     entry: Decimal | None = None,
     manual_frac: Decimal | None = None,
+    max_stop_pct: Decimal | None = None,
 ) -> StopDecision:
     """Widen the structural stop by a volatility buffer and push it past clusters.
 
@@ -109,6 +110,8 @@ def initial_stop(
     ATR from the entry — a setup whose invalidation is that far away is refused
     (ValueError), it is not "fitted" by shrinking the buffer. Size follows the stop,
     never the other way round.
+    `max_stop_pct` with `entry`: the same refusal in price-percent terms (Э1).
+    Without `entry` the percent ceiling cannot be measured and is not applied.
     """
     if side not in {"buy", "sell"}:
         raise ValueError("side must be buy|sell")
@@ -118,6 +121,8 @@ def initial_stop(
         raise ValueError("k_atr must be > 0")
     if max_stop_atr is not None and max_stop_atr <= 0:
         raise ValueError("max_stop_atr must be > 0")
+    if max_stop_pct is not None and max_stop_pct <= 0:
+        raise ValueError("max_stop_pct must be > 0")
     if mode not in MODES:
         raise ValueError(f"mode must be one of {sorted(MODES)}")
     comps: dict[str, str] = {"structural": str(structural), "mode": mode}
@@ -149,6 +154,7 @@ def initial_stop(
                 raise ValueError(
                     f"stop_too_wide: {dist_atr} ATR from entry > max {max_stop_atr} ATR"
                 )
+        _enforce_max_stop_pct(stop=stop, entry=entry, max_stop_pct=max_stop_pct, comps=comps)
         return StopDecision(
             stop=stop,
             structural=structural,
@@ -208,6 +214,7 @@ def initial_stop(
             raise ValueError(
                 f"stop_too_wide: {dist_atr} ATR from entry > max {max_stop_atr} ATR"
             )
+    _enforce_max_stop_pct(stop=stop, entry=entry, max_stop_pct=max_stop_pct, comps=comps)
     return StopDecision(
         stop=stop,
         structural=structural,
@@ -215,6 +222,26 @@ def initial_stop(
         moved_for_cluster=moved,
         components=comps,
     )
+
+
+def _enforce_max_stop_pct(
+    *,
+    stop: Decimal,
+    entry: Decimal | None,
+    max_stop_pct: Decimal | None,
+    comps: dict[str, str],
+) -> None:
+    """Refuse — do not shrink — when the finished stop is farther than the operator %.
+
+    Missing entry: the ceiling cannot be measured (never a guessed price).
+    """
+    if max_stop_pct is None or entry is None or entry <= 0:
+        return
+    frac = abs(entry - stop) / entry
+    comps["stop_pct"] = str(frac)
+    comps["max_stop_pct"] = str(max_stop_pct)
+    if frac > max_stop_pct:
+        raise ValueError(f"stop_too_wide_pct: {frac} of entry > max {max_stop_pct}")
 
 
 def soft_exit(*, side: str, structural: Decimal, bar: Bar) -> bool:

@@ -124,6 +124,8 @@ class BounceSnapshot:
     # liquidation clusters the stop must not park on.
     k_atr: Decimal = K_ATR_DEFAULT
     max_stop_atr: Decimal | None = None
+    # Operator ceiling on stop distance as a fraction of entry (Э1). None = unset.
+    max_stop_pct: Decimal | None = None
     liq_levels: tuple[Decimal, ...] = ()
     manual_stop_frac: Decimal | None = None
     # Symbol policy inputs for SessionPolicy (None = unknown, majors still pass).
@@ -143,6 +145,8 @@ class BounceSnapshot:
             raise ValueError("k_atr must be > 0")
         if self.max_stop_atr is not None and self.max_stop_atr <= 0:
             raise ValueError("max_stop_atr must be > 0")
+        if self.max_stop_pct is not None and self.max_stop_pct <= 0:
+            raise ValueError("max_stop_pct must be > 0")
         if self.macro_multiplier < 0 or self.macro_multiplier > 1:
             raise ValueError("macro_multiplier must be in [0, 1]; windows never open size")
 
@@ -515,6 +519,7 @@ class BounceStrategy:
                 entry=snap.price,
                 manual_frac=snap.manual_stop_frac,
                 mode=snap.stop_mode,
+                max_stop_pct=snap.max_stop_pct,
             )
             stop = smart.stop
         except ValueError:

@@ -150,7 +150,37 @@ class QtyDecision:
     margin: Decimal
     risk_usdt: Decimal
     risk_frac: Decimal
-    binding: str  # target_risk | deposit_share | cap_margin | min_qty | min_notional
+    binding: str  # deposit_share | min_qty | min_notional | max_lev | max_stop_pct | stop_past_liq
+    risk_warning: bool = False
+    warning: str = ""
+
+
+def isolated_liq_price(
+    *,
+    entry: Decimal,
+    lev: Decimal,
+    side: str,
+    mmr: Decimal = Decimal("0.005"),
+) -> Decimal:
+    """Isolated-margin estimate: the price where equity equals maintenance margin.
+
+    Cross is looser; isolated is the conservative bound. A stop at or past this
+    price would never fire — the venue liquidates first.
+    long  liq = entry × (1 − 1/lev + mmr)
+    short liq = entry × (1 + 1/lev − mmr)
+    """
+    if entry <= 0 or lev <= 0:
+        raise ValueError("entry/lev must be > 0")
+    if side not in {"buy", "sell"}:
+        raise ValueError("side must be buy|sell")
+    if mmr < 0:
+        raise ValueError("mmr must be >= 0")
+    offset = (Decimal("1") / lev) - mmr
+    if offset <= 0:
+        return entry
+    if side == "buy":
+        return entry * (Decimal("1") - offset)
+    return entry * (Decimal("1") + offset)
 
 
 def size_position(
@@ -166,14 +196,21 @@ def size_position(
     min_notional: Decimal,
     cap_margin: Decimal = CAP_MARGIN,
     max_lev: Decimal = F1_MAX_LEV,
+    max_stop_pct: Decimal | None = None,
+    side: str | None = None,
+    day_halt_room: Decimal | None = None,
+    mmr: Decimal = Decimal("0.005"),
 ) -> QtyDecision:
-    """Concrete qty from equity, stop distance and the two operator knobs (D-11/D-12).
+    """Concrete qty from the operator's deposit share (Э1, D-11/D-12).
 
-    qty_risk   = target_risk × equity / |entry − stop|     (risk budget)
-    qty_margin = deposit_share × equity × lev / entry     (margin the operator allows)
-    qty_cap    = cap_margin × equity × lev / entry        (10% margin hard cap)
-    qty = min of the three, floored to qty_step. Leverage is never raised to fit.
-    Below min_qty / min_notional → reject (no "0.001 anyway").
+    qty = deposit_share × equity × lev / entry, floored to qty_step.
+    `target_risk` is a warning threshold (risk_frac > target → accept + warning),
+    not a shrink. `cap_margin` is kept so existing callers do not break; it is
+    not a binding constraint — 20–30% share is 20–30%, not silently 10%.
+    `max_stop_pct`: |entry−stop|/entry above the ceiling → reject.
+    `side`: a stop at or past the isolated-liq estimate → reject.
+    Leverage is never raised to fit. Below min_qty / min_notional → reject
+    (no "0.001 anyway").
     """
     if equity <= 0 or entry <= 0 or stop <= 0:
         raise ValueError("equity/entry/stop must be > 0")
@@ -181,6 +218,8 @@ def size_position(
         raise ValueError("lev must be > 0")
     if qty_step <= 0 or min_qty <= 0:
         raise ValueError("qty_step/min_qty must be > 0")
+    if deposit_share <= 0:
+        raise ValueError("deposit_share must be > 0")
     if lev > max_lev:
         return QtyDecision(
             "reject", f"lev {lev} above max {max_lev}", Decimal("0"), lev,
@@ -189,20 +228,34 @@ def size_position(
     dist = abs(entry - stop)
     if dist <= 0:
         raise ValueError("stop must differ from entry")
-    qty_risk = target_risk * equity / dist
-    qty_margin = deposit_share * equity * lev / entry
-    qty_cap = cap_margin * equity * lev / entry
-    candidates = {
-        "target_risk": qty_risk,
-        "deposit_share": qty_margin,
-        "cap_margin": qty_cap,
-    }
-    binding = min(candidates, key=lambda k: candidates[k])
-    raw = candidates[binding]
+    stop_frac = dist / entry
+    if max_stop_pct is not None:
+        if max_stop_pct <= 0:
+            raise ValueError("max_stop_pct must be > 0")
+        if stop_frac > max_stop_pct:
+            return QtyDecision(
+                "reject",
+                f"stop {stop_frac} > max_stop_pct {max_stop_pct}",
+                Decimal("0"), lev, Decimal("0"), Decimal("0"), Decimal("0"),
+                "max_stop_pct",
+            )
+    if side in {"buy", "sell"}:
+        liq = isolated_liq_price(entry=entry, lev=lev, side=side, mmr=mmr)
+        if (side == "buy" and stop <= liq) or (side == "sell" and stop >= liq):
+            return QtyDecision(
+                "reject",
+                f"stop {stop} past isolated liq {liq}",
+                Decimal("0"), lev, Decimal("0"), Decimal("0"), Decimal("0"),
+                "stop_past_liq",
+            )
+    # cap_margin stays in the signature (callers / old tests pass it) and does
+    # not shrink the operator's share — that was the 10% silent override.
+    _ = cap_margin
+    raw = deposit_share * equity * lev / entry
     qty = (raw / qty_step).to_integral_value(rounding=ROUND_DOWN) * qty_step
     margin = qty * entry / lev
     risk_usdt = qty * dist
-    risk_frac = risk_usdt / equity
+    risk_frac = risk_usdt / equity if equity else Decimal("0")
     if qty < min_qty:
         return QtyDecision(
             "reject", f"qty {qty} < minOrderQty {min_qty}", qty, lev, margin,
@@ -213,4 +266,15 @@ def size_position(
             "reject", f"notional {qty * entry} < minNotional {min_notional}", qty, lev,
             margin, risk_usdt, risk_frac, "min_notional",
         )
-    return QtyDecision("accept", "ok", qty, lev, margin, risk_usdt, risk_frac, binding)
+    flags: list[str] = []
+    if target_risk > 0 and risk_frac > target_risk:
+        flags.append("risk_above_target")
+    if day_halt_room is not None and risk_frac > day_halt_room:
+        flags.append("risk_above_day_halt")
+    warning = ",".join(flags)
+    return QtyDecision(
+        "accept",
+        "ok" if not warning else warning,
+        qty, lev, margin, risk_usdt, risk_frac, "deposit_share",
+        bool(warning), warning,
+    )

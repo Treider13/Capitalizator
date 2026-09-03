@@ -119,6 +119,24 @@ class Halts:
             liq_flag=False,
         )
 
+    def remaining_frac(self, equity: Decimal) -> dict[str, Decimal]:
+        """How much more of each reference equity can be lost before that tap.
+
+        Positive = room left. At the start of the day with the default −3% tap
+        this is 0.03. Already down 1% → 0.02. A trade whose risk_frac is larger
+        is a warning (the tap still fires after the loss), not a silent shrink.
+        """
+        if equity <= 0:
+            raise ValueError("equity must be > 0")
+        day_used = (self.day_start - equity) / self.day_start
+        week_used = (self.week_start - equity) / self.week_start
+        peak_used = (self.peak - equity) / self.peak
+        return {
+            "day": abs(self.day_limit) - day_used,
+            "week": abs(self.week_limit) - week_used,
+            "peak": abs(self.peak_limit) - peak_used,
+        }
+
     def allow_entry(self) -> bool:
         return not self.halted
 

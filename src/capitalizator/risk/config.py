@@ -5,9 +5,9 @@ hash-chain link so the journal can say which config sized which intent.
 Defaults come from infra/phase.yaml (target_risk, max_lev) and infra/gates.yaml f5
 (halts) — the numbers a human already wrote there, not new constants.
 
-Law 8 (IMPLEMENTATION.md): risk% = margin% × lev × stop%. The sizer takes the
-binding constraint of {target_risk, deposit_share, cap_margin}; it never raises
-leverage to hit a number.
+Law 8 (IMPLEMENTATION.md): risk% = margin% × lev × stop%. The live sizer takes
+the operator's deposit_share as the size; implied risk is a warning against
+target_risk_pct, never a silent shrink. Leverage is never raised to hit a number.
 """
 
 from __future__ import annotations
@@ -38,8 +38,12 @@ def phase_ceilings() -> tuple[Decimal, Decimal]:
 @dataclass(frozen=True)
 class RiskConfig:
     # Fraction of equity used as margin per trade ("какая часть депозита в сделку").
+    # This is the size, not a ceiling the sizer may undercut.
     deposit_share_per_trade: Decimal = Decimal("0.10")
-    # Fraction of equity lost if the stop is hit.
+    # Operator ceiling on stop distance as a fraction of entry (1–5%). The stop
+    # may stretch up to this; farther is a refusal, never a fitted tighter stop.
+    max_stop_pct: Decimal = Decimal("0.05")
+    # Fraction of equity lost if the stop is hit — a warning threshold, not a cut.
     target_risk_pct: Decimal = Decimal("0.01")
     max_lev: Decimal = Decimal("3")
     # Sessions release: up to three ideas at once, one per correlation group
@@ -87,6 +91,8 @@ class RiskConfig:
     def __post_init__(self) -> None:
         if not (Decimal("0") < self.deposit_share_per_trade <= Decimal("1")):
             raise ValueError("deposit_share_per_trade must be in (0, 1]")
+        if not (Decimal("0.01") <= self.max_stop_pct <= Decimal("0.05")):
+            raise ValueError("max_stop_pct must be in [0.01, 0.05] (1-5%)")
         # Ceilings are the phase file — the artifact a human writes after a gate
         # (ARCHITECTURE-AZ §10 п.2/3: 1% until Ф4, 3x unless A+). The operator menu can
         # lower risk, never lift it above the phase (audit: 5% / 10x were reachable).
@@ -145,7 +151,6 @@ class RiskConfig:
     @classmethod
     def from_payload(cls, raw: dict[str, Any]) -> RiskConfig:
         dec = (
-            "deposit_share_per_trade",
             "target_risk_pct",
             "max_lev",
             "day_halt",
@@ -160,7 +165,11 @@ class RiskConfig:
         )
         kwargs: dict[str, Any] = {}
         for key, value in raw.items():
-            if key in dec:
+            if key == "deposit_share_per_trade":
+                kwargs[key] = parse_deposit_share(value)
+            elif key == "max_stop_pct":
+                kwargs[key] = parse_max_stop_pct(value)
+            elif key in dec:
                 kwargs[key] = Decimal(str(value))
             elif key in {"max_stop_atr", "manual_stop_frac"}:
                 kwargs[key] = None if value in (None, "", "null", "none") else Decimal(str(value))
@@ -187,6 +196,26 @@ class RiskConfig:
     def implied_risk(self, *, lev: Decimal, stop_frac: Decimal) -> Decimal:
         """Law 8: what deposit_share × lev × stop% would risk."""
         return self.deposit_share_per_trade * lev * stop_frac
+
+
+def parse_deposit_share(raw: object) -> Decimal:
+    """Operator box is percent (10/20/30); stored snapshots and the API use (0, 1]."""
+    d = Decimal(str(raw))
+    if Decimal("1") < d <= Decimal("100"):
+        d = d / Decimal("100")
+    if not (Decimal("0") < d <= Decimal("1")):
+        raise ValueError("deposit_share_per_trade must be in (0, 1] or 1-100%")
+    return d
+
+
+def parse_max_stop_pct(raw: object) -> Decimal:
+    """Operator box is percent (1–5); stored snapshots use [0.01, 0.05]."""
+    d = Decimal(str(raw))
+    if Decimal("0.05") < d <= Decimal("5"):
+        d = d / Decimal("100")
+    if not (Decimal("0.01") <= d <= Decimal("0.05")):
+        raise ValueError("max_stop_pct must be in [0.01, 0.05] or 1-5%")
+    return d
 
 
 def _as_bool(value: Any) -> bool:

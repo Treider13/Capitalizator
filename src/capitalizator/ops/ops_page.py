@@ -17,6 +17,7 @@ from __future__ import annotations
 import html
 import json
 from collections.abc import Mapping, Sequence
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from capitalizator.ops import i18n_ru
@@ -30,13 +31,17 @@ th{color:#7f8fa4;font-weight:600}form.inline{display:inline-block;margin:0 6px 6
 input,select{background:#1e2329;color:#d7dde5;border:1px solid #2e3a4d;border-radius:4px;padding:4px 8px}
 button{background:#2a3a55;color:#e6edf6;border:1px solid #3d5278;border-radius:4px;padding:4px 10px;cursor:pointer}
 button.warn{background:#5a2a2a;border-color:#8a3d3d}.pill{display:inline-block;padding:2px 8px;border-radius:10px;background:#1e2329;margin:0 4px 4px 0;font-size:12px}
+.knobs{display:flex;gap:24px;flex-wrap:wrap;margin:8px 0 16px}
+.knobs label{display:flex;flex-direction:column;gap:6px;font-size:14px;color:#c5d0dc}
+.knobs input{font-size:22px;padding:8px 12px;width:8em;border-color:#4a6a9a}
 .ok{color:#6fd18a}.bad{color:#f28b82}.muted{color:#7f8fa4}.hint{font-size:12px;color:#7f8fa4}
 label.confirm{font-size:12px;color:#9fb3c8;margin-right:6px}a{color:#8ab4f8}
 """
 
 RISK_HINTS: dict[str, str] = {
-    "deposit_share_per_trade": "Доля депозита в маржу одной сделки (0..1).",
-    "target_risk_pct": "Риск на сделку как доля эквити; потолок задаёт phase.yaml.",
+    "deposit_share_per_trade": "Доля депозита, которая реально входит в сделку как маржа (10/20/30%). Это размер, не потолок «если влезет».",
+    "max_stop_pct": "Максимальный стоп как процент цены (1–5). Система может растянуть стоп до этого; дальше — отказ, не подгонка.",
+    "target_risk_pct": "Целевой риск на сделку (доля эквити). Предупреждение в журнале, если получилось больше; сделку не режет. Потолок задаёт phase.yaml.",
     "max_lev": "Максимальное плечо; потолок задаёт phase.yaml.",
     "max_open_positions": "Одновременно открытых идей (по одной на корреляционную группу).",
     "max_intents_per_session": "Потолок заявок на любой ключ бюджета; окна в sessions.yaml режут ниже.",
@@ -60,6 +65,16 @@ RISK_HINTS: dict[str, str] = {
 
 def _e(value: object) -> str:
     return html.escape("" if value is None else str(value))
+
+
+def _frac_to_pct(value: object) -> str:
+    """Stored fraction 0.10 / 0.05 → operator box 10 / 5. Empty if unset."""
+    if value in (None, "", "null", "none"):
+        return ""
+    try:
+        return format((Decimal(str(value)) * 100).quantize(Decimal("1")), "f")
+    except (InvalidOperation, ValueError, TypeError):
+        return ""
 
 
 def _json(raw: str | None, default: Any) -> Any:
@@ -202,10 +217,28 @@ def render_ops_html(
         f"<p class='hint'>Версия {_e(cfg.get('version'))}, id {_e(cfg.get('config_id'))}. "
         "Пустое поле — без изменений. Потолки риска и плеча берутся из phase.yaml и не поднимаются отсюда.</p>"
     )
-    out.append("<form method='post' action='/api/risk'>" + _confirm(token) + "<table>")
+    out.append("<form method='post' action='/api/risk'>" + _confirm(token))
+    share_pct = _frac_to_pct(cfg.get("deposit_share_per_trade"))
+    stop_pct = _frac_to_pct(cfg.get("max_stop_pct"))
+    out.append(
+        "<h3>Сделка: доля депозита и максимальный стоп</h3>"
+        "<p class='hint'>Два обязательных окна. Доля депозита — сколько маржи реально "
+        "входит в сделку. Стоп система может растянуть до указанного процента цены; "
+        "дальше — отказ. Если получившийся риск больше целевого — сделка ставится, "
+        "в журнале предупреждение (кран дня/недели по-прежнему срабатывает после убытка).</p>"
+        "<div class='knobs'>"
+        "<label>Доля депозита в сделку, %"
+        f"<input id='knob-deposit-share' name='deposit_share_per_trade' "
+        f"inputmode='decimal' size='6' value='{_e(share_pct)}'/></label>"
+        "<label>Максимальный стоп, %"
+        f"<input id='knob-max-stop' name='max_stop_pct' "
+        f"inputmode='decimal' size='6' value='{_e(stop_pct)}'/></label>"
+        "</div>"
+    )
+    out.append("<table>")
     out.append("<tr><th>параметр</th><th>сейчас</th><th>новое</th><th>что это</th></tr>")
     for key, value in cfg.items():
-        if key in {"version", "config_id"}:
+        if key in {"version", "config_id", "deposit_share_per_trade", "max_stop_pct"}:
             continue
         out.append(
             f"<tr><td><code>{_e(key)}</code></td><td>{_e(value)}</td>"
