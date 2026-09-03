@@ -25,6 +25,16 @@ def test_k_atr_is_applied_and_recorded() -> None:
                      k_atr=Decimal("0"))
 
 
+def test_cluster_band_widens_to_tenth_atr() -> None:
+    # buffered stop at 10000.6: 10000 is 0.6 away — outside 5 ticks (0.5), inside 0.1·ATR
+    small = initial_stop(side="buy", structural=Decimal("10001.1"), tick=TICK,
+                         atr=Decimal("1"), spread=None, mode="hybrid")
+    assert small.stop == Decimal("10000.6") and not small.moved_for_cluster
+    wide = initial_stop(side="buy", structural=Decimal("10005.6"), tick=TICK,
+                        atr=Decimal("10"), spread=None, mode="hybrid")
+    assert wide.moved_for_cluster and wide.stop <= Decimal("10000") - Decimal("1.0")
+
+
 def test_liquidation_cluster_pushes_the_stop_past_it() -> None:
     # buffered stop lands at 98950; a liquidation cluster sits 2 ticks below it
     base = initial_stop(side="buy", structural=Decimal("99000"), tick=TICK, atr=Decimal("100"),

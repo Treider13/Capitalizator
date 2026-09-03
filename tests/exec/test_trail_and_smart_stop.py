@@ -8,7 +8,12 @@ from decimal import Decimal
 import pytest
 
 from capitalizator.exec.paper import PaperEngine
-from capitalizator.exec.smart_stop import initial_stop, round_levels_near, soft_exit
+from capitalizator.exec.smart_stop import (
+    initial_stop,
+    push_past_clusters,
+    round_levels_near,
+    soft_exit,
+)
 from capitalizator.exec.trail import TrailEngine, TrailState
 from capitalizator.patterns.bar_quality import atr as atr_of
 from capitalizator.types import MarketEvent
@@ -109,7 +114,11 @@ def test_no_trail_before_half_then_structure_trail_monotone() -> None:
     buffer = (Decimal("0.5") * atr_of(bars) / Decimal("0.1")).to_integral_value(
         rounding="ROUND_CEILING"
     ) * Decimal("0.1")
-    assert first == Decimal("100.9") - buffer  # swing − k·ATR (ceil to tick)
+    raw = TrailEngine._round(Decimal("100.9") - buffer, Decimal("0.1"), "buy")
+    expected, _, _ = push_past_clusters(
+        side="buy", stop=raw, tick=Decimal("0.1"), atr=atr_of(bars),
+    )
+    assert first == expected  # swing − k·ATR, then past magnets
     # same bars again → no move (monotone / idempotent)
     assert eng.on_bar(st, bars, last_px=Decimal("107")) == []
     assert st.stop == first
@@ -185,6 +194,51 @@ def test_v_spike_arms_exchange_trailing_and_paper_follows_it() -> None:
     assert pos.state == "closed" and pos.exit_reason == "stop"
     assert pos.exit_px >= Decimal("123") - trailing.trailing_distance - Decimal("0.1")
     assert pos.r_gross() is not None and pos.r_gross() > Decimal("5")  # most of the spike kept
+
+
+def test_already_armed_trail_state_does_not_rearm() -> None:
+    """Restart: twin already has trailing_distance → TrailState starts armed."""
+    eng = TrailEngine(mode="both")
+    st = TrailState(
+        side="buy", entry=Decimal("100"), stop=Decimal("98"), tick=Decimal("0.1"),
+        exchange_trailing_armed=True,
+    )
+    st.half_taken = True
+    st.phase = 1
+    spike = _bar(16, "106", "121.9", "105.9", "121")
+    actions = eng.on_bar(st, _uptrend(16) + [spike], last_px=Decimal("121"))
+    assert all(a.kind != "exchange_trailing" for a in actions)
+
+
+def test_impulse_against_us_does_not_arm_exchange_trailing() -> None:
+    eng = TrailEngine(mode="both")
+    st = TrailState(side="buy", entry=Decimal("100"), stop=Decimal("98"), tick=Decimal("0.1"))
+    eng.on_half(st)
+    dump = _bar(16, "106", "106.2", "90", "90.5")  # range ≫ 2·ATR, close against the long
+    actions = eng.on_bar(st, _uptrend(16) + [dump], last_px=Decimal("90.5"))
+    assert all(a.kind != "exchange_trailing" for a in actions)
+    assert not st.exchange_trailing_armed
+
+
+def test_follow_trailing_does_not_place_stop_through_last_price() -> None:
+    paper = PaperEngine()
+    pos = paper.submit(
+        paper_id="p", touch_id="t", symbol="BTCUSDT", side="buy",
+        limit_px=Decimal("100"), qty=Decimal("1"), stop=Decimal("98"), tp=None,
+        tick=Decimal("0.1"), now=T0, valid_for=timedelta(hours=1), source="shadow",
+        tag="bounce",
+    )
+
+    def pr(ts, px):
+        return MarketEvent(stream="trades", exchange="bybit", symbol="BTCUSDT",
+                           exchange_ts=ts, recv_ts=ts,
+                           payload={"px": px, "qty": "1", "side": "sell"})
+
+    paper.on_print(pr(T0 + timedelta(seconds=1), "99.9"))
+    paper.on_print(pr(T0 + timedelta(minutes=1), "121"))
+    # spike already given back: last 115, mfe 121, distance 1 → cand 120 would fire now
+    assert paper.arm_trailing("p", Decimal("1"), reason="impulse", last_px=Decimal("115"))
+    assert pos.stop == Decimal("98")
 
 
 def test_trail_state_rejects_wrong_side_stop() -> None:

@@ -11,9 +11,9 @@ Three layers, every one with a source:
 3. Cluster avoidance: stops parked exactly at round numbers get run (Osler 2005,
    "Stop-loss orders and price cascades in currency markets", J. Int. Money &
    Finance: stop-loss clustering at round numbers, cascades when they trigger).
-   A stop landing within `cluster_ticks` of a round level or another zone edge is
-   pushed to the far side of it. Size is then recomputed from the wider stop —
-   never the other way round.
+   A stop landing within max(cluster_ticks · tick, 0.1 · ATR) of a round level
+   or another zone edge is pushed to the far side of it. Size is then recomputed
+   from the wider stop — never the other way round.
 
 `soft_exit` is the confirmation exit: a closed working bar beyond the structural
 level while the hard stop (with buffer) is still alive → leave at market instead
@@ -32,6 +32,7 @@ from capitalizator.zones.model import Bar, Zone
 MODES = frozenset({"structural", "volatility", "hybrid", "manual_bounded"})
 K_ATR_DEFAULT = Decimal("0.5")  # provenance: docs 0.5–0.7 ATR; status paper until calibrated
 CLUSTER_TICKS_DEFAULT = 5  # provenance: prs_delta_ticks (registry.yaml) — the "near" band
+CLUSTER_ATR_DEFAULT = Decimal("0.1")  # 0.1 ATR; 5 ticks alone is cosmetic on BTC
 SPREAD_MULT_DEFAULT = Decimal("3")
 
 
@@ -76,6 +77,62 @@ def _plain(value: Decimal) -> Decimal:
     if value == value.to_integral_value():
         return value.quantize(Decimal(1))
     return value.normalize()
+
+
+def cluster_band(
+    *,
+    tick: Decimal,
+    atr: Decimal | None,
+    cluster_ticks: int = CLUSTER_TICKS_DEFAULT,
+) -> Decimal:
+    """Magnet proximity: max(cluster_ticks · tick, 0.1 · ATR). ATR None → ticks only."""
+    if tick <= 0:
+        raise ValueError("tick must be > 0")
+    band = tick * cluster_ticks
+    if atr is not None and atr > 0:
+        band = max(band, CLUSTER_ATR_DEFAULT * atr)
+    return (band / tick).to_integral_value(rounding=ROUND_CEILING) * tick
+
+
+def push_past_clusters(
+    *,
+    side: str,
+    stop: Decimal,
+    tick: Decimal,
+    atr: Decimal | None = None,
+    zones: Sequence[Zone] = (),
+    liq_levels: Sequence[Decimal] = (),
+    cluster_ticks: int = CLUSTER_TICKS_DEFAULT,
+) -> tuple[Decimal, bool, Decimal | None]:
+    """One push past the farthest magnet (round / zone edge / liq) inside the band.
+
+    Returns (stop, moved, magnet). Never walks: measured from the incoming stop.
+    """
+    if side not in {"buy", "sell"}:
+        raise ValueError("side must be buy|sell")
+    if tick <= 0 or stop <= 0:
+        raise ValueError("tick/stop must be > 0")
+    band = cluster_band(tick=tick, atr=atr, cluster_ticks=cluster_ticks)
+    magnets: list[Decimal] = list(round_levels_near(stop, span=band, tick=tick))
+    for z in zones:
+        magnets.extend((z.lo, z.hi))
+    magnets.extend(lvl for lvl in liq_levels if lvl > 0 and abs(lvl - stop) <= band)
+    base = stop
+    best: Decimal | None = None
+    best_level: Decimal | None = None
+    for level in magnets:
+        if abs(level - base) > band:
+            continue
+        pushed = level - band if side == "buy" else level + band
+        if (side == "buy" and pushed < base) or (side == "sell" and pushed > base):
+            if best is None or (pushed < best if side == "buy" else pushed > best):
+                best, best_level = pushed, level
+    if best is None:
+        return stop, False, None
+    out = (best / tick).to_integral_value(
+        rounding=ROUND_FLOOR if side == "buy" else ROUND_CEILING
+    ) * tick
+    return out, True, best_level
 
 
 def initial_stop(
@@ -171,32 +228,21 @@ def initial_stop(
     stop = structural - buffer if side == "buy" else structural + buffer
     moved = False
     if mode == "hybrid":
-        band = tick * cluster_ticks
-        magnets: list[Decimal] = list(round_levels_near(stop, span=band, tick=tick))
-        for z in zones:
-            magnets.extend((z.lo, z.hi))
+        band = cluster_band(tick=tick, atr=atr, cluster_ticks=cluster_ticks)
         liq_near = [lvl for lvl in liq_levels if lvl > 0 and abs(lvl - stop) <= band]
         if liq_near:
-            magnets.extend(liq_near)
             comps["liq_levels_near"] = str(len(liq_near))
-        # One push, measured from the buffered stop: past the farthest magnet inside
-        # the band. Chaining pushes off the moved stop would walk away indefinitely.
-        base = stop
-        best: Decimal | None = None
-        best_level: Decimal | None = None
-        for level in magnets:
-            if abs(level - base) > band:
-                continue
-            pushed = level - band if side == "buy" else level + band
-            if (side == "buy" and pushed < base) or (side == "sell" and pushed > base):
-                if best is None or (pushed < best if side == "buy" else pushed > best):
-                    best, best_level = pushed, level
-        if best is not None:
-            stop = (best / tick).to_integral_value(
-                rounding=ROUND_FLOOR if side == "buy" else ROUND_CEILING
-            ) * tick
-            moved = True
-            comps["cluster_level"] = format(_plain(best_level or Decimal(0)), "f")
+        stop, moved, cluster_level = push_past_clusters(
+            side=side,
+            stop=stop,
+            tick=tick,
+            atr=atr,
+            zones=zones,
+            liq_levels=liq_levels,
+            cluster_ticks=cluster_ticks,
+        )
+        if moved and cluster_level is not None:
+            comps["cluster_level"] = format(_plain(cluster_level), "f")
     if stop <= 0:
         raise ValueError("stop would be <= 0")
     comps["buffer"] = str(buffer)

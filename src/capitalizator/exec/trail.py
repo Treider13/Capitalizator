@@ -25,11 +25,12 @@ from dataclasses import dataclass, field
 from decimal import ROUND_CEILING, Decimal
 
 from capitalizator.card.sweep import fractals
+from capitalizator.exec.smart_stop import push_past_clusters
 from capitalizator.patterns.bar_quality import atr as atr_of
-from capitalizator.zones.model import Bar
+from capitalizator.zones.model import Bar, Zone
 
 IMPULSE_ATR_MULT = Decimal("2")  # provenance: paper — a bar > 2 ATR is a spike (calibrate)
-TRAIL_ATR_MULT = Decimal("1")  # exchange trailing distance; paper until calibrated
+TRAIL_ATR_MULT = Decimal("2")  # exchange trailing distance; 2 ATR (practice floor)
 K_ATR_TRAIL = Decimal("0.5")  # docs 0.5–0.7 ATR behind the swing
 
 
@@ -108,6 +109,8 @@ class TrailEngine:
         bars: Sequence[Bar],
         *,
         last_px: Decimal,
+        zones: Sequence[Zone] = (),
+        liq_levels: Sequence[Decimal] = (),
     ) -> list[TrailAction]:
         """Closed working bars (oldest→newest, same symbol/tf). Returns actions to apply."""
         out: list[TrailAction] = []
@@ -120,6 +123,14 @@ class TrailEngine:
             if swing is not None:
                 cand = swing - buffer if st.side == "buy" else swing + buffer
                 cand = self._round(cand, st.tick, st.side)
+                cand, _, _ = push_past_clusters(
+                    side=st.side,
+                    stop=cand,
+                    tick=st.tick,
+                    atr=atr,
+                    zones=zones,
+                    liq_levels=liq_levels,
+                )
                 if st._better(cand) and self._safe(st, cand, last_px):
                     st.moves.append((str(st.stop), str(cand), "swing"))
                     st.stop = cand
@@ -134,7 +145,8 @@ class TrailEngine:
             and st.half_taken
         ):
             last = bars[-1]
-            if (last.high - last.low) >= self.impulse_mult * atr:
+            our_way = last.close > last.open if st.side == "buy" else last.close < last.open
+            if our_way and (last.high - last.low) >= self.impulse_mult * atr:
                 dist = self._round(self.trail_mult * atr, st.tick, "sell")
                 st.exchange_trailing_armed = True
                 out.append(

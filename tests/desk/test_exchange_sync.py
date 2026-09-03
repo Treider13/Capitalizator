@@ -107,11 +107,11 @@ def test_short_spring_at_resistance_sends_sell_and_paper_twin_mirrors_it(tmp_pat
     t = WINDOW + timedelta(minutes=6)
     desk.on_trade(_trade(t, "4000", "ETHUSDT", "buy"), [RES])
     assert twin.state == "open"
-    desk.on_trade(_trade(t + timedelta(minutes=1), str(Decimal("4000") - twin.r_px - 1), "ETHUSDT"), [RES])
-    assert twin.half_taken and twin.half_px < twin.entry_px
     oms = desk.knowledge.oms_rows()
     half = next(c for c in oms if c["kind"] == "half_tp")
     assert half["payload"]["side"] == "sell" and Decimal(half["payload"]["price"]) < Decimal("4000")
+    desk.on_trade(_trade(t + timedelta(minutes=1), str(Decimal("4000") - twin.r_px - 1), "ETHUSDT"), [RES])
+    assert twin.half_taken and twin.half_px < twin.entry_px
 
 
 def test_exchange_equity_drives_account_and_halts_in_live(tmp_path: Path) -> None:

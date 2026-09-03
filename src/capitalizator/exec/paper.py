@@ -210,6 +210,9 @@ class PaperEngine:
         self.positions: dict[str, PaperPosition] = {}
         self.closed: list[PaperPosition] = []
         self.n_submitted = 0
+        # Last mark per symbol. Hard SL follows mark (venue slTriggerBy=MarkPrice).
+        # Unknown mark → last print, same as before any ticker arrived.
+        self._marks: dict[str, Decimal] = {}
 
     # --- submit ---------------------------------------------------------------
     def submit(
@@ -332,9 +335,9 @@ class PaperEngine:
                     continue
             if pos.state == "open":
                 self._track(pos, px)
-                self._follow_trailing(pos)
+                self._follow_trailing(pos, px)
                 self._funding_tick(pos, when)
-                if self._stop_hit(pos, px):
+                if self._stop_hit(pos, self._stop_trigger_px(pos, px)):
                     self._exit(pos, when, self._stop_fill_px(pos), "stop", role="taker")
                     changed.append(pos)
                     continue
@@ -363,6 +366,34 @@ class PaperEngine:
                 changed.append(pos)
         return changed
 
+    def on_mark(self, event: MarketEvent) -> list[PaperPosition]:
+        """Hard SL trigger. Venue SL is MarkPrice; a last-price wick is not a stop.
+
+        Trailing distance is last-price on the venue — mark does not fire that path.
+        """
+        if event.stream != "mark":
+            return []
+        try:
+            px = Decimal(str(event.payload["mark"]))
+        except (KeyError, ArithmeticError):
+            return []
+        if px <= 0:
+            return []
+        self._marks[event.symbol] = px
+        when = require_utc(event.exchange_ts)
+        changed: list[PaperPosition] = []
+        for pos in list(self.positions.values()):
+            if pos.symbol != event.symbol or pos.state != "open":
+                continue
+            if pos.trailing_distance is not None:
+                continue
+            if when < pos.created_at or (pos.filled_at is not None and when < pos.filled_at):
+                continue
+            if self._stop_hit(pos, px):
+                self._exit(pos, when, self._stop_fill_px(pos), "stop", role="taker")
+                changed.append(pos)
+        return changed
+
     def set_stop(self, paper_id: str, new_stop: Decimal, *, reason: str) -> bool:
         """Trail hook (W4). Monotone: a long stop only rises, a short stop only falls."""
         pos = self.positions.get(paper_id)
@@ -376,17 +407,24 @@ class PaperEngine:
         pos.stop = new_stop
         return True
 
-    def arm_trailing(self, paper_id: str, distance: Decimal, *, reason: str) -> bool:
+    def arm_trailing(
+        self,
+        paper_id: str,
+        distance: Decimal,
+        *,
+        reason: str,
+        last_px: Decimal | None = None,
+    ) -> bool:
         """Venue-style trailing stop: follows the best price at `distance`, monotone."""
         pos = self.positions.get(paper_id)
         if pos is None or pos.state != "open" or distance <= 0:
             return False
         pos.trailing_distance = distance
         pos.stop_moves.append((str(pos.stop), f"trailing@{distance}"))
-        self._follow_trailing(pos)
+        self._follow_trailing(pos, last_px)
         return True
 
-    def _follow_trailing(self, pos: PaperPosition) -> None:
+    def _follow_trailing(self, pos: PaperPosition, last_px: Decimal | None = None) -> None:
         if pos.trailing_distance is None or pos.mfe_px is None:
             return
         cand = (
@@ -394,6 +432,11 @@ class PaperEngine:
             if pos.side == "buy"
             else pos.mfe_px + pos.trailing_distance
         )
+        if last_px is not None:
+            if pos.side == "buy" and cand >= last_px:
+                return
+            if pos.side == "sell" and cand <= last_px:
+                return
         if (pos.side == "buy" and cand > pos.stop) or (pos.side == "sell" and cand < pos.stop):
             pos.stop_moves.append((str(pos.stop), str(cand)))
             pos.stop = cand
@@ -469,6 +512,12 @@ class PaperEngine:
     def _half_px(pos: PaperPosition) -> Decimal:
         assert pos.entry_px is not None
         return pos.entry_px + pos.r_px if pos.side == "buy" else pos.entry_px - pos.r_px
+
+    def _stop_trigger_px(self, pos: PaperPosition, last_px: Decimal) -> Decimal:
+        """Hard SL: mark when known. Exchange trailing: last (Bybit trailing is LTP)."""
+        if pos.trailing_distance is not None:
+            return last_px
+        return self._marks.get(pos.symbol, last_px)
 
     @staticmethod
     def _stop_hit(pos: PaperPosition, px: Decimal) -> bool:

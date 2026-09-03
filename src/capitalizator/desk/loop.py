@@ -633,6 +633,8 @@ class DeskLoop:
             # (INVENTION-OKO §След). No journal row is written here.
             if event.stream == "funding":
                 self._on_funding_payload(event.symbol, event.payload)
+            if event.stream == "mark":
+                self.paper.on_mark(event)
             self._keep_feed(st, event)
             return [{"event": event.stream, "symbol": event.symbol}]
         if event.stream == "liquidation":
@@ -746,23 +748,27 @@ class DeskLoop:
         if st.bar_builder is not None:
             st.bar_builder.on_trade(trade)
         self._trim_trades(st, trade.exchange_ts)
-        for pos in self.paper.on_print(trade):
-            # The +1R half on a demo/live twin is a venue order (reduce-only limit).
+        self.paper.on_print(trade)
+        # Resting +1R half on the venue as soon as the twin is filled, not after
+        # the tape has already printed through +1R (that was a taker / a miss).
+        for pos in self.paper.open_for(trade.symbol):
             if (
                 pos.source == "demo"
                 and pos.state == "open"
-                and pos.half_taken
+                and pos.entry_px is not None
                 and pos.paper_id not in self._half_sent
                 and not pos.labels.get("half_sent")
             ):
                 self._half_sent.add(pos.paper_id)
                 pos.labels["half_sent"] = True  # persisted with the twin: no re-send after restart
-                # Half of what the venue actually holds, not of the paper size.
                 venue_qty = self._venue_qty(pos.symbol)
                 base = venue_qty if venue_qty is not None and venue_qty > 0 else pos.qty
+                half_px = (
+                    pos.entry_px + pos.r_px if pos.side == "buy" else pos.entry_px - pos.r_px
+                )
                 self._oms(
                     pos, "half_tp", trade.exchange_ts,
-                    qty=str(base * HALF), price=str(pos.half_px), reason="+1R half",
+                    qty=str(base * HALF), price=str(half_px), reason="+1R half",
                 )
         try:
             px = Decimal(str(trade.payload["px"]))
@@ -2652,6 +2658,7 @@ class DeskLoop:
                 stop=pos.stop,
                 tick=pos.tick,
                 initial_stop=pos.initial_stop,
+                exchange_trailing_armed=pos.trailing_distance is not None,
             )
             self._trails[pos.paper_id] = stt
         return stt
@@ -2682,6 +2689,8 @@ class DeskLoop:
         out: list[dict[str, Any]] = []
         work = [b for b in st.bars if b.tf == self.config.working_tf][-60:]
         last_px = self.last_price.get(st.symbol, bar.close)
+        known_zones = tuple(z for z in self.registry._zones.values() if z.symbol == st.symbol)
+        liq = self.liquidation_levels(st, bar.close_ts)
         for pos in list(self.paper.open_for(st.symbol)):
             if pos.state != "open":
                 continue
@@ -2698,7 +2707,9 @@ class DeskLoop:
             stt = self._trail_state(pos)
             if pos.half_taken and not stt.half_taken:
                 self.trail.on_half(stt)
-            for action in self.trail.on_bar(stt, work, last_px=last_px):
+            for action in self.trail.on_bar(
+                stt, work, last_px=last_px, zones=known_zones, liq_levels=liq,
+            ):
                 if action.kind == "amend_stop" and action.new_stop is not None:
                     if self.paper.set_stop(pos.paper_id, action.new_stop, reason=action.reason):
                         out.append(
@@ -2714,7 +2725,8 @@ class DeskLoop:
                                   reason=action.reason)
                 elif action.kind == "exchange_trailing" and action.trailing_distance:
                     if self.paper.arm_trailing(
-                        pos.paper_id, action.trailing_distance, reason=action.reason
+                        pos.paper_id, action.trailing_distance, reason=action.reason,
+                        last_px=last_px,
                     ):
                         out.append(
                             {

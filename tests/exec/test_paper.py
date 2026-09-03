@@ -46,6 +46,13 @@ def test_conservative_fill_needs_trade_through_or_seller_at_limit() -> None:
     assert pos.fees == Decimal("1") * Decimal("100") * FeeTable.VIP0_MAKER
 
 
+def _mark(ts: datetime, px: str, symbol: str = "BTCUSDT") -> MarketEvent:
+    return MarketEvent(
+        stream="mark", exchange="bybit", symbol=symbol, exchange_ts=ts, recv_ts=ts,
+        payload={"mark": px},
+    )
+
+
 def test_stop_is_market_with_slippage_and_taker_fee() -> None:
     eng = _engine(slippage_ticks=2)
     pos = _buy(eng)
@@ -60,6 +67,18 @@ def test_stop_is_market_with_slippage_and_taker_fee() -> None:
     assert pos.r_gross() == Decimal("-2.2") / Decimal("2")
     assert pos.r_net() < pos.r_gross()
     assert pos.mae_r() == Decimal("2.1") / Decimal("2")  # worst print 97.9 → 2.1 against
+
+
+def test_hard_stop_uses_mark_when_known_last_wick_is_ignored() -> None:
+    eng = _engine()
+    pos = _buy(eng)
+    eng.on_print(_print(T0 + timedelta(seconds=1), "99.9"))
+    eng.on_mark(_mark(T0 + timedelta(seconds=2), "99.5"))
+    eng.on_print(_print(T0 + timedelta(seconds=3), "97.5"))  # last through 98, mark still 99.5
+    assert pos.state == "open"
+    eng.on_mark(_mark(T0 + timedelta(seconds=4), "97.9"))
+    assert pos.state == "closed" and pos.exit_reason == "stop"
+    assert pos.exit_px == Decimal("98") - Decimal("0.1")
 
 
 def test_half_at_one_r_then_tp_on_remainder() -> None:
