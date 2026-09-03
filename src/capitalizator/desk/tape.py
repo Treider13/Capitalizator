@@ -73,27 +73,61 @@ def load_tape(tape: Path) -> list[MarketEvent]:
 class TapeCursor:
     """Per-file read position so a 1s serve loop does not re-parse the whole tape.
 
-    A file is re-read only when its (size, mtime) changed; rows already consumed
-    are skipped by offset (the sink appends in order). Immutable part files are
-    read once. `seen` dedup still guards against a rewritten file re-emitting rows.
+    Two layers, same rows:
+      * `hour=HH.jsonl` — the recorder's live feed, appended per event. Tailed by byte
+        offset: O(new bytes) per tick, no re-parse, no per-second part files.
+      * `hour=HH*.parquet` — the archive (parts, later compacted). Read once each; used
+        for hours that have no live feed (backfill, old recordings, fixtures).
+    The first pass reads the whole tape (backfill after a restart, fixtures); every
+    later pass scans only partitions of the last `RECENT_DAYS`: a month of tape is
+    hundreds of thousands of files and `os.walk` over all of them every second was
+    the desk's own latency (2026-09-03). `seen` dedup guards a rewritten file.
     """
 
-    def __init__(self) -> None:
+    RECENT_DAYS = 2
+
+    def __init__(self, *, recent_days: int | None = None) -> None:
         self._pos: dict[Path, tuple[int, int, int]] = {}
+        self._tail: dict[Path, int] = {}  # jsonl → bytes consumed
+        self._partial: dict[Path, str] = {}  # jsonl → unfinished last line
         self.files_scanned = 0
         self.files_read = 0
+        self.recent_days = self.RECENT_DAYS if recent_days is None else recent_days
+        self._first_pass_done = False
 
-    def fresh_rows(self, tape: Path) -> list[MarketEvent]:
+    def _recent(self, path: Path, now: datetime | None) -> bool:
+        if not self._first_pass_done or now is None or self.recent_days <= 0:
+            return True
+        for part in path.parts:
+            if part.startswith("date="):
+                try:
+                    day = datetime.strptime(part[5:], "%Y-%m-%d").date()
+                except ValueError:
+                    return True
+                return (now.date() - day).days <= self.recent_days
+        return True
+
+    def fresh_rows(self, tape: Path, *, now: datetime | None = None) -> list[MarketEvent]:
         if tape.is_symlink() or not tape.is_dir():
             return []
         try:
-            paths = list(iter_regular_files(tape))
+            paths = [p for p in iter_regular_files(tape) if self._recent(p, now)]
         except VaultError:
             return []
+        self._first_pass_done = True
         events: list[MarketEvent] = []
+        live_dirs: set[Path] = set()
+        for path in paths:
+            if path.suffix == ".jsonl":
+                live_dirs.add(path.parent / path.stem)  # hour=HH key
+                events.extend(self._tail_jsonl(path))
         for path in paths:
             if path.suffix != ".parquet":
                 continue
+            # `hour=HH.000123.parquet` → stem `hour=HH.000123`; live key is `hour=HH`
+            hour_key = path.parent / path.name.split(".")[0]
+            if hour_key in live_dirs:
+                continue  # the live feed already delivered these rows
             self.files_scanned += 1
             try:
                 st = path.stat()
@@ -118,6 +152,47 @@ class TapeCursor:
         events.sort(key=lambda e: (e.exchange_ts, e.symbol, e.stream))
         return events
 
+    def _tail_jsonl(self, path: Path) -> list[MarketEvent]:
+        self.files_scanned += 1
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return []
+        start = self._tail.get(path, 0)
+        if size < start:  # truncated/rotated: start over
+            start = 0
+            self._partial.pop(path, None)
+        if size == start:
+            return []
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(start)
+                chunk = fh.read(size - start)
+        except OSError:
+            return []
+        self.files_read += 1
+        self._tail[path] = size
+        text = self._partial.pop(path, "") + chunk.decode("utf-8", errors="replace")
+        lines = text.split("\n")
+        if not text.endswith("\n"):
+            self._partial[path] = lines.pop()  # incomplete line: wait for the rest
+        else:
+            lines.pop()  # trailing empty
+        out: list[MarketEvent] = []
+        for line in lines:
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+                row["exchange_ts"] = datetime.fromisoformat(row["exchange_ts"])
+                row["recv_ts"] = datetime.fromisoformat(row["recv_ts"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            event = _parse(row)
+            if event is not None:
+                out.append(event)
+        return out
+
 
 def consume_tape(
     desk: DeskLoop,
@@ -134,7 +209,7 @@ def consume_tape(
     old tests) the whole tape is loaded as before.
     """
     fresh: list[MarketEvent] = []
-    source = cursor.fresh_rows(tape) if cursor is not None else load_tape(tape)
+    source = cursor.fresh_rows(tape, now=now) if cursor is not None else load_tape(tape)
     for event in source:
         key = (event.stream, event.symbol, event.exchange_ts.isoformat(), event.seq)
         if key in seen:

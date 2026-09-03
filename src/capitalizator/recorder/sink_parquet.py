@@ -12,6 +12,7 @@ import json
 import os
 import stat
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -63,6 +64,15 @@ def _row(event: MarketEvent) -> dict:
         "recv_ts": event.recv_ts,
         "seq": event.seq,
         "payload_json": json.dumps(event.payload, separators=(",", ":")),
+    }
+
+
+def live_row(row: dict) -> dict:
+    """The parquet row with timestamps as ISO strings — one JSON line of the live feed."""
+    return {
+        **row,
+        "exchange_ts": row["exchange_ts"].isoformat(),
+        "recv_ts": row["recv_ts"].isoformat(),
     }
 
 
@@ -158,27 +168,69 @@ class BufferedParquetSink:
     single-file layout coexist. Part files are never rewritten.
     """
 
-    def __init__(self, data_root: Path, *, flush_every_s: float = 1.0, max_rows: int = 5000):
+    def __init__(
+        self,
+        data_root: Path,
+        *,
+        flush_every_s: float = 1.0,
+        max_rows: int = 5000,
+        live_jsonl: bool = False,
+    ):
         if flush_every_s <= 0 or max_rows <= 0:
             raise ValueError("flush_every_s and max_rows must be > 0")
         self.data_root = data_root
         self.flush_every_s = flush_every_s
         self.max_rows = max_rows
+        # Live feed: every event is also appended, at once, to `hour=HH.jsonl` next to
+        # the parquet parts. The desk tails it by byte offset (O(1) per tick) while the
+        # parquet archive can flush rarely and compact — 24 symbols × 4 streams × 1 s
+        # flushes produced ~5 800 part files a minute on the VPS (2026-09-03).
+        self.live_jsonl = live_jsonl
         self.accepted_count = 0
         self.flushed_count = 0
         self.parts_written = 0
         self._buf: dict[Path, list[dict]] = {}
         self._seq: dict[Path, int] = {}
         self._last_flush: float | None = None
+        self._live: dict[Path, Any] = {}
 
     def write(self, event: MarketEvent, *, now_monotonic: float | None = None) -> None:
         path = partition_path(self.data_root, event)
-        self._buf.setdefault(path, []).append(_row(event))
+        row = _row(event)
+        self._buf.setdefault(path, []).append(row)
         self.accepted_count += 1
+        if self.live_jsonl:
+            self._append_live(path, row)
         if sum(len(rows) for rows in self._buf.values()) >= self.max_rows:
             self.flush()
         elif now_monotonic is not None:
             self.maybe_flush(now_monotonic)
+
+    # --- live jsonl ------------------------------------------------------------------
+    def _append_live(self, hour_path: Path, row: dict) -> None:
+        live_path = hour_path.with_suffix(".jsonl")
+        fh = self._live.get(live_path)
+        if fh is None:
+            mkdir_real_parents(self.data_root, live_path.parent)
+            assert_no_symlink_components(self.data_root, live_path)
+            # one hour per file: close the others (an hour ago at most one is live)
+            for other, old in list(self._live.items()):
+                if other.parent != live_path.parent or other != live_path:
+                    try:
+                        old.close()
+                    finally:
+                        del self._live[other]
+            fh = open(live_path, "a", encoding="utf-8", buffering=1)  # line-buffered
+            self._live[live_path] = fh
+        fh.write(json.dumps(live_row(row), separators=(",", ":")) + "\n")
+
+    def close(self) -> None:
+        for fh in self._live.values():
+            try:
+                fh.close()
+            except OSError:
+                pass
+        self._live.clear()
 
     def maybe_flush(self, now_monotonic: float) -> int:
         if self._last_flush is None:

@@ -131,3 +131,54 @@ def test_live_recorder_writes_liquidations_and_reports_socket_state(tmp_path: Pa
     parts = list(vault.tape.rglob("*.parquet"))
     assert any("liquidation" in str(p) for p in parts)
     kn.close()
+
+
+def test_live_jsonl_feed_is_tailed_by_offset_and_parquet_parts_are_not_reread(tmp_path: Path) -> None:
+    """Э2b: the desk reads the recorder's per-event jsonl by byte offset; the parquet
+    parts of the same hour are the archive and are skipped."""
+    from datetime import timedelta
+
+    from capitalizator.desk.tape import TapeCursor
+    from capitalizator.recorder.sink_parquet import BufferedParquetSink
+    from capitalizator.types import MarketEvent
+
+    t0 = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    sink = BufferedParquetSink(tmp_path, flush_every_s=60, max_rows=1000, live_jsonl=True)
+
+    def ev(i: int) -> MarketEvent:
+        ts = t0 + timedelta(seconds=i)
+        return MarketEvent(stream="trades", exchange="bybit", symbol="BTCUSDT", exchange_ts=ts,
+                           recv_ts=ts, seq=i, payload={"px": str(100 + i), "qty": "1", "side": "sell"})
+
+    for i in range(3):
+        sink.write(ev(i))
+    cur = TapeCursor()
+    got = cur.fresh_rows(tmp_path, now=t0)
+    assert [e.payload["px"] for e in got] == ["100", "101", "102"]
+    assert cur.files_read == 1  # one jsonl tail
+    # nothing new → nothing read
+    assert cur.fresh_rows(tmp_path, now=t0) == []
+    # two more events: only the new bytes are parsed
+    sink.write(ev(3))
+    sink.write(ev(4))
+    got2 = cur.fresh_rows(tmp_path, now=t0)
+    assert [e.payload["px"] for e in got2] == ["103", "104"]
+    # the archive part of the same hour is skipped (same rows)
+    sink.flush()
+    assert sink.parts_written == 1
+    assert cur.fresh_rows(tmp_path, now=t0) == []
+    sink.close()
+    # a partition without a live feed (old recording) is still read from parquet
+    old = BufferedParquetSink(tmp_path, flush_every_s=60, max_rows=1000)
+    old_ts = t0 - timedelta(hours=5)
+    old.write(MarketEvent(stream="trades", exchange="bybit", symbol="ETHUSDT", exchange_ts=old_ts,
+                          recv_ts=old_ts, seq=1, payload={"px": "3000", "qty": "1", "side": "buy"}))
+    old.flush()
+    got3 = cur.fresh_rows(tmp_path, now=t0)
+    assert [e.symbol for e in got3] == ["ETHUSDT"]
+    # after the first pass, partitions older than RECENT_DAYS are not scanned
+    stale_ts = t0 - timedelta(days=10)
+    old.write(MarketEvent(stream="trades", exchange="bybit", symbol="SOLUSDT", exchange_ts=stale_ts,
+                          recv_ts=stale_ts, seq=1, payload={"px": "100", "qty": "1", "side": "buy"}))
+    old.flush()
+    assert cur.fresh_rows(tmp_path, now=t0) == []

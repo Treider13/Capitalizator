@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--userdir", default=None)
     parser.add_argument("--testnet", action="store_true")
+    parser.add_argument(
+        "--universe",
+        choices=("week0", "desk"),
+        default=os.environ.get("CAP_UNIVERSE", "week0"),
+        help="week0 = BTC+ETH (PHASE-BUILD canon until 24h of tape); desk = the 24-symbol list",
+    )
     args = parser.parse_args(argv)
     app = RecorderApp()
     if args.live_ws:
@@ -80,7 +87,11 @@ def main(argv: list[str] | None = None) -> int:
         from capitalizator.ops.knowledge import open_knowledge
         from capitalizator.ops.vault import load_vault
         from capitalizator.recorder.live_ws import LiveRecorder, make_public_ws
-        from capitalizator.screener.universe import load_desk_universe
+        from capitalizator.screener.universe import (
+            default_week0_path,
+            load_desk_universe,
+            load_universe,
+        )
 
         knowledge = None
         data_root = Path(args.data_root) if args.data_root else None
@@ -96,14 +107,23 @@ def main(argv: list[str] | None = None) -> int:
 
         signal.signal(signal.SIGINT, _stop)
         signal.signal(signal.SIGTERM, _stop)
+        if args.universe == "week0":
+            universe = load_universe(default_week0_path())
+        else:
+            universe = load_desk_universe()
         rec = LiveRecorder(
-            symbols=list(load_desk_universe().symbols),
+            symbols=list(universe.symbols),
             data_root=data_root,
             ws_factory=lambda: make_public_ws(testnet=args.testnet),
             knowledge=knowledge,
         )
         app.recording = True
-        hello = {"live_ws": True, "n_symbols": len(rec.symbols), "data_root": str(data_root)}
+        hello = {
+            "live_ws": True,
+            "universe": args.universe,
+            "n_symbols": len(rec.symbols),
+            "data_root": str(data_root),
+        }
         print(json.dumps(hello), flush=True)
         try:
             rec.run(should_stop=lambda: stopped["v"])

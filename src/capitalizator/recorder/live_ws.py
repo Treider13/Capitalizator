@@ -80,7 +80,12 @@ class LiveRecorder:
         if not self.symbols:
             raise ValueError("symbols required")
         if self.sink is None:
-            self.sink = BufferedParquetSink(self.data_root, flush_every_s=1.0, max_rows=5000)
+            # Live feed (jsonl, per event) for the desk; parquet archive parts once a
+            # minute (compacted later). 1 s parts × 24 symbols × 4 streams = 5 800
+            # files/min on the VPS (2026-09-03) — the desk's own cursor choked on them.
+            self.sink = BufferedParquetSink(
+                self.data_root, flush_every_s=60.0, max_rows=200_000, live_jsonl=True
+            )
         if self.fetch_snapshot is None:
             rest = RestSnapshot()
             self.fetch_snapshot = rest.fetch
@@ -221,6 +226,7 @@ class LiveRecorder:
         finally:
             assert self.sink is not None
             self.sink.flush()
+            self.sink.close()
             self.publish_status(every_s=0)
             ws = self.ws
             if ws is not None and hasattr(ws, "exit"):

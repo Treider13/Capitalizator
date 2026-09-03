@@ -38,7 +38,8 @@ services:
   recorder:
     <<: *base
     depends_on: { init: { condition: service_completed_successfully } }
-    command: ["python", "-m", "capitalizator.recorder.app", "--live-ws", "--userdir", "/data"]
+    # CAP_UNIVERSE=week0 (BTC+ETH, canon until 24h of clean tape) | desk (24 symbols)
+    command: ["python", "-m", "capitalizator.recorder.app", "--live-ws", "--userdir", "/data", "--universe", "${CAP_UNIVERSE:-week0}"]
 
   desk:
     <<: *base
@@ -66,8 +67,9 @@ services:
   night:
     <<: *base
     depends_on: { init: { condition: service_completed_successfully } }
-    # Night contour once a day at 00:30 UTC: replay, challengers, report. Loop in-container
-    # so no host cron is needed; `date -d yesterday` keeps the day honest.
+    # Night contour once a day at 00:30 UTC (replay, challengers, report) and tape
+    # compaction at every :05 (hourly parts → one file, old live feeds pruned).
+    # Loop in-container so no host cron is needed.
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -75,6 +77,10 @@ services:
           now=$$(date -u +%H%M)
           if [ "$$now" = "0030" ]; then
             python -m capitalizator.ops.night --userdir /data --day "$$(date -u -d yesterday +%F)" || true
+            sleep 60
+          fi
+          if [ "$${now#??}" = "05" ]; then
+            python -m capitalizator.ops.compact_tape --tape /data/tape || true
             sleep 60
           fi
           sleep 30
