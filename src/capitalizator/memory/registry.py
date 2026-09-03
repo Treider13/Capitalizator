@@ -311,7 +311,7 @@ class Registry:
             if touch.outcome != "pending":
                 next_rows.append(touch)
                 continue
-            zone = self._zones.get(touch.zone_id)
+            zone = self._zone_any(touch.zone_id)
             if zone is None:
                 next_rows.append(touch)
                 continue
@@ -335,7 +335,7 @@ class Registry:
         changed: list[Touch] = []
         next_rows: list[Touch] = []
         for touch in self.touches:
-            zone = self._zones.get(touch.zone_id)
+            zone = self._zone_any(touch.zone_id)
             if zone is None or touch.outcome != "pending" or zone.symbol != symbol:
                 next_rows.append(touch)
                 continue
@@ -406,7 +406,10 @@ class Registry:
             if touch.tape_eaten is not None:
                 next_rows.append(touch)
                 continue
-            zone = self._zones[touch.zone_id]
+            zone = self._zone_any(touch.zone_id)
+            if zone is None:
+                next_rows.append(touch)
+                continue
             flag = clf.eaten(
                 book=book,
                 trades=trades,

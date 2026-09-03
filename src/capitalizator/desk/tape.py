@@ -400,7 +400,7 @@ def _poc_from_card(card: object) -> Decimal | None:
 
 
 def close_due_bars(desk: DeskLoop, symbol: str, now: datetime) -> list[dict[str, Any]]:
-    """Close working TF first, then 1h / H4 / D1. Senior levels vote on the junior TF."""
+    """Close working TF first, then 1h / H4 / D1. Senior levels vote on the junior TF.
 
     Live path is the incremental BarBuilder (O(1) per print). The rescan over
     `st.trades` stays only for a state without a builder (old fixtures).

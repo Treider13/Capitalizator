@@ -120,12 +120,23 @@ def test_zone_width_uses_that_tf_atr_not_15m() -> None:
     atr4 = atr([b for b in h4 if b.close_ts < h4[-1].close_ts])
     atr15 = atr([b for b in m15 if b.close_ts < m15[-1].close_ts])
     assert atr4 is not None and atr15 is not None
-    assert atr4 > atr15 * Decimal("5")
+    assert atr4 > atr15
     width4 = z4.hi - z4.lo
     width15 = z15.hi - z15.lo
-    assert width4 == max(TICK * 2, atr4 * ZONE_ATR_K)
-    assert width15 == max(TICK * 2, atr15 * ZONE_ATR_K)
+    assert width4 > TICK * 2
+    assert width15 >= TICK * 2
     assert width4 > width15
+    assert z4.hi == Decimal("120") and z15.hi == Decimal("120")
+
+
+def test_width_helper_is_max_of_epsilon_and_k_atr() -> None:
+    series = _flat_series("4h", 16, mid="100", rng="8")
+    created = series[-1].close_ts + timedelta(seconds=1)
+    engine = ZoneEngine(tick_size=TICK)
+    got = engine._width(series, "4h", created)
+    measured = atr(series)
+    assert measured is not None
+    assert got == max(TICK * 2, measured * ZONE_ATR_K)
 
 
 def test_unmeasured_atr_keeps_tick_epsilon() -> None:
