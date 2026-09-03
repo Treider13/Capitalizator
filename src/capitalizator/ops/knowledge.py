@@ -129,6 +129,14 @@ CREATE TABLE IF NOT EXISTS intent_result (
   status TEXT NOT NULL,
   body TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS intel_item (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  known_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS intel_item_known ON intel_item(known_at);
 CREATE TABLE IF NOT EXISTS desk_commands (
   id INTEGER PRIMARY KEY,
   created_ts TEXT NOT NULL,
@@ -996,6 +1004,65 @@ class Knowledge:
             if isinstance(raw, dict):
                 out.append(raw)
         return out
+
+    # --- intel items (contour B raw material, point-in-time) --------------------------
+    def put_intel_item(
+        self, item_id: str, *, kind: str, source_id: str, known_at: str, payload: Mapping[str, Any]
+    ) -> bool:
+        """Insert once; returns False when the id was already stored (dedup by id)."""
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        body = json.dumps(dict(payload), sort_keys=True, ensure_ascii=False, default=str)
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self._cx.execute(
+                "INSERT OR IGNORE INTO intel_item(id, kind, source_id, known_at, payload) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (item_id, kind, source_id, known_at, body),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+        return bool(cur.rowcount)
+
+    def intel_items(
+        self, *, kind: str | None = None, since: str | None = None, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        if self._cx is None:
+            return []
+        sql = "SELECT id, kind, source_id, known_at, payload FROM intel_item"
+        where: list[str] = []
+        args: list[Any] = []
+        if kind:
+            where.append("kind = ?")
+            args.append(kind)
+        if since:
+            where.append("known_at >= ?")
+            args.append(since)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY known_at DESC LIMIT ?"
+        args.append(int(limit))
+        out: list[dict[str, Any]] = []
+        for row in self._cx.execute(sql, tuple(args)).fetchall():
+            payload = json.loads(str(row["payload"]))
+            out.append(
+                {
+                    "id": str(row["id"]),
+                    "kind": str(row["kind"]),
+                    "source_id": str(row["source_id"]),
+                    "known_at": str(row["known_at"]),
+                    **(payload if isinstance(payload, dict) else {}),
+                }
+            )
+        return out
+
+    def put_author_call(self, call_id: str, payload: Mapping[str, Any]) -> None:
+        self._put_keyed_payload("author_call", "id", call_id, payload)
+
+    def author_calls(self) -> list[dict[str, Any]]:
+        return self._list_payloads("author_call")
 
     # --- OMS commands: desk decides, gateway executes (amend_stop / trailing / half_tp / flatten)
     def enqueue_oms(

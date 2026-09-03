@@ -229,6 +229,8 @@ class DeskLoop:
         self._calibration: dict[str, ClassStat] = {}
         self._calibration_at: datetime | None = None
         self.drift_active = False
+        self._sentiment_at: datetime | None = None
+        self._sentiment_mult = Decimal("1")
         self.oko = OkoEye(working_tf=self.config.working_tf)
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
@@ -1600,7 +1602,10 @@ class DeskLoop:
                     allow_break=breakout_enabled(),
                     card_bearing_verdict=row.bearing_verdict,
                     b_verdict=None if card is None else card.bearing_verdict,
-                    macro_multiplier=Decimal("1") if card is None else card.macro_multiplier,
+                    macro_multiplier=min(
+                        Decimal("1") if card is None else card.macro_multiplier,
+                        self._sentiment_multiplier(closed_at),
+                    ),
                     b_marks_ok=(
                         True
                         if card is None or not self.risk_config.require_ict_marks
@@ -1896,6 +1901,35 @@ class DeskLoop:
                 "drift_last_change",
                 json.dumps({"at": now.isoformat(), "drift": self.drift_active}),
             )
+
+    # --- sentiment (2.12.5): monthly extreme greed de-risks; nothing else ----------------
+    SENTIMENT_GREED = 80
+    SENTIMENT_MULT = Decimal("0.7")
+    SENTIMENT_REFRESH_S = 600.0
+
+    def _sentiment_multiplier(self, now: datetime) -> Decimal:
+        """×0.7 when the 30-day mean Fear & Greed (intel `fng` items) is ≥ 80. Hourly
+        readings never decide anything ("buy fear" is refused by design)."""
+        if (
+            self._sentiment_at is not None
+            and (now - self._sentiment_at).total_seconds() < self.SENTIMENT_REFRESH_S
+        ):
+            return self._sentiment_mult
+        self._sentiment_at = now
+        self._sentiment_mult = Decimal("1")
+        if not self.knowledge.available():
+            return self._sentiment_mult
+        since = (now - timedelta(days=30)).isoformat()
+        values: list[float] = []
+        for item in self.knowledge.intel_items(kind="fng", since=since, limit=100):
+            try:
+                values.append(float(item.get("value")))
+            except (TypeError, ValueError):
+                continue
+        # a month is ≥ 20 daily prints; fewer is not a monthly window
+        if len(values) >= 20 and sum(values) / len(values) >= self.SENTIMENT_GREED:
+            self._sentiment_mult = self.SENTIMENT_MULT
+        return self._sentiment_mult
 
     def effective_target_risk(self) -> Decimal:
         return target_after_drift(drift=self.drift_active, base=self.risk_config.target_risk_pct)

@@ -56,6 +56,13 @@ services:
         required: false
     command: ["python", "-m", "capitalizator.signer", "--userdir", "/data", "--serve"]
 
+  intel:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    # Contour B raw material: RSS / Reddit / X API / Hyperliquid / Bybit public / F&G every 5 min;
+    # LLM extraction only when a provider is configured in Настройки. No exchange keys here.
+    command: ["python", "-m", "capitalizator.intel", "--userdir", "/data", "--serve", "--every-s", "300"]
+
   console:
     <<: *base
     depends_on: { init: { condition: service_completed_successfully } }
