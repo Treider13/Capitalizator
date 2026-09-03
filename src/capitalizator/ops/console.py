@@ -169,6 +169,8 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     user = read_user_mode(vault)
     hello_ok = hello_recorded(vault)
     banners: list[str] = []
+    if knowledge.available() and knowledge.meta("desk_backlog") == "1":
+        banners.append("Стол догоняет ленту после рестарта: метки исторические, входов нет")
     if not hello_ok:
         banners.append("Демо: нет hello")
     if n_touches < 20:

@@ -7,7 +7,7 @@ import json
 import signal
 import time
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from capitalizator.desk.loop import DeskLoop
@@ -73,7 +73,8 @@ def serve_loop(
         user_mode=read_user_mode(vault),
         calendar=load_desk_calendar(),
     )
-    seen: set[tuple[str, str, str, int | None]] = set()
+    # production: the cursor's offsets are the dedup; a per-event set is unbounded
+    seen: set[tuple[str, str, str, int | None]] | None = set() if replay_all_first else None
     zones = tuple(extra_zones)
     cursor = TapeCursor(replay_all_first=replay_all_first)
     ticks = 0
@@ -87,13 +88,13 @@ def serve_loop(
         consume_tape(desk, vault.tape, seen=seen, extra_zones=zones, now=when, cursor=cursor)
         desk.tick(when)
         ticks += 1
-        if not replay_all_first and ticks % 600 == 0:
-            cutoff = (when - timedelta(days=cursor.recent_days + 1)).isoformat()
-            seen.difference_update({k for k in seen if k[2] < cutoff})
+        if ticks % 30 == 0 and knowledge.available():
+            # the console shows whether the desk is still catching up on the tape
+            knowledge.set_meta("desk_backlog", "1" if cursor.backlog else "0")
         if on_tick is not None:
             on_tick(desk)
-        if idle_s:
-            sleep(idle_s)
+        if idle_s and not cursor.backlog:
+            sleep(idle_s)  # while catching up, the next pass follows at once
     return desk
 
 

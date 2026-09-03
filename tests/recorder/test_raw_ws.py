@@ -211,3 +211,63 @@ def test_recorder_publishes_public_instruments_without_a_key(tmp_path: Path) -> 
     snap = json.loads(kn.meta("instruments_snapshot"))
     assert snap["instruments"]["DOGEUSDT"]["tick"] == "0.00001"
     kn.close()
+
+
+def test_tape_replay_is_bounded_per_pass_and_resumes(tmp_path: Path) -> None:
+    """VPS 2026-09-03: a restart read two days of tape into one list → 3.2 GB RSS → OOM
+    loop. A pass now stops at its byte/row budget, reports `backlog`, and the next pass
+    resumes exactly where it stopped; nothing is lost or duplicated. Old book deltas are
+    skipped on a production first pass (a book is only valid from its next snapshot)."""
+    from datetime import timedelta
+
+    from capitalizator.desk.tape import TapeCursor
+    from capitalizator.recorder.sink_parquet import BufferedParquetSink
+    from capitalizator.types import MarketEvent
+
+    t0 = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    sink = BufferedParquetSink(tmp_path, flush_every_s=60, max_rows=10_000, live_jsonl=True)
+    for i in range(400):
+        ts = t0 + timedelta(seconds=i)
+        sink.write(MarketEvent(stream="trades", exchange="bybit", symbol="BTCUSDT", exchange_ts=ts,
+                               recv_ts=ts, seq=i, payload={"px": str(100 + i), "qty": "1", "side": "sell"}))
+    # an old book delta and a fresh one
+    for hours_ago, seq in ((6, 1), (0, 2)):
+        ts = t0 - timedelta(hours=hours_ago)
+        sink.write(MarketEvent(stream="book_diff", exchange="bybit", symbol="BTCUSDT", exchange_ts=ts,
+                               recv_ts=ts, seq=seq, payload={"b": [["100", "1"]], "a": []}))
+    sink.flush()
+    sink.close()
+    # jsonl: 400 trade lines ≈ 60 KB; a 16 KB budget needs several passes
+    cur = TapeCursor(replay_all_first=False, max_bytes=16 * 1024, book_hours=2)
+    got: list = []
+    passes = 0
+    while True:
+        batch = cur.fresh_rows(tmp_path, now=t0 + timedelta(minutes=10))
+        passes += 1
+        got.extend(batch)
+        if not cur.backlog:
+            break
+        assert passes < 50
+    assert passes >= 3
+    trades = [e for e in got if e.stream == "trades"]
+    assert [e.seq for e in trades] == list(range(400))  # complete, in order, no duplicates
+    books = [e for e in got if e.stream == "book_diff"]
+    assert [e.seq for e in books] == [2]  # the 6h-old delta was skipped
+    assert cur.fresh_rows(tmp_path, now=t0 + timedelta(minutes=10)) == []
+
+    # parquet-only partition (no live feed): rows are read in bounded slices too
+    old = BufferedParquetSink(tmp_path, flush_every_s=60, max_rows=100_000)
+    for i in range(300):
+        ts = t0 - timedelta(hours=3) + timedelta(seconds=i)
+        old.write(MarketEvent(stream="trades", exchange="bybit", symbol="ETHUSDT", exchange_ts=ts,
+                              recv_ts=ts, seq=i, payload={"px": "3000", "qty": "1", "side": "buy"}))
+    old.flush()
+    old.close()
+    cur2 = TapeCursor(replay_all_first=False, max_rows=120)
+    seqs: list[int] = []
+    for _ in range(10):
+        seqs.extend(e.seq for e in cur2.fresh_rows(tmp_path, now=t0 + timedelta(minutes=10))
+                    if e.symbol == "ETHUSDT")
+        if not cur2.backlog:
+            break
+    assert seqs == list(range(300))
