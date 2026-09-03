@@ -92,6 +92,7 @@ from capitalizator.oko.forecast import class_key as oko_class_key
 from capitalizator.oko.retina import RawWindow
 from capitalizator.oko.shadow import FINGERPRINT_LEN as OKO_SHADOW_FP_LEN
 from capitalizator.ops.knowledge import Knowledge
+from capitalizator.ops.latency import decision_report
 from capitalizator.ops.phase import breakout_enabled
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
 from capitalizator.ops.uptime import UptimeTracker
@@ -385,6 +386,15 @@ class DeskLoop:
 
     def _ui_put(self, key: str, value: str) -> None:
         self._ui_pending[key] = value
+
+    def _publish_decision_latency(self) -> None:
+        if not self.knowledge.available():
+            return
+        try:
+            report = decision_report(self.knowledge.journal_rows())
+        except ValueError:
+            return
+        self.knowledge.set_meta("latency_decision", json.dumps(report, sort_keys=True))
 
     def _ui_due(self, now: datetime) -> bool:
         return (
@@ -1663,6 +1673,7 @@ class DeskLoop:
             "has_tvh": has_tvh,
             "shadow_would_no_marks": shadow_would_no_marks,
             "shadow_would_marks": shadow_would_marks,
+            "decision_ms": (closed_at - touch.ts).total_seconds() * 1000.0,
         }
         payload_row = {**journal, **extra}
         payload_row["challenger_would"] = challenger_on(payload_row)
@@ -1697,6 +1708,7 @@ class DeskLoop:
         payload_row["session_size_mult"] = str(window.size_mult)
         payload_row["session_k_atr"] = str(window.k_atr)
         self.knowledge.put_journal_touch(row.touch_id, payload_row)
+        self._publish_decision_latency()
         day = row_day_utc(payload_row)
         if day:
             persist_day(self.knowledge, day)

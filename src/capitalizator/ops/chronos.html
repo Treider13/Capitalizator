@@ -109,6 +109,7 @@
     <span id="window" class="pill">окно —</span>
     <span id="hello" class="pill">hello —</span>
     <span id="cred" class="pill">ключ —</span>
+    <span id="latency" class="pill">решение —</span>
     <nav class="pages"><a href="/ops">Управление</a><a href="/settings">Настройки</a><a href="/touch">Касание</a><a href="/api/glossary">Словарь</a></nav>
     <form id="mode-form">
       <input type="hidden" name="ack" value="1"/>
@@ -373,6 +374,13 @@
              + " · карточек " + (exp.n_cards || 0));
         expEl.className = exp.n_touches ? "" : "empty";
       }
+      const lat = st.latency_decision;
+      const latEl = document.getElementById("latency");
+      if (latEl) {
+        latEl.textContent = lat
+          ? ("решение p50 " + Math.round(lat.p50_ms) + " мс · p95 " + Math.round(lat.p95_ms) + " мс")
+          : "решение —";
+      }
       const contour = st.contour || "off";
       const hours24 = !!st.hours24;
       const canEnable = !!st.can_enable;
@@ -534,7 +542,15 @@
       refresh();
     });
     refresh();
-    setInterval(refresh, 5000);
+    let fallback = setInterval(refresh, 30000);
+    try {
+      const es = new EventSource("/api/stream");
+      es.onmessage = () => { refresh(); };
+      es.onerror = () => { /* 30s interval stays the fallback */ };
+    } catch (e) {
+      clearInterval(fallback);
+      fallback = setInterval(refresh, 5000);
+    }
   </script>
 </body>
 </html>

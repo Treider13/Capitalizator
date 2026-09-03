@@ -86,6 +86,18 @@ def _json(raw: str | None, default: Any) -> Any:
         return default
 
 
+def _latency_decision(raw: str | None) -> str:
+    parsed = _json(raw, None)
+    if not isinstance(parsed, dict):
+        return "нет"
+    p50 = parsed.get("p50_ms")
+    p95 = parsed.get("p95_ms")
+    n = parsed.get("n")
+    if p50 is None or p95 is None:
+        return "нет"
+    return f"p50 {p50:.0f} мс · p95 {p95:.0f} мс (n={n})"
+
+
 def _confirm(token: str, extra_hidden: Mapping[str, str] | None = None) -> str:
     hidden = f"<input type='hidden' name='ack_token' value='{_e(token)}'/>"
     hidden += "<input type='hidden' name='redirect' value='1'/>"
@@ -345,6 +357,7 @@ def render_ops_html(
     health_rows: list[tuple[str, str]] = [
         ("пульс стола", _age("desk_heartbeat")),
         ("пульс сигнера", _age("signer_heartbeat")),
+        ("задержка решения p50/p95", _latency_decision(meta.get("latency_decision"))),
         ("стол догоняет ленту", "да" if meta.get("desk_backlog") == "1" else "нет"),
         ("рекордер: сокет", "подключён" if rec_status.get("socket_connected") else _e(rec_status.get("socket_connected"))),
         ("рекордер: реконнектов", _e(rec_status.get("reconnects", "—"))),

@@ -11,7 +11,7 @@ import html
 import json
 import secrets
 from datetime import UTC, datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
@@ -22,6 +22,8 @@ from capitalizator.ops.contour import enable as enable_contour
 from capitalizator.ops.contour import status as contour_status
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
 from capitalizator.ops.knowledge import Knowledge, open_knowledge
+from capitalizator.ops.latency import decision_report
+from capitalizator.ops.wake import desk_wake, idle
 from capitalizator.ops.phase import load_phase, trading_mode
 from capitalizator.ops.product import (
     HelloRequired,
@@ -53,6 +55,13 @@ from capitalizator.risk.session import load_time_config
 from capitalizator.screener.universe import load_desk_universe
 
 ADVICE_WORDS = ("лонг", "шорт", "купи", "продай", "завтра")
+
+
+class ThreadedHTTPServer(ThreadingHTTPServer):
+    """SSE holds a GET open; without threads every other console request freezes."""
+
+    daemon_threads = True
+    allow_reuse_address = True
 
 
 def _parquet_counts(tape: Path) -> tuple[int, int]:
@@ -95,6 +104,13 @@ def _crosstab(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         {"cav": cav, "zlg": zlg, "outcome": outcome, "n": n}
         for (cav, zlg, outcome), n in sorted(buckets.items())
     ]
+
+
+def _latency_decision(rows: list[dict[str, Any]]) -> dict[str, float] | None:
+    try:
+        return decision_report(rows)
+    except ValueError:
+        return None
 
 
 def _jury_today(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -223,6 +239,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         "money": money,
         "queue_counts": queue["counts"],
         "banners": banners,
+        "latency_decision": _latency_decision(journal),
     }
     text = json.dumps(snap, ensure_ascii=False)
     if contains_advice(text):
@@ -576,7 +593,7 @@ def render_ops(app: ConsoleApp, *, message: str | None = None) -> str:
             "signer_heartbeat", "desk_backlog", "recorder_status", "dead_man_last",
             "signer_requeued", "instruments_error_signer", "instruments_error_recorder",
             "intel_status", "llm_last_error", "reddit_auth_error", "paper_restored",
-            "paper_open_error", "oko_load_errors",
+            "paper_open_error", "oko_load_errors", "latency_decision",
         )
         meta: dict[str, str | None] = dict.fromkeys(keys)
         if knowledge.available():
@@ -1114,11 +1131,30 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
         def do_PATCH(self) -> None:  # noqa: N802
             self._reject_write()
 
+        def _sse_desk(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            wake = desk_wake(app.vault)
+            ping = json.dumps({"refresh": True}, ensure_ascii=False)
+            while True:
+                try:
+                    self.wfile.write(f"data: {ping}\n\n".encode())
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+                idle(wake, 1.0)
+
         def do_GET(self) -> None:  # noqa: N802
             started = False
             try:
                 parsed = urlparse(self.path)
                 path = parsed.path
+                if path == "/api/stream":
+                    self._sse_desk()
+                    return
                 if path == "/healthz":
                     body, code, ctype = b"ok", 200, "text/plain; charset=utf-8"
                 elif path == "/api/status":
@@ -1207,7 +1243,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(desk_snapshot(vault), ensure_ascii=False, indent=2))
         return 0
     app = ConsoleApp(vault)
-    server = HTTPServer((args.host, args.port), _handler(app))
+    server = ThreadedHTTPServer((args.host, args.port), _handler(app))
     try:
         server.serve_forever()
     except KeyboardInterrupt:

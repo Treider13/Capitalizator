@@ -28,6 +28,7 @@ from capitalizator.gateway.keys import LIVE_MODES, PAPER_MODES
 from capitalizator.ops.alerts import Alerter
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.product import USER_MODES
+from capitalizator.ops.wake import StampWake, Wake, idle, signer_wake
 from capitalizator.risk.session import load_time_config
 from capitalizator.screener.universe import Universe, load_desk_universe
 from capitalizator.signer.validate import Signer, UnsignedIntent
@@ -269,6 +270,7 @@ def serve_loop(
     now: datetime | None = None,
     sleep: Callable[[float], None] = _sleep,
     dead_man_s: int | None = None,
+    wake: Wake | StampWake | None = None,
 ) -> None:
     """No-key loop. Nothing can be sent, so nothing pretends to be: pending intents
     are parked as `no_gateway` (the desk keeps the idea; `requeue_no_gateway` brings
@@ -278,6 +280,7 @@ def serve_loop(
     from capitalizator.ops.product import read_user_mode
 
     dead = Watchdog(dead_man_s=dead_man_s or HEARTBEAT_S, cancel_entries=lambda _reason: None)
+    waiter = wake if wake is not None else signer_wake(vault)
     while not should_stop():
         when = now if now is not None else datetime.now(tz=UTC)
         require_utc(when)
@@ -294,7 +297,7 @@ def serve_loop(
             drain_once(knowledge, park_no_gateway, user_mode=mode, now=when)
         knowledge.set_meta("signer_heartbeat", when.isoformat())
         if idle_s:
-            sleep(idle_s)
+            idle(waiter, idle_s, should_stop=should_stop)
 
 
 def park_no_gateway(row: dict[str, Any]) -> dict[str, Any]:
@@ -462,6 +465,7 @@ def serve_gateway_loop(
     dead_man_s: int | None = None,
     reconcile_s: int | None = None,
     alerter: Alerter | None = None,
+    wake: Wake | StampWake | None = None,
 ) -> None:
     """Real signer loop: watchdog, intent drain via the gateway, OMS drain, reconcile.
 
@@ -508,6 +512,7 @@ def serve_gateway_loop(
     requeued = requeue_no_gateway(knowledge)
     if requeued:
         knowledge.set_meta("signer_requeued", str(requeued))
+    waiter = wake if wake is not None else signer_wake(vault)
     while not should_stop():
         when = now if now is not None else datetime.now(tz=UTC)
         require_utc(when)
@@ -603,7 +608,7 @@ def serve_gateway_loop(
                 venue = gateway.mode  # the order carries the venue the key really talks to
                 drain_validated(knowledge, gateway.send, user_mode=mode, now=when, venue=venue)
         if idle_s:
-            sleep(idle_s)
+            idle(waiter, idle_s, should_stop=should_stop)
 
 
 def _alert_transitions(

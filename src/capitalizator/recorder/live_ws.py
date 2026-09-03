@@ -29,6 +29,7 @@ from typing import Any
 
 from capitalizator.book.reconstruct import BookDirty
 from capitalizator.ops.knowledge import Knowledge
+from capitalizator.ops.wake import desk_wake_from_tape
 from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.live import liquidation_events, ticker_events
 from capitalizator.recorder.normalize import TradesNormalizer
@@ -88,7 +89,11 @@ class LiveRecorder:
             # minute (compacted later). 1 s parts × 10 symbols × 4 streams — the old
             # files/min on the VPS (2026-09-03) — the desk's own cursor choked on them.
             self.sink = BufferedParquetSink(
-                self.data_root, flush_every_s=60.0, max_rows=200_000, live_jsonl=True
+                self.data_root,
+                flush_every_s=60.0,
+                max_rows=200_000,
+                live_jsonl=True,
+                on_write=desk_wake_from_tape(self.data_root).notify,
             )
         if self.fetch_snapshot is None:
             rest = RestSnapshot()

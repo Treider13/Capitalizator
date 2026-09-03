@@ -98,5 +98,7 @@ def pump_jsonl(
     stream: str,
     recv_ts: datetime | None = None,
 ) -> int:
-    sink = ParquetSink(data_root)
+    from capitalizator.ops.wake import desk_wake_from_tape
+
+    sink = ParquetSink(data_root, on_write=desk_wake_from_tape(data_root).notify)
     return pump_frames(app, sink, load_jsonl(jsonl_path), stream=stream, recv_ts=recv_ts)
