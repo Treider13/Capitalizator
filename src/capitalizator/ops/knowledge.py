@@ -636,11 +636,14 @@ class Knowledge:
     def journal_rows(self) -> list[dict[str, Any]]:
         if self._cx is None:
             return []
-        rows = self._cx.execute("SELECT payload FROM journal_touches").fetchall()
+        rows = self._cx.execute("SELECT touch_id, payload FROM journal_touches").fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
             raw = json.loads(str(row["payload"]))
             if isinstance(raw, dict):
+                # The row key is a fact of the row: readers (night map, revive, UI) must
+                # not depend on the writer having copied it into the payload.
+                raw.setdefault("touch_id", str(row["touch_id"]))
                 out.append(raw)
         return out
 

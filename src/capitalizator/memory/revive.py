@@ -82,6 +82,65 @@ def touch_from_journal(row: dict[str, Any]) -> Touch | None:
     )
 
 
+_OUTCOMES = frozenset({"pending", "bounce", "break", "die"})
+
+
+def zone_from_journal(row: dict[str, Any]) -> Zone | None:
+    """The zone as the touch saw it — from the journal's own zone facts (written by the
+    desk since zones retire). Rows written before those facts existed → None."""
+    created = _parse_utc(row.get("zone_created_as_of")) or _parse_utc(row.get("touch_ts"))
+    return zone_from_payload(
+        {
+            "zone_id": row.get("zone_id"),
+            "symbol": row.get("symbol"),
+            "tf": row.get("zone_tf"),
+            "side": row.get("zone_side"),
+            "lo": row.get("zone_lo"),
+            "hi": row.get("zone_hi"),
+            "method": row.get("zone_method"),
+            "created_as_of": None if created is None else created.isoformat(),
+        }
+    )
+
+
+def _opt_bool(raw: object) -> bool | None:
+    if isinstance(raw, bool):
+        return raw
+    if raw in (None, ""):
+        return None
+    return str(raw).strip().lower() in {"1", "true", "yes"}
+
+
+def touch_record_from_journal(row: dict[str, Any]) -> Touch | None:
+    """A journal row as a Touch with its outcome and labels — for reports that read the
+    day as it happened (`touch_from_journal` rebuilds *pending* touches for revival)."""
+    touch_id = str(row.get("touch_id") or "").strip()
+    zone_id = str(row.get("zone_id") or "").strip()
+    ts = _parse_utc(row.get("touch_ts"))
+    px = _decimal(row.get("trade_px"))
+    qty = _decimal(row.get("trade_qty"))
+    if not touch_id or not zone_id or ts is None or px is None or qty is None:
+        return None
+    outcome = str(row.get("outcome") or "pending")
+    if outcome not in _OUTCOMES:
+        outcome = "pending"
+    return Touch(
+        touch_id=touch_id,
+        zone_id=zone_id,
+        ts=ts,
+        trade_px=px,
+        trade_qty=qty,
+        outcome=outcome,  # type: ignore[arg-type]
+        tape_eaten=_opt_bool(row.get("tape_eaten")),
+        gesture=str(row["zlg_label"]) if row.get("zlg_label") else None,
+        cav_label=str(row["cav_label"]) if row.get("cav_label") else None,
+        jury=str(row["jury"]) if row.get("jury") else None,
+        skip_reason=str(row["skip_reason"]) if row.get("skip_reason") else None,
+        shadow_would=_opt_bool(row.get("shadow_would")),
+        idea=str(row["idea"]) if row.get("idea") else None,
+    )
+
+
 def load_pending(knowledge: Knowledge) -> tuple[list[Zone], list[Touch]]:
     """Pending journal rows whose zone is still stored. Missing zone stays out."""
     if not knowledge.available():

@@ -24,7 +24,11 @@ from capitalizator.champion.calibrate import class_stats, to_meta
 from capitalizator.champion.exam import exam
 from capitalizator.champion.shadow_day import persist_day
 from capitalizator.memory.registry import Touch
-from capitalizator.memory.revive import load_pending
+from capitalizator.memory.revive import (
+    touch_record_from_journal,
+    zone_from_journal,
+    zone_from_payload,
+)
 from capitalizator.ops.daily_map_report import daily_map_report
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.settings import load_sources
@@ -32,18 +36,36 @@ from capitalizator.types import require_utc
 from capitalizator.zones.model import Zone
 
 
-def _day_rows(knowledge: Knowledge, day: str) -> list[tuple[Zone, Touch]]:
-    """(zone, touch) pairs of the day whose zone is still stored — for the map report."""
-    zones, touches = load_pending(knowledge)
-    by_id = {z.zone_id: z for z in zones}
+def day_rows(knowledge: Knowledge, day: str) -> tuple[list[tuple[Zone, Touch]], list[str]]:
+    """Every journal touch of the day as (zone, touch) — resolved or pending, on a live
+    or a retired zone. The zone comes from the stored table when it is still there, else
+    from the zone facts the desk writes into the row. Rows that carry neither are
+    returned by id as `unplaced` (counted, never invented)."""
+    if not knowledge.available():
+        return [], []
+    stored = {
+        str(row.get("zone_id")): zone
+        for row in knowledge.list_zones()
+        if (zone := zone_from_payload(row)) is not None
+    }
     out: list[tuple[Zone, Touch]] = []
-    for touch in touches:
-        if touch.ts.date().isoformat() != day:
+    unplaced: list[str] = []
+    seen: set[str] = set()
+    for row in knowledge.journal_rows():
+        ts = str(row.get("touch_ts") or "")
+        if not ts.startswith(day):
             continue
-        zone = by_id.get(touch.zone_id)
-        if zone is not None:
-            out.append((zone, touch))
-    return out
+        touch = touch_record_from_journal(row)
+        if touch is None or touch.touch_id in seen:
+            continue
+        seen.add(touch.touch_id)
+        zone = stored.get(touch.zone_id) or zone_from_journal(row)
+        if zone is None:
+            unplaced.append(touch.touch_id)
+            continue
+        out.append((zone, touch))
+    out.sort(key=lambda pair: pair[1].ts)
+    return out, unplaced
 
 
 def _oko_summary(knowledge: Knowledge) -> dict[str, Any]:
@@ -77,8 +99,10 @@ def _oko_summary(knowledge: Knowledge) -> dict[str, Any]:
 
 def run_night(knowledge: Knowledge, *, day: str, now: datetime) -> dict[str, Any]:
     when = require_utc(now)
-    rows = _day_rows(knowledge, day) if knowledge.available() else []
+    rows, unplaced = day_rows(knowledge, day)
     body = daily_map_report(day=day, rows=rows)
+    if unplaced:
+        body += f"\nКасаний без фактов зоны (не на карте): {len(unplaced)}.\n"
     knowledge.save_report(day=day, kind="map", body=body)
     snap = persist_day(knowledge, day)
 
@@ -108,6 +132,7 @@ def run_night(knowledge: Knowledge, *, day: str, now: datetime) -> dict[str, Any
     out = {
         "day": day,
         "n_rows": len(rows),
+        "n_rows_unplaced": len(unplaced),
         "report": body,
         "n_shadow": snap.n_would,
         "r_shadow": None if snap.r_shadow is None else format(snap.r_shadow, "f"),

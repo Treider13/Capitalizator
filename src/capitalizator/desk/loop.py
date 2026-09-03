@@ -1615,6 +1615,13 @@ class DeskLoop:
             "idea_side": idea_side,
             "btc_direction": self.btc.direction,
             "btc_same_side": btc_same_side,
+            # Zone facts travel with the touch: reports and the UI must not depend on the
+            # zone still being on the map (zones retire after die_no_touch_h).
+            "zone_lo": str(zone.lo),
+            "zone_hi": str(zone.hi),
+            "zone_tf": zone.tf,
+            "zone_method": zone.method,
+            "zone_created_as_of": zone.created_as_of.isoformat(),
             "wick_extreme": str(wick_extreme),
             "fade_side": fade_side,
             "fade_tag": "fade_spring" if fade_side else None,
