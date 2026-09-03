@@ -36,7 +36,7 @@ B **не считает** ZLG, CAV, tape eaten, PRS. Это только A. Об
 
 | Имя в плане | Файл | Что делает сейчас | Что дописать |
 |---|---|---|---|
-| `hours24` | `ops/contour.py` | лента 24ч, `max-unmarked-gap-s 0` | без зелёного A не `enable` — уже закон |
+| `hours24` | `ops/contour.py` | лента 24ч, `max-unmarked-gap-s 60` (запись `tape_uptime` от стола, не пересчёт ленты) | без зелёного A не `enable` — уже закон |
 | `enable` | тот же | человек, отказ если hours24 красный; `phase.yaml` не пишет; `trading_mode` не меняет | не трогать закон |
 | `status` / `contour_state` | тот же | on/off, `can_enable`, без советов | ок |
 | `observe` | тот же | **одно касание**: tape → ZLG → CAV → BTC → `stamp_jury`. **Размер не открывает** | до `propose` не ходит; стык B читать **до** ролей, если B-метки красные |

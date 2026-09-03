@@ -94,6 +94,7 @@ from capitalizator.oko.shadow import FINGERPRINT_LEN as OKO_SHADOW_FP_LEN
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.phase import breakout_enabled
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
+from capitalizator.ops.uptime import UptimeTracker
 from capitalizator.patterns.bar_quality import atr as atr_of
 from capitalizator.patterns.bar_quality import classify_bar_quality
 from capitalizator.patterns.cav import label as cav_label
@@ -259,6 +260,11 @@ class DeskLoop:
         self._live_funding_interval: dict[str, int] = {}
         self._correlation_at: datetime | None = None
         self.oko = OkoEye(working_tf=self.config.working_tf)
+        # F0 tape uptime, tracked from the events this process already streams
+        self.uptime = UptimeTracker.from_json(
+            knowledge.meta("tape_uptime") if knowledge.available() else None
+        )
+        self._uptime_dirty = False
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
         # Symbols the venue has shown a position or a fill for (venue_flat needs proof
@@ -383,7 +389,7 @@ class DeskLoop:
 
     def flush_ui(self, now: datetime, *, force: bool = False) -> int:
         """Write last_price / book snapshots in one transaction, at most every 0.5s."""
-        if not self._ui_pending or not self.knowledge.available():
+        if (not self._ui_pending and not self._uptime_dirty) or not self.knowledge.available():
             return 0
         if (
             not force
@@ -391,6 +397,9 @@ class DeskLoop:
             and (now - self._ui_last_flush).total_seconds() < self.UI_FLUSH_S
         ):
             return 0
+        if self._uptime_dirty:
+            self._ui_pending["tape_uptime"] = self.uptime.to_json()
+            self._uptime_dirty = False
         n = len(self._ui_pending)
         self.knowledge.set_meta_many(self._ui_pending)
         self._ui_pending = {}
@@ -3245,6 +3254,9 @@ class DeskLoop:
                 out.extend(self.on_event(event, list(extras) or None))
                 continue
             advance(event.exchange_ts)
+            if event.stream in {"trades", "gap"}:
+                self.uptime.on_event(event)
+                self._uptime_dirty = True
             if not self.instrument_ok(event.symbol):
                 out.append(_refused(event.symbol))
                 continue

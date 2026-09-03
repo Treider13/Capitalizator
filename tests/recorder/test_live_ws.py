@@ -164,3 +164,42 @@ def test_run_loop_stops_flushes_and_exits_socket(tmp_path: Path) -> None:
     assert ws.exited
     assert rec.sink.pending() == 0 and rec.sink.flushed_count == 5
     assert rec.status()["streams"]["trades"]["events"] == 5
+
+
+def test_restart_and_reconnect_write_marked_time_gaps(tmp_path: Path) -> None:
+    """F0 law: a recorder restart or a socket reconnect is a MARKED hole (gap event
+    with ts_from/ts_to). Unmarked holes are what the 24h gate refuses."""
+    vault = init_vault(tmp_path / "v")
+    kn = open_knowledge(vault)
+    ws = FakeWs()
+    ws.reconnects = 0
+    rec = LiveRecorder(symbols=["BTCUSDT"], data_root=vault.tape, ws_factory=lambda: ws, knowledge=kn)
+    calls = {"n": 0}
+
+    def stop() -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            for f in _trade_frames()[:5]:
+                ws.emit("trades", f)
+        if calls["n"] == 2:
+            ws.reconnects = 1  # the socket dropped and came back
+        return calls["n"] > 3
+
+    rec.run(should_stop=stop, sleep=lambda s: None)
+    gaps = [e for e in TapeCursor().fresh_rows(vault.tape) if e.stream == "gap"]
+    assert len(gaps) == 1 and gaps[0].payload["reason"] == "reconnect"
+    assert gaps[0].payload["ts_from"] == rec.last_trade_ts["BTCUSDT"].isoformat()
+    # the previous process's last trade is remembered in recorder_status …
+    status = json.loads(kn.meta("recorder_status"))
+    assert status["last_trade_ts"]["BTCUSDT"] == rec.last_trade_ts["BTCUSDT"].isoformat()
+    # … so a NEW process marks the hole from there to its own start
+    ws2 = FakeWs()
+    rec2 = LiveRecorder(symbols=["BTCUSDT"], data_root=vault.tape, ws_factory=lambda: ws2, knowledge=kn)
+    rec2.run(should_stop=lambda: True, sleep=lambda s: None)
+    gaps = sorted(
+        (e for e in TapeCursor().fresh_rows(vault.tape) if e.stream == "gap"),
+        key=lambda e: e.payload["ts_to"],
+    )
+    assert [g.payload["reason"] for g in gaps] == ["reconnect", "start"]
+    assert gaps[-1].payload["ts_from"] == rec.last_trade_ts["BTCUSDT"].isoformat()
+    kn.close()

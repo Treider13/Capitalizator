@@ -75,6 +75,9 @@ class LiveRecorder:
     ws: Any = None
     started_at: datetime | None = None
     _last_status: float | None = None
+    # last trade time per symbol (this process) and the reconnect count we last marked
+    last_trade_ts: dict[str, datetime] = field(default_factory=dict)
+    _marked_reconnects: int = 0
     _last_instruments: float | None = None
 
     def __post_init__(self) -> None:
@@ -165,6 +168,8 @@ class LiveRecorder:
         assert self.sink is not None
         for event in events:
             self.sink.write(event)
+            if event.stream == "trades":
+                self.last_trade_ts[event.symbol] = event.exchange_ts
         stat.events += len(events)
         return events
 
@@ -181,6 +186,7 @@ class LiveRecorder:
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "socket_connected": self._socket_connected(),
             "reconnects": getattr(self.ws, "reconnects", None),
+            "last_trade_ts": {k: v.isoformat() for k, v in sorted(self.last_trade_ts.items())},
             "streams": {},
         }
         for name, st in self.stats.items():
@@ -193,6 +199,59 @@ class LiveRecorder:
                 "last_age_s": age,
             }
         return out
+
+    def mark_time_gap(self, *, now: datetime, reason: str) -> int:
+        """Write one `gap` event per symbol with ts_from/ts_to: the hole this process
+        knows about (F0 law: a restart or a reconnect is a MARKED hole; an unmarked one
+        is a silent death). ts_from = the last trade we saw for the symbol — in this
+        process, or, at startup, in the previous process's `recorder_status`."""
+        assert self.sink is not None
+        n = 0
+        for symbol in self.symbols:
+            since = self.last_trade_ts.get(symbol)
+            if since is None:
+                since = self._previous_last_trade(symbol)
+            if since is None or since >= now:
+                continue
+            self.sink.write(
+                MarketEvent(
+                    stream="gap",
+                    exchange="bybit",
+                    symbol=symbol,
+                    exchange_ts=since,
+                    recv_ts=now,
+                    seq=None,
+                    payload={
+                        "ts_from": since.isoformat(),
+                        "ts_to": now.isoformat(),
+                        "reason": reason,
+                    },
+                )
+            )
+            n += 1
+        return n
+
+    def _previous_last_trade(self, symbol: str) -> datetime | None:
+        if self.knowledge is None or not self.knowledge.available():
+            return None
+        raw = self.knowledge.meta("recorder_status")
+        if not raw:
+            return None
+        try:
+            prev = json.loads(raw)
+            stamp = (prev.get("last_trade_ts") or {}).get(symbol)
+            return None if not stamp else datetime.fromisoformat(str(stamp))
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+            return None
+
+    def mark_reconnects(self, *, now: datetime | None = None) -> int:
+        """Called from the main loop: every reconnect the socket counted since the last
+        call becomes a marked hole (ts_from = last trade before it)."""
+        count = getattr(self.ws, "reconnects", None)
+        if not isinstance(count, int) or count <= self._marked_reconnects:
+            return 0
+        self._marked_reconnects = count
+        return self.mark_time_gap(now=now or datetime.now(tz=UTC), reason="reconnect")
 
     def _socket_connected(self) -> bool | None:
         ws = self.ws
@@ -242,11 +301,14 @@ class LiveRecorder:
         sleep: Callable[[float], None] = time.sleep,
         testnet: bool = False,
     ) -> None:
+        # the hole between the previous process's last trade and now is OURS to mark
+        self.mark_time_gap(now=datetime.now(tz=UTC), reason="start")
         self.start()
         self.publish_instruments(testnet=testnet, force=True)
         try:
             while not should_stop():
                 n = self.drain()
+                self.mark_reconnects()
                 self.publish_status()
                 self.publish_instruments(testnet=testnet)
                 if n == 0 and idle_s:

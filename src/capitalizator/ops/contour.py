@@ -20,6 +20,7 @@ from capitalizator.book.reconstruct import Book
 from capitalizator.btc.regime import BtcRegime
 from capitalizator.card.live import CardLive, card_is_fresh
 from capitalizator.memory.registry import Registry, Touch
+from capitalizator.ops import uptime
 from capitalizator.ops.check_uptime import check_uptime, parse_event_row
 from capitalizator.ops.daily_map_report import contains_advice
 from capitalizator.ops.knowledge import open_knowledge
@@ -34,7 +35,12 @@ from capitalizator.zones.model import Bar
 
 ContourState = Literal["off", "on"]
 HOURS24 = 24.0
-MAX_UNMARKED_GAP_S = 0.0
+# 0.0 in the old code made any millisecond between prints a "hole": real tape could
+# never turn green, and every console page re-read the whole tape to find that out.
+MAX_UNMARKED_GAP_S = uptime.MAX_UNMARKED_GAP_S
+# Without a desk record the console may scan a SMALL tape (fixtures, a fresh install);
+# anything bigger is the desk's job — it streams the tape anyway.
+SCAN_MAX_FILES = 64
 META_KEY = "contour"
 
 
@@ -120,14 +126,44 @@ def contour_state(vault: Vault) -> ContourState:
     raise ValueError(f"unknown contour: {raw!r}")
 
 
-def status(vault: Vault, *, symbol: str = "BTCUSDT") -> dict[str, Any]:
+def uptime_record(vault: Vault, *, symbol: str) -> tuple[dict[str, Any] | None, str]:
+    """The desk's `tape_uptime` record, or one built by a bounded scan of a small tape.
+    Returns (state, source) with source in {"desk", "scan", "none"}."""
+    knowledge = open_knowledge(vault, create=False)
+    try:
+        raw = knowledge.meta("tape_uptime") if knowledge.available() else None
+    finally:
+        knowledge.close()
+    tracker = uptime.UptimeTracker.from_json(raw)
+    if symbol in tracker.symbols:
+        return json.loads(tracker.to_json()), "desk"
+    if vault.tape.is_symlink() or not vault.tape.is_dir():
+        return None, "none"
+    n_files = 0
+    for _ in iter_regular_files(vault.tape):
+        n_files += 1
+        if n_files > SCAN_MAX_FILES:
+            return None, "none"
     events = load_tape_events(vault, symbol=symbol)
-    ok, span = hours24(events, symbol=symbol)
+    # time order, markers before the print that closes their hole
+    events.sort(key=lambda e: (e.exchange_ts, 0 if e.stream == "gap" else 1))
+    for event in events:
+        tracker.on_event(event)
+    if symbol not in tracker.symbols:
+        return None, "none"
+    return json.loads(tracker.to_json()), "scan"
+
+
+def status(vault: Vault, *, symbol: str = "BTCUSDT") -> dict[str, Any]:
+    record, source = uptime_record(vault, symbol=symbol)
+    ok, span, detail = uptime.hours24_from_state(record, symbol=symbol, hours=HOURS24)
     state = contour_state(vault)
     snap = {
         "contour": state,
         "hours24": ok,
         "hours24_span_s": span,
+        "hours24_source": source,
+        "hours24_detail": detail,
         "trading_mode": trading_mode(),
         "can_enable": ok and state == "off",
     }
@@ -155,7 +191,8 @@ def enable(vault: Vault, *, symbol: str = "BTCUSDT") -> dict[str, Any]:
     try:
         if knowledge.meta(META_KEY) == "on":
             return _ok_status(vault, symbol=symbol, mode_before=mode_before)
-        ok, _span = hours24(load_tape_events(vault, symbol=symbol), symbol=symbol)
+        record, _source = uptime_record(vault, symbol=symbol)
+        ok, _span, _detail = uptime.hours24_from_state(record, symbol=symbol, hours=HOURS24)
         if not ok:
             raise ContourNotReady("hours24 red")
         knowledge.set_meta(META_KEY, "on")

@@ -1370,7 +1370,7 @@ class MarketEvent:
 | **Не параллелить** | подключение альтов; зоны |
 | **Артефакты** | `ops/uptime-24h.md`; watchdog рестарт пишет gap |
 | **Зелёный** | аптайм ≥23.5 ч **или** рестарты только с помеченной gap; нет «тихо умер» |
-| **Команда** | `python -m capitalizator.ops.check_uptime --symbol BTCUSDT --hours 24 --max-unmarked-gap-s 0` |
+| **Команда** | `python -m capitalizator.ops.check_uptime --symbol BTCUSDT --hours 24 --max-unmarked-gap-s 60` (в консоли — из записи `tape_uptime`, которую ведёт стол; порог 60 с: BTC печатает много раз в секунду, минута тишины — мёртвая лента, а не рынок; «0» делало любую миллисекунду дырой) |
 
 ---
 
