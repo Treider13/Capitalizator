@@ -49,8 +49,12 @@ install -d -m 750 -o trader -g trader "$DATA" "$DATA/userdir" "$DATA/backups" "$
 log "repo"
 if [ -d "$DATA/app/.git" ]; then
   sudo -u trader git -C "$DATA/app" fetch -q origin && sudo -u trader git -C "$DATA/app" checkout -q "$BRANCH" && sudo -u trader git -C "$DATA/app" pull -q --ff-only origin "$BRANCH"
+elif [ -f "$DATA/app/pyproject.toml" ]; then
+  echo "code already unpacked at $DATA/app (no .git — uploaded tree; deploy.sh will not git pull)"
+  chown -R trader:trader "$DATA/app"
 else
-  sudo -u trader git clone -q --branch "$BRANCH" "$REPO" "$DATA/app"
+  sudo -u trader git clone -q --branch "$BRANCH" "$REPO" "$DATA/app" \
+    || { echo "clone failed (private repo?). Upload the tree to $DATA/app or add a deploy key, then re-run."; exit 1; }
 fi
 
 log "firewall"

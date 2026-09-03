@@ -5,11 +5,13 @@
 set -euo pipefail
 DATA=/srv/capitalizator
 APP="$DATA/app"
-BRANCH="${CAP_BRANCH:-$(git -C "$APP" rev-parse --abbrev-ref HEAD)}"
 cd "$APP"
-git fetch -q origin
-git checkout -q "$BRANCH"
-git pull -q --ff-only origin "$BRANCH"
+if [ -d .git ]; then
+  BRANCH="${CAP_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
+  git fetch -q origin && git checkout -q "$BRANCH" && git pull -q --ff-only origin "$BRANCH"
+else
+  echo "no .git in $APP: deploying the uploaded tree as is"
+fi
 cd infra/deploy
 [ -f .env ] || { cp ../../.env.example .env; chmod 600 .env; echo "created infra/deploy/.env from .env.example — fill BYBIT_* (or use /data/secrets/bybit.json)"; }
 export CAP_DATA="$DATA/userdir"
