@@ -1,31 +1,29 @@
-"""Validate unsigned testnet intent. Dead-man and reconcile are local only."""
+"""Validate unsigned intent; drain the queue through a gateway. Key never in desk.
 
-from capitalizator.signer.deadman import DeadMan
+Liveness (dead-man) and REST reconcile live in `gateway.watchdog` and
+`gateway.tracker`; the old local-only DeadMan/Reconciler shims are gone.
+"""
+
 from capitalizator.signer.process import (
     HEARTBEAT_S,
     RECONCILE_S,
     drain_once,
     drain_validated,
-    make_watchdogs,
+    park_no_gateway,
     unsigned_from_intent,
     validate_queue_payload,
 )
-from capitalizator.signer.reconcile import PaperPosition, Reconciler, UnknownPosition
 from capitalizator.signer.validate import Order, Signer, UnsignedIntent
 
 __all__ = [
-    "DeadMan",
     "Order",
-    "PaperPosition",
-    "Reconciler",
     "Signer",
-    "UnknownPosition",
     "UnsignedIntent",
     "HEARTBEAT_S",
     "RECONCILE_S",
     "drain_once",
     "drain_validated",
-    "make_watchdogs",
+    "park_no_gateway",
     "unsigned_from_intent",
     "validate_queue_payload",
 ]

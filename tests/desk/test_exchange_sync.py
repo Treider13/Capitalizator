@@ -162,12 +162,48 @@ def test_failed_intent_frees_the_idea_and_venue_flat_closes_twin(tmp_path: Path)
     desk.knowledge.set_meta("exchange_state", json.dumps({"at": fresh.isoformat(), "positions": []}))
     desk.tick(fresh)
     assert twin2.state == "open"  # inside the 90 s grace: the venue may not have filled yet
+    # The venue never showed this position: our real limit may simply be queued.
+    # A tape-filled twin must NOT be closed on "venue flat" (that flatten used to
+    # cancel the live entry order) — no proof, no close.
     later = t + timedelta(seconds=120)
     desk.knowledge.set_meta("exchange_state", json.dumps({"at": later.isoformat(), "positions": []}))
     out = desk.tick(later)
+    assert not any(e.get("event") == "venue_flat" for e in out)
+    assert twin2.state == "open" and "BTCUSDT" in desk.account.open
+    # Now the venue shows the position (filled) …
+    held = t + timedelta(seconds=150)
+    desk.knowledge.set_meta("exchange_state", json.dumps({
+        "at": held.isoformat(),
+        "positions": [{"symbol": "BTCUSDT", "side": "buy", "size": "0.3", "avg_price": "100000.1"}],
+    }))
+    desk.tick(held)
+    assert twin2.state == "open"
+    # … and then flat: the venue closed it (stop / TP / liquidation) → twin closed
+    gone = t + timedelta(seconds=240)
+    desk.knowledge.set_meta("exchange_state", json.dumps({"at": gone.isoformat(), "positions": []}))
+    out = desk.tick(gone)
     assert {"event": "venue_flat", "symbol": "BTCUSDT"} in out
     assert twin2.state == "closed" and twin2.exit_reason == "venue_flat"
     assert desk.account.open == {}
+
+
+def test_restart_keeps_open_idea_and_twin(tmp_path: Path) -> None:
+    """Audit B3: `Account.open` was written but never read back; twins were in-memory."""
+    desk = _desk(tmp_path, "demo", SUP, "100000.1")
+    ev = _arm_and_close(desk, SUP, "100000.1")
+    assert ev["sent"] is True
+    row = desk.knowledge.get_journal_touch(ev["touch_id"])
+    pid = row["paper_ids"]["demo"]
+    desk.on_trade(_trade(WINDOW + timedelta(minutes=6), "100000.1"), [SUP])
+    assert desk.paper.positions[pid].state == "open"
+    desk.tick(WINDOW + timedelta(minutes=6, seconds=1))
+    # new process, same knowledge
+    again = DeskLoop(knowledge=desk.knowledge, user_mode="demo", tick_size=TICK)
+    assert "BTCUSDT" in again.account.open
+    assert again.risk.allow_entry("BTCUSDT") is False
+    twin = again.paper.positions[pid]
+    assert twin.state == "open" and twin.initial_stop is not None
+    assert again.account.open["BTCUSDT"].intent_id == row["intent_id"]
 
 
 def test_b_veto_flattens_the_live_twin_and_queues_venue_flatten(tmp_path: Path) -> None:

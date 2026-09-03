@@ -121,7 +121,11 @@ def test_risk_menu_and_commands_reach_the_desk(tmp_path: Path) -> None:
     kinds = [e["event"] for e in events]
     assert "release_halts" in kinds and "resume_entries" in kinds
     assert not desk.account.halts.halted and not desk.entries_paused
-    assert kn.meta("desk_commands") == "[]"
+    # transactional queue: every command claimed and marked, none left pending
+    cmds = kn.commands()
+    assert cmds and all(c["status"] == "done" for c in cmds)
+    assert {c["kind"] for c in cmds} >= {"pause_entries", "release_halts", "resume_entries", "flatten"}
+    assert kn.claim_commands() == []
     try:
         app.command("flatten", symbol=None, ack=True)
     except ValueError as exc:

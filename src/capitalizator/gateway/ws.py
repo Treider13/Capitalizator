@@ -52,6 +52,22 @@ class PrivateFeed:
         self.ws.order_stream(self.enqueue)
         self.ws.wallet_stream(self.enqueue)
 
+    def connected(self) -> bool | None:
+        """Socket liveness from pybit (`is_connected`), not from event frames.
+
+        Private topics are event-driven: a healthy socket can be silent for hours.
+        None when there is no socket (offline) or the client cannot tell.
+        """
+        if self.ws is None:
+            return None
+        probe = getattr(self.ws, "is_connected", None)
+        if probe is None:
+            return None
+        try:
+            return bool(probe())
+        except Exception:  # a dead client object is "not connected", not a crash
+            return False
+
     def enqueue(self, frame: Frame) -> None:
         """pybit callback thread: park the frame, nothing else."""
         try:

@@ -224,8 +224,28 @@ class DeskLoop:
         self.oko = OkoEye(working_tf=self.config.working_tf)
         self.shadow_writes: list[dict[str, Any]] = []
         self.last_price: dict[str, Decimal] = {}
+        # Symbols the venue has shown a position or a fill for (venue_flat needs proof
+        # the venue ever held the idea before it may close the twin).
+        self._venue_seen: set[str] = set()
+        self._paper_dirty = False
         if knowledge.available():
             self.oko.load(knowledge)
+            # Twins (pending/open paper positions) survive a restart: the position the
+            # venue still holds keeps its trail / half / stop logic (audit B3).
+            raw_twins = knowledge.meta("paper_open")
+            if raw_twins:
+                try:
+                    restored = self.paper.restore(json.loads(raw_twins))
+                except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+                    knowledge.set_meta("paper_open_error", str(exc))
+                else:
+                    knowledge.set_meta("paper_restored", str(restored))
+            raw_seen = knowledge.meta("venue_seen")
+            if raw_seen:
+                try:
+                    self._venue_seen = set(json.loads(raw_seen))
+                except (json.JSONDecodeError, TypeError):
+                    self._venue_seen = set()
             for symbol, raw in knowledge.last_prices().items():
                 try:
                     px = Decimal(str(raw))
@@ -672,11 +692,16 @@ class DeskLoop:
                 and pos.state == "open"
                 and pos.half_taken
                 and pos.paper_id not in self._half_sent
+                and not pos.labels.get("half_sent")
             ):
                 self._half_sent.add(pos.paper_id)
+                pos.labels["half_sent"] = True  # persisted with the twin: no re-send after restart
+                # Half of what the venue actually holds, not of the paper size.
+                venue_qty = self._venue_qty(pos.symbol)
+                base = venue_qty if venue_qty is not None and venue_qty > 0 else pos.qty
                 self._oms(
                     pos, "half_tp", trade.exchange_ts,
-                    qty=str(pos.qty * HALF), price=str(pos.half_px), reason="+1R half",
+                    qty=str(base * HALF), price=str(pos.half_px), reason="+1R half",
                 )
         try:
             px = Decimal(str(trade.payload["px"]))
@@ -725,6 +750,9 @@ class DeskLoop:
                 self._reload_instruments()
                 self._refresh_calibration(when)
                 out.extend(self._sync_exchange_state(when))
+            # Twins and venue proof survive a restart (audit B3).
+            self._ui_put("paper_open", json.dumps(self.paper.snapshot(), sort_keys=True))
+            self._ui_put("venue_seen", json.dumps(sorted(self._venue_seen)))
         self.flush_ui(when, force=force_flush)
         # Settling pending touches walks every touch; once per second of clock is
         # enough (outcomes are 15m closes / 8-tick moves / 6h timeouts).
@@ -1800,43 +1828,58 @@ class DeskLoop:
         return [out_event]
 
     # --- operator commands / config hot reload (D-37, D-12) -------------------------
+    DESK_COMMANDS = ("flatten", "release_halts", "pause_entries", "resume_entries", "promote")
+
     def _consume_commands(self, now: datetime) -> list[dict[str, Any]]:
-        raw = self.knowledge.meta("desk_commands")
-        if not raw:
-            return []
-        try:
-            queue = json.loads(raw)
-        except json.JSONDecodeError:
-            queue = []
-        self.knowledge.set_meta("desk_commands", "[]")
+        """Operator commands are claimed atomically (no read-modify-write on meta):
+        a command posted between two desk ticks can no longer be lost."""
         out: list[dict[str, Any]] = []
-        for cmd in queue if isinstance(queue, list) else []:
-            kind = str(cmd.get("kind") or "")
-            symbol = cmd.get("symbol")
-            if kind == "flatten":
-                targets = list(self.symbols) if symbol in {None, "ALL"} else [str(symbol)]
-                for sym in targets:
-                    out.extend(
-                        self.on_event(
-                            {
-                                "kind": "flatten",
-                                "symbol": sym,
-                                "now": now,
-                                "reason": cmd.get("reason"),
-                            }
-                        )
+        for cmd in self.knowledge.claim_commands(self.DESK_COMMANDS):
+            kind = cmd["kind"]
+            payload = cmd["payload"]
+            symbol = payload.get("symbol")
+            try:
+                if kind == "flatten":
+                    # ALL = every symbol with a twin or an open idea, not just the ones
+                    # this process happened to see a print for.
+                    known = (
+                        set(self.symbols) | set(self.account.open) | set(self.paper.open_symbols())
                     )
-            elif kind == "release_halts":
-                assert self.account.halts is not None
-                self.account.halts.release(ack=True)
-                self.account._persist()
-                out.append({"event": "release_halts"})
-            elif kind == "pause_entries":
-                self.entries_paused = True
-                out.append({"event": "pause_entries"})
-            elif kind == "resume_entries":
-                self.entries_paused = False
-                out.append({"event": "resume_entries"})
+                    targets = sorted(known) if symbol in {None, "ALL"} else [str(symbol)]
+                    events: list[dict[str, Any]] = []
+                    for sym in targets:
+                        events.extend(
+                            self.on_event(
+                                {
+                                    "kind": "flatten",
+                                    "symbol": sym,
+                                    "now": now,
+                                    "reason": payload.get("reason"),
+                                }
+                            )
+                        )
+                    out.extend(events)
+                    result: dict[str, Any] = {"targets": targets, "events": len(events)}
+                elif kind == "release_halts":
+                    assert self.account.halts is not None
+                    self.account.halts.release(ack=True)
+                    self.account.persist()
+                    out.append({"event": "release_halts"})
+                    result = {"released": True}
+                elif kind == "pause_entries":
+                    self.entries_paused = True
+                    out.append({"event": "pause_entries"})
+                    result = {"paused": True}
+                elif kind == "resume_entries":
+                    self.entries_paused = False
+                    out.append({"event": "resume_entries"})
+                    result = {"paused": False}
+                else:  # promote — handled by the night contour; the desk only records it
+                    result = {"deferred": "night"}
+                self.knowledge.mark_command(cmd["id"], "done", result)
+            except Exception as exc:  # one bad command must not stop the others
+                self.knowledge.mark_command(cmd["id"], "failed", {"error": str(exc)})
+                out.append({"event": "command_failed", "kind": kind, "error": str(exc)})
         return out
 
     # --- exchange truth → account (live/demo) --------------------------------------
@@ -1855,12 +1898,14 @@ class DeskLoop:
         if self.user_mode not in {"demo", "live"}:
             return []
         out: list[dict[str, Any]] = []
-        # 1) intents the signer marked failed → free the idea
+        # 1) intents the venue refused (or the signer could not send at all) free the
+        #    idea. `unknown` (transport failed after the order left) and `no_gateway`
+        #    (no key yet) keep it: the venue may hold the order / the row is re-sent.
         for symbol, idea in list(self.account.open.items()):
             if idea.intent_id is None:
                 continue
             status = self.knowledge.intent_status(idea.intent_id)
-            if status in {"failed", "skipped"}:
+            if status in {"failed", "skipped", "rejected"}:
                 px = self.last_price.get(symbol, idea.entry)
                 self.paper.flatten(symbol, px, now, reason=f"intent_{status}")
                 if symbol in self.account.open:  # twin may not have existed
@@ -1892,10 +1937,21 @@ class DeskLoop:
             ):
                 self.account.set_equity(eq, source=f"exchange:{self.user_mode}", now=now)
                 out.append({"event": "equity", "equity": str(eq), "source": self.user_mode})
-        # 3) venue flat while our filled twin is open → the venue closed it
+        # 3) venue flat while our filled twin is open → the venue closed it.
+        #    Only after the venue has *shown* the position (or a fill) for this idea:
+        #    a twin the tape "filled" while our real limit is still queued is not
+        #    closed (audit B3: that flatten used to cancel the live entry).
         venue_open = {str(p.get("symbol")) for p in state.get("positions") or [] if p.get("symbol")}
+        for symbol in venue_open:
+            self._venue_seen.add(symbol)
+        for fill in state.get("fills") or []:
+            sym = str(fill.get("symbol") or "")
+            if sym:
+                self._venue_seen.add(sym)
         for symbol in list(self.account.open):
             if symbol in venue_open:
+                continue
+            if symbol not in self._venue_seen:
                 continue
             twins = [p for p in self.paper.open_for(symbol, source="demo") if p.state == "open"]
             for twin in twins:
@@ -1906,6 +1962,7 @@ class DeskLoop:
                 px = self.last_price.get(symbol, twin.entry_px or twin.limit_px)
                 self.paper.flatten(symbol, px, now, reason="venue_flat")
                 out.append({"event": "venue_flat", "symbol": symbol})
+            self._venue_seen.discard(symbol)
         return out
 
     CALIBRATION_REFRESH_S = 600.0
@@ -2097,9 +2154,34 @@ class DeskLoop:
         stt = self._trails.get(pos.paper_id)
         if stt is None:
             assert pos.entry_px is not None
-            stt = TrailState(side=pos.side, entry=pos.entry_px, stop=pos.stop, tick=pos.tick)
+            # After a restart the twin carries its trailed stop and its initial stop:
+            # 1R must come from the initial one, the phase from the half flag.
+            stt = TrailState(
+                side=pos.side,
+                entry=pos.entry_px,
+                stop=pos.stop,
+                tick=pos.tick,
+                initial_stop=pos.initial_stop,
+            )
             self._trails[pos.paper_id] = stt
         return stt
+
+    def _venue_qty(self, symbol: str) -> Decimal | None:
+        """Size the venue reports for `symbol` (REST truth), None when unknown."""
+        raw = self.knowledge.meta("exchange_state") if self.knowledge.available() else None
+        if not raw:
+            return None
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        for p in state.get("positions") or []:
+            if str(p.get("symbol")) == symbol:
+                try:
+                    return Decimal(str(p.get("size") or "0"))
+                except ArithmeticError:
+                    return None
+        return None
 
     def _trail_on_bar(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
         """§7: every closed working bar moves the stops of open paper positions.

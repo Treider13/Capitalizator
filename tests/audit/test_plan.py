@@ -418,25 +418,25 @@ def test_signer_serve_loop_drains_queue(tmp_path: Path) -> None:
         },
         created_ts=WINDOW.isoformat(),
     )
-    sent: list[dict] = []
     n = {"i": 0}
 
     def should_stop() -> bool:
         n["i"] += 1
         return n["i"] >= 2
 
+    # No key → the row is parked as `no_gateway` (never "failed"): the desk keeps
+    # the idea and the row is re-queued when a gateway appears.
     serve_loop(
         knowledge=knowledge,
         vault=vault,
-        send=lambda row: sent.append(row) or {"status": "sent"},
-        cancel_all=lambda: None,
         should_stop=should_stop,
         idle_s=0,
         now=WINDOW,
     )
+    parked = knowledge.intents_with_status("no_gateway")
+    assert len(parked) == 1 and parked[0]["payload"]["symbol"] == "BTCUSDT"
+    assert knowledge.pending_intents() == []
     knowledge.close()
-    assert sent
-    assert sent[0]["symbol"] == "BTCUSDT"
 
 
 def test_desk_screener_accepts_sol(tmp_path: Path) -> None:

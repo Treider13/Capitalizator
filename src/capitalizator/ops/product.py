@@ -19,7 +19,12 @@ META_LEARN_N = "learn_n_days"
 META_LEARN_STARTED = "learn_started_at"
 META_ACK = "mode_ack_ts"
 META_HELLO = "testnet_hello"
+META_LIVE_OVERRIDE = "live_override_reason"
 DEFAULT_MODE = "off"
+
+
+class LiveGateClosed(ValueError):
+    """`live` asked for while phase.yaml still says the gate is not passed."""
 
 
 def user_mode_from_knowledge(knowledge: Knowledge) -> str:
@@ -48,8 +53,14 @@ def set_user_mode(
     ack: bool,
     learn_n_days: int | None = None,
     ack_ts: str = "acked",
+    override_reason: str | None = None,
 ) -> dict[str, Any]:
-    """Human switch. Requires ack. Does not write phase.yaml."""
+    """Human switch. Requires ack. Does not write phase.yaml.
+
+    `live` additionally requires the phase file to say `trading_mode: "live"` — the
+    artifact a human writes after the F4 gate exits 0. An owner may override with
+    an explicit reason; the override is recorded next to the mode (never silent).
+    """
     if mode not in USER_MODES:
         raise ValueError(f"unknown user_mode: {mode!r}")
     if not ack:
@@ -59,12 +70,23 @@ def set_user_mode(
             raise ValueError("learn_n_days must be >= 1")
     phase_before = phase_path().read_bytes()
     trading_before = trading_mode()
+    if mode == "live" and trading_before != "live":
+        if not override_reason or len(override_reason.strip()) < 8:
+            raise LiveGateClosed(
+                f"phase.yaml trading_mode is {trading_before!r}: the F4 gate has not been "
+                "passed; give an explicit override_reason (≥ 8 chars) to force live"
+            )
     knowledge = open_knowledge(vault, create=True)
     try:
         knowledge.set_meta(META_USER_MODE, mode)
         knowledge.set_meta(META_ACK, ack_ts)
         if mode == "learn" and learn_n_days is not None:
             knowledge.set_meta(META_LEARN_N, str(int(learn_n_days)))
+        if mode == "live":
+            knowledge.set_meta(
+                META_LIVE_OVERRIDE,
+                "" if trading_before == "live" else str(override_reason).strip(),
+            )
         out_mode = user_mode_from_knowledge(knowledge)
     finally:
         knowledge.close()
@@ -77,6 +99,9 @@ def set_user_mode(
         "ack": True,
         "learn_n_days": learn_n_days,
         "trading_mode_yaml": trading_before,
+        "live_override": (
+            None if mode != "live" or trading_before == "live" else str(override_reason).strip()
+        ),
     }
 
 

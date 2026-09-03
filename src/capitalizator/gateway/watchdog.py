@@ -1,10 +1,20 @@
 """Gateway-side dead-man (Н-4/Н-5).
 
-The old DeadMan beat and ticked itself inside one loop iteration and could never
-fire. Bybit's own DCP is institutional-only (docs: "DCP feature is only available
-for Ins clients"), so protection is: (1) the stop-loss lives on the exchange from
-the fill, (2) this watchdog cancels *entry* orders when the desk heartbeat, the
-private WebSocket or the exchange clock goes silent. It never touches stops.
+Bybit's own DCP is institutional-only (docs: "DCP feature is only available for
+Ins clients"), so protection is: (1) the stop-loss lives on the exchange from the
+fill, (2) this watchdog cancels *entry* orders and asks for reduce-only when a
+liveness source goes silent. It never touches stops.
+
+Liveness sources (each armed by its first beat):
+  desk        — the desk heartbeat written every tick;
+  ws_private  — pybit `WebSocket.is_connected()` sampled by the signer loop, not
+                event frames: Bybit private topics are event-driven and can be
+                silent for hours while the socket is healthy (audit B1);
+  rest        — the last successful REST reconcile.
+
+Episodes: a source that goes stale fires once; when it recovers and goes stale
+again, it fires again (the old `fired[-1] == reason` check silenced every second
+episode for the life of the process).
 """
 
 from __future__ import annotations
@@ -20,9 +30,12 @@ from capitalizator.types import require_utc
 class Watchdog:
     dead_man_s: int
     cancel_entries: Callable[[str], None]  # reason → cancel all entry orders
+    on_recover: Callable[[str], None] | None = None
     max_clock_skew_ms: int = 2000
     _last: dict[str, datetime] = field(default_factory=dict)
+    _in_episode: set[str] = field(default_factory=set)
     fired: list[tuple[datetime, str]] = field(default_factory=list)
+    recovered: list[tuple[datetime, str]] = field(default_factory=list)
     armed: bool = False
     clock_skew_ms: int | None = None
 
@@ -31,7 +44,7 @@ class Watchdog:
             raise ValueError("dead_man_s must be > 0")
 
     def beat(self, source: str, now: datetime) -> None:
-        """desk | ws_private | ws_public. Arms on the first beat of each source."""
+        """desk | ws_private | rest. Arms on the first beat of each source."""
         self._last[source] = require_utc(now)
         self.armed = True
 
@@ -51,15 +64,25 @@ class Watchdog:
         return sorted(out)
 
     def check(self, now: datetime) -> list[str]:
-        """Cancel entries once per stale episode; stops stay on the venue."""
+        """Cancel entries once per stale *episode* per source; stops stay on the venue."""
         if not self.armed:
             return []
-        stale = self.stale(now)
-        if not stale:
-            return []
-        reason = "dead_man:" + ",".join(stale)
-        if self.fired and self.fired[-1][1] == reason:
-            return stale
-        self.cancel_entries(reason)
-        self.fired.append((require_utc(now), reason))
-        return stale
+        when = require_utc(now)
+        stale = set(self.stale(when))
+        new = sorted(stale - self._in_episode)
+        healed = sorted(self._in_episode - stale)
+        for src in healed:
+            self._in_episode.discard(src)
+            self.recovered.append((when, src))
+            if self.on_recover is not None:
+                self.on_recover(src)
+        if new:
+            reason = "dead_man:" + ",".join(new)
+            self.cancel_entries(reason)
+            self.fired.append((when, reason))
+            self._in_episode.update(new)
+        return sorted(stale)
+
+    @property
+    def in_episode(self) -> list[str]:
+        return sorted(self._in_episode)

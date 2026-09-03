@@ -94,6 +94,10 @@ class PositionTracker:
     equity_at: datetime | None = None
     last_ws_at: datetime | None = None
     mismatches: list[dict[str, Any]] = field(default_factory=list)
+    # REST positions nobody (WS, desk) claims. Reported on every reconcile until an
+    # operator acknowledges them; never silently adopted (audit B1).
+    unknown: dict[str, PositionSnapshot] = field(default_factory=dict)
+    acknowledged: set[str] = field(default_factory=set)
 
     # --- WS topics -----------------------------------------------------------------
     def on_position(
@@ -207,18 +211,29 @@ class PositionTracker:
                 position_idx=int(row.get("positionIdx") or 0),
             )
         out: list[dict[str, Any]] = []
-        known = {s for s, p in self.positions.items() if not p.flat} | set(expected or ())
+        known = (
+            {s for s, p in self.positions.items() if not p.flat}
+            | set(expected or ())
+            | self.acknowledged
+        )
         has_ws = self.last_ws_at is not None
-        for symbol in sorted(set(rest) | set(self.positions)):
+        still_unknown: dict[str, PositionSnapshot] = {}
+        for symbol in sorted(set(rest) | set(self.positions) | set(self.unknown)):
             a = self.positions.get(symbol)
             b = rest.get(symbol)
             if b is not None and not b.flat and symbol not in known:
+                still_unknown[symbol] = b
                 out.append(
                     {
                         "symbol": symbol,
                         "field": "unknown_position",
                         "ws": "absent",
                         "rest": str(b.size),
+                        "since": (
+                            self.unknown[symbol].updated_at.isoformat()
+                            if symbol in self.unknown and self.unknown[symbol].updated_at
+                            else now.isoformat()
+                        ),
                     }
                 )
                 continue
@@ -238,10 +253,35 @@ class PositionTracker:
         self.mismatches.extend(stamped)
         if len(self.mismatches) > 1000:
             del self.mismatches[: len(self.mismatches) - 1000]
-        # REST is truth: adopt it after reporting
+        # REST is truth for what we know about; unknown positions stay unknown until
+        # an operator acknowledges them (then they become known and are adopted).
         for symbol, snap in rest.items():
+            if symbol in still_unknown:
+                continue
             self.positions[symbol] = snap
+        for symbol in list(self.positions):
+            if symbol not in rest and not self.positions[symbol].flat and has_ws is False:
+                # No WS and REST says flat: the venue is the truth.
+                self.positions[symbol] = PositionSnapshot(
+                    symbol=symbol, side="flat", size=Decimal("0"), avg_price=None,
+                    stop_loss=None, take_profit=None, trailing_stop=None, liq_price=None,
+                    unrealised_pnl=None, updated_at=now,
+                )
+        for symbol, snap in still_unknown.items():
+            if symbol not in self.unknown:
+                snap.updated_at = snap.updated_at or now
+        self.unknown = still_unknown
         return stamped
+
+    def acknowledge(self, symbol: str) -> bool:
+        """Operator: 'this position is mine / handled'. Adopts it on the next reconcile."""
+        if symbol not in self.unknown:
+            return False
+        self.acknowledged.add(symbol)
+        return True
+
+    def unknown_symbols(self) -> list[str]:
+        return sorted(self.unknown)
 
     def open_symbols(self) -> list[str]:
         return sorted(s for s, p in self.positions.items() if not p.flat)

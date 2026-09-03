@@ -75,6 +75,7 @@ class Account:
     _budgets: dict[str, PersistentBudget] = field(default_factory=dict)
     _day: str | None = None
     _week: str | None = None
+    source_switches: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.equity <= 0:
@@ -129,13 +130,23 @@ class Account:
         if source != self.equity_source:
             # Source switch (paper → venue wallet, testnet → live): the old baselines
             # belong to another number. Comparing the first wallet reading with the
-            # paper equity tripped a false day halt (found by test). Re-baseline.
+            # paper equity tripped a false day halt (found by test). Re-baseline the
+            # *numbers* — but a halt that is already on stays on: releasing a kill
+            # switch is an operator act (`release_halts` with ack), never a side
+            # effect of reading a wallet (audit B3).
             self.halts.day_start = equity
             self.halts.week_start = equity
             self.halts.peak = equity
-            if self.halts.halted and self.halts.reason in {"day", "week", "peak"}:
-                self.halts.halted = False
-                self.halts.reason = ""
+            self.source_switches.append(
+                {
+                    "at": require_utc(now).isoformat(),
+                    "from": self.equity_source,
+                    "to": source,
+                    "equity": str(equity),
+                    "halted": self.halts.halted,
+                }
+            )
+            del self.source_switches[:-20]
         self.equity = equity
         self.equity_source = source
         self.equity_at = require_utc(now)
@@ -217,16 +228,21 @@ class Account:
                     "stop": str(o.stop),
                     "opened_at": o.opened_at.isoformat(),
                     "source": o.source,
+                    "intent_id": o.intent_id,
                 }
                 for o in self.open.values()
             ],
+            "source_switches": list(self.source_switches),
             "config_id": self.config.config_id,
         }
 
-    def _persist(self) -> None:
+    def persist(self) -> None:
         if self.knowledge is None or not self.knowledge.available():
             return
         self.knowledge.set_meta("account", json.dumps(self.snapshot(), sort_keys=True))
+
+    # kept for callers that still use the private name
+    _persist = persist
 
     @classmethod
     def load(
@@ -257,6 +273,41 @@ class Account:
                 if snap.get("halted"):
                     acct.halts.halted = True
                     acct.halts.reason = str(snap.get("halt_reason") or "")
+                acct.source_switches = list(snap.get("source_switches") or [])
+                # Open ideas survive a restart: `allow_entry` must know about the
+                # position the venue still holds (audit B3: "one position persisted"
+                # was written but never read back).
+                for raw_open in snap.get("open") or []:
+                    idea = OpenIdea(
+                        symbol=str(raw_open["symbol"]),
+                        side=str(raw_open["side"]),
+                        qty=Decimal(str(raw_open["qty"])),
+                        entry=Decimal(str(raw_open["entry"])),
+                        stop=Decimal(str(raw_open["stop"])),
+                        opened_at=datetime.fromisoformat(str(raw_open["opened_at"])),
+                        intent_id=(
+                            None if raw_open.get("intent_id") is None
+                            else int(raw_open["intent_id"])
+                        ),
+                        source=str(raw_open.get("source") or "paper"),
+                    )
+                    acct.open[idea.symbol] = idea
+                    tp = (
+                        idea.entry + (idea.entry - idea.stop)
+                        if idea.side == "buy"
+                        else idea.entry - (idea.stop - idea.entry)
+                    )
+                    acct.risk.on_open(
+                        Intent(
+                            symbol=idea.symbol,
+                            side=idea.side,  # type: ignore[arg-type]
+                            entry=idea.entry,
+                            stop=idea.stop,
+                            tp=tp,
+                            tag="restored",
+                            qty=idea.qty,
+                        )
+                    )
             except (KeyError, ValueError, ArithmeticError, json.JSONDecodeError):
                 pass
         acct.roll(now if now is not None else datetime.now(tz=UTC))

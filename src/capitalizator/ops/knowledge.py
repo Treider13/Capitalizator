@@ -15,7 +15,7 @@ import json
 import os
 import sqlite3
 import stat
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -121,6 +121,19 @@ CREATE TABLE IF NOT EXISTS oms_commands (
   status TEXT NOT NULL,
   kind TEXT NOT NULL,
   symbol TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  result TEXT
+);
+CREATE TABLE IF NOT EXISTS intent_result (
+  intent_id INTEGER PRIMARY KEY,
+  status TEXT NOT NULL,
+  body TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS desk_commands (
+  id INTEGER PRIMARY KEY,
+  created_ts TEXT NOT NULL,
+  status TEXT NOT NULL,
+  kind TEXT NOT NULL,
   payload TEXT NOT NULL,
   result TEXT
 );
@@ -692,10 +705,19 @@ class Knowledge:
             )
         return out
 
-    def mark_intent(self, intent_id: int, status: str) -> None:
+    # `unknown`: transport failed after the order left — the venue may hold it; the
+    # signer resolves it by orderLinkId. `no_gateway`: no key/process to send with;
+    # the desk keeps the idea and the row is re-sent when a gateway appears.
+    INTENT_STATUSES = frozenset(
+        {"pending", "sent", "skipped", "failed", "rejected", "unknown", "no_gateway"}
+    )
+
+    def mark_intent(
+        self, intent_id: int, status: str, result: Mapping[str, Any] | None = None
+    ) -> None:
         if self._cx is None:
             raise FileNotFoundError("no knowledge db")
-        if status not in {"pending", "sent", "skipped", "failed"}:
+        if status not in self.INTENT_STATUSES:
             raise ValueError(f"bad intent status: {status!r}")
         self._cx.execute("BEGIN IMMEDIATE")
         try:
@@ -703,10 +725,178 @@ class Knowledge:
                 "UPDATE intent_queue SET status = ? WHERE id = ?",
                 (status, int(intent_id)),
             )
+            if result is not None:
+                self._cx.execute(
+                    "INSERT OR REPLACE INTO intent_result(intent_id, status, body) "
+                    "VALUES (?, ?, ?)",
+                    (
+                        int(intent_id),
+                        status,
+                        json.dumps(dict(result), sort_keys=True, default=str),
+                    ),
+                )
             self._cx.commit()
         except Exception:
             self._cx.rollback()
             raise
+
+    def intents_with_status(self, status: str) -> list[dict[str, Any]]:
+        """Rows in one state, with the last recorded result (if any)."""
+        if self._cx is None:
+            return []
+        rows = self._cx.execute(
+            "SELECT q.id, q.created_ts, q.status, q.payload, r.body AS result "
+            "FROM intent_queue q LEFT JOIN intent_result r ON r.intent_id = q.id "
+            "WHERE q.status = ? ORDER BY q.id",
+            (status,),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(str(row["payload"]))
+            result = json.loads(str(row["result"])) if row["result"] else None
+            out.append(
+                {
+                    "id": int(row["id"]),
+                    "created_ts": str(row["created_ts"]),
+                    "status": str(row["status"]),
+                    "payload": payload if isinstance(payload, dict) else {},
+                    "result": result if isinstance(result, dict) else None,
+                }
+            )
+        return out
+
+    # --- operator → desk / signer commands (transactional, no read-modify-write) --------
+    COMMAND_KINDS = frozenset(
+        {
+            "flatten",
+            "release_halts",
+            "pause_entries",
+            "resume_entries",
+            "release_signer",  # clear the sticky entry block after a reconcile mismatch
+            "ack_position",  # operator claims an unknown venue position
+            "promote",  # champion ← challenger, with the exam report attached
+        }
+    )
+
+    def enqueue_command(
+        self, kind: str, payload: Mapping[str, Any], *, created_ts: str
+    ) -> int:
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        if kind not in self.COMMAND_KINDS:
+            raise ValueError(f"unknown command kind: {kind!r}")
+        body = json.dumps(dict(payload), sort_keys=True, ensure_ascii=False, default=str)
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self._cx.execute(
+                "INSERT INTO desk_commands(created_ts, status, kind, payload) VALUES (?, ?, ?, ?)",
+                (created_ts, "pending", kind, body),
+            )
+            row_id = int(cur.lastrowid or 0)
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+        return row_id
+
+    def claim_commands(self, kinds: Iterable[str] | None = None) -> list[dict[str, Any]]:
+        """Atomically move pending commands to `claimed` and return them. Two consumers
+        (desk, signer) never see the same row; a crash between claim and done leaves
+        the row `claimed` for the operator to see, never silently dropped."""
+        if self._cx is None:
+            return []
+        wanted = None if kinds is None else sorted(set(kinds))
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            if wanted:
+                marks = ",".join("?" for _ in wanted)
+                rows = self._cx.execute(
+                    "SELECT id, created_ts, kind, payload FROM desk_commands "
+                    f"WHERE status = 'pending' AND kind IN ({marks}) ORDER BY id",
+                    tuple(wanted),
+                ).fetchall()
+            else:
+                rows = self._cx.execute(
+                    "SELECT id, created_ts, kind, payload FROM desk_commands "
+                    "WHERE status = 'pending' ORDER BY id"
+                ).fetchall()
+            ids = [int(r["id"]) for r in rows]
+            if ids:
+                marks = ",".join("?" for _ in ids)
+                self._cx.execute(
+                    f"UPDATE desk_commands SET status = 'claimed' WHERE id IN ({marks})",
+                    tuple(ids),
+                )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(str(row["payload"]))
+            out.append(
+                {
+                    "id": int(row["id"]),
+                    "created_ts": str(row["created_ts"]),
+                    "kind": str(row["kind"]),
+                    "payload": payload if isinstance(payload, dict) else {},
+                }
+            )
+        return out
+
+    def mark_command(
+        self, cmd_id: int, status: str, result: Mapping[str, Any] | None = None
+    ) -> None:
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        if status not in {"pending", "claimed", "done", "failed"}:
+            raise ValueError(f"bad command status: {status!r}")
+        body = None if result is None else json.dumps(dict(result), sort_keys=True, default=str)
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            self._cx.execute(
+                "UPDATE desk_commands SET status = ?, result = ? WHERE id = ?",
+                (status, body, int(cmd_id)),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+
+    def commands(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        if self._cx is None:
+            return []
+        rows = self._cx.execute(
+            "SELECT id, created_ts, status, kind, payload, result FROM desk_commands "
+            "ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(str(row["payload"]))
+            result = json.loads(str(row["result"])) if row["result"] else None
+            out.append(
+                {
+                    "id": int(row["id"]),
+                    "created_ts": str(row["created_ts"]),
+                    "status": str(row["status"]),
+                    "kind": str(row["kind"]),
+                    "payload": payload if isinstance(payload, dict) else {},
+                    "result": result,
+                }
+            )
+        return out
+
+    def intent_result(self, intent_id: int) -> dict[str, Any] | None:
+        if self._cx is None:
+            return None
+        row = self._cx.execute(
+            "SELECT body FROM intent_result WHERE intent_id = ?", (int(intent_id),)
+        ).fetchone()
+        if row is None:
+            return None
+        raw = json.loads(str(row["body"]))
+        return raw if isinstance(raw, dict) else None
 
     def enqueue_order(
         self,

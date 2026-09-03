@@ -20,9 +20,10 @@ from capitalizator.ops.contour import ContourNotReady
 from capitalizator.ops.contour import enable as enable_contour
 from capitalizator.ops.contour import status as contour_status
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
-from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.phase import load_phase, trading_mode
 from capitalizator.ops.product import (
+    LiveGateClosed,
     hello_recorded,
     read_user_mode,
     set_user_mode,
@@ -431,8 +432,11 @@ class ConsoleApp:
         *,
         ack: bool,
         learn_n_days: int | None = None,
+        override_reason: str | None = None,
     ) -> dict[str, Any]:
-        return set_user_mode(self.vault, mode, ack=ack, learn_n_days=learn_n_days)
+        return set_user_mode(
+            self.vault, mode, ack=ack, learn_n_days=learn_n_days, override_reason=override_reason
+        )
 
     def set_risk(self, changes: dict[str, Any], *, ack: bool) -> dict[str, Any]:
         """Operator risk menu (D-12). Validated by RiskConfig; applies to new intents."""
@@ -472,25 +476,17 @@ class ConsoleApp:
         """flatten | release_halts | pause_entries | resume_entries → picked up by the desk tick."""
         if not ack:
             raise ValueError("ack required")
-        if kind not in {"flatten", "release_halts", "pause_entries", "resume_entries"}:
+        if kind not in Knowledge.COMMAND_KINDS:
             raise ValueError(f"unknown command: {kind}")
-        if kind == "flatten" and not symbol:
-            raise ValueError("flatten needs a symbol (or ALL)")
+        if kind in {"flatten", "ack_position"} and not symbol:
+            raise ValueError(f"{kind} needs a symbol" + (" (or ALL)" if kind == "flatten" else ""))
         knowledge = open_knowledge(self.vault, create=True)
         try:
-            raw = knowledge.meta("desk_commands")
-            queue = json.loads(raw) if raw else []
-            if not isinstance(queue, list):
-                queue = []
-            cmd = {
-                "kind": kind,
-                "symbol": symbol,
-                "reason": reason or "operator",
-                "at": datetime.now(tz=UTC).isoformat(),
-            }
-            queue.append(cmd)
-            knowledge.set_meta("desk_commands", json.dumps(queue))
-            return {"queued": cmd, "pending": len(queue)}
+            now = datetime.now(tz=UTC).isoformat()
+            cmd = {"kind": kind, "symbol": symbol, "reason": reason or "operator", "at": now}
+            cmd_id = knowledge.enqueue_command(kind, cmd, created_ts=now)
+            pending = sum(1 for c in knowledge.commands(limit=500) if c["status"] == "pending")
+            return {"queued": {**cmd, "id": cmd_id}, "pending": pending}
         finally:
             knowledge.close()
 
@@ -584,8 +580,15 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
             if mode in {"demo", "live"} and not hello_recorded(app.vault):
                 self._send(403, b"hello required", "text/plain; charset=utf-8")
                 return
+            reason = payload.get("override_reason")
             try:
-                out = app.set_mode(mode, ack=True, learn_n_days=learn_n)
+                out = app.set_mode(
+                    mode, ack=True, learn_n_days=learn_n,
+                    override_reason=None if reason in {None, ""} else str(reason),
+                )
+            except LiveGateClosed as exc:
+                self._send(409, str(exc).encode(), "text/plain; charset=utf-8")
+                return
             except ValueError as exc:
                 self._send(400, str(exc).encode(), "text/plain; charset=utf-8")
                 return

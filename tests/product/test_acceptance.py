@@ -21,6 +21,7 @@ from capitalizator.exec.demo_adapter import DemoAdapter
 from capitalizator.exec.episodes import EpisodeLog
 from capitalizator.exec.replay import ReplayEngine
 from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy
+from capitalizator.gateway.watchdog import Watchdog
 from capitalizator.jury.desk import decide, voices_for_bounce
 from capitalizator.llm.daily_summary import DailySummary
 from capitalizator.memory.registry import Registry, Touch
@@ -35,7 +36,6 @@ from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import Intent, RiskEngine, reject_forbidden_keys
 from capitalizator.risk.sizing import Sizer, implied_risk
 from capitalizator.screener.universe import UniverseError, load_desk_universe, validate_universe
-from capitalizator.signer.deadman import DeadMan
 from capitalizator.signer.validate import UnsignedIntent
 from capitalizator.types import MarketEvent
 from capitalizator.zlg.gesture import ZLG, BookAdd
@@ -320,12 +320,12 @@ def test_11_llm_poison_is_not_advice() -> None:
 
 
 def test_12_dead_man_cancel_all() -> None:
-    hits: list[int] = []
-    man = DeadMan(lambda: hits.append(1), dead_man_s=30)
-    man.beat(WINDOW)
-    assert man.tick(WINDOW + timedelta(seconds=30)) is False
-    assert man.tick(WINDOW + timedelta(seconds=31)) is True
-    assert hits == [1]
+    hits: list[str] = []
+    dog = Watchdog(dead_man_s=30, cancel_entries=hits.append)
+    dog.beat("desk", WINDOW)
+    assert dog.check(WINDOW + timedelta(seconds=30)) == []
+    assert dog.check(WINDOW + timedelta(seconds=31)) == ["desk"]
+    assert hits == ["dead_man:desk"]
 
 
 def test_13_future_zone_is_invisible() -> None:

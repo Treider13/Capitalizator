@@ -1,9 +1,10 @@
-"""Signer process: only process with a key. Heartbeat 30s, reconcile 60s.
+"""Signer process: the only process with a key. Heartbeat / reconcile from time.yaml.
 
-With keys (environment or vault secrets file — see gateway/keys.py) the loop
-is the real gateway loop: watchdog, intent drain to Bybit via pybit, OMS drain,
-reconcile, exchange state for the console. Without keys the drain keeps the
-`{"status": "not_sent"}` stub and prints `"gateway": "absent"` — nothing pretends.
+With keys (environment or vault secrets file — see gateway/keys.py) the loop is
+the real gateway loop: watchdog, intent drain to Bybit via pybit, OMS drain,
+reconcile, exchange state for the console. Without keys pending intents are
+parked as `no_gateway` and the process prints `"gateway": "absent"` — nothing
+pretends, and the desk keeps its ideas for when a key appears.
 """
 
 from __future__ import annotations
@@ -19,9 +20,10 @@ from capitalizator.ops.vault import init_vault, load_vault
 from capitalizator.signer.process import (
     HEARTBEAT_S,
     RECONCILE_S,
+    drain_once,
     drain_validated,
-    make_watchdogs,
     on_signer_exit,
+    park_no_gateway,
     serve_gateway_loop,
     serve_loop,
 )
@@ -56,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.userdir)
     vault = init_vault(root) if args.init else load_vault(root)
     knowledge = open_knowledge(vault)
-    cancels: list[int] = []
+    gateway = None
     try:
         gateway, tracker, feed = build_gateway(vault)
         mode = read_user_mode(vault)
@@ -76,32 +78,23 @@ def main(argv: list[str] | None = None) -> int:
 
             mark_hello(vault, ok=bool(result.get("ok")))
             knowledge.set_meta("hello_result", json.dumps(result, default=str))
+            fee = result.get("fee_rate") or {}
+            if fee.get("ok") and isinstance(fee.get("value"), list) and len(fee["value"]) == 2:
+                knowledge.set_meta(
+                    "fee_rate", json.dumps({"maker": fee["value"][0], "taker": fee["value"][1]})
+                )
             print(json.dumps({**payload, "hello": result}, ensure_ascii=False, default=str))
             return 0 if result.get("ok") else 1
         if gateway is None:
-            dead, _recon = make_watchdogs(
-                cancel_all=lambda: cancels.append(1),
-                dead_man_s=HEARTBEAT_S,
-                reconcile_s=RECONCILE_S,
-            )
             if args.once or not args.serve:
                 if mode in {"demo", "live"}:
-                    drain_validated(
-                        knowledge,
-                        lambda row: {"status": "not_sent"},
-                        user_mode=mode,
-                        now=datetime.now(tz=UTC),
+                    drain_once(
+                        knowledge, park_no_gateway, user_mode=mode, now=datetime.now(tz=UTC)
                     )
                 print(json.dumps(payload, ensure_ascii=False))
                 return 0
             print(json.dumps({**payload, "serve": True}, ensure_ascii=False), flush=True)
-            serve_loop(
-                knowledge=knowledge,
-                vault=vault,
-                send=lambda row: {"status": "not_sent"},
-                cancel_all=lambda: cancels.append(1),
-                should_stop=lambda: False,
-            )
+            serve_loop(knowledge=knowledge, vault=vault, should_stop=lambda: False)
             return 0
         if args.once or not args.serve:
             if mode in {"demo", "live"}:
@@ -119,7 +112,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     finally:
-        on_signer_exit(lambda: cancels.append(1))
+        if gateway is not None:
+            # Process gone → no resting entry order may survive us. Stops stay.
+            on_signer_exit(lambda: gateway.cancel_entries(None, reason="signer_exit"))
         knowledge.close()
 
 
