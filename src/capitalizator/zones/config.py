@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,8 @@ REQUIRED = (
     "prs_delta_ticks",
     "n_min",
     "mature_n",
+    "wall_min_notional",
+    "wall_depth_mult",
 )
 
 
@@ -50,6 +53,10 @@ class RegistryConfig:
     # narrow enough to refute at mature_n. One place for the whole desk (stats.py).
     n_min: int = 20
     mature_n: int = 30
+    # Wall threshold before a symbol's Passport matures: one level worth this many USDT.
+    wall_min_notional: Decimal = Decimal("3000000")
+    # Wall threshold once the Passport is mature: one level ≥ mult × median zone-side depth.
+    wall_depth_mult: Decimal = Decimal("1")
 
 
 def default_registry_path() -> Path:
@@ -86,7 +93,19 @@ def load_registry(path: Path | None = None) -> RegistryConfig:
         prs_delta_ticks=_int(raw, "prs_delta_ticks"),
         n_min=_int(raw, "n_min"),
         mature_n=_int(raw, "mature_n"),
+        wall_min_notional=_positive_decimal(raw, "wall_min_notional"),
+        wall_depth_mult=_positive_decimal(raw, "wall_depth_mult"),
     )
+
+
+def _positive_decimal(raw: dict[str, Any], key: str) -> Decimal:
+    value = raw[key]
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise RegistryConfigError(f"{key} must be a number")
+    out = Decimal(str(value))
+    if out <= 0:
+        raise RegistryConfigError(f"{key} must be > 0")
+    return out
 
 
 def _int(raw: dict[str, Any], key: str) -> int:

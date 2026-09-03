@@ -488,19 +488,34 @@ class DeskLoop:
             )
             self.flush_ui(when)
 
-    # A "wall" is a notional, not a coin count: 50 BTC ≈ $3M at 60k. The same
-    # threshold in coins made every DOGE level a wall and no SOL level one.
-    WALL_MIN_NOTIONAL = Decimal("3000000")
+    def _wall_threshold(self, symbol: str) -> Decimal | None:
+        """One level is a wall when it is loud for *this* book.
+
+        Mature Passport → `wall_depth_mult × median zone-side depth` of the symbol
+        (the same measure ОКО normalises on). Before that → `wall_min_notional / px`.
+        No price and no norm → None: nothing is a wall, nothing is a pull. The old
+        constants (50 coins, then $3M for every symbol) made every DOGE level a wall
+        and no alt level one.
+        """
+        passport = self.oko.passport_for(symbol)
+        if passport.depth.mature:
+            median = passport.depth.median()
+            if median is not None and median > 0:
+                return median * self.config.wall_depth_mult
+        px = self.last_price.get(symbol)
+        if px and px > 0:
+            return self.config.wall_min_notional / px
+        return None
 
     def _wall_for(self, symbol: str) -> WallWatch:
-        px = self.last_price.get(symbol)
-        if symbol not in self.walls:
-            size = self.WALL_MIN_NOTIONAL / px if px else Decimal("50")
-            self.walls[symbol] = WallWatch(symbol, min_size=size)
-        elif px:
-            # follow the price: the wall stays a $3M object as the coin moves
-            self.walls[symbol].min_size = self.WALL_MIN_NOTIONAL / px
-        return self.walls[symbol]
+        threshold = self._wall_threshold(symbol)
+        watch = self.walls.get(symbol)
+        if watch is None:
+            watch = WallWatch(symbol, min_size=threshold)
+            self.walls[symbol] = watch
+        else:
+            watch.set_min_size(threshold)
+        return watch
 
     def _prs_for(self, symbol: str) -> PRS:
         if symbol not in self.prs:
