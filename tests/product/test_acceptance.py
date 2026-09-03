@@ -599,6 +599,7 @@ def test_demo_adapter_default_is_not_sent() -> None:
 
 def test_set_mode_with_ack_does_not_write_phase(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "user")
+    mark_hello(vault, ok=True)
     out = set_user_mode(vault, "demo", ack=True)
     assert out["user_mode"] == "demo"
     assert out["trading_mode_yaml"] == "off"

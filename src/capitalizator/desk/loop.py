@@ -1755,8 +1755,10 @@ class DeskLoop:
         return out
 
     def _promote(self, payload: Mapping[str, Any], now: datetime) -> dict[str, Any]:
-        """Operator asked for the exam. Champion ← challenger only when it passes; the
-        report is recorded either way (meta `exam_last`, `champion`)."""
+        """Operator asked for the exam. The report is recorded (meta `exam_last`); a pass
+        records the winner as `champion_candidate`. The actual switch of what the desk
+        sends is a code-reviewed change (the challenger reading becomes the sendable
+        idea) — never an automatic flip in the fight (ARCHITECTURE-AZ §6.1 п.6)."""
         rows = self.knowledge.paper_trades(limit=100_000)
         report = exam(rows, now=now)
         body = report.to_payload()
@@ -1769,7 +1771,7 @@ class DeskLoop:
                 "to": "challenger",
                 "report": body,
             }
-            self.knowledge.set_meta("champion", json.dumps(champion, sort_keys=True))
+            self.knowledge.set_meta("champion_candidate", json.dumps(champion, sort_keys=True))
         return body
 
     # --- exchange truth → account (live/demo) --------------------------------------

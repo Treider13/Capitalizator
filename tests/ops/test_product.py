@@ -9,7 +9,9 @@ import pytest
 from capitalizator.ops.phase import phase_path, trading_mode
 from capitalizator.ops.product import (
     USER_MODES,
+    HelloRequired,
     hello_recorded,
+    mark_hello,
     read_user_mode,
     set_user_mode,
 )
@@ -30,8 +32,16 @@ def test_set_mode_requires_ack(tmp_path: Path) -> None:
         set_user_mode(vault, "demo", ack=False)
 
 
+def test_demo_requires_a_green_hello(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "user")
+    with pytest.raises(HelloRequired):
+        set_user_mode(vault, "demo", ack=True)
+    assert read_user_mode(vault) == "off"
+
+
 def test_set_demo_does_not_write_phase_yaml(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "user")
+    mark_hello(vault, ok=True)
     before = PHASE.read_bytes()
     yaml_mode = trading_mode()
     out = set_user_mode(vault, "demo", ack=True, ack_ts="2026-09-01T13:00:00Z")

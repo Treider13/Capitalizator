@@ -1,7 +1,8 @@
-"""Night contour: report + overlay + pending card. No LLM verdict."""
+"""Night contour: facts of the day only — report, overlay, calibration, exam, ОКО/intel state."""
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,24 +23,23 @@ def test_night_cli_writes_report(tmp_path: Path) -> None:
     try:
         assert knowledge.report(day="2026-08-31", kind="map")
         assert knowledge.get_overlay("2026-08-31:shadow") is not None
+        assert knowledge.meta("exam_night") and knowledge.meta("oko_night")
     finally:
         knowledge.close()
 
 
-def test_night_writes_report_and_pending_card(tmp_path: Path) -> None:
+def test_night_records_facts_and_never_promotes(tmp_path: Path) -> None:
     knowledge = open_knowledge(init_vault(tmp_path / "desk"))
-    out = run_night(knowledge, day="2026-08-31", now=NOW, thin_book=True)
-    assert out["verdict"] == "pending"
-    assert out["card"].claims[0].verdict == "pending"
-    assert len(out["card"].claims) == 5
-    assert knowledge.report(day="2026-08-31", kind="map")
-    overlay = knowledge.get_overlay("2026-08-31:shadow")
-    assert overlay is not None
-    assert overlay["r_shadow"] is None
-    assert overlay["r_challenger"] is None
-    assert out["fragility"] is False
-    assert out["n_shadow"] == 0
-    assert out["r_shadow"] is None
+    out = run_night(knowledge, day="2026-08-31", now=NOW)
+    assert out["n_shadow"] == 0 and out["r_shadow"] is None
+    assert out["exam_passed"] is False and out["classes"] == 0
+    assert "card" not in out and "fragility" not in out and "replayed" not in out  # placeholders gone
+    exam = json.loads(knowledge.meta("exam_night"))
+    assert exam["passed"] is False and exam["challenger"]["n"] == 0
+    assert knowledge.meta("champion") is None  # the night never flips the champion
+    oko = json.loads(knowledge.meta("oko_night"))
+    assert oko["passports"] == {} and oko["mirror"] is None
+    knowledge.close()
 
 
 def test_night_scores_journal_shadow_r(tmp_path: Path) -> None:
@@ -58,4 +58,4 @@ def test_night_scores_journal_shadow_r(tmp_path: Path) -> None:
     assert out["r_shadow"] == "1"
     overlay = knowledge.get_overlay("2026-08-31:shadow")
     assert overlay is not None
-    assert overlay["r_shadow"] == "1"
+    knowledge.close()

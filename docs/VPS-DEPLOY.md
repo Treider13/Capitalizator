@@ -69,7 +69,8 @@ cd /srv/capitalizator/app/infra/deploy
 docker compose run --rm signer python -m capitalizator.signer --userdir /data --hello --probe-order
 ```
 Проверяет время, кошелёк, позиции, комиссии, инструменты, выставляет и снимает пробный ордер
-(цена/объём — из `instruments-info`). Без зелёного hello режимы `demo`/`live` в консоли недоступны.
+(цена/объём — из `instruments-info`). Без зелёного hello консоль отказывает включить `demo`/`live`
+(`HelloRequired`), а стол в любом случае не отправляет интенты.
 
 ## Как включить реальную торговлю (четыре независимых замка)
 

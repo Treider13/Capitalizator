@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from capitalizator.desk.loop import DeskLoop
 from capitalizator.ops.account_view import account_view, paper_stats, queue_view
 from capitalizator.ops.console import ConsoleApp, _api_get, desk_snapshot, render_html
@@ -96,15 +98,16 @@ def test_risk_menu_and_commands_reach_the_desk(tmp_path: Path) -> None:
         app.set_risk({"nonsense": "1"}, ack=True)
     except ValueError as exc:
         assert "unknown risk keys" in str(exc)
-    try:
-        app.set_risk({"target_risk_pct": "0.5"}, ack=True)
-    except ValueError:
-        pass  # RiskConfig validation refuses 50% risk
-    out = app.set_risk({"target_risk_pct": "0.02", "max_open_positions": 2, "allow_night": "true"}, ack=True)
-    assert out["risk_config"]["target_risk_pct"] == "0.02" and out["risk_config"]["version"] == 2
+    # the operator menu can lower risk, never lift it above phase.yaml (1% / 3x now)
+    with pytest.raises(ValueError, match="phase.yaml"):
+        app.set_risk({"target_risk_pct": "0.02"}, ack=True)
+    with pytest.raises(ValueError, match="phase.yaml"):
+        app.set_risk({"max_lev": "5"}, ack=True)
+    out = app.set_risk({"target_risk_pct": "0.005", "max_open_positions": 2, "allow_night": "true"}, ack=True)
+    assert out["risk_config"]["target_risk_pct"] == "0.005" and out["risk_config"]["version"] == 2
     kn = open_knowledge(vault)
     desk = DeskLoop(knowledge=kn, user_mode="off")
-    assert desk.risk_config.target_risk_pct == Decimal("0.02") and desk.risk.max_open == 2
+    assert desk.risk_config.target_risk_pct == Decimal("0.005") and desk.risk.max_open == 2
     # a later change is picked up on the next tick (hot reload, new intents only)
     app.set_risk({"max_open_positions": 3}, ack=True)
     desk.tick(NOW)

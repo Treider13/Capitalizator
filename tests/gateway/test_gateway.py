@@ -28,7 +28,7 @@ from capitalizator.gateway import (
 from capitalizator.gateway.bybit import from_exception
 from capitalizator.gateway.ws import PrivateFeed
 from capitalizator.ops.knowledge import open_knowledge
-from capitalizator.ops.product import set_user_mode
+from capitalizator.ops.product import mark_hello, set_user_mode
 from capitalizator.ops.vault import init_vault
 from capitalizator.signer.process import (
     drain_oms,
@@ -471,6 +471,7 @@ def _run_loop(kn, vault, gw, tr, *, now, iterations: int) -> None:
 def test_gateway_loop_block_is_sticky_until_operator_release(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "v")
     kn = open_knowledge(vault)
+    mark_hello(vault, ok=True)
     set_user_mode(vault, "demo", ack=True)
     s = FakeSession()
     gw = _gw(s)
@@ -508,6 +509,7 @@ def test_gateway_loop_block_is_sticky_until_operator_release(tmp_path: Path) -> 
 def test_gateway_loop_resolves_unknown_intents_by_link(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "v")
     kn = open_knowledge(vault)
+    mark_hello(vault, ok=True)
     set_user_mode(vault, "demo", ack=True)
     s = FakeSession()
     gw = _gw(s)
@@ -533,6 +535,7 @@ def test_gateway_loop_resolves_unknown_intents_by_link(tmp_path: Path) -> None:
 def test_loop_never_sends_demo_to_a_live_key(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "v")
     kn = open_knowledge(vault)
+    mark_hello(vault, ok=True)
     set_user_mode(vault, "demo", ack=True)
     s = FakeSession()
     gw = _gw(s, mode="live_main")
@@ -588,6 +591,7 @@ def test_no_key_loop_parks_intents_as_no_gateway_and_requeues_later(tmp_path: Pa
 
     vault = init_vault(tmp_path / "v")
     kn = open_knowledge(vault)
+    mark_hello(vault, ok=True)
     set_user_mode(vault, "demo", ack=True)
     kn.enqueue_intent(_intent(), created_ts=NOW.isoformat())
     kn.set_meta("desk_heartbeat", (NOW - timedelta(seconds=120)).isoformat())  # desk silent

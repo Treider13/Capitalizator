@@ -112,6 +112,7 @@ def from_news(
         )
         if spot_acked:
             bearing = "propose"
+            pluses = (*pluses, "operator_spot_ack")  # the ack is a recorded fact, not padding
             minuses = ("not_in_universe",)
         else:
             bearing = "hold"
@@ -143,9 +144,12 @@ def from_news(
             minuses = (*minuses, "pre_event_24h")
 
     n = len(pluses) + len(minuses)
-    while n < 5:
-        pluses = (*pluses, f"atom_{n}")
-        n = len(pluses) + len(minuses)
+    if n < 5 and bearing != "hold":
+        # Too little evidence for a bearing verdict: the card holds and says why —
+        # never padded with `atom_N` placeholders (audit: fake atoms).
+        bearing = "hold"
+        macro = Decimal("1")
+        minuses = (*minuses, "insufficient_atoms")
     if n > 7:
         pluses = pluses[: max(0, 7 - len(minuses))]
 
@@ -187,6 +191,11 @@ def timedelta_hours(later: datetime, now: datetime) -> float:
     return (later - now).total_seconds() / 3600.0
 
 
+NEGATIVE_TOKENS = ("hack", "exploit", "sec ", "lawsuit", "ban", "halt", "delist", "outage", "neg")
+
+
 def _negative(row: NewsRow) -> bool:
+    """A coin-specific row that names a bad class. `OTHER` alone is not negative
+    (audit: every unclassified headline became a veto)."""
     text = f"{row.notes} {row.size_rule} {row.event_class}".lower()
-    return any(token in text for token in ("hack", "sec", "ban", "halt", "neg", "other"))
+    return any(token in text for token in NEGATIVE_TOKENS)

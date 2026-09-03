@@ -62,8 +62,11 @@ def test_risk_config_rejects_nonsense(bad: dict) -> None:
 
 
 def test_law_8_implied_risk() -> None:
-    cfg = RiskConfig(deposit_share_per_trade=Decimal("0.2"), max_lev=Decimal("5"))
-    assert cfg.implied_risk(lev=Decimal("5"), stop_frac=Decimal("0.04")) == Decimal("0.04")
+    cfg = RiskConfig(deposit_share_per_trade=Decimal("0.2"), max_lev=Decimal("3"))
+    assert cfg.implied_risk(lev=Decimal("3"), stop_frac=Decimal("0.04")) == Decimal("0.024")
+    # 5x is above the phase ceiling (ARCHITECTURE-AZ §10 п.3) until a human raises phase.yaml
+    with pytest.raises(ValueError, match="phase.yaml"):
+        RiskConfig(max_lev=Decimal("5"))
 
 
 # --- sizing ----------------------------------------------------------------------

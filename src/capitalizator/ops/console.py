@@ -207,6 +207,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         },
         "taps": _desk_taps(),
         "entries_blocked": entries_blocked if isinstance(entries_blocked, list) else [],
+        "learning": _learning_snapshot(vault),
         "touch": touch_snap,
         "last_price": chronos_data.last_prices(vault),
         "session_window": chronos_data.session_window(),
@@ -317,7 +318,25 @@ def _page(snap: dict[str, Any]) -> str:
         ", ".join(i18n_ru.ru(b) for b in (snap.get("entries_blocked") or [])) or "не заблокированы"
     )
     queue_txt = _e(json.dumps(snap.get("queue_counts") or {}, ensure_ascii=False))
-    money_block = f"""<h2>Счёт</h2>
+    learn = snap.get("learning") or {}
+    drift = learn.get("drift") or {}
+    exam = learn.get("exam") or {}
+    oko_n = learn.get("oko") or {}
+    learn_block = (
+        "<h2>Учёба (контур C и ОКО)</h2>"
+        f"<p>дрейф: {'есть' if drift.get('drift') else 'нет'} (n={_e(drift.get('n', 0))}, "
+        f"целевой риск {_e(drift.get('target_risk', '—'))}) · классов в калибровке: "
+        f"{_e(learn.get('calibration_classes', 0))} · экзамен претендента: "
+        f"{'пройден' if exam.get('passed') else 'не пройден'}"
+        f" (n чемпиона {_e((exam.get('champion') or {}).get('n', 0))}, "
+        f"n претендента {_e((exam.get('challenger') or {}).get('n', 0))})</p>"
+        f"<p>паспорта ОКО: {_e(oko_n.get('passports', 0))} (зрелых {_e(oko_n.get('mature', 0))}) · "
+        f"память ловушек: {_e(oko_n.get('memory', 0))} · Зеркало: "
+        f"{'пройдено' if oko_n.get('mirror_passed') else 'не пройдено / нет'} · "
+        f"сентимент (F&G): {_e(learn.get('sentiment', '—'))} · intel-элементов: "
+        f"{_e(learn.get('intel_items', 0))}</p>"
+    )
+    money_block = f"""{learn_block}<h2>Счёт</h2>
       <p>{equity_line}</p>
       <p>день {_pct(acct.get("day_pnl_pct"))} · неделя {_pct(acct.get("week_pnl_pct"))}
       · просадка от пика {_pct(acct.get("drawdown_from_peak"))} · кран: {halt_txt}</p>
@@ -362,6 +381,57 @@ def _page(snap: dict[str, Any]) -> str:
     )
     page = template.replace("{{SERVICE}}", service).replace("{{BOOT}}", boot)
     return page
+
+
+def _learning_snapshot(vault: Vault) -> dict[str, Any]:
+    """Contour C / ОКО facts for the operator: drift, calibration, exam, passports."""
+    knowledge = open_knowledge(vault, create=False)
+    try:
+        if not knowledge.available():
+            return {}
+
+        def _j(key: str) -> Any:
+            raw = knowledge.meta(key)
+            if not raw:
+                return None
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return None
+
+        calib = _j("calibration") or {}
+        passports = knowledge.meta_prefix("oko:passport:")
+        mature = 0
+        for raw in passports.values():
+            try:
+                if len(json.loads(raw).get("depth") or []) >= 30:
+                    mature += 1
+            except (json.JSONDecodeError, AttributeError):
+                continue
+        memory = 0
+        for raw in knowledge.meta_prefix("oko:memory:").values():
+            try:
+                memory += len(json.loads(raw).get("records") or [])
+            except (json.JSONDecodeError, AttributeError):
+                continue
+        mirror = _j("oko:mirror") or {}
+        sentiment = _j("sentiment") or {}
+        return {
+            "drift": _j("drift") or {},
+            "calibration_classes": len(calib) if isinstance(calib, dict) else 0,
+            "exam": _j("exam_last") or _j("exam_night") or {},
+            "champion_candidate": _j("champion_candidate"),
+            "oko": {
+                "passports": len(passports),
+                "mature": mature,
+                "memory": memory,
+                "mirror_passed": bool(mirror.get("passed")) if isinstance(mirror, dict) else False,
+            },
+            "sentiment": sentiment.get("value") if isinstance(sentiment, dict) else None,
+            "intel_items": len(knowledge.intel_items(limit=100_000)),
+        }
+    finally:
+        knowledge.close()
 
 
 def _int_arg(qs: dict[str, list[str]], name: str, default: int) -> int:

@@ -27,6 +27,10 @@ class LiveGateClosed(ValueError):
     """`live` asked for while phase.yaml still says the gate is not passed."""
 
 
+class HelloRequired(ValueError):
+    """demo/live asked for before a green `hello` (key, wallet, instruments, probe order)."""
+
+
 def user_mode_from_knowledge(knowledge: Knowledge) -> str:
     raw = knowledge.meta(META_USER_MODE)
     if raw is None:
@@ -70,6 +74,8 @@ def set_user_mode(
             raise ValueError("learn_n_days must be >= 1")
     phase_before = phase_path().read_bytes()
     trading_before = trading_mode()
+    if mode in {"demo", "live"} and not hello_recorded(vault):
+        raise HelloRequired("run `signer --hello` with a working key before demo/live")
     if mode == "live" and trading_before != "live":
         if not override_reason or len(override_reason.strip()) < 8:
             raise LiveGateClosed(
