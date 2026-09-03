@@ -126,6 +126,11 @@ class BybitGateway:
                 break
         return out
 
+    def tickers(self) -> list[dict[str, Any]]:
+        """GET /v5/market/tickers for the whole category: turnover24h, funding, OI, price."""
+        res = _ok(self.s.get_tickers(category=self.category), what="tickers")
+        return list(res.get("list") or [])
+
     def wallet_equity(self) -> Decimal:
         res = _ok(self.s.get_wallet_balance(accountType="UNIFIED"), what="wallet")
         rows = res.get("list") or []

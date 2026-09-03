@@ -289,6 +289,16 @@ def publish_exchange_state(
 INSTRUMENTS_REFRESH_S = 3600
 
 
+def publish_universe_proposal(knowledge: Knowledge, gateway: Any, *, now: datetime) -> int:
+    """Weekly top-N-by-turnover proposal → meta for the console. Human applies it."""
+    from capitalizator.screener.refresh import publish_proposal
+
+    proposal = publish_proposal(
+        knowledge, now=now, instruments=gateway.instruments(), tickers=gateway.tickers()
+    )
+    return len(proposal.symbols)
+
+
 def publish_instruments(knowledge: Knowledge, gateway: Any, *, now: datetime) -> int:
     """instruments-info from the venue → meta for the desk's InstrumentRegistry (D-04)."""
     from capitalizator.instruments import InstrumentRegistry, instrument_from_bybit
@@ -332,9 +342,12 @@ def serve_gateway_loop(
         dead_man_s=dead_man_s or HEARTBEAT_S,
         cancel_entries=lambda reason: gateway.cancel_entries(None, reason=reason),
     )
+    from capitalizator.screener.refresh import REFRESH_S as UNIVERSE_REFRESH_S
+
     recon_every = reconcile_s or RECONCILE_S
     last_recon: datetime | None = None
     last_instruments: datetime | None = None
+    last_universe: datetime | None = None
     if feed is not None:
         feed.start()
     while not should_stop():
@@ -351,6 +364,12 @@ def serve_gateway_loop(
             except Exception as exc:  # venue/network: keep the last snapshot, say why
                 knowledge.set_meta("instruments_error", str(exc))
             last_instruments = when
+        if last_universe is None or (when - last_universe).total_seconds() >= UNIVERSE_REFRESH_S:
+            try:
+                publish_universe_proposal(knowledge, gateway, now=when)
+            except Exception as exc:  # a proposal is advice; failing to write one blocks nothing
+                knowledge.set_meta("universe_proposal_error", str(exc))
+            last_universe = when
         if feed is not None:
             feed.drain(now=when)
             if feed.last_frame_at is not None:

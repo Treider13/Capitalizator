@@ -81,9 +81,7 @@ def class_key(
     group: str | None = None,
 ) -> str:
     """Full key. `window`/`group` None → `*` (the aggregate over that dimension)."""
-    return "|".join(
-        (idea or "-", cav or "-", zlg or "-", window or ANY, group or ANY)
-    )
+    return "|".join((idea or "-", cav or "-", zlg or "-", window or ANY, group or ANY))
 
 
 def window_key(key: str) -> str:
@@ -180,9 +178,7 @@ def refuted(stat: ClassStat | None, *, breakeven: Decimal, min_n: int = MIN_N) -
     return stat.upper < breakeven
 
 
-def eligible(
-    stat: ClassStat | None, *, breakeven: Decimal, min_n: int = ELIGIBLE_MIN_N
-) -> bool:
+def eligible(stat: ClassStat | None, *, breakeven: Decimal, min_n: int = ELIGIBLE_MIN_N) -> bool:
     """True when even the pessimistic bound beats break-even on enough trades.
 
     Used for windows the operator closed in sessions.yaml: the desk flags them,

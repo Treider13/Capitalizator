@@ -403,6 +403,19 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
             return {"risk_config": load_risk_config(knowledge).to_payload()}
         finally:
             knowledge.close()
+    if path in {"/api/universe", "/api/sessions", "/api/preview"}:
+        from capitalizator.ops.account_view import preview_view, sessions_view, universe_view
+
+        knowledge = open_knowledge(vault, create=False)
+        try:
+            if path == "/api/universe":
+                return universe_view(knowledge)
+            if path == "/api/sessions":
+                return sessions_view(knowledge)
+            touch_id = (qs.get("touch_id") or [None])[0]
+            return preview_view(knowledge, touch_id=touch_id)
+        finally:
+            knowledge.close()
     return None
 
 
@@ -458,6 +471,29 @@ class ConsoleApp:
             nxt = RiskConfig.from_payload(merged)
             save_risk_config(knowledge, nxt, ack=True)
             return {"risk_config": nxt.to_payload(), "previous_id": current.config_id}
+        finally:
+            knowledge.close()
+
+    def apply_universe(self, proposal_id: str, *, ack: bool) -> dict[str, Any]:
+        """Human step: the weekly top-N proposal becomes infra/universe.yaml."""
+        from datetime import UTC, datetime
+
+        from capitalizator.screener.refresh import apply_universe
+
+        if not ack:
+            raise ValueError("ack required")
+        if not proposal_id:
+            raise ValueError("proposal_id required")
+        knowledge = open_knowledge(self.vault, create=True)
+        try:
+            universe = apply_universe(
+                knowledge, proposal_id=proposal_id, ack=True, now=datetime.now(tz=UTC)
+            )
+            return {
+                "universe": list(universe.symbols),
+                "proposal_id": proposal_id,
+                "takes_effect": "on desk/recorder restart",
+            }
         finally:
             knowledge.close()
 
@@ -608,7 +644,7 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                         return
                     self._set_mode(payload, redirect=path == "/mode")
                     return
-                if path in {"/api/risk", "/api/command"}:
+                if path in {"/api/risk", "/api/command", "/api/universe"}:
                     if not _is_local(self):
                         self._send(403, b"localhost only", "text/plain; charset=utf-8")
                         return
@@ -622,6 +658,10 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     try:
                         if path == "/api/risk":
                             out = app.set_risk(payload, ack=ack)
+                        elif path == "/api/universe":
+                            out = app.apply_universe(
+                                str(payload.get("proposal_id") or ""), ack=ack
+                            )
                         else:
                             out = app.command(
                                 str(payload.get("kind") or ""),

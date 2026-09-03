@@ -45,9 +45,7 @@ WINDOW_KEYS = frozenset(
 WEEKEND_KEYS = frozenset({"ideas", "size_mult", "k_atr", "budget", "symbols", "lev_5x_ok"})
 BLACKOUT_KEYS = frozenset({"name", "kind", "start", "end", "weekday", "applies_to"})
 IDEAS = frozenset({"bounce", "spring", "breakout"})
-SYMBOL_POLICIES = frozenset(
-    {"none", "majors", "top5_plus_majors", "top10_plus_screen", "all"}
-)
+SYMBOL_POLICIES = frozenset({"none", "majors", "top5_plus_majors", "top10_plus_screen", "all"})
 APPLIES = frozenset({"all", "non_majors"})
 WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 DAY_END = time(23, 59, 59, 999999)
@@ -216,9 +214,7 @@ def _weekend(body: Any) -> Window:
     missing = WEEKEND_KEYS - set(body)
     if missing:
         raise SessionPolicyError(f"weekend: missing {sorted(missing)}")
-    return _window(
-        WEEKEND_NAME, {**dict(body), "start": "00:00", "end": "24:00"}
-    )
+    return _window(WEEKEND_NAME, {**dict(body), "start": "00:00", "end": "24:00"})
 
 
 def _blackout(idx: int, body: Any) -> Blackout:
