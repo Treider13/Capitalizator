@@ -14,6 +14,7 @@ from decimal import Decimal
 from time import sleep as _sleep
 from typing import Any
 
+from capitalizator.gateway.keys import LIVE_MODES, PAPER_MODES
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.product import USER_MODES
 from capitalizator.screener.universe import Universe, load_desk_universe
@@ -31,7 +32,7 @@ RECONCILE_S = 60
 def unsigned_from_intent(
     payload: dict[str, Any],
     *,
-    trading_mode: str = "testnet",
+    trading_mode: str = "demo",
     allow_default_qty: bool = True,
 ) -> UnsignedIntent:
     """Map desk Intent dump onto the signer schema. Stop is mandatory.
@@ -75,9 +76,10 @@ def validate_queue_payload(
     payload: dict[str, Any],
     *,
     universe: Universe | None = None,
+    trading_mode: str = "demo",
 ) -> dict[str, Any]:
     """Desk 24-symbol universe. week0 stays the isolated Signer() default."""
-    raw = unsigned_from_intent(payload, allow_default_qty=False)
+    raw = unsigned_from_intent(payload, allow_default_qty=False, trading_mode=trading_mode)
     order = Signer(universe=universe or load_desk_universe()).validate(raw)
     return order.model_dump(mode="json")
 
@@ -188,11 +190,16 @@ def drain_validated(
     user_mode: str,
     now: datetime,
     universe: Universe | None = None,
+    venue: str = "demo",
 ) -> list[dict[str, Any]]:
-    """Drain pending intents after Signer.validate. Key stays in `send`."""
+    """Drain pending intents after Signer.validate. Key stays in `send`.
+
+    `venue` is the paper venue the gateway key belongs to (demo | testnet); it is
+    stamped on the signed order so the journal says which venue filled it.
+    """
 
     def checked(payload: dict[str, Any]) -> dict[str, Any]:
-        signed = validate_queue_payload(payload, universe=universe)
+        signed = validate_queue_payload(payload, universe=universe, trading_mode=venue)
         # Keep the desk fields the gateway needs (idempotency, staleness, leverage).
         for key in ("valid_until", "lev", "touch_id", "intent_id", "risk_config_id", "tag"):
             if key in payload and key not in signed:
@@ -203,11 +210,11 @@ def drain_validated(
 
 
 # --- gateway-driven serve loop (W4b) ------------------------------------------------------
-MODE_FOR_GATEWAY = {"demo": {"testnet"}, "live": {"live_sub", "live_main"}}
+MODE_FOR_GATEWAY = {"demo": set(PAPER_MODES), "live": set(LIVE_MODES)}
 
 
 def gateway_mode_ok(user_mode: str, gateway_mode: str) -> bool:
-    """demo talks to testnet only; live to a live key only. Never cross."""
+    """demo talks to a paper venue (Demo Trading or testnet); live to a live key. Never cross."""
     return gateway_mode in MODE_FOR_GATEWAY.get(user_mode, set())
 
 
@@ -368,6 +375,7 @@ def serve_gateway_loop(
             # OMS first: protecting an open position beats opening a new one.
             drain_oms(knowledge, gateway, now=when)
             if not blocked:
-                drain_validated(knowledge, gateway.send, user_mode=mode, now=when)
+                venue = gateway.mode if gateway.mode in PAPER_MODES else "demo"
+                drain_validated(knowledge, gateway.send, user_mode=mode, now=when, venue=venue)
         if idle_s:
             sleep(idle_s)

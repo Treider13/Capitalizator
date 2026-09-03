@@ -29,7 +29,7 @@ from decimal import Decimal
 from hashlib import blake2s
 from typing import Any
 
-from capitalizator.gateway.keys import Keys
+from capitalizator.gateway.keys import MODES, Keys
 
 CATEGORY = "linear"
 
@@ -56,8 +56,11 @@ def make_session(keys: Keys) -> Any:
     """Real pybit session. Imported lazily so the desk never loads pybit."""
     from pybit.unified_trading import HTTP
 
+    # demo=True → api-demo.bybit.com (Bybit Demo Trading, mainnet data, simulated
+    # funds); testnet=True → api-testnet.bybit.com; both False → mainnet (live keys).
     return HTTP(
         testnet=keys.testnet,
+        demo=keys.demo,
         api_key=keys.api_key,
         api_secret=keys.api_secret,
         recv_window=5000,
@@ -82,8 +85,8 @@ class BybitGateway:
         clock: Callable[[], datetime] | None = None,
         position_idx: int = 0,
     ) -> None:
-        if mode not in {"testnet", "live_sub", "live_main"}:
-            raise ValueError("mode must be testnet|live_sub|live_main")
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {sorted(MODES)}")
         self.s = session
         self.mode = mode
         self.category = category
