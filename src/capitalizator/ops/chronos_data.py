@@ -16,7 +16,7 @@ from capitalizator.ops.daily_map_report import contains_advice
 from capitalizator.ops.gates_from_sqlite import gates_from_sqlite
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import Vault
-from capitalizator.risk.session import MSK, load_time_config
+from capitalizator.risk.session import MSK
 from capitalizator.zones.config import load_registry
 from capitalizator.zones.engine import MAP_VOTE_METHODS, ZoneEngine
 from capitalizator.zones.model import Bar
@@ -29,12 +29,26 @@ def _safe(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def session_window() -> dict[str, Any]:
-    cfg = load_time_config()
+def session_window(now: datetime | None = None) -> dict[str, Any]:
+    """The SessionPolicy window that holds `now` (one calendar for the whole desk; the
+    old time.yaml Moscow window next to it was a second, contradicting clock)."""
+    from capitalizator.risk.sessions import SessionPolicy
+
+    policy = SessionPolicy.load()
+    when = now or datetime.now(tz=UTC)
+    state = policy.window(when)
+    win = next((w for w in (*policy.windows, policy.weekend) if w.name == state.name), None)
+    start = end = None
+    if win is not None and win.name != "weekend":
+        start = win.start.isoformat(timespec="minutes")
+        end = "24:00" if win.end_is_midnight else win.end.isoformat(timespec="minutes")
     return {
-        "tz": str(cfg["session_tz"]),
-        "start": str(cfg["session_start"]),
-        "end": str(cfg["session_end"]),
+        "tz": "UTC",
+        "name": state.name,
+        "start": start,
+        "end": end,
+        "weekend": state.weekend,
+        "closed": win is None or not win.ideas or win.budget <= 0 or win.size_mult <= 0,
     }
 
 

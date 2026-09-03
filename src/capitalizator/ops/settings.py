@@ -8,7 +8,7 @@ them. Every change appends a hash-chain link with the *field names* only.
 
 Which processes read what:
   signer         bybit.api_key / api_secret / mode  (also honours gateway/keys.py env/file)
-  intel-fetcher  x.bearer, reddit.client_id/secret, tradingview.session, sources
+  intel-fetcher  x.bearer, reddit.client_id/secret, sources
   intel-sandbox  llm.provider / model / api_key / monthly_budget_usd
   alerts         telegram.bot_token / chat_id
 """
@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from capitalizator.gateway.keys import DEFAULT_MODE, MODES
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.vault import Vault
 
@@ -40,9 +41,8 @@ FIELDS: dict[str, tuple[str, str, bool, str]] = {
     "x.bearer": ("Источники", "X (Twitter) API bearer", True, "Официальный API v2. Скрейпинг не используется. Пусто — источник выключен."),
     "reddit.client_id": ("Источники", "Reddit client id", False, "Приложение Reddit (script, reddit.com/prefs/apps). Без него Reddit отвечает 403 с серверных IP."),
     "reddit.client_secret": ("Источники", "Reddit client secret", True, ""),
-    "tradingview.session": ("Источники", "TradingView sessionid (свой аккаунт)", True, "Только собственный аккаунт: экспорт идей, без скрейпинга чужих страниц (ToS)."),
-    "telegram.bot_token": ("Оповещения", "Telegram bot token", True, "Исходящие оповещения (инфо/критично). Чтение каналов запрещено каноном."),
-    "telegram.chat_id": ("Оповещения", "Telegram chat id", False, "Куда слать. Тестовое сообщение — кнопкой «Проверить»."),
+    "telegram.bot_token": ("Оповещения", "Telegram bot token", True, "Исходящие оповещения от сигнера при изменении фактов: входы заблокированы/сняты, кран, срабатывание сторожа. Чтение каналов запрещено каноном."),
+    "telegram.chat_id": ("Оповещения", "Telegram chat id", False, "Куда слать. Тестовое сообщение — кнопкой «Проверить Telegram» на этой странице."),
 }
 
 SOURCE_KINDS = ("rss", "reddit", "x_account", "hl_wallet", "tradingview_own")
@@ -119,7 +119,7 @@ class Settings:
             if target.exists():
                 target.unlink()
             return
-        body = {"api_key": key, "api_secret": secret, "mode": values.get("bybit.mode") or "testnet"}
+        body = {"api_key": key, "api_secret": secret, "mode": values.get("bybit.mode") or DEFAULT_MODE}
         _write_secret_file(target, json.dumps(body))
 
     def update(
@@ -134,10 +134,8 @@ class Settings:
         touched: list[str] = []
         for key, value in changes.items():
             value = str(value).strip()
-            if key == "bybit.mode" and value and value not in {
-                "demo", "testnet", "live_sub", "live_main",
-            }:
-                raise ValueError("bybit.mode must be demo|testnet|live_sub|live_main")
+            if key == "bybit.mode" and value and value not in MODES:
+                raise ValueError(f"bybit.mode must be one of {sorted(MODES)}")
             if key == "llm.provider" and value and value not in {"anthropic", "openai", "none"}:
                 raise ValueError("llm.provider must be anthropic|openai|none")
             if key == "llm.monthly_budget_usd" and value:

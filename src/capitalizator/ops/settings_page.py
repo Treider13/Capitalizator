@@ -34,7 +34,11 @@ a{color:#9fd3ff}.card{background:#121821;border:1px solid #1f2a37;border-radius:
 
 
 def render_settings_html(
-    fields: Sequence[dict[str, Any]], sources: Sequence[dict[str, Any]], *, token: str = ""
+    fields: Sequence[dict[str, Any]],
+    sources: Sequence[dict[str, Any]],
+    *,
+    token: str = "",
+    message: str | None = None,
 ) -> str:
     tok = html.escape(token)
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -46,8 +50,11 @@ def render_settings_html(
         "<h1>Настройки: ключи и источники</h1>",
         "<p class='note'>Секреты хранятся только на сервере в <code>secrets/settings.json</code> (права 0600), "
         "в журнал, бэкапы и логи не попадают. Здесь они показаны маской. Пустое поле — «не менять». "
-        "Каждое изменение пишет в хеш-цепь только <i>имена</i> полей. <a href='/'>← к столу</a></p>",
+        "Каждое изменение пишет в хеш-цепь только <i>имена</i> полей. <a href='/'>← к столу</a>"
+        " · <a href='/ops'>Управление</a></p>",
     ]
+    if message:
+        parts.append(f"<p class='note'><b>{html.escape(message)}</b></p>")
     for group, rows in groups.items():
         parts.append(f"<div class='card'><h2>{html.escape(group)}</h2>")
         parts.append("<form method='post' action='/api/settings'><input type='hidden' name='redirect' value='1'/>")
@@ -74,6 +81,13 @@ def render_settings_html(
             "<label><input type='checkbox' name='confirm' required/> Подтверждаю: понимаю, что меняю</label> "
             "<button type='submit'>Сохранить группу</button></div>"
         )
+        if group == "Оповещения":
+            parts.append(
+                "</form><form method='post' action='/api/alerts/test' class='inline'>"
+                f"<input type='hidden' name='ack_token' value='{tok}'/>"
+                "<input type='hidden' name='redirect' value='1'/>"
+                "<button type='submit'>Проверить Telegram (тестовое сообщение)</button>"
+            )
         parts.append("</form></div>")
     # sources
     parts.append("<div class='card'><h2>Источники внешней информации</h2>")

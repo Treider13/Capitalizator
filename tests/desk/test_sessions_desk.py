@@ -246,7 +246,10 @@ def test_window_drift_halves_size_until_released(tmp_path: Path) -> None:
     # the flag survives a desk restart
     desk_b = DeskLoop(knowledge=desk.knowledge, user_mode="demo", tick_size=TICK)
     assert "overlap" in desk_b._window_drift
-    desk.knowledge.push_command({"kind": "drift_release", "symbol": "ALL"})
+    desk.knowledge.enqueue_command(
+        "drift_release", {"kind": "drift_release", "symbol": "ALL"},
+        created_ts="2026-01-05T12:00:00+00:00",
+    )
     out = desk.tick(OVERLAP + timedelta(seconds=10))
     assert {"event": "drift_release", "windows": ["overlap"]} in out
     assert desk._window_drift == {} and desk.window_size_mult(window) == Decimal("1.0")
@@ -265,14 +268,15 @@ def test_command_queue_is_one_table_with_claims(tmp_path: Path) -> None:
     from a JSON blob; a corrupt meta value cannot exist because there is none."""
     kn = open_knowledge(init_vault(tmp_path / "v"))
     assert kn.claim_commands() == []
-    assert kn.push_command({"kind": "pause_entries", "symbol": None}) == 1
-    assert kn.push_command({"kind": "resume_entries", "symbol": None}) == 2
+    ts = "2026-01-05T12:00:00+00:00"
+    assert kn.enqueue_command("pause_entries", {"kind": "pause_entries"}, created_ts=ts) == 1
+    assert kn.enqueue_command("resume_entries", {"kind": "resume_entries"}, created_ts=ts) == 2
     got = kn.claim_commands(("pause_entries", "resume_entries"))
     assert [c["kind"] for c in got] == ["pause_entries", "resume_entries"]
     assert kn.claim_commands() == []  # claimed rows are not handed out twice
     assert {c["status"] for c in kn.commands(limit=10)} == {"claimed"}
     with pytest.raises(ValueError, match="unknown command kind"):
-        kn.push_command({"kind": "withdraw_all"})
+        kn.enqueue_command("withdraw_all", {"kind": "withdraw_all"}, created_ts=ts)
     kn.close()
 
 

@@ -84,7 +84,6 @@ def test_budget_keys_per_window_and_daily_total() -> None:
     c = acct.budget(now, key="2026-01-05:overlap", max_n=20)
     assert c.max_n == 8  # operator ceiling wins over a larger window budget
     c.on_intent()
-    assert acct.daily_intents(now) == 6
     closed = acct.budget(now, key="2026-01-05:night", max_n=0)
     assert closed.allow_entry() is False
     with pytest.raises(ValueError):

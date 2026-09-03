@@ -367,6 +367,7 @@ def _page(snap: dict[str, Any], *, token: str = "") -> str:
       <p>очередь интентов: {queue_txt}</p>
       <h2>Предупреждения</h2><ul>{banner_items}</ul>"""
     service = f"""<div id="service">
+      <h2>Стол: счёт, позиции, учёба, предупреждения (факты из журнала)</h2>
       {money_block}
       <h2>Свеча (CAV) × Книга (ZLG) × Исход</h2>
       <table><tbody>{cav_html}</tbody></table>
@@ -571,7 +572,11 @@ def render_ops(app: ConsoleApp, *, message: str | None = None) -> str:
     try:
         keys = (
             "exchange_state", "entries_blocked_since", "window_drift", "drift", "exam_last",
-            "night_last", "champion_candidate",
+            "night_last", "champion_candidate", "entries_paused", "desk_heartbeat",
+            "signer_heartbeat", "desk_backlog", "recorder_status", "dead_man_last",
+            "signer_requeued", "instruments_error_signer", "instruments_error_recorder",
+            "intel_status", "llm_last_error", "reddit_auth_error", "paper_restored",
+            "paper_open_error", "oko_load_errors",
         )
         meta: dict[str, str | None] = dict.fromkeys(keys)
         if knowledge.available():
@@ -644,18 +649,11 @@ class ConsoleApp:
 
         gateway = BybitGateway(make_session(keys), mode=keys.mode)
         result = gateway.hello(probe_order=probe_order)
-        from capitalizator.ops.product import mark_hello
+        from capitalizator.ops.product import record_hello
 
-        ok = bool(result.get("ok"))
-        mark_hello(self.vault, ok=ok)
         knowledge = open_knowledge(self.vault, create=True)
         try:
-            knowledge.set_meta("hello_result", json.dumps(result, default=str))
-            fee = result.get("fee_rate") or {}
-            if fee.get("ok") and isinstance(fee.get("value"), list) and len(fee["value"]) == 2:
-                knowledge.set_meta(
-                    "fee_rate", json.dumps({"maker": fee["value"][0], "taker": fee["value"][1]})
-                )
+            ok = record_hello(self.vault, knowledge, result)
         finally:
             knowledge.close()
         # `real` means the last venue hello succeeded — same as GET /api/hello/status.
@@ -687,6 +685,20 @@ class ConsoleApp:
             return {"risk_config": nxt.to_payload(), "previous_id": current.config_id}
         finally:
             knowledge.close()
+
+    def alerts_test(self, *, ack: bool) -> dict[str, Any]:
+        """Send one test message with the Telegram credentials from Настройки."""
+        from capitalizator.ops.alerts import send
+
+        if not ack:
+            raise ValueError("ack required")
+        values = Settings(self.vault, exclude_prefixes=("bybit.", "llm.", "x.", "reddit.")).load()
+        ok, note = send(
+            values.get("telegram.bot_token", ""),
+            values.get("telegram.chat_id", ""),
+            "Capitalizator: тестовое оповещение из консоли",
+        )
+        return {"ok": ok, "note": note}
 
     def settings_post(self, path: str, payload: dict[str, Any], *, ack: bool) -> dict[str, Any]:
         """/api/settings: {field: value, ...} (empty value deletes). /api/sources:
@@ -727,7 +739,11 @@ class ConsoleApp:
         knowledge = open_knowledge(self.vault, create=True)
         try:
             universe = apply_universe(
-                knowledge, proposal_id=proposal_id, ack=True, now=datetime.now(tz=UTC)
+                knowledge,
+                proposal_id=proposal_id,
+                ack=True,
+                now=datetime.now(tz=UTC),
+                universe_path=self.vault.root / "universe.yaml",
             )
             return {
                 "universe": list(universe.symbols),
@@ -908,9 +924,6 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
             sent = False
             try:
                 path = urlparse(self.path).path
-                if path == "/order":
-                    self._reject_write()
-                    return
                 denied = _write_allowed(self)
                 if denied is not None:
                     self._send(403, denied.encode(), "text/plain; charset=utf-8")
@@ -946,6 +959,30 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                         return
                     body = json.dumps(out, ensure_ascii=False, default=str).encode()
                     self._send(200, body, "application/json; charset=utf-8")
+                    return
+                if path == "/api/alerts/test":
+                    try:
+                        payload = _read_body(self)
+                    except (ValueError, json.JSONDecodeError):
+                        self._send(400, b"bad-json", "text/plain; charset=utf-8")
+                        return
+                    ack = _token_ok(app, self, payload)
+                    try:
+                        out = app.alerts_test(ack=ack)
+                    except ValueError as exc:
+                        self._send(403, str(exc).encode(), "text/plain; charset=utf-8")
+                        return
+                    if payload.get("redirect") in {"1", "true"}:
+                        note = (
+                            "Telegram: отправлено" if out["ok"]
+                            else f"Telegram: отказ ({out['note']})"
+                        )
+                        self._send(
+                            303, b"", "text/plain; charset=utf-8",
+                            extra={"Location": "/settings?msg=" + quote(note)},
+                        )
+                        return
+                    self._send(200, json.dumps(out).encode(), "application/json; charset=utf-8")
                     return
                 if path in {"/api/settings", "/api/sources"}:
                     try:
@@ -1124,6 +1161,7 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                         body = render_settings_html(
                             Settings(app.vault).view(), load_sources(knowledge),
                             token=app.csrf_token,
+                            message=(parse_qs(parsed.query).get("msg") or [None])[0],
                         ).encode()
                     finally:
                         knowledge.close()

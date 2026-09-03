@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.universe == "week0":
             universe = load_universe(default_week0_path())
         else:
-            universe = load_desk_universe()
+            universe = load_desk_universe()  # honours CAP_UNIVERSE / the applied file too
         rec = LiveRecorder(
             symbols=list(universe.symbols),
             data_root=data_root,

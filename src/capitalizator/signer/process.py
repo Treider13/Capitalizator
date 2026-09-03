@@ -25,6 +25,7 @@ from time import sleep as _sleep
 from typing import Any
 
 from capitalizator.gateway.keys import LIVE_MODES, PAPER_MODES
+from capitalizator.ops.alerts import Alerter
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.product import USER_MODES
 from capitalizator.risk.session import load_time_config
@@ -54,7 +55,7 @@ def unsigned_from_intent(
     payload: dict[str, Any],
     *,
     trading_mode: str = "demo",
-    allow_default_qty: bool = True,
+    allow_default_qty: bool = False,
 ) -> UnsignedIntent:
     """Map desk Intent dump onto the signer schema. Stop is mandatory.
 
@@ -385,6 +386,7 @@ def serve_gateway_loop(
     sleep: Callable[[float], None] = _sleep,
     dead_man_s: int | None = None,
     reconcile_s: int | None = None,
+    alerter: Alerter | None = None,
 ) -> None:
     """Real signer loop: watchdog, intent drain via the gateway, OMS drain, reconcile.
 
@@ -505,6 +507,13 @@ def serve_gateway_loop(
             last_recon = when
         stale = dead.check(when)
         blocked = sorted(set(stale) | set(sticky))
+        mode = read_user_mode(vault)
+        if mode in {"demo", "live"} and not gateway_mode_ok(mode, gateway.mode):
+            # demo with a live key or live with a paper key: nothing is sent, and the
+            # operator sees WHY instead of a queue that only grows
+            blocked = sorted({*blocked, "mode_mismatch"})
+        if alerter is not None:
+            _alert_transitions(alerter, knowledge, blocked=blocked, mode=mode, when=when)
         knowledge.set_meta_many(
             {
                 "entries_blocked": json.dumps(blocked),
@@ -516,10 +525,57 @@ def serve_gateway_loop(
             # OMS first: protecting an open position beats opening a new one.
             drain_oms(knowledge, gateway, now=when)
             if not blocked:
-                venue = gateway.mode if gateway.mode in PAPER_MODES else "demo"
+                venue = gateway.mode  # the order carries the venue the key really talks to
                 drain_validated(knowledge, gateway.send, user_mode=mode, now=when, venue=venue)
         if idle_s:
             sleep(idle_s)
+
+
+def _alert_transitions(
+    alerter: Alerter, knowledge: Knowledge, *, blocked: list[str], mode: str, when: datetime
+) -> None:
+    """Critical facts → one Telegram message per CHANGE: entries blocked / released,
+    a halt on the account, the dead-man firing. Never per tick."""
+    try:
+        if blocked:
+            text = "⛔ Входы заблокированы: " + ", ".join(blocked)
+        else:
+            text = "✅ Входы разблокированы"
+        alerter.on_change(knowledge, "entries_blocked", blocked, f"[{mode}] {text}")
+        raw = knowledge.meta("account") if knowledge.available() else None
+        halt = ""
+        if raw:
+            try:
+                halt = str((json.loads(raw).get("halts") or {}).get("reason") or "")
+            except (json.JSONDecodeError, AttributeError):
+                halt = ""
+        alerter.on_change(
+            knowledge, "halt", halt,
+            f"[{mode}] 🛑 Кран: {halt}" if halt else f"[{mode}] кран снят",
+        )
+        dead_raw = knowledge.meta("dead_man_last") if knowledge.available() else None
+        if dead_raw:
+            alerter.on_change(
+                knowledge, "dead_man", dead_raw,
+                f"[{mode}] ⚠️ Сторож снял входные ордера: {dead_raw}",
+            )
+    except Exception as exc:  # alerts never take the signer down
+        if knowledge.available():
+            knowledge.set_meta("alerts_last_error", type(exc).__name__)
+
+
+def alerter_from_settings(vault: Any) -> Alerter | None:
+    """Telegram credentials from Настройки (0600 settings.json); None when absent."""
+    try:
+        from capitalizator.ops.settings import Settings
+
+        values = Settings(vault, exclude_prefixes=("bybit.", "llm.", "x.", "reddit.")).load()
+    except Exception:
+        return None
+    token, chat = values.get("telegram.bot_token", ""), values.get("telegram.chat_id", "")
+    if not token or not chat:
+        return None
+    return Alerter(token, chat)
 
 
 def _note(exc: BaseException) -> str:

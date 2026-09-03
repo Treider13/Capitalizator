@@ -16,7 +16,7 @@ import os
 import sqlite3
 import stat
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -295,19 +295,6 @@ class Knowledge:
         except Exception:
             self._cx.rollback()
             raise
-
-    def push_command(self, cmd: Mapping[str, Any]) -> int:
-        """Append one operator command. ONE queue: the `desk_commands` table
-        (`enqueue_command`); the sessions-release meta JSON list is gone, so the console,
-        the desk and the signer see the same rows with `pending/claimed/done/failed`.
-        Returns the number of pending rows after the append."""
-        body = json.dumps(dict(cmd), sort_keys=True, default=str)
-        if contains_advice(body):
-            raise ValueError("command must not advise")
-        kind = str(cmd.get("kind") or "")
-        created = str(cmd.get("at") or datetime.now(tz=UTC).isoformat())
-        self.enqueue_command(kind, cmd, created_ts=created)
-        return sum(1 for c in self.commands(limit=1000) if c["status"] == "pending")
 
     def set_meta_many(self, rows: Mapping[str, str]) -> None:
         """One BEGIN IMMEDIATE for a batch of meta keys (UI snapshots, counters)."""

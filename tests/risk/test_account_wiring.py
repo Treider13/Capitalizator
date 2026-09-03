@@ -12,7 +12,7 @@ import pytest
 from capitalizator.exec.ev_gate import evaluate, expected_funding
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
-from capitalizator.risk.account import Account, PersistentBudget, session_key
+from capitalizator.risk.account import Account, PersistentBudget
 from capitalizator.risk.config import RiskConfig, load_risk_config, save_risk_config
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.schema import Intent, RiskEngine
@@ -171,15 +171,17 @@ def test_account_roll_budget_and_persistence(tmp_path: Path) -> None:
     cfg = RiskConfig(max_intents_per_session=2, max_open_positions=1)
     acct = Account.load(kn, cfg, now=NOW)
     assert acct.equity == cfg.paper_equity
-    b = acct.budget(NOW)
-    assert isinstance(b, PersistentBudget) and b.key == session_key(NOW)
+    key = f"{NOW.date().isoformat()}:overlap"
+    b = acct.budget(NOW, key=key)
+    assert isinstance(b, PersistentBudget) and b.key == key
     b.on_intent()
     b.on_intent()
     assert b.allow_entry() is False
     # next Moscow day → fresh budget; the old one is remembered on disk
-    assert acct.budget(NOW + timedelta(days=1)).allow_entry() is True
+    tomorrow = NOW + timedelta(days=1)
+    assert acct.budget(tomorrow, key=f"{tomorrow.date().isoformat()}:overlap").allow_entry() is True
     again = Account.load(kn, cfg, now=NOW)
-    assert again.budget(NOW).n == 2  # survived the "restart"
+    assert again.budget(NOW, key=key).n == 2  # survived the "restart"
     # open idea + pnl → equity, halts, persistence
     acct.on_open(_intent(), now=NOW, intent_id=7)
     assert acct.allow_entry("BTCUSDT") == (False, "position_open_same_symbol")
@@ -206,7 +208,9 @@ def test_account_rejects_unsized_intent() -> None:
 # --- signer refuses unsized intents on the live drain -----------------------------
 def test_live_drain_refuses_unsized_intent() -> None:
     raw = {"symbol": "BTCUSDT", "side": "buy", "entry": "65000", "stop": "64300", "tp": "66400"}
-    assert unsigned_from_intent(raw).qty == Decimal("0.001")  # bare helper keeps the fixture
+    with pytest.raises(ValueError, match="not sized"):
+        unsigned_from_intent(raw)  # the default is now the live rule: no invented size
+    assert unsigned_from_intent(raw, allow_default_qty=True).qty == Decimal("0.001")  # fixtures
     with pytest.raises(ValueError, match="not sized"):
         validate_queue_payload(raw)
     sized = validate_queue_payload({**raw, "qty": "0.461"})

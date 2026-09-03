@@ -30,6 +30,7 @@ from capitalizator.screener.universe import (
     MAX_SYMBOLS,
     REQUIRED_SYMBOLS,
     Universe,
+    applied_universe_path,
     default_desk_path,
     load_universe,
     validate_universe,
@@ -232,7 +233,8 @@ def apply_universe(
         "symbols": list(payload["symbols"]),
     }
     universe = validate_universe(body)
-    target = universe_path or default_desk_path()
+    target = universe_path or applied_universe_path() or default_desk_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
     text = (
         "# Written by screener.refresh.apply_universe (top-N by 24h turnover, "
         f"history ≥ {HISTORY_MIN_DAYS}d, majors always). proposal_id={proposal_id}\n"

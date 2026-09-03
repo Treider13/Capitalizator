@@ -340,8 +340,11 @@ def main(argv: list[str] | None = None) -> int:
             started = time.monotonic()
             try:
                 cycle(vault, knowledge)
+                knowledge.set_meta("intel_error", "")
             except Exception as exc:  # keep the loop alive; the console shows intel_status
-                knowledge.set_meta("intel_error", f"{type(exc).__name__}: {exc}"[:300])
+                knowledge.set_meta("intel_error", type(exc).__name__)
+            # the compose healthcheck reads this: a hung cycle is a sick container
+            knowledge.set_meta("intel_heartbeat", datetime.now(tz=UTC).isoformat())
             time.sleep(max(5.0, args.every_s - (time.monotonic() - started)))
     finally:
         knowledge.close()

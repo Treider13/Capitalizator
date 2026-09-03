@@ -10,8 +10,7 @@ blocks until the Moscow session opens. 24h pre-event cut is 2.11.7, not here.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, time
-from decimal import Decimal
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -62,30 +61,7 @@ def load_time_config() -> dict:
 _CFG = load_time_config()
 MSK = ZoneInfo(str(_CFG["session_tz"]))
 NY = ZoneInfo(str(_CFG["us_tz"]))
-START = time.fromisoformat(str(_CFG["session_start"]))
-END = time.fromisoformat(str(_CFG["session_end"]))
 US_MACRO = frozenset(str(x) for x in _CFG["us_data_classes"])
-
-
-def in_desk_window(now: datetime) -> bool:
-    local = require_utc(now).astimezone(MSK)
-    stamp = local.timetz().replace(tzinfo=None)
-    return START <= stamp < END
-
-
-def allow_entry(
-    now: datetime,
-    *,
-    lev: Decimal = Decimal("3"),
-    no_us_today: bool = False,
-) -> tuple[bool, str]:
-    if lev >= 5 and not in_desk_window(now):
-        return False, "night 5x"
-    if in_desk_window(now):
-        return True, "session"
-    if no_us_today:
-        return True, "no_us_today"
-    return False, "outside session"
 
 
 def _macro_known_at(
@@ -122,17 +98,3 @@ def us_data_day(now: datetime, calendar: Sequence[NewsRow]) -> bool:
 def cpi_day(now: datetime, calendar: Sequence[NewsRow]) -> bool:
     """Card CPI window: CPI on this NY date, already learned. Not the 24h pre-cut."""
     return _macro_known_at(now, calendar, frozenset({"CPI"})) is not None
-
-
-class SessionWindow:
-    def allows(
-        self,
-        now_utc: datetime,
-        calendar: Sequence[NewsRow] | None = None,
-        *,
-        lev: Decimal = Decimal("3"),
-        no_us_today: bool = False,
-    ) -> tuple[bool, str]:
-        if us_data_day(now_utc, calendar or ()) and not in_desk_window(now_utc):
-            return False, "us_data_day"
-        return allow_entry(now_utc, lev=lev, no_us_today=no_us_today)

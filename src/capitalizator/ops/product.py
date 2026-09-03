@@ -6,6 +6,8 @@ Laws: off|learn|demo|live. Bot does not advance phase.yaml.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -152,6 +154,19 @@ def mark_hello(vault: Vault, *, ok: bool) -> None:
         knowledge.set_meta(META_HELLO, "1" if ok else "0")
     finally:
         knowledge.close()
+
+
+def record_hello(vault: Vault, knowledge: Any, result: Mapping[str, Any]) -> bool:
+    """One place for what a venue hello leaves behind (CLI `--hello` and `/api/hello`
+    used to carry two copies): the flag, the full result, the fee rate. Returns ok."""
+    ok = bool(result.get("ok"))
+    mark_hello(vault, ok=ok)
+    knowledge.set_meta("hello_result", json.dumps(result, default=str))
+    fee = result.get("fee_rate") or {}
+    value = fee.get("value") if isinstance(fee, Mapping) else None
+    if fee and fee.get("ok") and isinstance(value, list) and len(value) == 2:
+        knowledge.set_meta("fee_rate", json.dumps({"maker": value[0], "taker": value[1]}))
+    return ok
 
 
 def default_universe_path() -> Path:

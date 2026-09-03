@@ -687,3 +687,17 @@ def test_publish_exchange_state_reports_missing_stop_and_fills(tmp_path: Path) -
     assert state["stop_missing"] == ["BTCUSDT"]
     assert state["fills"][0]["orderLinkId"] == "abc"
     kn.close()
+
+
+def test_mode_key_mismatch_is_a_visible_block_reason(tmp_path: Path) -> None:
+    """demo desk with a live key (or live desk with a paper key): nothing is sent — and
+    the reason is in `entries_blocked`, not a queue that silently grows."""
+    vault = init_vault(tmp_path / "v")
+    kn = open_knowledge(vault)
+    mark_hello(vault, ok=True)
+    set_user_mode(vault, "demo", ack=True)
+    _run_loop(kn, vault, _gw(mode="live_sub"), PositionTracker(), now=NOW, iterations=1)
+    assert "mode_mismatch" in json.loads(kn.meta("entries_blocked"))
+    _run_loop(kn, vault, _gw(mode="demo"), PositionTracker(), now=NOW, iterations=1)
+    assert "mode_mismatch" not in json.loads(kn.meta("entries_blocked"))
+    kn.close()

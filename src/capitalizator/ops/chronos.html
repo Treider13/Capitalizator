@@ -91,7 +91,11 @@
     }
     button:disabled, .dead { opacity: .5; cursor: not-allowed; }
     button:not(:disabled) { color: var(--text); cursor: pointer; }
-    #service { display: none; }
+    #service { margin: 0 8px 8px; padding: 8px 14px; border-top: 1px solid var(--line); }
+    #service h2 { font-size: 15px; color: var(--muted); margin: 14px 0 6px; }
+    #service table { border-collapse: collapse; font-size: 13px; }
+    #service td, #service th { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; }
+    nav.pages a { color: #8ab4f8; margin-right: 10px; font-size: 13px; }
     footer { padding: 8px 14px 16px; color: var(--muted); font-size: 12px; }
   </style>
 </head>
@@ -105,6 +109,7 @@
     <span id="window" class="pill">окно —</span>
     <span id="hello" class="pill">hello —</span>
     <span id="cred" class="pill">ключ —</span>
+    <nav class="pages"><a href="/ops">Управление</a><a href="/settings">Настройки</a><a href="/touch">Касание</a><a href="/api/glossary">Словарь</a></nav>
     <form id="mode-form">
       <input type="hidden" name="ack" value="1"/>
       <button type="submit" name="mode" value="off">off</button>

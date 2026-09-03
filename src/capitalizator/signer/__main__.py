@@ -14,13 +14,13 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from capitalizator.gateway.keys import PAPER_MODES
 from capitalizator.ops.knowledge import open_knowledge
-from capitalizator.ops.product import read_user_mode
+from capitalizator.ops.product import read_user_mode, record_hello
 from capitalizator.ops.vault import init_vault, load_vault
 from capitalizator.signer.process import (
     HEARTBEAT_S,
     RECONCILE_S,
+    alerter_from_settings,
     drain_once,
     drain_validated,
     gateway_mode_ok,
@@ -76,17 +76,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({**payload, "hello": {"ok": False, "error": "no keys"}}))
                 return 2
             result = gateway.hello(probe_order=args.probe_order)
-            from capitalizator.ops.product import mark_hello
-
-            mark_hello(vault, ok=bool(result.get("ok")))
-            knowledge.set_meta("hello_result", json.dumps(result, default=str))
-            fee = result.get("fee_rate") or {}
-            if fee.get("ok") and isinstance(fee.get("value"), list) and len(fee["value"]) == 2:
-                knowledge.set_meta(
-                    "fee_rate", json.dumps({"maker": fee["value"][0], "taker": fee["value"][1]})
-                )
+            ok = record_hello(vault, knowledge, result)
             print(json.dumps({**payload, "hello": result}, ensure_ascii=False, default=str))
-            return 0 if result.get("ok") else 1
+            return 0 if ok else 1
         if gateway is None:
             if args.once or not args.serve:
                 if mode in {"demo", "live"}:
@@ -105,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(json.dumps({**payload, "error": "user mode / key mode mismatch"}))
                     return 3
                 if not blocked:
-                    venue = gateway.mode if gateway.mode in PAPER_MODES else "demo"
+                    venue = gateway.mode  # the order carries the venue the key really talks to
                     drain_validated(
                         knowledge,
                         gateway.send,
@@ -124,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
                 tracker=tracker,
                 feed=feed,
                 should_stop=lambda: False,
+                alerter=alerter_from_settings(vault),
             )
         finally:
             # Only the serving process owns resting entries: when IT goes, no entry may

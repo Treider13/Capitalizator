@@ -27,6 +27,10 @@ x-base: &base
   environment:
     TZ: UTC
     PYTHONDONTWRITEBYTECODE: "1"
+    # One universe for every process: week0 (BTC+ETH, canon) | desk (infra/universe.yaml
+    # or the applied /data/universe.yaml). Recorder, desk, signer and console read the same.
+    CAP_UNIVERSE: ${CAP_UNIVERSE:-week0}
+    CAP_USERDIR: /data
   logging:
     driver: json-file
     options: { max-size: "50m", max-file: "5" }
@@ -46,7 +50,7 @@ services:
     <<: *base
     depends_on: { init: { condition: service_completed_successfully } }
     # CAP_UNIVERSE=week0 (BTC+ETH, canon until 24h of clean tape) | desk (24 symbols)
-    command: ["python", "-m", "capitalizator.recorder.app", "--live-ws", "--userdir", "/data", "--universe", "${CAP_UNIVERSE:-week0}"]
+    command: ["python", "-m", "capitalizator.recorder.app", "--live-ws", "--userdir", "/data", "--universe", "desk"]
 
   desk:
     <<: *base
@@ -80,6 +84,12 @@ services:
     # Contour B raw material: RSS / Reddit / X API / Hyperliquid / Bybit public / F&G every 5 min;
     # LLM extraction only when a provider is configured in Настройки. No exchange keys here.
     command: ["python", "-m", "capitalizator.intel", "--userdir", "/data", "--serve", "--every-s", "300"]
+    healthcheck:
+      # one cycle every 300 s; a heartbeat older than 3 cycles = hung
+      test: ["CMD", "python", "-m", "capitalizator.ops.healthz", "--userdir", "/data", "--heartbeat", "intel_heartbeat", "--max-age-s", "900"]
+      interval: 120s
+      timeout: 15s
+      retries: 3
 
   console:
     <<: *base

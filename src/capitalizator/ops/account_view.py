@@ -246,6 +246,7 @@ def sessions_view(knowledge: Knowledge, *, now: datetime | None = None) -> dict[
             "blackouts": list(policy.active_blackouts(when)),
         },
         "windows": windows,
+        "daily_budget_cap": policy.daily_budget_cap(),
         "blackouts": [
             {
                 "name": b.name,

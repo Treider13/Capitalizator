@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from capitalizator.ops import i18n_ru
+from capitalizator.risk.config import STOP_MODES, TRAIL_MODES
 
 CSS = """
 body{font-family:system-ui,sans-serif;background:#0f1216;color:#d7dde5;margin:0;padding:16px}
@@ -43,9 +44,9 @@ RISK_HINTS: dict[str, str] = {
     "week_halt": "Кран недели (отрицательная доля).",
     "peak_kill": "Стоп-кран от пика эквити (отрицательная доля); снимает только человек.",
     "fee_multiple_min": "1R должен покрывать столько круговых комиссий (EV-гейт).",
-    "stop_mode": "hybrid | structural | manual_bounded.",
+    "stop_mode": "Режим стопа: " + " | ".join(sorted(STOP_MODES)) + ".",
     "manual_stop_frac": "Для manual_bounded: расстояние стопа как доля цены (0.001..0.2) или null.",
-    "trail_mode": "Трейл: both | structural | none.",
+    "trail_mode": "Трейл: " + " | ".join(sorted(TRAIL_MODES)) + ".",
     "max_stop_atr": "Стоп не дальше стольких ATR рабочего ТФ; null — без потолка.",
     "participating_share": "Какая доля счёта участвует в размере и кранах (1 — весь).",
     "corr_block_threshold": "Порог корреляции доходностей за 30 дней для запрета второй идеи.",
@@ -112,7 +113,8 @@ def render_ops_html(
     unknown = list(exch.get("unknown_detail") or [])
     stop_missing = list(exch.get("stop_missing") or [])
     mismatches = list(exch.get("mismatches") or [])
-    acct = status.get("account") or {}
+    acct = (status.get("money") or {}).get("account") or {}
+    paused = meta.get("entries_paused") == "1"
     window_drift = _json(meta.get("window_drift"), {}) or {}
     drift = _json(meta.get("drift"), {}) or {}
     exam_last = _json(meta.get("exam_last"), {}) or {}
@@ -144,7 +146,7 @@ def render_ops_html(
     else:
         out.append("<p class='ok'>Входы не заблокированы.</p>")
     if unknown:
-        rows = "".join(
+        unknown_rows = "".join(
             f"<tr><td>{_e(u.get('symbol'))}</td><td>{_e(u.get('side'))}</td><td>{_e(u.get('size'))}</td>"
             f"<td>{_e(u.get('avg_price'))}</td><td>{_e(u.get('stop_loss') or '—')}</td>"
             f"<td>{_command_form(token, 'ack_position', 'Принять позицию', symbol_value=str(u.get('symbol')))}</td></tr>"
@@ -153,7 +155,7 @@ def render_ops_html(
         out.append(
             "<p class='bad'>Позиции на бирже, которых стол не открывал (усыновление только руками):</p>"
             "<table><tr><th>символ</th><th>сторона</th><th>размер</th><th>средняя</th><th>стоп</th><th></th></tr>"
-            f"{rows}</table>"
+            f"{unknown_rows}</table>"
         )
     if stop_missing:
         out.append(f"<p class='bad'>Без подтверждённого стопа на бирже: {_e(', '.join(stop_missing))}</p>")
@@ -174,8 +176,9 @@ def render_ops_html(
     halt = acct.get("halt_reason") or ""
     out.append(
         f"<p>Кран: <b class='{'bad' if halt else 'ok'}'>{_e(halt or 'открыт')}</b> · "
-        f"входы на паузе: <b>{'да' if status.get('entries_paused') else 'нет'}</b> · "
-        f"режим: <b>{_e(status.get('trading_mode'))}</b> · контур: <b>{_e(status.get('contour'))}</b></p>"
+        f"входы на паузе: <b>{'да' if paused else 'нет'}</b> · "
+        f"режим оператора: <b>{_e(status.get('user_mode'))}</b> · режим фазы (phase.yaml): "
+        f"<b>{_e(status.get('trading_mode'))}</b> · контур: <b>{_e(status.get('contour'))}</b></p>"
     )
     out.append(
         "<p>"
@@ -215,13 +218,14 @@ def render_ops_html(
         f"<p>Сейчас окно <b>{_e(now.get('window'))}</b>"
         + (" (выходные)" if now.get("weekend") else "")
         + f" · размер ×{_e(now.get('size_mult'))} · k·ATR {_e(now.get('k_atr'))} · бюджет {_e(now.get('budget'))}"
+        + f" · потолок заявок за будний день по всем окнам: {_e(sessions.get('daily_budget_cap', '—'))}"
         + (f" · блэкауты: {_e(', '.join(now.get('blackouts') or []))}" if now.get("blackouts") else "")
         + "</p>"
     )
     spent = sessions.get("budget_spent_today") or {}
     eligible = sessions.get("eligible_windows") or {}
     k_atr_cal = sessions.get("k_atr_calibrated") or {}
-    rows = []
+    win_rows: list[str] = []
     for w in sessions.get("windows") or []:
         name = str(w.get("name"))
         flags = []
@@ -231,7 +235,7 @@ def render_ops_html(
             flags.append(f"дрейф с {window_drift[name]}")
         if name in eligible:
             flags.append("готово к открытию (нижняя граница > безубытка)")
-        rows.append(
+        win_rows.append(
             f"<tr><td>{_e(name)}</td><td>{_e(w.get('start') or '—')}–{_e(w.get('end') or '—')}</td>"
             f"<td>{_e(', '.join(w.get('ideas') or []) or '—')}</td><td>×{_e(w.get('size_mult'))}</td>"
             f"<td>{_e(w.get('k_atr'))}"
@@ -241,7 +245,7 @@ def render_ops_html(
         )
     out.append(
         "<table><tr><th>окно</th><th>UTC</th><th>идеи</th><th>размер</th><th>k·ATR</th>"
-        "<th>заявок сегодня</th><th>состояние</th></tr>" + "".join(rows) + "</table>"
+        "<th>заявок сегодня</th><th>состояние</th></tr>" + "".join(win_rows) + "</table>"
     )
     out.append(
         f"<p class='hint'>Дрейф чемпиона (весь стол): {'есть' if drift.get('drift') else 'нет'}"
@@ -283,13 +287,52 @@ def render_ops_html(
         + "</p>"
     )
 
+    # --- process health --------------------------------------------------------------------
+    out.append("<h2>Здоровье процессов</h2>")
+
+    def _age(key: str) -> str:
+        raw = meta.get(key)
+        if not raw:
+            return "нет"
+        try:
+            from datetime import UTC, datetime
+
+            at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            return f"{(datetime.now(tz=UTC) - at).total_seconds():.0f} с назад"
+        except ValueError:
+            return _e(raw)
+
+    dead_man = _json(meta.get("dead_man_last"), {}) or {}
+    intel_status = _json(meta.get("intel_status"), {}) or {}
+    rec_status = _json(meta.get("recorder_status"), {}) or {}
+    rec_streams = rec_status.get("streams") or {}
+    health_rows: list[tuple[str, str]] = [
+        ("пульс стола", _age("desk_heartbeat")),
+        ("пульс сигнера", _age("signer_heartbeat")),
+        ("стол догоняет ленту", "да" if meta.get("desk_backlog") == "1" else "нет"),
+        ("рекордер: сокет", "подключён" if rec_status.get("socket_connected") else _e(rec_status.get("socket_connected"))),
+        ("рекордер: реконнектов", _e(rec_status.get("reconnects", "—"))),
+        ("рекордер: возраст последнего кадра trades", _e((rec_streams.get("trades") or {}).get("last_age_s", "—"))),
+        ("сторож: последнее срабатывание", _e(json.dumps(dead_man, ensure_ascii=False)) if dead_man else "не срабатывал"),
+        ("интенты, возвращённые после появления ключа", _e(meta.get("signer_requeued") or "0")),
+        ("инструменты: ошибка сигнера / рекордера", f"{_e(meta.get('instruments_error_signer') or '—')} / {_e(meta.get('instruments_error_recorder') or '—')}"),
+        ("intel: последний цикл", _e(intel_status.get("at") or "—")),
+        ("intel: источников / сохранено", f"{_e((intel_status.get('fetch') or {}).get('sources', '—'))} / {_e((intel_status.get('fetch') or {}).get('stored', '—'))}"),
+        ("intel: ошибка LLM / Reddit", f"{_e(meta.get('llm_last_error') or '—')} / {_e(meta.get('reddit_auth_error') or '—')}"),
+        ("двойники после рестарта", f"восстановлено {_e(meta.get('paper_restored') or '0')}, ошибка: {_e(meta.get('paper_open_error') or '—')}"),
+        ("ОКО: органы, не прочитанные при старте", _e(", ".join(sorted(_json(meta.get("oko_load_errors"), {}) or {})) or "нет")),
+    ]
+    out.append(
+        "<table>" + "".join(f"<tr><th>{_e(k)}</th><td>{v}</td></tr>" for k, v in health_rows) + "</table>"
+    )
+
     # --- command log ----------------------------------------------------------------------
     out.append("<h2>Журнал команд</h2>")
-    rows = []
+    log_rows: list[str] = []
     for c in list(commands)[:40]:
         payload = c.get("payload") or {}
         result = c.get("result")
-        rows.append(
+        log_rows.append(
             f"<tr><td>{_e(c.get('created_ts'))}</td><td>{_e(i18n_ru.ru(str(c.get('kind'))))}</td>"
             f"<td>{_e(payload.get('symbol') or '')}</td><td>{_e(payload.get('reason') or '')}</td>"
             f"<td class='{'ok' if c.get('status') == 'done' else ('bad' if c.get('status') == 'failed' else 'muted')}'>{_e(c.get('status'))}</td>"
@@ -297,7 +340,7 @@ def render_ops_html(
         )
     out.append(
         "<table><tr><th>когда</th><th>команда</th><th>символ/окно</th><th>причина</th><th>статус</th><th>результат</th></tr>"
-        + ("".join(rows) or "<tr><td colspan='6' class='muted'>команд не было</td></tr>")
+        + ("".join(log_rows) or "<tr><td colspan='6' class='muted'>команд не было</td></tr>")
         + "</table>"
     )
     out.append("</body></html>")

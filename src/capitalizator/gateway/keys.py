@@ -66,14 +66,22 @@ class Keys:
 
 
 def load_keys(vault: Vault | None = None, *, env: dict[str, str] | None = None) -> Keys | None:
+    """The key the operator entered in Настройки (`secrets/bybit.json`, 0600) wins;
+    `BYBIT_*` environment variables are the fallback (deploy `.env`, tests). The old
+    order let a stale `.env` silently override what the operator had just saved."""
+    from_file = _keys_from_file(vault) if vault is not None else None
+    if from_file is not None and from_file.api_key and from_file.api_secret:
+        return from_file
     source = env if env is not None else os.environ
     key = source.get(ENV_KEY)
     secret = source.get(ENV_SECRET)
     if key and secret:
         mode = source.get(ENV_MODE) or DEFAULT_MODE
         return Keys(api_key=key, api_secret=secret, mode=mode)
-    if vault is None:
-        return None
+    return from_file
+
+
+def _keys_from_file(vault: Vault) -> Keys | None:
     path: Path = vault.secrets / FILE_NAME
     if path.is_symlink() or not path.is_file():
         return None

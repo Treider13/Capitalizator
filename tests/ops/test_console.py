@@ -419,7 +419,7 @@ def test_chronos_api_empty_shapes(tmp_path: Path) -> None:
         status = json.loads(conn.getresponse().read().decode())
         conn.close()
         assert "last_price" in status
-        assert status["session_window"]["start"] == "16:30"
+        assert status["session_window"]["tz"] == "UTC" and "name" in status["session_window"]
         assert status["last_jury"] == {}
         conn = HTTPConnection(host, port, timeout=3)
         conn.request("GET", "/api/hello/status")

@@ -46,7 +46,7 @@ TICK = Decimal("0.1")
 CREATED = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 WINDOW = datetime(2026, 8, 31, 14, 10, tzinfo=UTC)
 ASIA = datetime(2026, 8, 31, 0, 0, tzinfo=UTC)  # 03:00 MSK
-OUTSIDE = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
+OUTSIDE = datetime(2026, 8, 31, 22, 0, tzinfo=UTC)  # sessions.yaml: night, ideas: []
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "day_btc_small"
 ZONE = Zone.create(
     symbol="BTCUSDT",

@@ -25,11 +25,6 @@ from capitalizator.types import require_utc
 MSK = ZoneInfo("Europe/Moscow")
 
 
-def session_key(when: datetime) -> str:
-    """One desk session per Moscow calendar day (time.yaml window is inside it)."""
-    return require_utc(when).astimezone(MSK).date().isoformat()
-
-
 class PersistentBudget(SessionBudget):
     """SessionBudget whose count survives a restart (meta budget:<session>)."""
 
@@ -121,18 +116,17 @@ class Account:
         if changed:
             self._persist()
 
-    def budget(
-        self, now: datetime, *, key: str | None = None, max_n: int | None = None
-    ) -> PersistentBudget:
+    def budget(self, now: datetime, *, key: str, max_n: int | None = None) -> PersistentBudget:
         """Intent budget for a session key.
 
-        Legacy call (no key): one budget per Moscow calendar day, cap from RiskConfig.
-        Sessions release: the desk passes the window's `budget_key`
-        (`YYYY-MM-DD:window`) and the window's cap; the operator's
-        `max_intents_per_session` stays the ceiling for any single key. Stale keys
-        are dropped when a newer one appears (keys sort chronologically).
+        The desk passes the window's `budget_key` (`YYYY-MM-DD:window`, UTC) and the
+        window's cap; the operator's `max_intents_per_session` stays the ceiling for
+        any single key. Stale keys are dropped when a newer one appears (keys sort
+        chronologically). There is no keyless form: a second calendar (the old
+        Moscow-day key) next to the UTC window keys was two budgets for one desk.
         """
-        budget_key = key if key is not None else session_key(now)
+        require_utc(now)
+        budget_key = key
         cap = self.config.max_intents_per_session
         if max_n is not None:
             cap = max(0, min(cap, max_n))
@@ -145,21 +139,6 @@ class Account:
                 del self._budgets[stale]
         return got
 
-    def daily_intents(self, now: datetime) -> int:
-        """Intents already spent today across every window key (UTC date prefix)."""
-        day = require_utc(now).date().isoformat()
-        total = 0
-        if self.knowledge is not None and self.knowledge.available():
-            for key, raw in self.knowledge.meta_prefix(f"budget:{day}").items():
-                if raw.isdigit():
-                    total += int(raw)
-            return total
-        for key, b in self._budgets.items():
-            if key.startswith(day):
-                total += b.n
-        return total
-
-    # --- equity --------------------------------------------------------------
     def set_equity(self, equity: Decimal, *, source: str, now: datetime) -> None:
         if equity <= 0:
             raise ValueError("equity must be > 0")

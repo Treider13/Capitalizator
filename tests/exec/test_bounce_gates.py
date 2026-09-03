@@ -13,7 +13,7 @@ from capitalizator.zones.model import Zone
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "capitalizator" / "exec" / "strategy_bounce.py"
 SESSION = datetime(2026, 8, 31, 14, 10, tzinfo=UTC)
-OUTSIDE = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
+OUTSIDE = datetime(2026, 8, 31, 22, 0, tzinfo=UTC)  # sessions.yaml: night, ideas: []
 
 
 def _zone(*, side: str = "support", lo: str = "100", hi: str = "101") -> Zone:

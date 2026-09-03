@@ -37,7 +37,6 @@ from capitalizator.risk.budget import SessionBudget
 from capitalizator.risk.halts import Halts
 from capitalizator.risk.prs_cut import decide as prs_cut
 from capitalizator.risk.schema import Intent, RiskEngine
-from capitalizator.risk.session import SessionWindow
 from capitalizator.risk.sessions import SessionPolicy
 from capitalizator.screener.filters import Screener
 from capitalizator.screener.universe import load_desk_universe
@@ -272,7 +271,7 @@ class BounceStrategy:
         *,
         risk: RiskEngine,
         halts: Halts,
-        session: SessionWindow | SessionPolicy | None = None,
+        session: SessionPolicy | None = None,
         screener: Screener | None = None,
         registry: RegistryConfig | None = None,
         desk_mode: str | None = None,
@@ -288,7 +287,7 @@ class BounceStrategy:
     ) -> None:
         self.risk = risk
         self.halts = halts
-        self.session = session or SessionWindow()
+        self.session = session or SessionPolicy.load()
         self.screener = screener or Screener(
             universe=load_desk_universe() if require_jury else None
         )
@@ -307,25 +306,18 @@ class BounceStrategy:
         self.last_aplus_5x_ok: bool | None = None
 
     def _session_allows(self, snap: BounceSnapshot, *, lev: Decimal) -> tuple[bool, str]:
-        """Legacy SessionWindow (time only) or SessionPolicy (time × idea × symbol)."""
-        if isinstance(self.session, SessionPolicy):
-            idea = snap.idea if snap.idea in _IDEAS else "bounce"
-            return self.session.allows(
-                snap.now,
-                snap.calendar,
-                idea="bounce" if idea == _LEGACY_FADE else idea,
-                symbol=snap.symbol,
-                lev=lev,
-                no_us_today=snap.no_us_today,
-                next_funding_at=snap.next_funding_at,
-                rank=snap.universe_rank,
-                screened=snap.screened,
-            )
+        """SessionPolicy: time × idea × symbol × funding × US-data day (one calendar)."""
+        idea = snap.idea if snap.idea in _IDEAS else "bounce"
         return self.session.allows(
             snap.now,
             snap.calendar,
+            idea="bounce" if idea == _LEGACY_FADE else idea,
+            symbol=snap.symbol,
             lev=lev,
             no_us_today=snap.no_us_today,
+            next_funding_at=snap.next_funding_at,
+            rank=snap.universe_rank,
+            screened=snap.screened,
         )
 
     def propose(self, snap: BounceSnapshot) -> Intent | None:
