@@ -320,6 +320,7 @@ class DeskLoop:
         self._ui_last_flush: datetime | None = None
         self.zone_cache: dict[str, tuple[tuple[Any, ...], tuple[Zone, ...]]] = {}
         self._persisted_zone_ids: dict[str, frozenset[str]] = {}
+        self._last_zone_retire: datetime | None = None
         self._last_settle: datetime | None = None
         if knowledge.available():
             self._reload_instruments()
@@ -828,6 +829,7 @@ class DeskLoop:
                 self._refresh_calibration(when)
                 self._refresh_correlation(when)
                 out.extend(self._sync_exchange_state(when))
+                out.extend(self._retire_zones(when))
             if force_flush:
                 # Twins and venue proof survive a restart (audit B3); once per clock tick,
                 # not per print (audit E).
@@ -851,6 +853,29 @@ class DeskLoop:
                 continue
             out.extend(self._label_zlg(st, when))
         return out
+
+    ZONE_RETIRE_EVERY_S = 60.0
+
+    def _retire_zones(self, now: datetime) -> list[dict[str, Any]]:
+        """PHASE-BUILD `die_no_touch_h`: zones nobody trades and the engine no longer
+        draws leave the map (memory, persisted table, per-symbol cache). Once a minute."""
+        last = self._last_zone_retire
+        if last is not None and (now - last).total_seconds() < self.ZONE_RETIRE_EVERY_S:
+            return []
+        self._last_zone_retire = now
+        gone = self.registry.retire_zones(now=now)
+        if not gone:
+            return []
+        for zone in gone:
+            if self.knowledge.available():
+                self.knowledge.drop_zone(zone.zone_id)
+            self.zone_cache.pop(zone.symbol, None)
+            self._persisted_zone_ids.pop(zone.symbol, None)
+        return [
+            {"event": "zone_retired", "zone_id": z.zone_id, "symbol": z.symbol, "tf": z.tf,
+             "method": z.method}
+            for z in gone
+        ]
 
     def _settle_shadows(self, now: datetime) -> list[dict[str, Any]]:
         """24/7: close pending touches and score shadow R. No orders."""
