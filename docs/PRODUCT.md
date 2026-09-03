@@ -18,8 +18,8 @@
 | user_mode | Тень 24/7 | Send |
 |---|---|---|
 | off / learn | да | нет |
-| demo | да | testnet, только окно + ACCORD + риск |
-| live | да | сабаккаунт, те же гейты |
+| demo | да | бумага (`not_sent`), только окно + ACCORD + риск |
+| live | да | Bybit linear mainnet через signer + cred-файл, те же гейты |
 
 ## Вселенная
 
@@ -27,7 +27,8 @@
 
 ## Очередь
 
-SQLite: desk пишет `intent_queue`, signer читает и исполняет. Ключ только у signer.
+SQLite: desk пишет `intent_queue`, signer читает и исполняет. Ключ только у signer (`--cred-file`, не консоль).
+`live` + cred → реальный limit+stop на Bybit. `demo` ордер не шлёт. Withdraw в коде нет.
 
 ## Демо → live (одна книга)
 

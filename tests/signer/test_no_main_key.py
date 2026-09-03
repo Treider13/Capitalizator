@@ -12,22 +12,22 @@ from capitalizator.signer.validate import Signer, UnsignedIntent
 SRC = Path(__file__).resolve().parents[2] / "src" / "capitalizator" / "signer"
 
 
-def test_mainnet_literal_rejected() -> None:
-    with pytest.raises(Exception, match="testnet|literal"):
-        UnsignedIntent.model_validate(
-            {
-                "symbol": "BTCUSDT",
-                "side": "buy",
-                "qty": "0.001",
-                "limit_px": "60000",
-                "stop_px": "59400",
-                "trading_mode": "mainnet",
-            }
-        )
+def test_mainnet_literal_is_a_venue() -> None:
+    raw = UnsignedIntent.model_validate(
+        {
+            "symbol": "BTCUSDT",
+            "side": "buy",
+            "qty": "0.001",
+            "limit_px": "60000",
+            "stop_px": "59400",
+            "trading_mode": "mainnet",
+        }
+    )
+    assert raw.trading_mode == "mainnet"
 
 
 def test_live_mode_rejected() -> None:
-    with pytest.raises(Exception, match="testnet|literal"):
+    with pytest.raises(Exception, match="testnet|literal|mainnet"):
         UnsignedIntent.model_validate(
             {
                 "symbol": "BTCUSDT",
@@ -40,9 +40,10 @@ def test_live_mode_rejected() -> None:
         )
 
 
-def test_signer_source_has_no_main_host_or_key() -> None:
+def test_signer_source_has_no_env_key_needles() -> None:
     text = "\n".join(p.read_text(encoding="utf-8") for p in SRC.glob("*.py"))
-    assert "api.bybit.com" not in text
     assert "BYBIT_API_KEY" not in text
     assert scan_tree(SRC) == []
-    assert Signer  # class exists; validate does not send
+    paper = (SRC / "validate.py").read_text(encoding="utf-8")
+    assert "api.bybit.com" not in paper
+    assert Signer  # validate does not send

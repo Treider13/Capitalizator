@@ -66,9 +66,10 @@ def validate_queue_payload(
     payload: dict[str, Any],
     *,
     universe: Universe | None = None,
+    trading_mode: str = "testnet",
 ) -> dict[str, Any]:
     """Desk 24-symbol universe. week0 stays the isolated Signer() default."""
-    raw = unsigned_from_intent(payload)
+    raw = unsigned_from_intent(payload, trading_mode=trading_mode)
     order = Signer(universe=universe or load_desk_universe()).validate(raw)
     return order.model_dump(mode="json")
 
@@ -168,7 +169,10 @@ def drain_validated(
     """Drain pending intents after Signer.validate. Key stays in `send`."""
 
     def checked(payload: dict[str, Any]) -> dict[str, Any]:
-        signed = validate_queue_payload(payload, universe=universe)
+        venue = "mainnet" if user_mode == "live" else "testnet"
+        signed = validate_queue_payload(
+            payload, universe=universe, trading_mode=venue
+        )
         return send(signed)
 
     return drain_once(knowledge, checked, user_mode=user_mode, now=now)
