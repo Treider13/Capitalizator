@@ -182,3 +182,32 @@ def test_live_jsonl_feed_is_tailed_by_offset_and_parquet_parts_are_not_reread(tm
                           recv_ts=stale_ts, seq=1, payload={"px": "100", "qty": "1", "side": "buy"}))
     old.flush()
     assert cur.fresh_rows(tmp_path, now=t0) == []
+
+
+def test_recorder_publishes_public_instruments_without_a_key(tmp_path: Path) -> None:
+    from capitalizator.recorder.public_rest import publish_instruments
+
+    vault = init_vault(tmp_path / "v")
+    kn = open_knowledge(vault)
+    pages = {
+        "": {"retCode": 0, "result": {"list": [
+            {"symbol": "BTCUSDT", "status": "Trading", "priceFilter": {"tickSize": "0.1"},
+             "lotSizeFilter": {"qtyStep": "0.001", "minOrderQty": "0.001", "minNotionalValue": "5"},
+             "leverageFilter": {"maxLeverage": "100"}, "fundingInterval": 480}],
+            "nextPageCursor": "p2"}},
+        "p2": {"retCode": 0, "result": {"list": [
+            {"symbol": "DOGEUSDT", "status": "Trading", "priceFilter": {"tickSize": "0.00001"},
+             "lotSizeFilter": {"qtyStep": "1", "minOrderQty": "1", "minNotionalValue": "5"},
+             "leverageFilter": {"maxLeverage": "75"}, "fundingInterval": 480}],
+            "nextPageCursor": ""}},
+    }
+
+    def opener(url: str):
+        cur = url.split("cursor=")[1] if "cursor=" in url else ""
+        return pages[cur]
+
+    n = publish_instruments(kn, now=datetime(2026, 9, 3, tzinfo=UTC), opener=opener)
+    assert n == 2
+    snap = json.loads(kn.meta("instruments_snapshot"))
+    assert snap["instruments"]["DOGEUSDT"]["tick"] == "0.00001"
+    kn.close()

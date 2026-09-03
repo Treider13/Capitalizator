@@ -126,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(json.dumps(hello), flush=True)
         try:
-            rec.run(should_stop=lambda: stopped["v"])
+            rec.run(should_stop=lambda: stopped["v"], testnet=args.testnet)
         finally:
             if knowledge is not None:
                 knowledge.close()

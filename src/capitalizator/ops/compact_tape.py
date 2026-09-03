@@ -88,7 +88,7 @@ def compact(
         table = table.take(order)
         expected = sum(t.num_rows for t in tables)
         tmp = target.with_name(target.name + ".compact.tmp")
-        pq.write_table(table, tmp)
+        pq.write_table(table, tmp, compression="zstd")
         if pq.ParquetFile(tmp).metadata.num_rows != expected:
             tmp.unlink(missing_ok=True)
             continue

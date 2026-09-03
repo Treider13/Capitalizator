@@ -75,6 +75,7 @@ class LiveRecorder:
     ws: Any = None
     started_at: datetime | None = None
     _last_status: float | None = None
+    _last_instruments: float | None = None
 
     def __post_init__(self) -> None:
         if not self.symbols:
@@ -209,18 +210,42 @@ class LiveRecorder:
         self.knowledge.set_meta("recorder_status", json.dumps(self.status(now), default=str))
         return True
 
+    INSTRUMENTS_EVERY_S = 3600.0
+
+    def publish_instruments(self, *, testnet: bool = False, force: bool = False) -> int | None:
+        """Public instruments-info → knowledge, hourly. Errors are recorded, not raised."""
+        if self.knowledge is None or not self.knowledge.available():
+            return None
+        mono = time.monotonic()
+        if not force and self._last_instruments is not None:
+            if mono - self._last_instruments < self.INSTRUMENTS_EVERY_S:
+                return None
+        self._last_instruments = mono
+        from capitalizator.recorder.public_rest import publish_instruments
+
+        try:
+            n = publish_instruments(self.knowledge, testnet=testnet)
+        except Exception as exc:  # network / venue: say why, keep recording
+            self.knowledge.set_meta("instruments_error", f"recorder: {exc}")
+            return None
+        self.knowledge.set_meta("instruments_error", "")
+        return n
+
     def run(
         self,
         *,
         should_stop: Callable[[], bool],
         idle_s: float = 0.05,
         sleep: Callable[[float], None] = time.sleep,
+        testnet: bool = False,
     ) -> None:
         self.start()
+        self.publish_instruments(testnet=testnet, force=True)
         try:
             while not should_stop():
                 n = self.drain()
                 self.publish_status()
+                self.publish_instruments(testnet=testnet)
                 if n == 0 and idle_s:
                     sleep(idle_s)
         finally:

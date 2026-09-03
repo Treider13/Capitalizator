@@ -276,7 +276,9 @@ class BufferedParquetSink:
         self._seq[hour_path] = seq + 1
         table = pa.Table.from_pylist(rows, schema=SCHEMA)
         buf = io.BytesIO()
-        pq.write_table(table, buf)
+        # zstd: ~2–3× smaller than snappy on JSON payload columns; the archive is
+        # what fills the disk (4 MB / 90 s for BTC+ETH L2 on the VPS).
+        pq.write_table(table, buf, compression="zstd")
         dir_fd = open_real_dir_fd(hour_path.parent)
         fd = -1
         tmp_name: str | None = None
