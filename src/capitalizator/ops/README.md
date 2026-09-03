@@ -18,7 +18,7 @@
 
 `contour`: `hours24` = тот же закон, что `check_uptime --hours 24 --max-unmarked-gap-s 0`. Кнопка / `enable` пишет `meta.contour=on` в `desk.sqlite`. `infra/phase.yaml` не трогает. `observe` склеивает ленту+CAV+ZLG+BTC+жюри на касании. Размер не открывает. Ордера нет.
 
-`console`: GET плюс POST `/contour`, `/api/contour`, `/api/mode` (ack), `/api/hello` (ack), `/api/live-cred` (ack, пишет `live.cred`). `127.0.0.1`. Без `LAYOUT` не поднимается (нужен `--init`). POST `/order`, PUT/DELETE/PATCH — 405. Советов «купи / лонг» нет. Баннер, если нет hello или нет ключа. Signer не импортируется.
+`console`: GET плюс POST `/contour`, `/api/contour`, `/api/mode` (ack), `/api/hello` (ack), `/api/live-cred` (ack, пишет `secrets/bybit.json`), `/api/risk`, `/api/command`, `/api/universe`. `127.0.0.1`. Без `LAYOUT` не поднимается (нужен `--init`). POST `/order`, PUT/DELETE/PATCH — 405. Советов «купи / лонг» нет. Баннер, если нет hello или нет ключа. Signer не импортируется.
 
 ```
 python -m capitalizator.ops.console --userdir ./user_data --init
@@ -26,4 +26,4 @@ python -m capitalizator.ops.backup pack --userdir ./user_data --dest ./cap-backu
 python -m capitalizator.ops.console --userdir ./user_data --serve --port 8082
 ```
 
-Не делает: торговлю с ноута, чтение ключей.
+Не делает: торговлю с ноута. Ключ пишет в файл, в GET не отдаёт.

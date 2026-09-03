@@ -1,7 +1,9 @@
-"""Unsigned intent → order. Testnet or mainnet venue. No key. No HTTP.
+"""0.4.4 — unsigned intent → paper order. Paper venues only. No key. No send.
 
-Week-0 whitelist is the isolated default (BTCUSDT/ETHUSDT).
-Desk drain uses the 24-symbol universe. Stop is mandatory.
+Week-0 whitelist is BTCUSDT/ETHUSDT. Live modes are rejected here: this validator
+serves the demo drain; the live drain has its own key gate in the gateway.
+`trading_mode` names the paper venue: `demo` (Bybit Demo Trading, mainnet data) or
+`testnet` (legacy). This does not place an order.
 """
 
 from __future__ import annotations
@@ -14,7 +16,8 @@ from pydantic import BaseModel, ConfigDict
 from capitalizator.screener.universe import Universe, default_week0_path, load_universe
 
 Side = Literal["buy", "sell"]
-Venue = Literal["testnet", "mainnet"]
+PaperVenue = Literal["demo", "testnet"]
+PAPER_VENUES = frozenset({"demo", "testnet"})
 
 
 class UnsignedIntent(BaseModel):
@@ -27,7 +30,7 @@ class UnsignedIntent(BaseModel):
     stop_px: Decimal
     tp_px: Decimal | None = None
     reduce_only_stop: bool = True
-    trading_mode: Venue
+    trading_mode: PaperVenue
 
 
 class Order(BaseModel):
@@ -40,7 +43,7 @@ class Order(BaseModel):
     stop_px: Decimal
     tp_px: Decimal | None = None
     reduce_only_stop: bool = True
-    trading_mode: Venue
+    trading_mode: PaperVenue
 
 
 class Signer:
@@ -48,8 +51,8 @@ class Signer:
         self.universe = universe or load_universe(default_week0_path())
 
     def validate(self, unsigned: UnsignedIntent) -> Order:
-        if unsigned.trading_mode not in {"testnet", "mainnet"}:
-            raise ValueError("trading_mode must be testnet or mainnet")
+        if unsigned.trading_mode not in PAPER_VENUES:
+            raise ValueError("signer accepts demo|testnet only")
         if unsigned.symbol not in self.universe.symbols:
             raise ValueError(f"symbol not in week0 universe: {unsigned.symbol}")
         if unsigned.qty <= 0 or unsigned.limit_px <= 0 or unsigned.stop_px <= 0:

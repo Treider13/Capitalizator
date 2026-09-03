@@ -2,7 +2,7 @@
 
 A — bounce at a pre-drawn zone.
 B — breakout with a close beyond + later retest (desk labels the idea).
-Г — failed bounce / failed break; always a new card_id.
+Г — spring (wick through, close inside; legacy name failed_break); always a new card_id.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ Picture = Literal["A", "B", "Г"]
 
 IDEA_PICTURE: dict[str, Picture] = {
     "bounce": "A",
+    "spring": "Г",
     "breakout": "B",
     "failed_break": "Г",
 }

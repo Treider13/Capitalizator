@@ -167,6 +167,8 @@ def from_news(
         pluses=tuple(pluses),
         minuses=tuple(minuses),
         venue=venue,  # type: ignore[arg-type]
+        fib_zone_short=labels.fib_zone_short,
+        fib_level_short=labels.fib_level_short,
     )
 
 

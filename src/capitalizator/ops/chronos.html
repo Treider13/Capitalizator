@@ -91,7 +91,7 @@
     }
     button:disabled, .dead { opacity: .5; cursor: not-allowed; }
     button:not(:disabled) { color: var(--text); cursor: pointer; }
-    input[type="text"], input[type="password"] {
+    input[type="text"], input[type="password"], select {
       background: #1e2329;
       color: var(--text);
       border: 1px solid var(--line);
@@ -128,19 +128,37 @@
     <div id="contour-action"></div>
   </section>
   <section id="ready-box" style="margin:8px;">
-    <h2>Демо и live с этой страницы</h2>
-    <p class="empty">Hello — флаг в SQLite, не биржа. Один раз. Потом demo или live.</p>
-    <p>
-      <button type="button" id="hello-on">Отметить hello</button>
-      <span id="mode-note" class="empty"></span>
-    </p>
-    <p class="empty">Ключ live пишется в файл live.cred (0600), не в журнал. Seed сюда не возвращается.</p>
-    <form id="cred-form">
-      <input type="text" name="id" placeholder="id" autocomplete="off" spellcheck="false"/>
-      <input type="password" name="seed" placeholder="seed" autocomplete="off"/>
-      <button type="submit">Сохранить ключ для live</button>
-    </form>
-    <p class="empty">Демо — бумага, те же правила. Live — сабаккаунт. Чемпион сам не повышается. Окно и ACCORD остаются. Кнопка ордер не рисует.</p>
+    <h2>Как включить стол — три шага на этой странице</h2>
+    <ol id="ready-steps" style="padding-left:20px;margin:6px 0;">
+      <li>
+        <b>Шаг 1. Hello</b> — один раз. Это галочка в журнале, не ордер на бирже.
+        <div style="margin:6px 0;">
+          <button type="button" id="hello-on">1. Отметить hello</button>
+        </div>
+      </li>
+      <li>
+        <b>Шаг 2. Ключ</b> — для учебного счёта или live. Файл <code>secrets/bybit.json</code>, права 0600.
+        Секрет в журнал и на экран не возвращается.
+        <form id="cred-form" style="margin:6px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+          <input type="text" name="id" placeholder="id ключа" autocomplete="off" spellcheck="false"/>
+          <input type="password" name="seed" placeholder="секрет" autocomplete="off"/>
+          <select name="mode" id="cred-mode">
+            <option value="demo" selected>учебный счёт Bybit Demo</option>
+            <option value="testnet">testnet</option>
+            <option value="live_sub">live сабаккаунт</option>
+            <option value="live_main">live основной</option>
+          </select>
+          <button type="submit">2. Сохранить ключ</button>
+        </form>
+      </li>
+      <li>
+        <b>Шаг 3. Режим</b> — кнопки сверху: <code>demo</code> или <code>live</code>.
+        Демо — те же правила на учебном счёте (без ключа остаётся бумага).
+        Live — те же правила на сабаккаунте. Чемпион сам не повышается.
+        Кнопка ордер не рисует. Вход только при ACCORD и открытом окне сессии.
+      </li>
+    </ol>
+    <p id="mode-note" class="empty">сначала шаг 1, потом 2, потом demo или live</p>
   </section>
   <section id="exp-box" style="margin:8px;">
     <h2>Опыт демо → live</h2>
@@ -298,7 +316,7 @@
         .join(" · ");
     }
     async function refresh() {
-      const [status, bars, zones, book, trades, touch, dash, news, authors, llm, gates, hello] = await Promise.all([
+      const [status, bars, zones, book, trades, touch, dash, news, authors, llm, gates, hello, sessions] = await Promise.all([
         jget("/api/status"),
         jget("/api/bars?symbol=" + encodeURIComponent(symbol) + "&tf=15m&limit=200"),
         jget("/api/zones?symbol=" + encodeURIComponent(symbol)),
@@ -310,25 +328,37 @@
         jget("/api/authors"),
         jget("/api/llm_summary"),
         jget("/api/gates"),
-        jget("/api/hello/status")
+        jget("/api/hello/status"),
+        jget("/api/sessions")
       ]);
       const st = status || BOOT;
       symbol = (st.symbols && st.symbols[0]) || symbol;
       document.getElementById("mode").textContent = "режим " + (st.user_mode || "off");
       const px = (st.last_price && (st.last_price[symbol] || Object.values(st.last_price)[0])) || "—";
       document.getElementById("price").textContent = symbol + " " + px;
+      const sess = (sessions && sessions.now) || {};
+      const sessName = sess.window || "";
+      const winRow = ((sessions && sessions.windows) || []).find(x => x.name === sessName) || {};
       const w = st.session_window || {};
-      document.getElementById("window").textContent = (w.start && w.end)
-        ? ("окно " + w.start + "–" + w.end + " " + (w.tz || ""))
-        : "окно —";
+      document.getElementById("window").textContent = sessName
+        ? ("окно " + sessName + (winRow.closed ? " закрыто" : " открыто"))
+        : ((w.start && w.end)
+          ? ("окно " + w.start + "–" + w.end + " " + (w.tz || ""))
+          : "окно —");
       const h = hello || {};
       const helloEl = document.getElementById("hello");
-      helloEl.textContent = h.hello_ok ? "флаг hello, не биржа" : "hello нет (флаг, не биржа)";
+      helloEl.textContent = h.hello_ok ? "шаг 1 готов · hello" : "шаг 1 · hello нет";
       helloEl.className = "pill " + (h.hello_ok ? "ok" : "bad");
       const credOk = !!(h.cred_present || st.cred_present);
       const credEl = document.getElementById("cred");
-      credEl.textContent = credOk ? "ключ есть (файл)" : "ключа нет";
+      credEl.textContent = credOk ? "шаг 2 готов · ключ есть" : "шаг 2 · ключа нет";
       credEl.className = "pill " + (credOk ? "ok" : "bad");
+      const note = document.getElementById("mode-note");
+      if (note && !note.dataset.sticky) {
+        if (!h.hello_ok) note.textContent = "сейчас: шаг 1 — отметить hello";
+        else if (!credOk) note.textContent = "сейчас: шаг 2 — сохранить ключ (для live обязателен)";
+        else note.textContent = "сейчас: шаг 3 — кнопка demo или live сверху";
+      }
       const contour = st.contour || "off";
       const hours24 = !!st.hours24;
       const canEnable = !!st.can_enable;
@@ -415,10 +445,15 @@
         return `<div class="gate ${row.ok ? "green" : "red"}">${k.toUpperCase()} ${row.ok ? "да" : "нет"}</div>`;
       }).join("");
     }
+    function setNote(text, sticky) {
+      const note = document.getElementById("mode-note");
+      note.textContent = text;
+      if (sticky) note.dataset.sticky = "1";
+      else delete note.dataset.sticky;
+    }
     document.getElementById("mode-form").addEventListener("submit", async ev => {
       ev.preventDefault();
       const mode = ev.submitter && ev.submitter.value;
-      const note = document.getElementById("mode-note");
       if (mode === "demo" || mode === "live") {
         await fetch("/api/hello", {
           method: "POST",
@@ -432,37 +467,45 @@
         body: JSON.stringify({mode, ack: true, learn_n_days: mode === "learn" ? 14 : null})
       });
       if (!resp.ok) {
-        note.textContent = await resp.text();
+        const err = await resp.text();
+        setNote(err === "cred required" ? "сначала шаг 2: сохраните ключ" : (err === "hello required" ? "сначала шаг 1: отметьте hello" : err), true);
+      } else if (mode === "live") {
+        setNote("режим live. Те же правила, уже на сабаккаунте.", true);
+      } else if (mode === "demo") {
+        setNote("режим demo. Те же правила, учебный счёт или бумага.", true);
       } else {
-        note.textContent = mode === "live" ? "live: те же правила, уже на сабаккаунте" : "";
+        setNote("режим " + mode, true);
       }
       refresh();
     });
     document.getElementById("hello-on").addEventListener("click", async () => {
-      const note = document.getElementById("mode-note");
       const resp = await fetch("/api/hello", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({ack: true})
       });
-      note.textContent = resp.ok ? "hello отмечен (флаг, не биржа)" : await resp.text();
+      setNote(resp.ok ? "шаг 1 готов. Дальше шаг 2 — ключ, или сразу demo." : await resp.text(), true);
       refresh();
     });
     document.getElementById("cred-form").addEventListener("submit", async ev => {
       ev.preventDefault();
-      const note = document.getElementById("mode-note");
       const data = new FormData(ev.target);
       const resp = await fetch("/api/live-cred", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ack: true, id: data.get("id"), seed: data.get("seed")})
+        body: JSON.stringify({
+          ack: true,
+          id: data.get("id"),
+          seed: data.get("seed"),
+          mode: data.get("mode") || "demo"
+        })
       });
       ev.target.reset();
       if (!resp.ok) {
-        note.textContent = await resp.text();
+        setNote(await resp.text(), true);
       } else {
         const payload = await resp.json();
-        note.textContent = payload.cred_present ? "ключ записан в live.cred" : "ключ не записан";
+        setNote(payload.cred_present ? "шаг 2 готов. Дальше шаг 3 — demo или live." : "ключ не записан", true);
       }
       refresh();
     });

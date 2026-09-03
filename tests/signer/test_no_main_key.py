@@ -12,18 +12,18 @@ from capitalizator.signer.validate import Signer, UnsignedIntent
 SRC = Path(__file__).resolve().parents[2] / "src" / "capitalizator" / "signer"
 
 
-def test_mainnet_literal_is_a_venue() -> None:
-    raw = UnsignedIntent.model_validate(
-        {
-            "symbol": "BTCUSDT",
-            "side": "buy",
-            "qty": "0.001",
-            "limit_px": "60000",
-            "stop_px": "59400",
-            "trading_mode": "mainnet",
-        }
-    )
-    assert raw.trading_mode == "mainnet"
+def test_mainnet_literal_is_not_a_paper_venue() -> None:
+    with pytest.raises(Exception, match="demo|testnet|literal"):
+        UnsignedIntent.model_validate(
+            {
+                "symbol": "BTCUSDT",
+                "side": "buy",
+                "qty": "0.001",
+                "limit_px": "60000",
+                "stop_px": "59400",
+                "trading_mode": "mainnet",
+            }
+        )
 
 
 def test_live_mode_rejected() -> None:

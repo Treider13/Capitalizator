@@ -1,5 +1,20 @@
 # Статус шагов (честно)
 
+**2026-09-03, релиз «sessions» (`docs/SESSIONS.md`):** локально **1677+ passed, 2 skipped**, `ruff` чисто,
+`mypy --strict` на модулях релиза чисто (`pyproject.toml [tool.mypy].files`). Отправка демо/лайв — по
+таблице окон UTC `infra/sessions.yaml` (`risk/sessions.py`), а не по единственному окну 16:30–19:30 МСК;
+тень 24/7 размечена окном/группой; калибратор считает классы `idea|CAV|ZLG|window|group`, расширяет `k_atr`
+по MAE и флагует закрытые окна с доказанным краем (`eligible_windows`, открывает человек). Стоп — с
+кластерами ликвидаций и потолком `max_stop_atr`; фандинг-интервал живой из тикера; бюджеты по окнам;
+до 3 позиций по корреляционным группам; `participating_share`. Шлюз: режим **Bybit Demo Trading**
+(`demo`, pybit `demo=True`), testnet — legacy. Живой ленты / VPS / hello **по-прежнему нет**
+(среда без egress). `allow_night` удалён (не читался). `desk/session_name.py` удалён.
+
+**2026-09-02, аудит кода:** локально **1444 passed, 2 skipped**, `ruff` чисто. Что нашли и что исправили —
+`docs/AUDIT-2026-09-02.md` (направление спринга, комиссия vs R, риск подключён, бумажное исполнение тени,
+стоп/трейл, шлюз Bybit на pybit, живой WS-рекордер, консоль с деньгами). Живой ленты/testnet по-прежнему нет:
+среда без egress на `api.bybit.com` (403); биржевой код проверен на фейковой сессии v5 и подписи pybit.
+
 Дата проверки: 2026-09-01. Локально: **984 passed, 2 skipped** (skip = нет egress на `api.bybit.com`; нет бинаря gitleaks). GitHub Actions на ветке — **startup_failure**. Это не «CI зелёный».
 
 | Шаг | Код / тест | Живое железо | Итог |
@@ -74,6 +89,7 @@
 
 | PTF бумага | `tests/champion/test_ptf.py` | нет живых классов | ρ = E[R]×риск%/часы. n=19 → ρ=`None`; n=138 не pickable; часы≤0 или >3 отказ; ρ≤0 не pickable; риск>1% без гейта отказ; `world_return_rank()` всегда `None` |
 | WJD бумага | `tests/jury/test_desk.py`, `test_weights.py`, `tests/memory/test_stamp_jury.py` | нет живых меток | THROUGH×DEFEND = SPLIT. Вес = n/(n+20)×hit только после экзамена; до n=20 веса равны. `weight_opens_size` всегда false. `propose` жюри не читает |
+| ОКО бумага | `tests/oko/*`, `tests/desk/test_oko_desk.py`, `tests/memory/test_oko_registry.py`, `tests/exec/test_oko_strategy.py` | нет живых окон | Шестой голос `Voices.oko` (default 0). +25 на бид под печатью, снятый без печати: ZLG DEFEND, ОКО SPOOF → жюри VETO. Съеденная стена — CLEAN. Без книги — UNKNOWN, голос 0. Паспорт n≥30, до того нормы `None`. BOCPD: скачок дисперсии → TRANSITION → VOL_EXPANSION; iid шум — RANGE в большинстве семян (локальный дрейф случаен и назван честно). Прогноз n<20 — все три исхода; LOO-конформный набор, покрытие ≥0.8 на обменяемых данных. Память: 15/20 ловушек — распознано, 14/20 — нет. След: ΔOI ≥2σ + ход mid → BUILD_LONG/SHORT (без OI-ленты — `None`, не догадка); пять печатей по 5 при показанных 10 с двумя доливками → ICEBERG; 12 продаж в стоящий бид → ABSORB; ABSORB/ICEBERG/BUILD против идеи → −1, за идею → 0 (не +1). Ликвидации — `allLiquidation` в рекордере, на столе улика `liq_rel`. Хрупкость 3.15.5 подключена флагами Паспорта (лонги). Зеркало ловит spoof/layering/cascade/iceberg/absorb/build на своих окнах; без него +1 запрещён. Аудит фактами: касание, разрешённое до бара жюри, не училось (n=0) — учится на жюри, один раз; B-вето оставляло ОКО слепым (label None, паспорт 0) — окно читается до гейта. Плоский прогрев Погоды проверен — патологии нет, не трогали. `size_mult ≤ 1`, `oko_opens_size()` false. Два прогона = один журнал ОКО. Живых окон — **нет** |
 | saved-R бумага | `tests/memory/test_saved_r.py` | нет живых скипов с исходом | пустой итог `None`, не ноль. skip bounce → later break = +1R; later bounce = missed, не прибыль. Чужая причина — отказ. Не PnL |
 | LLM не ставит вердикт | `tests/llm/test_cannot_verify.py`, `test_redteam_poison.py` | контейнера нет | яд `verdict=VERIFIED` / `API_KEY` не копируется в сводку. `trade_advice=false`. Сокет в sandbox — ошибка. Не модель по сети |
 | 2.9.1 зоны BTC | `tests/btc/test_zones.py` | нет живой карты | тот же `ZoneEngine`, не второй движок. Есть support/resistance и regime=box на закрытых 4h. У `BtcRegime` метода `veto()` нет |

@@ -1,7 +1,9 @@
 # Capitalizator
 
 Частная фьючерсная торговая система. Исследования и план — в `docs/`.  
-Код: каркас −1.x, рекордер (jsonl→parquet, не live-час), книга/ресинк, вселенная BTC+ETH, реплеер фикстуры, хранилище знаний + бэкап + консоль на localhost. Живой VPS/сутки BTC **ещё не зелёные** (`ops/STATUS.md`). Стратегии нет.  
+Код: рекордер (pybit public WS → parquet part-файлы), книга/ресинк, реестр инструментов, стол 24/7 (зоны → касание → ZLG/CAV → жюри → **бумажное исполнение** тени/демо с комиссиями), **сессионная политика** (`infra/sessions.yaml`: окна UTC, размер/стоп/бюджет по окну, блэкауты, фандинг-гард — [`docs/SESSIONS.md`](docs/SESSIONS.md)), риск-движок (эквити, размер, EV-гейт, краны, бюджеты по окнам, корреляционные группы), умный стоп (структура + k·ATR окна + кластеры ликвидаций + потолок) и трейл, шлюз Bybit v5 (pybit; **Demo Trading** / testnet / live) с OMS-очередью, консоль с эквити/позициями/сессиями/баннерами. Живой VPS/сутки и hello **ещё не зелёные** (`ops/STATUS.md`). Аудит и карта исправлений: [`docs/AUDIT-2026-09-02.md`](docs/AUDIT-2026-09-02.md).  
+
+Запуск проверок: `pip install -e ".[dev,live]" && ruff check src tests && mypy && pytest`.  
 База на ноут и переезд: [`docs/VAULT-LAPTOP.md`](docs/VAULT-LAPTOP.md).
 
 **С чего читать:** [`docs/PHASE-BUILD.md`](docs/PHASE-BUILD.md) — очередь шагов плюс детализация (артефакты, глоссарий, SQL гейтов, тесты, мониторинг, окна UTC).  
@@ -20,6 +22,8 @@
 Пассивное восстановление стакана (не Sharpe > 3): [`docs/PASSIVE-RESILIENCE.md`](docs/PASSIVE-RESILIENCE.md).  
 Изобретение: жест книги и первый факт: [`docs/INVENTION-FIRST-FACT.md`](docs/INVENTION-FIRST-FACT.md).  
 Жюри графика и книги, % за час сессии: [`docs/INVENTION-JURY.md`](docs/INVENTION-JURY.md).  
+ОКО — шестой голос жюри с вето: манипуляции, режим, конформное «не знаю»: [`docs/INVENTION-OKO.md`](docs/INVENTION-OKO.md).  
+ICT + «поток заказов» vs наши атомы: [`docs/COMPARE-ICT-FLOW.md`](docs/COMPARE-ICT-FLOW.md).  
 ×6–×9 за 6 месяцев «стабильно и с низким риском»: [`docs/VERDICT-x6-LOWRISK.md`](docs/VERDICT-x6-LOWRISK.md) — **нет**.
 
 Рядом: [`docs/SR-LEVELS-SCIENCE.md`](docs/SR-LEVELS-SCIENCE.md) (факты по уровням), [`docs/CENSUS-PRACTICE-REPOS.md`](docs/CENSUS-PRACTICE-REPOS.md) (~110 репо), [`docs/ARCHITECTURE-AZ.md`](docs/ARCHITECTURE-AZ.md) (ИИ, безопасность, контуры).

@@ -105,6 +105,25 @@ CREATE TABLE IF NOT EXISTS saved_r (
   setup_id TEXT PRIMARY KEY,
   payload TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS paper_trades (
+  paper_id TEXT PRIMARY KEY,
+  touch_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  closed_at TEXT,
+  payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS paper_trades_touch ON paper_trades(touch_id);
+CREATE INDEX IF NOT EXISTS paper_trades_closed ON paper_trades(closed_at);
+CREATE TABLE IF NOT EXISTS oms_commands (
+  id INTEGER PRIMARY KEY,
+  created_ts TEXT NOT NULL,
+  status TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  result TEXT
+);
 """
 
 EPISODE_MODES = frozenset({"shadow", "demo", "micro", "live"})
@@ -247,6 +266,85 @@ class Knowledge:
             self._cx.execute(
                 "INSERT OR REPLACE INTO meta(k, v) VALUES (?, ?)",
                 (key, value),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+
+    def push_command(self, cmd: Mapping[str, Any]) -> int:
+        """Append one operator command to `desk_commands` inside ONE write transaction.
+
+        The console (HTTP thread) appends while the desk pops; a read-modify-write
+        across two transactions could resurrect a command the desk had already
+        consumed (double flatten) or drop a fresh one. BEGIN IMMEDIATE serialises the
+        read and the write. Returns the queue length after the append.
+        """
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        body = json.dumps(dict(cmd), sort_keys=True, default=str)
+        if contains_advice(body):
+            raise ValueError("command must not advise")
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._cx.execute("SELECT v FROM meta WHERE k = ?", ("desk_commands",)).fetchone()
+            queue: list[Any] = []
+            if row is not None:
+                try:
+                    got = json.loads(str(row["v"]))
+                except json.JSONDecodeError:
+                    got = []
+                if isinstance(got, list):
+                    queue = got
+            queue.append(json.loads(body))
+            self._cx.execute(
+                "INSERT OR REPLACE INTO meta(k, v) VALUES (?, ?)",
+                ("desk_commands", json.dumps(queue, sort_keys=True, default=str)),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+        return len(queue)
+
+    def pop_commands(self) -> list[dict[str, Any]]:
+        """Take every queued operator command and empty the queue in ONE transaction."""
+        if self._cx is None:
+            return []
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._cx.execute("SELECT v FROM meta WHERE k = ?", ("desk_commands",)).fetchone()
+            queue: list[dict[str, Any]] = []
+            if row is not None:
+                try:
+                    got = json.loads(str(row["v"]))
+                except json.JSONDecodeError:
+                    got = []
+                if isinstance(got, list):
+                    queue = [c for c in got if isinstance(c, dict)]
+            self._cx.execute(
+                "INSERT OR REPLACE INTO meta(k, v) VALUES (?, ?)", ("desk_commands", "[]")
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+        return queue
+
+    def set_meta_many(self, rows: Mapping[str, str]) -> None:
+        """One BEGIN IMMEDIATE for a batch of meta keys (UI snapshots, counters)."""
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        if not rows:
+            return
+        for key, value in rows.items():
+            if not key or contains_advice(key) or contains_advice(value):
+                raise ValueError("meta must not advise")
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            self._cx.executemany(
+                "INSERT OR REPLACE INTO meta(k, v) VALUES (?, ?)",
+                list(rows.items()),
             )
             self._cx.commit()
         except Exception:
@@ -775,6 +873,189 @@ class Knowledge:
         rows = self._cx.execute(f"SELECT payload FROM {table}").fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
+            raw = json.loads(str(row["payload"]))
+            if isinstance(raw, dict):
+                out.append(raw)
+        return out
+
+    # --- OMS commands: desk decides, gateway executes (amend_stop / trailing / half_tp / flatten)
+    def enqueue_oms(
+        self, *, kind: str, symbol: str, payload: Mapping[str, Any], created_ts: str
+    ) -> int:
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        if kind not in {"amend_stop", "set_trailing", "half_tp", "flatten", "cancel_entries"}:
+            raise ValueError(f"unknown oms kind: {kind!r}")
+        body = json.dumps(dict(payload), sort_keys=True, ensure_ascii=False, default=str)
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self._cx.execute(
+                "INSERT INTO oms_commands(created_ts, status, kind, symbol, payload) "
+                "VALUES (?, 'pending', ?, ?, ?)",
+                (created_ts, kind, symbol, body),
+            )
+            row_id = int(cur.lastrowid or 0)
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+        return row_id
+
+    def pending_oms(self) -> list[dict[str, Any]]:
+        if self._cx is None:
+            return []
+        rows = self._cx.execute(
+            "SELECT id, created_ts, kind, symbol, payload FROM oms_commands "
+            "WHERE status = 'pending' ORDER BY id"
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(str(row["payload"]))
+            out.append(
+                {
+                    "id": int(row["id"]),
+                    "created_ts": str(row["created_ts"]),
+                    "kind": str(row["kind"]),
+                    "symbol": str(row["symbol"]),
+                    "payload": payload if isinstance(payload, dict) else {},
+                }
+            )
+        return out
+
+    def mark_oms(self, cmd_id: int, status: str, result: Mapping[str, Any] | None = None) -> None:
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        if status not in {"pending", "done", "failed", "skipped"}:
+            raise ValueError(f"bad oms status: {status!r}")
+        body = None if result is None else json.dumps(dict(result), sort_keys=True, default=str)
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            self._cx.execute(
+                "UPDATE oms_commands SET status = ?, result = ? WHERE id = ?",
+                (status, body, int(cmd_id)),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+
+    def oms_rows(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        if self._cx is None:
+            return []
+        rows = self._cx.execute(
+            "SELECT id, created_ts, status, kind, symbol, payload, result FROM oms_commands "
+            "ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+        return [
+            {
+                "id": int(r["id"]),
+                "created_ts": str(r["created_ts"]),
+                "status": str(r["status"]),
+                "kind": str(r["kind"]),
+                "symbol": str(r["symbol"]),
+                "payload": json.loads(str(r["payload"])),
+                "result": None if r["result"] is None else json.loads(str(r["result"])),
+            }
+            for r in rows
+        ]
+
+    def intent_status(self, intent_id: int) -> str | None:
+        if self._cx is None:
+            return None
+        row = self._cx.execute(
+            "SELECT status FROM intent_queue WHERE id = ?", (int(intent_id),)
+        ).fetchone()
+        return None if row is None else str(row["status"])
+
+    def intent_rows(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Every intent with its status — the UI must show failed/rejected, not hide them."""
+        if self._cx is None:
+            return []
+        rows = self._cx.execute(
+            "SELECT id, created_ts, status, payload FROM intent_queue ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+        return [
+            {
+                "id": int(r["id"]),
+                "created_ts": str(r["created_ts"]),
+                "status": str(r["status"]),
+                "payload": json.loads(str(r["payload"])),
+            }
+            for r in rows
+        ]
+
+    def order_rows(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        if self._cx is None:
+            return []
+        rows = self._cx.execute(
+            "SELECT id, intent_id, created_ts, status, payload FROM order_queue "
+            "ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+        return [
+            {
+                "id": int(r["id"]),
+                "intent_id": r["intent_id"],
+                "created_ts": str(r["created_ts"]),
+                "status": str(r["status"]),
+                "payload": json.loads(str(r["payload"])),
+            }
+            for r in rows
+        ]
+
+    def put_paper_trade(self, payload: Mapping[str, Any]) -> None:
+        """Closed paper position (exec/paper.py). Keyed by paper_id; indexed by touch."""
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        body = json.dumps(dict(payload), sort_keys=True, ensure_ascii=False, default=str)
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            self._cx.execute(
+                "INSERT OR REPLACE INTO paper_trades"
+                "(paper_id, touch_id, source, symbol, closed_at, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    str(payload["paper_id"]),
+                    str(payload.get("touch_id") or ""),
+                    str(payload.get("source") or ""),
+                    str(payload.get("symbol") or ""),
+                    None if payload.get("closed_at") is None else str(payload["closed_at"]),
+                    body,
+                ),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+
+    def paper_trades(
+        self,
+        *,
+        source: str | None = None,
+        since: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if self._cx is None:
+            return []
+        sql = "SELECT payload FROM paper_trades"
+        where: list[str] = []
+        args: list[Any] = []
+        if source is not None:
+            where.append("source = ?")
+            args.append(source)
+        if since is not None:
+            where.append("closed_at >= ?")
+            args.append(since)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY closed_at DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(int(limit))
+        out: list[dict[str, Any]] = []
+        for row in self._cx.execute(sql, args).fetchall():
             raw = json.loads(str(row["payload"]))
             if isinstance(raw, dict):
                 out.append(raw)

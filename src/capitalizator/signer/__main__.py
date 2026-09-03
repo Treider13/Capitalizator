@@ -1,4 +1,10 @@
-"""Signer process: only process with a cred file. Heartbeat 30s, reconcile 60s."""
+"""Signer process: only process with a key. Heartbeat 30s, reconcile 60s.
+
+With keys (environment or vault secrets file — see gateway/keys.py) the loop
+is the real gateway loop: watchdog, intent drain to Bybit via pybit, OMS drain,
+reconcile, exchange state for the console. Without keys the drain keeps the
+`{"status": "not_sent"}` stub and prints `"gateway": "absent"` — nothing pretends.
+"""
 
 from __future__ import annotations
 
@@ -7,52 +13,35 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from capitalizator.gateway.keys import PAPER_MODES
 from capitalizator.ops.knowledge import open_knowledge
-from capitalizator.ops.product import mark_hello, read_user_mode
+from capitalizator.ops.product import read_user_mode
 from capitalizator.ops.vault import init_vault, load_vault
-from capitalizator.signer.bybit_rest import MAIN_HOST, cancel_open, submit_limit
-from capitalizator.signer.cred import default_cred_file, load_cred
 from capitalizator.signer.process import (
     HEARTBEAT_S,
     RECONCILE_S,
     drain_validated,
+    gateway_mode_ok,
     make_watchdogs,
     on_signer_exit,
+    serve_gateway_loop,
     serve_loop,
 )
 
 
-def _has_cred(path: Path | None) -> bool:
-    return path is not None and path.is_file() and not path.is_symlink()
+def build_gateway(vault):  # type: ignore[no-untyped-def]
+    """(gateway, tracker, feed) or (None, None, None) when no key is configured."""
+    from capitalizator.gateway import BybitGateway, PositionTracker, load_keys
+    from capitalizator.gateway.bybit import make_session
+    from capitalizator.gateway.ws import PrivateFeed, make_private_ws
 
-
-def build_send(cred_path: Path | None, *, vault) -> object:
-    """live + cred file → mainnet. Reloads the file each send so Chronos can write it."""
-
-    def send(row: dict) -> dict:
-        mode = read_user_mode(vault)
-        if mode != "live":
-            return {"status": "not_sent", "reason": "not_live"}
-        if cred_path is None or not _has_cred(cred_path):
-            raise ValueError("live needs cred file")
-        cred = load_cred(cred_path)
-        if str(row.get("trading_mode") or "") != "mainnet":
-            raise ValueError("live sends mainnet only")
-        return submit_limit(cred, row, host=MAIN_HOST)
-
-    return send
-
-
-def build_cancel(cred_path: Path | None, *, vault, sink: list[int]) -> object:
-    def cancel() -> None:
-        sink.append(1)
-        if cred_path is None or not _has_cred(cred_path):
-            return
-        if read_user_mode(vault) != "live":
-            return
-        cancel_open(load_cred(cred_path), host=MAIN_HOST)
-
-    return cancel
+    keys = load_keys(vault)
+    if keys is None:
+        return None, None, None
+    gateway = BybitGateway(make_session(keys), mode=keys.mode)
+    tracker = PositionTracker()
+    feed = PrivateFeed(tracker, ws=make_private_ws(keys))
+    return gateway, tracker, feed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -61,55 +50,84 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--init", action="store_true")
     parser.add_argument("--serve", action="store_true")
     parser.add_argument("--once", action="store_true")
-    parser.add_argument("--cred-file", default=None)
-    parser.add_argument("--mark-hello", action="store_true")
+    parser.add_argument("--hello", action="store_true", help="prove the key step by step")
+    parser.add_argument(
+        "--probe-order", action="store_true", help="hello: place+cancel a far order"
+    )
     args = parser.parse_args(argv)
     root = Path(args.userdir)
     vault = init_vault(root) if args.init else load_vault(root)
-    if args.mark_hello:
-        mark_hello(vault, ok=True)
     knowledge = open_knowledge(vault)
-    cred_path = Path(args.cred_file) if args.cred_file else default_cred_file(vault.root)
     cancels: list[int] = []
-    send = build_send(cred_path, vault=vault)
-    cancel = build_cancel(cred_path, vault=vault, sink=cancels)
     try:
-        dead, _recon = make_watchdogs(
-            cancel_all=cancel,
-            dead_man_s=HEARTBEAT_S,
-            reconcile_s=RECONCILE_S,
-        )
+        gateway, tracker, feed = build_gateway(vault)
         mode = read_user_mode(vault)
-        ready = _has_cred(cred_path)
         payload = {
             "process": "signer",
-            "heartbeat_s": dead.dead_man_s,
+            "heartbeat_s": HEARTBEAT_S,
             "reconcile_s": RECONCILE_S,
             "user_mode": mode,
-            "has_cred": ready,
-            "send": "mainnet" if mode == "live" and ready else "not_sent",
+            "gateway": "absent" if gateway is None else gateway.mode,
         }
+        if args.hello:
+            if gateway is None:
+                print(json.dumps({**payload, "hello": {"ok": False, "error": "no keys"}}))
+                return 2
+            result = gateway.hello(probe_order=args.probe_order)
+            from capitalizator.ops.product import mark_hello
+
+            mark_hello(vault, ok=bool(result.get("ok")))
+            knowledge.set_meta("hello_result", json.dumps(result, default=str))
+            print(json.dumps({**payload, "hello": result}, ensure_ascii=False, default=str))
+            return 0 if result.get("ok") else 1
+        if gateway is None:
+            dead, _recon = make_watchdogs(
+                cancel_all=lambda: cancels.append(1),
+                dead_man_s=HEARTBEAT_S,
+                reconcile_s=RECONCILE_S,
+            )
+            if args.once or not args.serve:
+                if mode in {"demo", "live"}:
+                    drain_validated(
+                        knowledge,
+                        lambda row: {"status": "not_sent"},
+                        user_mode=mode,
+                        now=datetime.now(tz=UTC),
+                    )
+                print(json.dumps(payload, ensure_ascii=False))
+                return 0
+            print(json.dumps({**payload, "serve": True}, ensure_ascii=False), flush=True)
+            serve_loop(
+                knowledge=knowledge,
+                vault=vault,
+                send=lambda row: {"status": "not_sent"},
+                cancel_all=lambda: cancels.append(1),
+                should_stop=lambda: False,
+            )
+            return 0
         if args.once or not args.serve:
             if mode in {"demo", "live"}:
+                if not gateway_mode_ok(mode, gateway.mode):
+                    print(json.dumps({**payload, "error": "user mode / key mode mismatch"}))
+                    return 3
+                venue = gateway.mode if gateway.mode in PAPER_MODES else "demo"
                 drain_validated(
-                    knowledge,
-                    send,
-                    user_mode=mode,
-                    now=datetime.now(tz=UTC),
+                    knowledge, gateway.send, user_mode=mode, now=datetime.now(tz=UTC), venue=venue
                 )
             print(json.dumps(payload, ensure_ascii=False))
             return 0
         print(json.dumps({**payload, "serve": True}, ensure_ascii=False), flush=True)
-        serve_loop(
+        serve_gateway_loop(
             knowledge=knowledge,
             vault=vault,
-            send=send,
-            cancel_all=cancel,
+            gateway=gateway,
+            tracker=tracker,
+            feed=feed,
             should_stop=lambda: False,
         )
         return 0
     finally:
-        on_signer_exit(cancel)
+        on_signer_exit(lambda: cancels.append(1))
         knowledge.close()
 
 

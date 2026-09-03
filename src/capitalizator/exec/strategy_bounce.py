@@ -9,7 +9,7 @@ require_jury (desk) applies 2.10.1: eaten or wall-without-print blocks bounce.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -20,11 +20,14 @@ from capitalizator.card.draft import CardDraft, load_bearing_ok, require_card
 from capitalizator.card.first_fact import resolve as resolve_first_fact
 from capitalizator.exec.breakout_close import BreakoutClose
 from capitalizator.exec.first_minute import FirstMinute
+from capitalizator.exec.smart_stop import K_ATR_DEFAULT, initial_stop
 from capitalizator.jury.desk import (
+    Voice,
     decide,
     voices_for_bounce,
     voices_for_breakout,
     voices_for_failed_break,
+    voices_for_spring,
 )
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
@@ -35,6 +38,7 @@ from capitalizator.risk.halts import Halts
 from capitalizator.risk.prs_cut import decide as prs_cut
 from capitalizator.risk.schema import Intent, RiskEngine
 from capitalizator.risk.session import SessionWindow
+from capitalizator.risk.sessions import SessionPolicy
 from capitalizator.screener.filters import Screener
 from capitalizator.screener.universe import load_desk_universe
 from capitalizator.zones.config import RegistryConfig, load_registry
@@ -46,7 +50,13 @@ SETUP_TAG = "bounce"
 MIN_R = Decimal("1.5")
 DEFAULT_R = Decimal("2")
 BREAK_MIN_R = Decimal("3")
+# Ideas that trade *through* the zone (side flips, 3R from a real zone, no default
+# multiple). `failed_break` here is the LEGACY fade-of-a-spring short. The desk
+# never emits it any more: the same bar is `spring`, traded WITH the zone (D-01).
+# Legacy stays for isolated callers; with require_jury (the desk) it is refused.
 _BREAK_IDEAS = frozenset({"breakout", "failed_break"})
+_LEGACY_FADE = "failed_break"
+_IDEAS = frozenset({"bounce", "spring", "breakout", _LEGACY_FADE})
 
 
 @dataclass(frozen=True)
@@ -97,6 +107,40 @@ class BounceSnapshot:
     wall_state: str | None = None
     venue: str = "perp"
     spot_acked: bool = False
+    # Spring: extreme of the wick that traded through the zone (bar.low / bar.high).
+    wick_extreme: Decimal | None = None
+    # Smart stop inputs (exec/smart_stop): working-TF ATR, absolute spread, operator mode.
+    atr: Decimal | None = None
+    spread_abs: Decimal | None = None
+    # "structural" keeps the legacy band/wick stop (isolated F1 tests); the desk
+    # passes RiskConfig.stop_mode (default hybrid).
+    stop_mode: str = "structural"
+    # Session window inputs (risk/sessions.py): buffer k·ATR for this window, the
+    # operator's ceiling on stop distance (ATR from entry; None = no ceiling) and the
+    # liquidation clusters the stop must not park on.
+    k_atr: Decimal = K_ATR_DEFAULT
+    max_stop_atr: Decimal | None = None
+    liq_levels: tuple[Decimal, ...] = ()
+    manual_stop_frac: Decimal | None = None
+    # Symbol policy inputs for SessionPolicy (None = unknown, majors still pass).
+    next_funding_at: datetime | None = None
+    universe_rank: Mapping[str, int] | None = None
+    screened: frozenset[str] | None = None
+    # ОКО (INVENTION-OKO): sixth voice and its size cut. Default = eye absent.
+    oko_voice: Voice = 0
+    oko_size_mult: Decimal = Decimal("1")
+
+    def __post_init__(self) -> None:
+        if self.oko_voice not in (-1, 0, 1, "VETO"):
+            raise ValueError("oko_voice must be -1|0|1|VETO")
+        if self.oko_size_mult < 0 or self.oko_size_mult > 1:
+            raise ValueError("oko_size_mult must be in [0, 1]; ОКО never opens size")
+        if self.k_atr <= 0:
+            raise ValueError("k_atr must be > 0")
+        if self.max_stop_atr is not None and self.max_stop_atr <= 0:
+            raise ValueError("max_stop_atr must be > 0")
+        if self.macro_multiplier < 0 or self.macro_multiplier > 1:
+            raise ValueError("macro_multiplier must be in [0, 1]; windows never open size")
 
 
 def price_in_zone(price: Decimal, zone: Zone) -> bool:
@@ -137,6 +181,30 @@ def stop_behind(zone: Zone, tick: Decimal, away_ticks: int, *, side: str) -> Dec
         raise ValueError("side must be buy|sell")
     buf = tick * away_ticks
     stop = zone.lo - buf if side == "buy" else zone.hi + buf
+    if stop <= 0:
+        raise ValueError("stop would be <= 0")
+    return stop
+
+
+def stop_behind_wick(
+    zone: Zone,
+    wick_extreme: Decimal,
+    tick: Decimal,
+    away_ticks: int,
+    *,
+    side: str,
+) -> Decimal:
+    """Spring stop: behind the wick that already traded through the zone.
+
+    The wick low (long) / high (short) is the level the market rejected; a stop
+    inside it would sit where the sweep already printed.
+    """
+    band = stop_behind(zone, tick, away_ticks, side=side)
+    buf = tick * away_ticks
+    if side == "buy":
+        stop = min(band, wick_extreme - buf)
+    else:
+        stop = max(band, wick_extreme + buf)
     if stop <= 0:
         raise ValueError("stop would be <= 0")
     return stop
@@ -201,7 +269,7 @@ class BounceStrategy:
         *,
         risk: RiskEngine,
         halts: Halts,
-        session: SessionWindow | None = None,
+        session: SessionWindow | SessionPolicy | None = None,
         screener: Screener | None = None,
         registry: RegistryConfig | None = None,
         desk_mode: str | None = None,
@@ -230,6 +298,30 @@ class BounceStrategy:
         self.macro = macro if macro is not None else MacroRules(enabled=True)
         self.btc_veto = BtcVeto()
         self.first_minute = FirstMinute()
+        # Journal-only: whether the last A+ idea's window would have allowed 5x.
+        self.last_aplus_5x_ok: bool | None = None
+
+    def _session_allows(self, snap: BounceSnapshot, *, lev: Decimal) -> tuple[bool, str]:
+        """Legacy SessionWindow (time only) or SessionPolicy (time × idea × symbol)."""
+        if isinstance(self.session, SessionPolicy):
+            idea = snap.idea if snap.idea in _IDEAS else "bounce"
+            return self.session.allows(
+                snap.now,
+                snap.calendar,
+                idea="bounce" if idea == _LEGACY_FADE else idea,
+                symbol=snap.symbol,
+                lev=lev,
+                no_us_today=snap.no_us_today,
+                next_funding_at=snap.next_funding_at,
+                rank=snap.universe_rank,
+                screened=snap.screened,
+            )
+        return self.session.allows(
+            snap.now,
+            snap.calendar,
+            lev=lev,
+            no_us_today=snap.no_us_today,
+        )
 
     def propose(self, snap: BounceSnapshot) -> Intent | None:
         if self.desk_mode not in {"demo", "live"} or snap.trading_mode not in {
@@ -258,12 +350,7 @@ class BounceStrategy:
             return None
         if TAKER_OK:
             return None
-        ok, _reason = self.session.allows(
-            snap.now,
-            snap.calendar,
-            lev=snap.lev,
-            no_us_today=snap.no_us_today,
-        )
+        ok, _reason = self._session_allows(snap, lev=snap.lev)
         if not ok:
             return None
         if not self.risk.allow_entry():
@@ -297,9 +384,13 @@ class BounceStrategy:
         # F1 isolated tests: check_tape / check_wall record only.
         # Desk require_jury: 2.10.1 — eaten or silent wall is not a bounce.
         _ = (self.check_tape, self.check_wall)
-        idea = snap.idea if snap.idea in {"bounce", "breakout", "failed_break"} else "bounce"
+        idea = snap.idea if snap.idea in _IDEAS else "bounce"
+        if idea == _LEGACY_FADE and self.require_jury:
+            # Desk law: a wick through + close inside is a held level (spring).
+            # Fading it is a shadow challenger, never a sent order.
+            return None
         if (
-            idea == "bounce"
+            idea in {"bounce", "spring"}
             and self.require_jury
             and (
                 snap.tape_eaten is True
@@ -345,9 +436,12 @@ class BounceStrategy:
                 first_minute=snap.first_minute,
             ):
                 return None
+        if snap.oko_voice == "VETO":
+            return None
         if self.require_jury or snap.jury is not None or snap.cav_label or snap.zlg_label:
             voice_fn = {
                 "bounce": voices_for_bounce,
+                "spring": voices_for_spring,
                 "breakout": voices_for_breakout,
                 "failed_break": voices_for_failed_break,
             }[idea]
@@ -363,13 +457,14 @@ class BounceStrategy:
                 btc_break_against=snap.btc_broke,
                 btc_same_side=snap.btc_same_side,
                 trades_in_window=snap.trades_in_window,
+                oko=snap.oko_voice,
             )
             label = decide(voices)
             if snap.jury is not None and snap.jury != "ACCORD":
                 return None
             if label != "ACCORD":
                 return None
-            if APlus.ok(
+            aplus = APlus.ok(
                 roles=(
                     voices.cav == 1,
                     voices.zlg == 1,
@@ -378,18 +473,50 @@ class BounceStrategy:
                     voices.card == 1,
                 ),
                 btc_same=voices.btc == 1,
-            ):
-                night_ok, _ = self.session.allows(
-                    snap.now,
-                    snap.calendar,
-                    lev=Decimal("5"),
-                    no_us_today=snap.no_us_today,
-                )
-                if not night_ok:
-                    return None
+            )
+            if aplus and not APlus.raises_lev_in_f1():
+                # A+ does not raise leverage in F1, so a window that forbids 5x is
+                # not a reason to drop the trade: it is taken at the base leverage.
+                # (Legacy: the same check refused the idea outright outside the
+                # 16:30–19:30 MSK window, where propose was never reached anyway.)
+                aplus_5x_ok, _ = self._session_allows(snap, lev=Decimal("5"))
+                self.last_aplus_5x_ok = aplus_5x_ok
         try:
             stop = stop_behind(zone, snap.tick, self.registry.bounce_away_ticks, side=side)
+            if idea == "spring" and snap.wick_extreme is not None:
+                # The spring's invalidation is the wick that already traded, not the band.
+                stop = stop_behind_wick(
+                    zone,
+                    snap.wick_extreme,
+                    snap.tick,
+                    self.registry.bounce_away_ticks,
+                    side=side,
+                )
         except ValueError:
+            return None
+        structural = stop
+        try:
+            # §6: volatility buffer + cluster avoidance on top of the structural level.
+            smart = initial_stop(
+                side=side,
+                structural=structural,
+                tick=snap.tick,
+                atr=snap.atr,
+                spread=snap.spread_abs,
+                zones=[z for z in snap.zones if z.zone_id != zone.zone_id],
+                k_atr=snap.k_atr,
+                liq_levels=snap.liq_levels,
+                max_stop_atr=snap.max_stop_atr,
+                entry=snap.price,
+                manual_frac=snap.manual_stop_frac,
+                mode=snap.stop_mode,
+            )
+            stop = smart.stop
+        except ValueError:
+            return None
+        if side == "buy" and snap.price <= stop:
+            return None
+        if side == "sell" and snap.price >= stop:
             return None
         tp = take_profit(side, snap.price, stop, snap.next_target, idea=idea)
         if tp is None:
@@ -398,7 +525,7 @@ class BounceStrategy:
             return None
         if idea == "bounce":
             tag = SETUP_TAG
-        elif idea == "failed_break":
+        elif idea == _LEGACY_FADE:
             tag = "failed_break_bounce"
         else:
             tag = idea
@@ -407,6 +534,9 @@ class BounceStrategy:
             size = macro.size_mult
         if snap.b_verdict == "cut_size" and size > Decimal("0.5"):
             size = Decimal("0.5")
+        # ОКО only cuts (INVENTION-OKO §5): min, never max.
+        if snap.oko_size_mult < size:
+            size = snap.oko_size_mult
         # Combined B+calendar multiplier lives on size_mult only.
         # Signer does qty * size_mult; stuffing the cut into qty would double-cut.
         intent = Intent(
@@ -418,6 +548,8 @@ class BounceStrategy:
             tag=tag,
             qty=None,
             size_mult=size,
+            structural=structural,
+            stop_components=dict(smart.components),
         )
         self.budget.on_intent()
         return intent

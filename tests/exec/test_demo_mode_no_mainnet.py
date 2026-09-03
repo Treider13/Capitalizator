@@ -48,9 +48,20 @@ def test_phase_off_does_not_submit() -> None:
 def test_injected_demo_mode_is_not_sent() -> None:
     out = DemoAdapter(trading_mode="demo").submit(_intent())
     assert out["mode"] == "demo"
+    assert out["venue"] == "testnet"
     assert out["status"] == "not_sent"
     assert out["symbol"] == "BTCUSDT"
     assert out["stop_px"] == "59400"
+
+
+def test_demo_trading_venue_is_accepted_and_stamped() -> None:
+    unsigned = _intent().model_copy(update={"trading_mode": "demo"})
+    posted: list = []
+    out = DemoAdapter(trading_mode="demo", post=lambda o: posted.append(o) or {"status": "sent"}).submit(
+        unsigned
+    )
+    assert out["venue"] == "demo" and out["status"] == "sent"
+    assert posted[0].trading_mode == "demo"
 
 
 def test_demo_still_requires_stop() -> None:

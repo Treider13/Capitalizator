@@ -9,7 +9,7 @@ Does not open size.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -85,6 +85,25 @@ class Touch:
     btc_state: str | None = None
     btc_break_against: bool | None = None
     bearing_verdict: str | None = None
+    # ОКО (INVENTION-OKO). oko_voice is a jury input; the rest is journal.
+    oko_voice: int | str | None = None
+    oko_label: str | None = None
+    oko_regime: str | None = None
+    oko_reason: str | None = None
+    oko_book_trust: str | None = None
+    oko_tape_trust: str | None = None
+    oko_cp_prob: str | None = None
+    oko_p_bounce: str | None = None
+    oko_p_break: str | None = None
+    oko_p_die: str | None = None
+    oko_set: str | None = None
+    oko_n_class: int | None = None
+    oko_size_mult: str | None = None
+    oko_fingerprint: str | None = None
+    oko_footprint: str | None = None
+    oko_footprint_side: str | None = None
+    oko_oi_z: str | None = None
+    oko_liq_rel: str | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.ts)
@@ -112,7 +131,13 @@ class Touch:
 
 
 class Registry:
-    def __init__(self, *, tick_size: Decimal, config: RegistryConfig | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        tick_size: Decimal,
+        config: RegistryConfig | None = None,
+        tick_for: Callable[[str], Decimal] | None = None,
+    ) -> None:
         if tick_size <= 0:
             raise ValueError("tick_size must be > 0")
         self.tick_size = tick_size
@@ -120,6 +145,59 @@ class Registry:
         self.touches: list[Touch] = []
         self._zones: dict[str, Zone] = {}
         self.chain = HashChain()
+        # Per-symbol tick (instruments-info). None keeps the legacy single tick.
+        self._tick_for = tick_for
+        # (kind, label, symbol) → n for touches archived out of memory. Journal
+        # rows are the record; these keep n_cav / n_zlg exact after archiving.
+        self.archived: dict[tuple[str, str, str], int] = {}
+        self.n_archived = 0
+
+    def archive_resolved(self, *, now: datetime, max_age: timedelta) -> list[Touch]:
+        """Move resolved touches older than max_age out of memory, keeping label counts."""
+        cutoff = require_utc(now) - max_age
+        keep: list[Touch] = []
+        gone: list[Touch] = []
+        for touch in self.touches:
+            if touch.outcome == "pending" or touch.ts >= cutoff:
+                keep.append(touch)
+                continue
+            zone = self._zones.get(touch.zone_id)
+            symbol = zone.symbol if zone is not None else ""
+            if touch.cav_label:
+                key = ("cav", touch.cav_label, symbol)
+                self.archived[key] = self.archived.get(key, 0) + 1
+            if touch.gesture:
+                key = ("zlg", touch.gesture, symbol)
+                self.archived[key] = self.archived.get(key, 0) + 1
+            gone.append(touch)
+        if gone:
+            self.touches = keep
+            self.n_archived += len(gone)
+        return gone
+
+    def archived_count(self, kind: str, label: str | None, symbol: str) -> int:
+        if not label:
+            return 0
+        return self.archived.get((kind, label, symbol), 0)
+
+    def count_label(self, kind: str, label: str | None, symbol: str) -> int:
+        """In-memory touches with this label for the symbol plus archived ones."""
+        if not label:
+            return 0
+        attr = "cav_label" if kind == "cav" else "gesture"
+        live = 0
+        for touch in self.touches:
+            if getattr(touch, attr) != label:
+                continue
+            zone = self._zones.get(touch.zone_id)
+            if zone is not None and zone.symbol == symbol:
+                live += 1
+        return live + self.archived_count(kind, label, symbol)
+
+    def tick(self, symbol: str) -> Decimal:
+        if self._tick_for is None:
+            return self.tick_size
+        return self._tick_for(symbol)
 
     def zone(self, zone_id: str) -> Zone:
         return self._zones[zone_id]
@@ -133,7 +211,7 @@ class Registry:
         if px <= 0 or qty <= 0:
             raise ValueError("trade px/qty must be > 0")
         opened: list[Touch] = []
-        pad = self.tick_size * self.config.epsilon_ticks
+        pad = self.tick(trade.symbol) * self.config.epsilon_ticks
         pending_zones = {t.zone_id for t in self.touches if t.outcome == "pending"}
         for zone in zones:
             self._zones[zone.zone_id] = zone
@@ -221,7 +299,7 @@ class Registry:
                 return replace(touch, outcome="break")
             if zone.side == "resistance" and bar.close > zone.hi:
                 return replace(touch, outcome="break")
-        away = self.tick_size * self.config.bounce_away_ticks
+        away = self.tick(zone.symbol) * self.config.bounce_away_ticks
         if zone.side == "support" and last_px >= zone.hi + away:
             return replace(touch, outcome="bounce")
         if zone.side == "resistance" and last_px <= zone.lo - away:
@@ -267,7 +345,7 @@ class Registry:
                 trades=trades,
                 zone=zone,
                 t0=touch.ts,
-                tick_size=self.tick_size,
+                tick_size=self.tick(zone.symbol),
                 config=self.config,
             )
             prints = clf.prints_in_window(
@@ -360,6 +438,110 @@ class Registry:
             require_touch_id=False,
         )
 
+    def fill_oko_window(
+        self,
+        *,
+        label: str,
+        fingerprint: str,
+        book_trust: str | None,
+        tape_trust: str | None,
+        footprint: str = "NONE",
+        footprint_side: str | None = None,
+        touch_id: str | None = None,
+    ) -> list[Touch]:
+        """Shadow + Footprint facts at the 8s clock. Voice comes later, with CAV."""
+        from capitalizator.oko.footprint import FOOTPRINT_LABELS
+        from capitalizator.oko.shadow import SHADOW_LABELS
+
+        if label not in SHADOW_LABELS:
+            raise ValueError(f"unknown oko label: {label!r}")
+        if footprint not in FOOTPRINT_LABELS:
+            raise ValueError(f"unknown oko footprint: {footprint!r}")
+        if footprint_side not in (None, "bid", "ask"):
+            raise ValueError("footprint_side must be bid|ask|None")
+        if not fingerprint:
+            raise ValueError("oko fingerprint must be non-empty")
+        return self._patch(
+            oko_label=label,
+            oko_fingerprint=fingerprint,
+            oko_book_trust=book_trust,
+            oko_tape_trust=tape_trust,
+            oko_footprint=footprint,
+            oko_footprint_side=footprint_side,
+            touch_id=touch_id,
+        )
+
+    def fill_oko(
+        self,
+        *,
+        voice: int | str,
+        label: str,
+        regime: str,
+        reason: str,
+        book_trust: str | None,
+        tape_trust: str | None,
+        cp_prob: str | None,
+        p_bounce: str,
+        p_break: str,
+        p_die: str,
+        pred_set: str,
+        n_class: int,
+        size_mult: str,
+        fingerprint: str,
+        footprint: str = "NONE",
+        footprint_side: str | None = None,
+        oi_z: str | None = None,
+        liq_rel: str | None = None,
+        touch_id: str | None = None,
+    ) -> list[Touch]:
+        """ОКО verdict. voice is a jury input: written once, like CAV / ZLG."""
+        from capitalizator.jury.desk import VOICES
+        from capitalizator.oko.footprint import FOOTPRINT_LABELS
+        from capitalizator.oko.shadow import SHADOW_LABELS
+        from capitalizator.oko.weather import REGIMES
+
+        if voice not in VOICES:
+            raise ValueError(f"oko voice must be -1|0|1|VETO, got {voice!r}")
+        if label not in SHADOW_LABELS:
+            raise ValueError(f"unknown oko label: {label!r}")
+        if regime not in REGIMES:
+            raise ValueError(f"unknown oko regime: {regime!r}")
+        if footprint not in FOOTPRINT_LABELS:
+            raise ValueError(f"unknown oko footprint: {footprint!r}")
+        if footprint_side not in (None, "bid", "ask"):
+            raise ValueError("footprint_side must be bid|ask|None")
+        if n_class < 0:
+            raise ValueError("n_class must be >= 0")
+        if Decimal(size_mult) < 0 or Decimal(size_mult) > 1:
+            raise ValueError("oko size_mult must be in [0, 1]")
+        changed = self._patch(oko_voice=voice, touch_id=touch_id)
+        if not changed:
+            return []
+        self._patch(
+            touch_id=touch_id,
+            overwrite=True,
+            require_touch_id=False,
+            oko_label=label,
+            oko_regime=regime,
+            oko_reason=reason,
+            oko_book_trust=book_trust,
+            oko_tape_trust=tape_trust,
+            oko_cp_prob=cp_prob,
+            oko_p_bounce=p_bounce,
+            oko_p_break=p_break,
+            oko_p_die=p_die,
+            oko_set=pred_set,
+            oko_n_class=n_class,
+            oko_size_mult=size_mult,
+            oko_fingerprint=fingerprint,
+            oko_footprint=footprint,
+            oko_footprint_side=footprint_side,
+            oko_oi_z=oi_z,
+            oko_liq_rel=liq_rel,
+        )
+        ids = {row.touch_id for row in changed}
+        return [row for row in self.touches if row.touch_id in ids]
+
     def fill_session_hour(self, *, touch_id: str | None = None) -> list[Touch]:
         changed: list[Touch] = []
         next_rows: list[Touch] = []
@@ -388,18 +570,25 @@ class Registry:
         cpi_window: bool = False,
         trades_in_window: int | None = None,
         btc_same_side: bool = False,
+        oko_voice: int | str | None = None,
     ) -> list[Touch]:
-        """Write jury + rho_class_id from already filled labels. Does not open size."""
+        """Write jury + rho_class_id from already filled labels. Does not open size.
+
+        oko_voice=None reads the row's own oko_voice (fill_oko). A row without
+        ОКО is judged with oko=0 — the eye absent, not a rubber-stamp +1.
+        """
         from capitalizator.jury.desk import (
             decide,
             rho_class_id,
             voices_for_bounce,
             voices_for_breakout,
             voices_for_failed_break,
+            voices_for_spring,
         )
+        from capitalizator.jury.desk import oko_voice as to_voice
 
-        if idea not in {"bounce", "breakout", "failed_break"}:
-            raise ValueError("idea must be bounce|breakout|failed_break")
+        if idea not in {"bounce", "spring", "breakout", "failed_break"}:
+            raise ValueError("idea must be bounce|spring|breakout|failed_break")
         self._require_touch_id_if_many(touch_id, what="stamp_jury")
         changed: list[Touch] = []
         next_rows: list[Touch] = []
@@ -412,6 +601,7 @@ class Registry:
                 continue
             voice_fn = {
                 "bounce": voices_for_bounce,
+                "spring": voices_for_spring,
                 "breakout": voices_for_breakout,
                 "failed_break": voices_for_failed_break,
             }[idea]
@@ -430,6 +620,7 @@ class Registry:
                 if trades_in_window is not None
                 else touch.trades_in_window,
                 btc_same_side=btc_same_side,
+                oko=to_voice(oko_voice if oko_voice is not None else touch.oko_voice),
             )
             label = decide(voices)
             class_id = None

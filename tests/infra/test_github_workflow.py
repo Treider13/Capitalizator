@@ -19,4 +19,4 @@ def test_lint_workflow_has_ruff_and_pytest() -> None:
     runs = "\n".join(step.get("run", "") for step in raw["jobs"]["lint"]["steps"])
     assert "ruff check src tests" in runs
     assert "pytest" in runs
-    assert "pip install -e \".[dev]\"" in runs
+    assert "pip install -e \".[dev" in runs

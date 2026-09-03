@@ -1,4 +1,4 @@
-"""user_mode=live drains through validate onto the injected send."""
+"""user_mode=demo|live drains through validate onto the injected send."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ def _intent() -> dict[str, str]:
     return {
         "symbol": "BTCUSDT",
         "side": "buy",
+        "qty": "0.001",
         "entry": "60000",
         "stop": "59400",
         "tp": "61200",
@@ -24,7 +25,7 @@ def _intent() -> dict[str, str]:
     }
 
 
-def test_live_drain_sends_mainnet_payload(tmp_path: Path) -> None:
+def test_live_drain_validates_then_sends(tmp_path: Path) -> None:
     knowledge = open_knowledge(init_vault(tmp_path / "desk"))
     knowledge.enqueue_intent(_intent(), created_ts=NOW.isoformat())
     seen: list[dict] = []
@@ -35,12 +36,12 @@ def test_live_drain_sends_mainnet_payload(tmp_path: Path) -> None:
 
     out = drain_validated(knowledge, send, user_mode="live", now=NOW)
     assert out[0]["status"] == "sent"
-    assert seen[0]["trading_mode"] == "mainnet"
+    assert seen[0]["trading_mode"] == "demo"
     assert seen[0]["stop_px"] == "59400"
     assert knowledge.pending_intents() == []
 
 
-def test_demo_drain_stays_testnet_venue(tmp_path: Path) -> None:
+def test_demo_drain_stays_paper_venue(tmp_path: Path) -> None:
     knowledge = open_knowledge(init_vault(tmp_path / "desk"))
     knowledge.enqueue_intent(_intent(), created_ts=NOW.isoformat())
     seen: list[dict] = []
@@ -51,4 +52,4 @@ def test_demo_drain_stays_testnet_venue(tmp_path: Path) -> None:
 
     out = drain_validated(knowledge, send, user_mode="demo", now=NOW)
     assert out[0]["status"] == "failed"
-    assert seen[0]["trading_mode"] == "testnet"
+    assert seen[0]["trading_mode"] == "demo"

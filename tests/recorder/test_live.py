@@ -94,7 +94,55 @@ def test_subscribe_many_covers_desk_universe() -> None:
     uni = load_desk_universe()
     payload = subscribe_desk(uni.symbols)
     assert payload["op"] == "subscribe"
-    assert len(payload["args"]) == 24 * 4
+    assert len(payload["args"]) == 24 * 5
+    assert "allLiquidation.BTCUSDT" in payload["args"]
     one = subscribe_many(["BTCUSDT"], ["trades", "book"])
     assert "publicTrade.BTCUSDT" in one["args"]
     assert "orderbook.200.BTCUSDT" in one["args"]
+
+
+def test_liquidation_frame_keeps_position_side() -> None:
+    """Official: S=Buy means a *long* was liquidated. We store position, not a taker."""
+    from capitalizator.recorder.live import liquidation_events
+
+    events = liquidation_events(
+        {
+            "topic": "allLiquidation.ROSEUSDT",
+            "type": "snapshot",
+            "ts": 1739502303204,
+            "data": [{"T": 1739502302929, "s": "ROSEUSDT", "S": "Sell", "v": "20000", "p": "0.04499"}],
+        },
+        recv_ts=NOW,
+    )
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.stream == "liquidation"
+    assert ev.symbol == "ROSEUSDT"
+    assert ev.payload == {"px": "0.04499", "qty": "20000", "position": "short"}
+    assert ev.exchange_ts.isoformat() == "2025-02-14T03:05:02.929000+00:00"
+    long_side = liquidation_events(
+        {"topic": "allLiquidation.BTCUSDT", "data": [{"T": 1, "s": "BTCUSDT", "S": "Buy", "v": "1", "p": "2"}]},
+        recv_ts=NOW,
+    )
+    assert long_side[0].payload["position"] == "long"
+    assert liquidation_events({"op": "subscribe", "success": True}, recv_ts=NOW) == []
+    import pytest
+
+    with pytest.raises(ValueError, match="missing"):
+        liquidation_events({"topic": "allLiquidation.X", "data": [{"T": 1, "s": "X"}]}, recv_ts=NOW)
+    with pytest.raises(ValueError, match="side"):
+        liquidation_events({"topic": "allLiquidation.X", "data": [{"T": 1, "s": "X", "S": "Long", "v": "1", "p": "1"}]}, recv_ts=NOW)
+
+
+def test_run_live_writes_liquidation_frames(tmp_path: Path) -> None:
+    app = RecorderApp()
+    frame = {
+        "topic": "allLiquidation.BTCUSDT",
+        "type": "snapshot",
+        "ts": 1739502303204,
+        "data": [{"T": 1739502302929, "s": "BTCUSDT", "S": "Buy", "v": "0.5", "p": "60000"}],
+    }
+    n = run_live(app, minutes=1, symbol="BTCUSDT", data_root=tmp_path, stream="liquidation", frames=[frame])
+    assert n == 1
+    payload = subscribe_many(["BTCUSDT"], ["liquidation"])
+    assert payload["args"] == ["allLiquidation.BTCUSDT"]

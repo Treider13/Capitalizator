@@ -671,7 +671,6 @@ def _post_json(host: str, port: int, path: str, payload: dict) -> tuple[int, str
 def test_hello_and_live_cred_from_console(tmp_path: Path) -> None:
     from capitalizator.ops.product import hello_recorded, read_user_mode
     from capitalizator.ops.user_keys import cred_present, live_cred_path
-    from capitalizator.signer.cred import load_cred
 
     vault = init_vault(tmp_path / "desk")
     open_knowledge(vault).close()
@@ -715,15 +714,20 @@ def test_hello_and_live_cred_from_console(tmp_path: Path) -> None:
         )
         assert status == 200
         saved = json.loads(body)
-        assert saved == {"ok": True, "cred_present": True}
+        assert saved["ok"] is True
+        assert saved["cred_present"] is True
+        assert saved.get("mode") == "demo"
         assert "priv-seed" not in body
         assert "seed" not in saved
         assert cred_present(vault) is True
         path = live_cred_path(vault)
         assert path.stat().st_mode & 0o077 == 0
-        cred = load_cred(path)
-        assert cred.public == "pub-id"
-        assert cred.seed == "priv-seed"
+        from capitalizator.gateway.keys import load_keys
+
+        keys = load_keys(vault)
+        assert keys is not None
+        assert keys.api_key == "pub-id"
+        assert keys.api_secret == "priv-seed"
 
         status = _json_get(host, port, "/api/status")
         assert status["hello_ok"] is True
@@ -741,7 +745,8 @@ def test_hello_and_live_cred_from_console(tmp_path: Path) -> None:
         conn.close()
         assert 'id="ready-box"' in page
         assert "priv-seed" not in page
-        assert "Сохранить ключ для live" in page
+        assert "Как включить стол" in page
+        assert "Сохранить ключ" in page
     finally:
         server.shutdown()
         server.server_close()

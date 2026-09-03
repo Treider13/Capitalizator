@@ -50,6 +50,10 @@ class BookResync:
                 "cross_seq": snap.cross_seq,
                 "bid_levels": len(snap.bids),
                 "ask_levels": len(snap.asks),
+                # Levels ride along so a reader (the desk) can rebuild its book from
+                # the tape instead of only learning that the book went dirty.
+                "bids": [list(x) for x in snap.bids],
+                "asks": [list(x) for x in snap.asks],
             },
         )
         self.events.append(event)

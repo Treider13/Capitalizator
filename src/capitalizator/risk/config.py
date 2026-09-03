@@ -1,0 +1,198 @@
+"""Risk configuration the operator edits in the console (D-12).
+
+Persisted in SQLite meta as JSON with a version id; every change is also a
+hash-chain link so the journal can say which config sized which intent.
+Defaults come from infra/phase.yaml (target_risk, max_lev) and infra/gates.yaml f5
+(halts) — the numbers a human already wrote there, not new constants.
+
+Law 8 (IMPLEMENTATION.md): risk% = margin% × lev × stop%. The sizer takes the
+binding constraint of {target_risk, deposit_share, cap_margin}; it never raises
+leverage to hit a number.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass, replace
+from decimal import Decimal
+from hashlib import blake2s
+from typing import Any
+
+from capitalizator.ops.knowledge import Knowledge
+
+META_KEY = "risk_config"
+STOP_MODES = frozenset({"structural", "volatility", "hybrid", "manual_bounded"})
+TRAIL_MODES = frozenset({"structure", "exchange_trailing", "both"})
+
+
+@dataclass(frozen=True)
+class RiskConfig:
+    # Fraction of equity used as margin per trade ("какая часть депозита в сделку").
+    deposit_share_per_trade: Decimal = Decimal("0.10")
+    # Fraction of equity lost if the stop is hit.
+    target_risk_pct: Decimal = Decimal("0.01")
+    max_lev: Decimal = Decimal("3")
+    # Sessions release: up to three ideas at once, one per correlation group
+    # (infra/corr_groups.yaml + rolling correlation), never two on the same symbol.
+    max_open_positions: int = 3
+    # Ceiling for ANY single budget key; the per-window caps live in sessions.yaml and
+    # are min()-ed with this. 8 = the overlap window's budget.
+    max_intents_per_session: int = 8
+    day_halt: Decimal = Decimal("-0.03")
+    week_halt: Decimal = Decimal("-0.06")
+    peak_kill: Decimal = Decimal("-0.25")
+    # A 1R win must be at least this many round-trip fees (EV gate).
+    fee_multiple_min: Decimal = Decimal("5")
+    stop_mode: str = "hybrid"
+    # manual_bounded: operator stop distance as a fraction of the entry price, bounded by
+    # the automatic hybrid stop (floor) and max_stop_atr (ceiling). Required in that mode.
+    manual_stop_frac: Decimal | None = None
+    trail_mode: str = "both"
+    # Finished stop may not sit farther than this many working-TF ATR from the entry;
+    # a setup that needs more is refused, not fitted. None disables the ceiling.
+    max_stop_atr: Decimal | None = Decimal("2.5")
+    # Fraction of the account that takes part in sizing ("сколько депозита участвует").
+    # Sizing, EV and halts see min(equity, participating_share × equity); the rest of
+    # the wallet is invisible to the desk. 1 = the whole account.
+    participating_share: Decimal = Decimal("1")
+    # Two open ideas on the same side are refused when their 30-day return correlation
+    # exceeds this (or they share a static group). Symmetric for opposite sides.
+    corr_block_threshold: Decimal = Decimal("0.8")
+    # Paper / demo equity used until a wallet is read from the exchange.
+    paper_equity: Decimal = Decimal("100000")
+    # D-19: ICT context marks (fib OTE / FVG / sweep) are informational by default —
+    # FINAL-SYSTEM.md calls named chart patterns "мусор" and the virtual 26h run
+    # showed them skipping 169/171 touches, starving the shadow. Turn on to require them.
+    require_ict_marks: bool = False
+    version: int = 1
+    config_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not (Decimal("0") < self.deposit_share_per_trade <= Decimal("1")):
+            raise ValueError("deposit_share_per_trade must be in (0, 1]")
+        if not (Decimal("0") < self.target_risk_pct <= Decimal("0.05")):
+            raise ValueError("target_risk_pct must be in (0, 0.05]")
+        if self.max_lev <= 0 or self.max_lev > Decimal("10"):
+            raise ValueError("max_lev must be in (0, 10]")
+        if self.max_open_positions < 1 or self.max_intents_per_session < 1:
+            raise ValueError("positions / intents per session must be >= 1")
+        for name in ("day_halt", "week_halt", "peak_kill"):
+            if getattr(self, name) >= 0:
+                raise ValueError(f"{name} must be negative")
+        if self.fee_multiple_min < 1:
+            raise ValueError("fee_multiple_min must be >= 1")
+        if self.stop_mode not in STOP_MODES:
+            raise ValueError(f"stop_mode must be one of {sorted(STOP_MODES)}")
+        if self.manual_stop_frac is not None and not (
+            Decimal("0.001") <= self.manual_stop_frac <= Decimal("0.2")
+        ):
+            raise ValueError("manual_stop_frac must be in [0.001, 0.2] or null")
+        if self.stop_mode == "manual_bounded" and self.manual_stop_frac is None:
+            raise ValueError("stop_mode manual_bounded needs manual_stop_frac")
+        if self.trail_mode not in TRAIL_MODES:
+            raise ValueError(f"trail_mode must be one of {sorted(TRAIL_MODES)}")
+        if self.max_stop_atr is not None and not (
+            Decimal("0.5") <= self.max_stop_atr <= Decimal("10")
+        ):
+            raise ValueError("max_stop_atr must be in [0.5, 10] or null")
+        if not (Decimal("0") < self.participating_share <= Decimal("1")):
+            raise ValueError("participating_share must be in (0, 1]")
+        if not (Decimal("0") < self.corr_block_threshold <= Decimal("1")):
+            raise ValueError("corr_block_threshold must be in (0, 1]")
+        if self.paper_equity <= 0:
+            raise ValueError("paper_equity must be > 0")
+        if not self.config_id:
+            object.__setattr__(self, "config_id", self._digest())
+
+    def _digest(self) -> str:
+        body = {k: str(v) for k, v in asdict(self).items() if k != "config_id"}
+        return blake2s(json.dumps(body, sort_keys=True).encode(), digest_size=8).hexdigest()
+
+    def to_payload(self) -> dict[str, Any]:
+        return {k: (str(v) if isinstance(v, Decimal) else v) for k, v in asdict(self).items()}
+
+    def participating_equity(self, equity: Decimal) -> Decimal:
+        """The slice of the wallet the desk may size against."""
+        return equity * self.participating_share
+
+    @classmethod
+    def from_payload(cls, raw: dict[str, Any]) -> RiskConfig:
+        dec = (
+            "deposit_share_per_trade",
+            "target_risk_pct",
+            "max_lev",
+            "day_halt",
+            "week_halt",
+            "peak_kill",
+            "fee_multiple_min",
+            "paper_equity",
+            "participating_share",
+            "corr_block_threshold",
+        )
+        kwargs: dict[str, Any] = {}
+        for key, value in raw.items():
+            if key in dec:
+                kwargs[key] = Decimal(str(value))
+            elif key in {"max_stop_atr", "manual_stop_frac"}:
+                kwargs[key] = None if value in (None, "", "null", "none") else Decimal(str(value))
+            elif key in {"max_open_positions", "max_intents_per_session", "version"}:
+                kwargs[key] = int(value)
+            elif key in {"stop_mode", "trail_mode", "config_id"}:
+                kwargs[key] = str(value)
+            elif key == "require_ict_marks":
+                kwargs[key] = _as_bool(value)
+            elif key == "allow_night":
+                # Removed knob (sessions release): it was written by the console and read
+                # by nothing. Old snapshots still carry it; ignore, do not fail the load.
+                continue
+            else:
+                raise ValueError(f"unknown risk_config key: {key}")
+        return cls(**kwargs)
+
+    def with_changes(self, **changes: Any) -> RiskConfig:
+        nxt = replace(self, **changes, config_id="", version=self.version + 1)
+        return nxt
+
+    def implied_risk(self, *, lev: Decimal, stop_frac: Decimal) -> Decimal:
+        """Law 8: what deposit_share × lev × stop% would risk."""
+        return self.deposit_share_per_trade * lev * stop_frac
+
+
+def _as_bool(value: Any) -> bool:
+    """Console posts strings; `bool("false")` is True — parse the word, not the object."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError(f"not a boolean: {value!r}")
+
+
+def load_risk_config(knowledge: Knowledge) -> RiskConfig:
+    raw = knowledge.meta(META_KEY) if knowledge.available() else None
+    if raw is None:
+        return RiskConfig()
+    try:
+        return RiskConfig.from_payload(json.loads(raw))
+    except (ValueError, json.JSONDecodeError):
+        return RiskConfig()
+
+
+def save_risk_config(knowledge: Knowledge, cfg: RiskConfig, *, ack: bool) -> RiskConfig:
+    """Human change with ack. Writes meta + a hash link so the journal can cite it."""
+    if not ack:
+        raise ValueError("ack required to change risk config")
+    body = json.dumps(cfg.to_payload(), sort_keys=True, ensure_ascii=False)
+    knowledge.set_meta(META_KEY, body)
+    knowledge.append_link(
+        json.dumps(
+            {"k": "risk_config", "config_id": cfg.config_id, "version": cfg.version},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    return cfg

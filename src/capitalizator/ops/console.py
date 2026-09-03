@@ -2,7 +2,7 @@
 
 GET is the desk. POST /contour and POST /api/contour may turn the
 recording contour on after hours24. POST /api/hello marks the SQLite flag.
-POST /api/live-cred writes `{userdir}/live.cred` (0600). Seed is never echoed.
+POST /api/live-cred writes `{userdir}/secrets/bybit.json` (0600). Seed is never echoed.
 POST /order and every other write stay 405. Console does not import signer.
 """
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -152,6 +153,14 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     finally:
         knowledge.close()
     files_n, rows_n = _parquet_counts(vault.tape)
+    from capitalizator.ops.account_view import account_view, queue_view
+
+    knowledge = open_knowledge(vault, create=False)
+    try:
+        money = account_view(knowledge)
+        queue = queue_view(knowledge, limit=50)
+    finally:
+        knowledge.close()
     if report_body is None:
         report_body = daily_map_report(day=report_day or "нет даты", rows=[])
         report_day = report_day or "нет даты"
@@ -167,6 +176,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         banners.append("live: нет ключа")
     if n_touches < 20:
         banners.append("мало n")
+    banners.extend(money["banners"])
     banner = " — ".join(banners)
     symbols = list(load_desk_universe().symbols)
     snap = {
@@ -209,6 +219,9 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         "session_window": chronos_data.session_window(),
         "last_jury": chronos_data.last_jury(vault),
         "experience": experience,
+        "money": money,
+        "queue_counts": queue["counts"],
+        "banners": banners,
     }
     text = json.dumps(snap, ensure_ascii=False)
     if contains_advice(text):
@@ -266,7 +279,58 @@ def _page(snap: dict[str, Any]) -> str:
     vs = snap.get("shadow_vs_demo_vs_live") or {}
     learn_n = snap.get("learn_n_days")
     learn_txt = "—" if learn_n is None else str(learn_n)
+    money = snap.get("money") or {}
+    acct = money.get("account") or {}
+    exch = money.get("exchange") or {}
+    paper = (money.get("paper") or {}).get("all") or {}
+    banner_items = "".join(
+        f"<li class=\"warn\">{html.escape(str(b))}</li>" for b in (money.get("banners") or [])
+    ) or '<li class="empty">предупреждений нет</li>'
+    positions = exch.get("positions") or acct.get("open") or []
+    pos_html = "".join(
+        "<tr>"
+        f"<td>{html.escape(str(p.get('symbol')))}</td>"
+        f"<td>{html.escape(str(p.get('side')))}</td>"
+        f"<td>{html.escape(str(p.get('size', p.get('qty'))))}</td>"
+        f"<td>{html.escape(str(p.get('avg_price', p.get('entry'))))}</td>"
+        f"<td>{html.escape(str(p.get('stop_loss', p.get('stop'))))}</td>"
+        f"<td>{html.escape(str(p.get('liq_price', '—')))}</td>"
+        f"<td>{html.escape(str(p.get('unrealised_pnl', '—')))}</td>"
+        "</tr>"
+        for p in positions
+    ) or '<tr><td colspan="7" class="empty">позиций нет</td></tr>'
+
+    def _pct(raw: object) -> str:
+        try:
+            return f"{float(str(raw)) * 100:+.2f}%"
+        except (TypeError, ValueError):
+            return "—"
+
+    equity_line = (
+        f"эквити {html.escape(str(acct.get('equity', '—')))} "
+        f"({html.escape(str(acct.get('equity_source', 'нет данных')))}) · "
+        f"биржа: {html.escape(str(exch.get('equity', 'не читалось')))}"
+    )
+    def _e(value: object) -> str:
+        return html.escape(str(value))
+
+    halt_txt = _e(acct.get("halt_reason") or "открыт")
+    queue_txt = _e(json.dumps(snap.get("queue_counts") or {}, ensure_ascii=False))
+    money_block = f"""<h2>Счёт</h2>
+      <p>{equity_line}</p>
+      <p>день {_pct(acct.get("day_pnl_pct"))} · неделя {_pct(acct.get("week_pnl_pct"))}
+      · просадка от пика {_pct(acct.get("drawdown_from_peak"))} · кран: {halt_txt}</p>
+      <p>бумага (все): n={paper.get("n", 0)} winrate={_e(paper.get("winrate"))}
+      ДИ95={_e(paper.get("winrate_ci95"))} avgR={_e(paper.get("avg_r_net"))}
+      PF={_e(paper.get("profit_factor"))} комиссии={_e(paper.get("fees"))}</p>
+      <h2>Позиции</h2>
+      <table><thead><tr><th>символ</th><th>сторона</th><th>размер</th><th>вход</th>
+      <th>стоп (биржа)</th><th>ликвидация</th><th>uPnL</th></tr></thead>
+      <tbody>{pos_html}</tbody></table>
+      <p>очередь интентов: {queue_txt}</p>
+      <h2>Предупреждения</h2><ul>{banner_items}</ul>"""
     service = f"""<div id="service">
+      {money_block}
       <h2>CAV × ZLG × outcome</h2>
       <table><tbody>{cav_html}</tbody></table>
       <h2>Жюри дня</h2><ul>{jury_html}</ul>
@@ -342,6 +406,39 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
             return gates_from_sqlite(knowledge)
         finally:
             knowledge.close()
+    if path in {"/api/account", "/api/queue", "/api/paper", "/api/risk"}:
+        from capitalizator.ops.account_view import account_view, queue_view
+        from capitalizator.risk.config import load_risk_config
+
+        knowledge = open_knowledge(vault, create=False)
+        try:
+            if path == "/api/account":
+                return account_view(knowledge)
+            if path == "/api/queue":
+                return queue_view(knowledge, limit=_int_arg(qs, "limit", 100))
+            if path == "/api/paper":
+                source = (qs.get("source") or [None])[0]
+                return {
+                    "trades": knowledge.paper_trades(
+                        source=source, limit=_int_arg(qs, "limit", 200)
+                    )
+                }
+            return {"risk_config": load_risk_config(knowledge).to_payload()}
+        finally:
+            knowledge.close()
+    if path in {"/api/universe", "/api/sessions", "/api/preview"}:
+        from capitalizator.ops.account_view import preview_view, sessions_view, universe_view
+
+        knowledge = open_knowledge(vault, create=False)
+        try:
+            if path == "/api/universe":
+                return universe_view(knowledge)
+            if path == "/api/sessions":
+                return sessions_view(knowledge)
+            touch_id = (qs.get("touch_id") or [None])[0]
+            return preview_view(knowledge, touch_id=touch_id)
+        finally:
+            knowledge.close()
     return None
 
 
@@ -383,11 +480,89 @@ class ConsoleApp:
             "cred_present": cred_present(self.vault),
         }
 
-    def save_live_cred(self, *, ack: bool, api_id: str, seed: str) -> dict[str, Any]:
+    def save_live_cred(
+        self, *, ack: bool, api_id: str, seed: str, mode: str = "demo"
+    ) -> dict[str, Any]:
         if not ack:
             raise ValueError("ack required")
-        write_live_cred(self.vault, api_id=api_id, seed=seed)
-        return {"ok": True, "cred_present": True}
+        write_live_cred(self.vault, api_id=api_id, seed=seed, mode=mode)
+        return {"ok": True, "cred_present": True, "mode": mode}
+
+    def set_risk(self, changes: dict[str, Any], *, ack: bool) -> dict[str, Any]:
+        """Operator risk menu (D-12). Validated by RiskConfig; applies to new intents."""
+        from capitalizator.risk.config import load_risk_config, save_risk_config
+
+        if not ack:
+            raise ValueError("ack required")
+        knowledge = open_knowledge(self.vault, create=True)
+        try:
+            from capitalizator.risk.config import RiskConfig
+
+            current = load_risk_config(knowledge)
+            allowed = set(current.to_payload()) - {"version", "config_id"}
+            bad = set(changes) - allowed
+            if bad:
+                raise ValueError(f"unknown risk keys: {sorted(bad)}")
+            # Typing lives in RiskConfig.from_payload (Decimal / int / bool words /
+            # nullable max_stop_atr) — one parser for the console and the snapshot.
+            merged = current.to_payload()
+            merged.update(changes)
+            merged.pop("config_id", None)
+            merged["version"] = current.version + 1
+            nxt = RiskConfig.from_payload(merged)
+            save_risk_config(knowledge, nxt, ack=True)
+            return {"risk_config": nxt.to_payload(), "previous_id": current.config_id}
+        finally:
+            knowledge.close()
+
+    def apply_universe(self, proposal_id: str, *, ack: bool) -> dict[str, Any]:
+        """Human step: the weekly top-N proposal becomes infra/universe.yaml."""
+        from datetime import UTC, datetime
+
+        from capitalizator.screener.refresh import apply_universe
+
+        if not ack:
+            raise ValueError("ack required")
+        if not proposal_id:
+            raise ValueError("proposal_id required")
+        knowledge = open_knowledge(self.vault, create=True)
+        try:
+            universe = apply_universe(
+                knowledge, proposal_id=proposal_id, ack=True, now=datetime.now(tz=UTC)
+            )
+            return {
+                "universe": list(universe.symbols),
+                "proposal_id": proposal_id,
+                "takes_effect": "on desk/recorder restart",
+            }
+        finally:
+            knowledge.close()
+
+    def command(
+        self, kind: str, *, symbol: str | None, ack: bool, reason: str = ""
+    ) -> dict[str, Any]:
+        """flatten | release_halts | pause_entries | resume_entries | drift_release
+        → picked up by the desk tick. drift_release takes a window name in `symbol` (or ALL)."""
+        if not ack:
+            raise ValueError("ack required")
+        if kind not in {
+            "flatten", "release_halts", "pause_entries", "resume_entries", "drift_release"
+        }:
+            raise ValueError(f"unknown command: {kind}")
+        if kind == "flatten" and not symbol:
+            raise ValueError("flatten needs a symbol (or ALL)")
+        knowledge = open_knowledge(self.vault, create=True)
+        try:
+            cmd = {
+                "kind": kind,
+                "symbol": symbol,
+                "reason": reason or "operator",
+                "at": datetime.now(tz=UTC).isoformat(),
+            }
+            pending = knowledge.push_command(cmd)
+            return {"queued": cmd, "pending": pending}
+        finally:
+            knowledge.close()
 
 
 def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -548,11 +723,44 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                             ack=True,
                             api_id=str(payload.get("id") or payload.get("api_id") or ""),
                             seed=str(payload.get("seed") or ""),
+                            mode=str(payload.get("mode") or "demo"),
                         )
                     except (ValueError, VaultError) as exc:
                         self._send(400, str(exc).encode(), "text/plain; charset=utf-8")
                         return
                     body = json.dumps(out, ensure_ascii=False).encode()
+                    self._send(200, body, "application/json; charset=utf-8")
+                    return
+                if path in {"/api/risk", "/api/command", "/api/universe"}:
+                    if not _is_local(self):
+                        self._send(403, b"localhost only", "text/plain; charset=utf-8")
+                        return
+                    try:
+                        payload = _read_body(self)
+                    except (ValueError, json.JSONDecodeError):
+                        self._send(400, b"bad-json", "text/plain; charset=utf-8")
+                        return
+                    raw_ack = payload.pop("ack_token", payload.pop("ack", None))
+                    ack = raw_ack in {True, "true", "1", 1, "yes"}
+                    try:
+                        if path == "/api/risk":
+                            out = app.set_risk(payload, ack=ack)
+                        elif path == "/api/universe":
+                            out = app.apply_universe(
+                                str(payload.get("proposal_id") or ""), ack=ack
+                            )
+                        else:
+                            out = app.command(
+                                str(payload.get("kind") or ""),
+                                symbol=payload.get("symbol"),
+                                ack=ack,
+                                reason=str(payload.get("reason") or ""),
+                            )
+                    except ValueError as exc:
+                        code = 403 if "ack" in str(exc) else 400
+                        self._send(code, str(exc).encode(), "text/plain; charset=utf-8")
+                        return
+                    body = json.dumps(out, ensure_ascii=False, default=str).encode()
                     self._send(200, body, "application/json; charset=utf-8")
                     return
                 if path not in {"/contour", "/api/contour"}:
