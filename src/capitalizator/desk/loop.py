@@ -2153,13 +2153,12 @@ class DeskLoop:
             )
 
     # --- sentiment (2.12.5): monthly extreme greed de-risks; nothing else ----------------
-    SENTIMENT_GREED = 80
-    SENTIMENT_MULT = Decimal("0.7")
     SENTIMENT_REFRESH_S = 600.0
 
     def _sentiment_multiplier(self, now: datetime) -> Decimal:
-        """×0.7 when the 30-day mean Fear & Greed (intel `fng` items) is ≥ 80. Hourly
-        readings never decide anything ("buy fear" is refused by design)."""
+        """×`RiskConfig.sentiment_mult` when the 30-day mean Fear & Greed (intel `fng`
+        items) is ≥ `RiskConfig.sentiment_greed`. Hourly readings never decide anything
+        ("buy fear" is refused by design)."""
         if (
             self._sentiment_at is not None
             and (now - self._sentiment_at).total_seconds() < self.SENTIMENT_REFRESH_S
@@ -2177,8 +2176,11 @@ class DeskLoop:
             except (TypeError, ValueError):
                 continue
         # a month is ≥ 20 daily prints; fewer is not a monthly window
-        if len(values) >= 20 and sum(values) / len(values) >= self.SENTIMENT_GREED:
-            self._sentiment_mult = self.SENTIMENT_MULT
+        if (
+            len(values) >= 20
+            and sum(values) / len(values) >= self.risk_config.sentiment_greed
+        ):
+            self._sentiment_mult = self.risk_config.sentiment_mult
         return self._sentiment_mult
 
     def effective_target_risk(self) -> Decimal:
@@ -2417,7 +2419,6 @@ class DeskLoop:
     # --- fragility (3.15.5): OI peak × crowded funding × thin book -----------------
     OI_HIST_STEP = timedelta(minutes=5)
     OI_HIST_KEEP = timedelta(days=30)
-    FRAGILITY_THIN_Z = Decimal("-1")
 
     def _sample_oi_history(self, symbol: str, when: datetime, level: Decimal) -> None:
         """One OI sample per 5 minutes per symbol, 30 days, persisted (meta oi_hist:*)."""
@@ -2481,7 +2482,7 @@ class DeskLoop:
         z = passport.depth.z(depth)
         if z is None:
             return None
-        return z < self.FRAGILITY_THIN_Z
+        return z < self.risk_config.fragility_thin_z
 
     def _fragility(self, st: SymbolState) -> dict[str, Any]:
         oi_peak = self._oi_peak(st.symbol)

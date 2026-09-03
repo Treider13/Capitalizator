@@ -74,6 +74,13 @@ class RiskConfig:
     # FINAL-SYSTEM.md calls named chart patterns "мусор" and the virtual 26h run
     # showed them skipping 169/171 touches, starving the shadow. Turn on to require them.
     require_ict_marks: bool = False
+    # 2.12.5 monthly sentiment: the 30-day mean Fear & Greed at or above this de-risks
+    # by `sentiment_mult` (a cut, never a raise). Hourly readings decide nothing.
+    sentiment_greed: int = 80
+    sentiment_mult: Decimal = Decimal("0.7")
+    # 3.15.5 fragility: the touch's book depth is "thin" when its robust z against the
+    # symbol's Passport norm is below this (negative = below the median).
+    fragility_thin_z: Decimal = Decimal("-1")
     version: int = 1
     config_id: str = ""
 
@@ -115,6 +122,12 @@ class RiskConfig:
             raise ValueError("corr_block_threshold must be in (0, 1]")
         if self.paper_equity <= 0:
             raise ValueError("paper_equity must be > 0")
+        if not (50 <= self.sentiment_greed <= 100):
+            raise ValueError("sentiment_greed must be in [50, 100]")
+        if not (Decimal("0") < self.sentiment_mult <= Decimal("1")):
+            raise ValueError("sentiment_mult must be in (0, 1]; sentiment only cuts")
+        if self.fragility_thin_z >= 0:
+            raise ValueError("fragility_thin_z must be < 0 (thin = below the norm)")
         if not self.config_id:
             object.__setattr__(self, "config_id", self._digest())
 
@@ -142,6 +155,8 @@ class RiskConfig:
             "paper_equity",
             "participating_share",
             "corr_block_threshold",
+            "sentiment_mult",
+            "fragility_thin_z",
         )
         kwargs: dict[str, Any] = {}
         for key, value in raw.items():
@@ -149,7 +164,9 @@ class RiskConfig:
                 kwargs[key] = Decimal(str(value))
             elif key in {"max_stop_atr", "manual_stop_frac"}:
                 kwargs[key] = None if value in (None, "", "null", "none") else Decimal(str(value))
-            elif key in {"max_open_positions", "max_intents_per_session", "version"}:
+            elif key in {
+                "max_open_positions", "max_intents_per_session", "version", "sentiment_greed"
+            }:
                 kwargs[key] = int(value)
             elif key in {"stop_mode", "trail_mode", "config_id"}:
                 kwargs[key] = str(value)

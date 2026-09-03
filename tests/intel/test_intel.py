@@ -163,3 +163,19 @@ def test_cycle_stores_items_extracts_claims_and_resolves_on_our_prices(tmp_path:
     weights = json.loads(kn.meta("author_weights"))["authors"]
     assert weights["x:trader"]["n"] == 1 and Decimal(weights["x:trader"]["weight"]) == 0  # n<5 → 0
     kn.close()
+
+
+def test_resolve_threshold_is_an_operator_setting(tmp_path: Path) -> None:
+    from capitalizator.intel.run import RESOLVE_THRESHOLD_PCT_DEFAULT, resolve_threshold
+
+    vault = init_vault(tmp_path / "v")
+    settings = Settings(vault)
+    assert resolve_threshold(settings) == RESOLVE_THRESHOLD_PCT_DEFAULT == Decimal("0.01")
+    settings.update({"intel.resolve_threshold_pct": "0.02"}, ack=True)
+    assert resolve_threshold(Settings(vault)) == Decimal("0.02")
+    import pytest
+
+    with pytest.raises(ValueError):
+        settings.update({"intel.resolve_threshold_pct": "1.5"}, ack=True)
+    with pytest.raises(ValueError):
+        settings.update({"intel.resolve_threshold_pct": "0"}, ack=True)
