@@ -21,5 +21,11 @@ class ShadowWidth:
             {"width": width, "orders": False, "role": "challenger"} for width in WIDTHS
         ]
 
-    def promote(self) -> None:
-        raise ValueError("no auto promote; exam days are not this module")
+    def promote(self, paper_rows=None, *, now=None, ack: bool = False):  # type: ignore[no-untyped-def]
+        """No auto promote. With `ack` and paper rows, runs the exam and returns the
+        report; the desk flips the champion label only on a pass (champion/exam.py)."""
+        if not ack or paper_rows is None or now is None:
+            raise ValueError("no auto promote; the exam needs paper rows, a clock and an ack")
+        from capitalizator.champion.exam import exam
+
+        return exam(paper_rows, now=now)

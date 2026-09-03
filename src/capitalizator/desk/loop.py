@@ -26,6 +26,7 @@ from capitalizator.card.live import CardLive, card_is_fresh, touch_line
 from capitalizator.card.volume import snapshot as volume_snapshot
 from capitalizator.champion.calibrate import ClassStat, class_key, class_stats, refuted, to_meta
 from capitalizator.champion.drift import PageHinkley
+from capitalizator.champion.exam import exam
 from capitalizator.champion.shadow_day import (
     challenger_on,
     challenger_tag,
@@ -1729,13 +1730,32 @@ class DeskLoop:
                     self.entries_paused = False
                     out.append({"event": "resume_entries"})
                     result = {"paused": False}
-                else:  # promote — handled by the night contour; the desk only records it
-                    result = {"deferred": "night"}
+                else:  # promote — run the exam now; flip the label only on a pass
+                    result = self._promote(payload, now)
+                    out.append({"event": "promote", **{k: result[k] for k in ("passed",)}})
                 self.knowledge.mark_command(cmd["id"], "done", result)
             except Exception as exc:  # one bad command must not stop the others
                 self.knowledge.mark_command(cmd["id"], "failed", {"error": str(exc)})
                 out.append({"event": "command_failed", "kind": kind, "error": str(exc)})
         return out
+
+    def _promote(self, payload: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+        """Operator asked for the exam. Champion ← challenger only when it passes; the
+        report is recorded either way (meta `exam_last`, `champion`)."""
+        rows = self.knowledge.paper_trades(limit=100_000)
+        report = exam(rows, now=now)
+        body = report.to_payload()
+        body["requested_by"] = payload.get("reason") or "operator"
+        self.knowledge.set_meta("exam_last", json.dumps(body, sort_keys=True))
+        if report.passed:
+            champion = {
+                "since": now.isoformat(),
+                "from": "shadow",
+                "to": "challenger",
+                "report": body,
+            }
+            self.knowledge.set_meta("champion", json.dumps(champion, sort_keys=True))
+        return body
 
     # --- exchange truth → account (live/demo) --------------------------------------
     EXCHANGE_STATE_MAX_AGE_S = 300.0
