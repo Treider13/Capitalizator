@@ -78,6 +78,7 @@ from capitalizator.oko.footprint import FINGERPRINT_LEN as OKO_FINGERPRINT_LEN
 from capitalizator.oko.forecast import Sample as OkoSample
 from capitalizator.oko.forecast import class_key as oko_class_key
 from capitalizator.oko.retina import RawWindow
+from capitalizator.oko.shadow import FINGERPRINT_LEN as OKO_SHADOW_FP_LEN
 from capitalizator.ops.knowledge import Knowledge
 from capitalizator.ops.phase import breakout_enabled
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
@@ -435,9 +436,18 @@ class DeskLoop:
             )
             self.flush_ui(when)
 
+    # A "wall" is a notional, not a coin count: 50 BTC ≈ $3M at 60k. The same
+    # threshold in coins made every DOGE level a wall and no SOL level one.
+    WALL_MIN_NOTIONAL = Decimal("3000000")
+
     def _wall_for(self, symbol: str) -> WallWatch:
+        px = self.last_price.get(symbol)
         if symbol not in self.walls:
-            self.walls[symbol] = WallWatch(symbol, min_size=Decimal("50"))
+            size = self.WALL_MIN_NOTIONAL / px if px else Decimal("50")
+            self.walls[symbol] = WallWatch(symbol, min_size=size)
+        elif px:
+            # follow the price: the wall stays a $3M object as the coin moves
+            self.walls[symbol].min_size = self.WALL_MIN_NOTIONAL / px
         return self.walls[symbol]
 
     def _prs_for(self, symbol: str) -> PRS:
@@ -866,8 +876,12 @@ class DeskLoop:
             fingerprint = tuple(int(v) for v in touch.oko_fingerprint.split("-"))
         except ValueError:
             return False
+        if len(fingerprint) == OKO_SHADOW_FP_LEN:
+            # Rows stamped before the Footprint organ carry 10 ints: the Footprint
+            # axes are padded with the neutral bucket, the same way the memory
+            # migrates its persisted antigens.
+            fingerprint = fingerprint + (0,) * (OKO_FINGERPRINT_LEN - OKO_SHADOW_FP_LEN)
         if len(fingerprint) != OKO_FINGERPRINT_LEN:
-            # Rows stamped before the Footprint organ carry 10 ints. Not learnable.
             return False
         # Antigen carries the touch time, not the tick that resolved it: replay-stable.
         return self.oko.learn(
@@ -898,7 +912,7 @@ class DeskLoop:
             zone=zone,
             t0=touch.ts,
             window_s=window_s,
-            tick_size=self.tick_size,
+            tick_size=self.tick_for(st.symbol),
             delta_ticks=self.config.prs_delta_ticks,
             book_pre=pre,
             book_path=path,
@@ -933,11 +947,15 @@ class DeskLoop:
             out.append(
                 OkoSample(
                     symbol=str(symbol),
+                    # The same six axes `judge` uses — footprint included. A key built
+                    # without it never matched the judge's key and n_class stayed 0
+                    # forever (audit B7).
                     class_key=oko_class_key(
                         idea=str(idea),
                         cav=row.get("cav_label"),
                         zlg=row.get("zlg_label"),
                         regime=row.get("oko_regime"),
+                        footprint=row.get("oko_footprint"),
                     ),
                     outcome=str(outcome),
                 )
@@ -956,6 +974,7 @@ class DeskLoop:
                         cav=touch.cav_label,
                         zlg=touch.gesture,
                         regime=touch.oko_regime,
+                        footprint=touch.oko_footprint,
                     ),
                     outcome=touch.outcome,
                 )

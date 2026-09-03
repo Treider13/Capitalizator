@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Any
 
 from capitalizator.oko.footprint import FINGERPRINT_LEN
+from capitalizator.oko.shadow import FINGERPRINT_LEN as SHADOW_FP_LEN
 from capitalizator.types import require_utc
 
 N_MIN = 20
@@ -98,6 +99,8 @@ class ImmuneMemory:
             raise ValueError("max_records must be >= N_MIN")
         self.symbol = symbol
         self.records: deque[Antigen] = deque(maxlen=max_records)
+        self.migrated = 0
+        self.skipped = 0
 
     @property
     def n(self) -> int:
@@ -152,19 +155,34 @@ class ImmuneMemory:
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> ImmuneMemory:
+        """Load persisted antigens. Rows written before the Footprint organ carry the
+        10-int Shadow fingerprint only; they are migrated by padding the Footprint
+        axes with the neutral bucket (0 = NONE / no OI / no liquidations) and counted
+        in `migrated`. Anything else malformed is skipped and counted in `skipped` —
+        a desk restart must never die on its own memory (audit B7)."""
         out = cls(str(raw.get("symbol") or ""))
         rows = raw.get("records") or []
         if not isinstance(rows, list):
             raise ValueError("memory records must be a list")
+        out.migrated = 0
+        out.skipped = 0
         for row in rows:
             if not isinstance(row, dict):
-                raise ValueError("memory record must be a mapping")
-            out.records.append(
-                Antigen(
-                    fingerprint=tuple(int(v) for v in row["f"]),
-                    family=str(row["family"]),
-                    trap=bool(row["trap"]),
-                    ts=str(row["ts"]),
+                out.skipped += 1
+                continue
+            try:
+                fp = tuple(int(v) for v in row["f"])
+                if len(fp) == SHADOW_FP_LEN:
+                    fp = fp + (0,) * (FINGERPRINT_LEN - SHADOW_FP_LEN)
+                    out.migrated += 1
+                out.records.append(
+                    Antigen(
+                        fingerprint=fp,
+                        family=str(row["family"]),
+                        trap=bool(row["trap"]),
+                        ts=str(row["ts"]),
+                    )
                 )
-            )
+            except (KeyError, TypeError, ValueError):
+                out.skipped += 1
         return out

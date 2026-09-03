@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 from pathlib import Path
 
@@ -156,22 +157,50 @@ def test_save_and_load_roundtrip_dict_store() -> None:
     assert back.mirror_ok is True
 
 
-def test_load_rejects_wrong_tf_and_unknown_organ() -> None:
+def test_load_reports_bad_organs_instead_of_dying() -> None:
+    """A corrupt organ must not stop the desk from starting: it is dropped and named."""
     eye = OkoEye(working_tf="15m")
     for bar in _bars([0.001] * 3):
         eye.on_bar_close(bar)
     store = DictStore()
     eye.save(store)
-    with pytest.raises(ValueError, match="tf"):
-        OkoEye(working_tf="1h").load(store)
+    other = OkoEye(working_tf="1h")
+    other.load(store)
+    assert "BTCUSDT" not in other.weathers
+    assert any("tf" in v for v in other.load_errors.values())
     bad = DictStore()
     bad.rows["oko:liver:BTCUSDT"] = "{}"
-    with pytest.raises(ValueError, match="organ"):
-        OkoEye(working_tf="15m").load(bad)
+    e2 = OkoEye(working_tf="15m")
+    e2.load(bad)
+    assert "organ" in e2.load_errors["oko:liver:BTCUSDT"]
     nosym = DictStore()
     nosym.rows["oko:passport"] = "{}"
-    with pytest.raises(ValueError, match="symbol"):
-        OkoEye(working_tf="15m").load(nosym)
+    e3 = OkoEye(working_tf="15m")
+    e3.load(nosym)
+    assert "symbol" in e3.load_errors["oko:passport"]
+
+
+def test_load_migrates_pre_footprint_memory_rows() -> None:
+    """Antigens saved between 20:02 and 21:23 on 2026-09-02 carry 10 ints (Shadow only).
+    They are padded with the neutral Footprint bucket, not thrown away, not a crash."""
+    from capitalizator.oko.footprint import FINGERPRINT_LEN
+
+    store = DictStore()
+    store.rows["oko:memory:BTCUSDT"] = json.dumps({
+        "symbol": "BTCUSDT",
+        "records": [
+            {"f": [1, 0, 2, 0, 0, 1, 0, 0, 3, 0], "family": "bounce", "trap": True, "ts": "2026-09-02T20:30:00+00:00"},
+            {"f": [1, 0, 2, 0, 0, 1, 0, 0, 3, 0, 0, 1, 2], "family": "bounce", "trap": False, "ts": "2026-09-02T21:30:00+00:00"},
+            {"f": [1, 2], "family": "bounce", "trap": False, "ts": "x"},
+        ],
+    })
+    eye = OkoEye(working_tf="15m")
+    eye.load(store)
+    mem = eye.memory_for("BTCUSDT")
+    assert mem.n == 2 and mem.migrated == 1 and mem.skipped == 1
+    assert all(len(r.fingerprint) == FINGERPRINT_LEN for r in mem.records)
+    assert "migrated=1" in eye.load_errors["oko:memory:BTCUSDT"]
+
 
 
 def test_save_and_load_through_knowledge(tmp_path: Path) -> None:

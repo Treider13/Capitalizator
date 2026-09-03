@@ -209,32 +209,46 @@ class OkoEye:
             store.set_meta(f"{META_PREFIX}mirror", _dump(self.mirror.to_dict()))
 
     def load(self, store: MetaStore) -> int:
-        """Rebuild organs from meta. Returns the number of keys read. Bad JSON raises."""
+        """Rebuild organs from meta. Returns the number of keys read.
+
+        One corrupt organ is dropped and reported in `load_errors` (the desk shows
+        it); it never stops the desk from starting — the organ simply starts empty
+        and learns again. Memory rows from before the Footprint organ are migrated.
+        """
         if not store.available():
             return 0
         rows = store.meta_prefix(META_PREFIX)
+        self.load_errors: dict[str, str] = {}
         for key, raw in sorted(rows.items()):
             parts = key[len(META_PREFIX) :].split(":", 1)
-            payload = json.loads(raw)
-            if not isinstance(payload, dict):
-                raise ValueError(f"oko meta {key} is not a mapping")
-            if parts[0] == "mirror":
-                self.mirror = MirrorReport.from_dict(payload)
-                continue
-            if len(parts) != 2 or not parts[1]:
-                raise ValueError(f"oko meta key without symbol: {key}")
-            organ, symbol = parts
-            if organ == "passport":
-                self.passports[symbol] = Passport.from_dict(payload)
-            elif organ == "weather":
-                weather = Weather.from_dict(payload)
-                if weather.tf != self.working_tf:
-                    raise ValueError(f"oko weather tf {weather.tf} != {self.working_tf}")
-                self.weathers[symbol] = weather
-            elif organ == "memory":
-                self.memories[symbol] = ImmuneMemory.from_dict(payload)
-            else:
-                raise ValueError(f"unknown oko organ: {organ}")
+            try:
+                payload = json.loads(raw)
+                if not isinstance(payload, dict):
+                    raise ValueError("not a mapping")
+                if parts[0] == "mirror":
+                    self.mirror = MirrorReport.from_dict(payload)
+                    continue
+                if len(parts) != 2 or not parts[1]:
+                    raise ValueError("key without symbol")
+                organ, symbol = parts
+                if organ == "passport":
+                    self.passports[symbol] = Passport.from_dict(payload)
+                elif organ == "weather":
+                    weather = Weather.from_dict(payload)
+                    if weather.tf != self.working_tf:
+                        raise ValueError(f"weather tf {weather.tf} != {self.working_tf}")
+                    self.weathers[symbol] = weather
+                elif organ == "memory":
+                    mem = ImmuneMemory.from_dict(payload)
+                    self.memories[symbol] = mem
+                    if mem.migrated or mem.skipped:
+                        self.load_errors[key] = (
+                            f"memory migrated={mem.migrated} skipped={mem.skipped}"
+                        )
+                else:
+                    raise ValueError(f"unknown organ: {organ}")
+            except (ValueError, KeyError, TypeError) as exc:
+                self.load_errors[key] = str(exc)
         return len(rows)
 
 

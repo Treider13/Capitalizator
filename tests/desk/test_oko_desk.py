@@ -390,3 +390,30 @@ def test_b_veto_does_not_blind_oko(tmp_path: Path) -> None:
     assert journal["oko_footprint"] == "NONE"
     assert journal["oko_voice"] == "VETO"  # ОКО judged the same touch
     assert journal["jury"] == "VETO"
+
+
+def test_forecast_class_key_matches_between_judge_and_samples(tmp_path: Path) -> None:
+    """Audit B7: `judge` keyed the class WITH the footprint axis, `_oko_samples` WITHOUT it
+    → the keys never matched and n_class stayed 0 for the life of the desk."""
+    from capitalizator.oko.forecast import class_key
+
+    desk = _desk(tmp_path)
+    desk.on_event(_snapshot(WINDOW))
+    desk.on_event(_trade(WINDOW), [ZONE])
+    desk.on_event(_diff(WINDOW + timedelta(seconds=2), seq=2, bid="30"))
+    desk.tick(WINDOW + timedelta(seconds=8))
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    row = desk.knowledge.get_journal_touch(events[0]["touch_id"])
+    assert row is not None and row["oko_footprint"] is not None
+    # resolve the touch so it becomes a sample (journal path)
+    desk.registry._patch(touch_id=row["touch_id"], overwrite=True, outcome="bounce")
+    row["outcome"] = "bounce"
+    desk.knowledge.put_journal_touch(row["touch_id"], row)
+    samples = desk._oko_samples()
+    assert samples, "a resolved touch must become a forecast sample"
+    judge_key = class_key(
+        idea=row["idea"], cav=row["cav_label"], zlg=row["zlg_label"],
+        regime=row["oko_regime"], footprint=row["oko_footprint"],
+    )
+    assert samples[0].class_key == judge_key
+    assert not samples[0].class_key.endswith("× ?")
