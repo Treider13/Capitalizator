@@ -374,7 +374,11 @@
       const span = st.hours24_span_s;
       let contourTxt = "контур " + contour;
       contourTxt += hours24 ? " · сутки ленты есть" : " · суток ленты нет";
-      if (span != null) contourTxt += " · " + span + " с";
+      if (span != null) contourTxt += " · непрерывно " + Math.round(span / 3600) + " ч";
+      const det = st.hours24_detail || {};
+      if (det.unmarked_holes) contourTxt += " · немаркированных дыр: " + det.unmarked_holes;
+      if (det.marked_gaps) contourTxt += " · помеченных пауз: " + det.marked_gaps;
+      if (!hours24 && det.reason) contourTxt += " · " + det.reason;
       document.getElementById("contour-status").textContent = contourTxt;
       document.getElementById("contour-status").className = contour === "on" ? "pill ok" : "empty";
       const action = document.getElementById("contour-action");

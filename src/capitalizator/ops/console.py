@@ -191,6 +191,8 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         "contour": contour["contour"],
         "hours24": contour["hours24"],
         "hours24_span_s": contour["hours24_span_s"],
+        "hours24_source": contour.get("hours24_source"),
+        "hours24_detail": contour.get("hours24_detail"),
         "can_enable": contour["can_enable"],
         "n_hash": counts["hash_links"],
         "n_episode": counts["episodes"],
