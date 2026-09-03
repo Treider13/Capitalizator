@@ -69,7 +69,9 @@ class BounceSnapshot:
     zones: tuple[Zone, ...] = ()
     next_target: Zone | None = None
     spread_frac: Decimal = Decimal("0")
-    typical_move: Decimal = Decimal("0.01")
+    # ATR14 / price from the desk; None = not measured yet (the spread-vs-move screen
+    # is skipped and recorded, the EV gate still prices fees against the real R).
+    typical_move: Decimal | None = None
     unlock_tomorrow: bool = False
     unlock_today: bool = False
     delisted: bool = False
@@ -304,6 +306,13 @@ class BounceStrategy:
         self.first_minute = FirstMinute()
         # Journal-only: whether the last A+ idea's window would have allowed 5x.
         self.last_aplus_5x_ok: bool | None = None
+        # Why the last `propose` returned None (`None` after an accepted proposal). The
+        # desk journals it as `send_skip`: a refusal without a reason is a blind spot.
+        self.last_skip: str | None = None
+
+    def _refuse(self, reason: str) -> None:
+        self.last_skip = reason
+        return None
 
     def _session_allows(self, snap: BounceSnapshot, *, lev: Decimal) -> tuple[bool, str]:
         """SessionPolicy: time × idea × symbol × funding × US-data day (one calendar)."""
@@ -321,39 +330,40 @@ class BounceStrategy:
         )
 
     def propose(self, snap: BounceSnapshot) -> Intent | None:
+        self.last_skip = None
         if self.desk_mode not in {"demo", "live"} or snap.trading_mode not in {
             "demo",
             "live",
         }:
-            return None
+            return self._refuse("mode:not_demo_live")
         if self.require_card:
             try:
                 card = snap.card if snap.card is not None else require_card(
                     snap.card_path, required=True
                 )
             except ValueError:
-                return None
+                return self._refuse("card:missing_or_invalid")
             if card is None:
-                return None
+                return self._refuse("card:none")
             if self.check_load_bearing and not load_bearing_ok(card):
-                return None
+                return self._refuse("card:load_bearing")
         if snap.b_verdict == "veto":
-            return None
+            return self._refuse("b:veto")
         if snap.b_verdict == "hold":
-            return None
+            return self._refuse("b:hold")
         if snap.venue == "spot_proposal" and not snap.spot_acked:
-            return None
+            return self._refuse("spot:not_acked")
         if snap.b_verdict in {"propose", "cut_size"} and not snap.b_marks_ok:
-            return None
+            return self._refuse("b:marks_red")
         if TAKER_OK:
-            return None
-        ok, _reason = self._session_allows(snap, lev=snap.lev)
+            return self._refuse("taker:forbidden")
+        ok, reason = self._session_allows(snap, lev=snap.lev)
         if not ok:
-            return None
+            return self._refuse(f"session:{reason}")
         if not self.risk.allow_entry():
-            return None
+            return self._refuse("risk:max_open")
         if not self.halts.allow_entry():
-            return None
+            return self._refuse("halts:closed")
         spot_rail = snap.venue == "spot_proposal" and snap.spot_acked
         if not spot_rail and not self.screener.ok(
             snap.symbol,
@@ -365,24 +375,24 @@ class BounceStrategy:
             funding_extreme=snap.funding_extreme,
             volume_ok=snap.volume_ok,
         ):
-            return None
+            return self._refuse("screener")
         zone = snap.zone
         if zone is None or zone.symbol != snap.symbol:
-            return None
+            return self._refuse("zone:none_or_other_symbol")
         if in_mid_range(
             snap.price,
             snap.zones,
             tick=snap.tick,
             band_ticks=self.registry.mid_band_ticks if self.require_jury else 0,
         ):
-            return None
+            return self._refuse("mid_range")
         if not price_in_zone(snap.price, zone):
-            return None
+            return self._refuse("price:outside_zone")
         idea = snap.idea if snap.idea in _IDEAS else "bounce"
         if idea == _LEGACY_FADE and self.require_jury:
             # Desk law: a wick through + close inside is a held level (spring).
             # Fading it is a shadow challenger, never a sent order.
-            return None
+            return self._refuse("idea:legacy_fade")
         # 2.10.1 / 2.10.2: an eaten level or a silent/pulled wall is not a bounce. The
         # desk turns these checks on (check_tape / check_wall); F1 isolated fixtures
         # leave them off and only record.
@@ -390,35 +400,35 @@ class BounceStrategy:
             (self.check_tape and snap.tape_eaten is True)
             or (self.check_wall and (snap.wall_no_print is True or snap.wall_state == "pulled"))
         ):
-            return None
+            return self._refuse("tape:eaten_or_wall_pulled")
         side = "buy" if zone.side == "support" else "sell"
         if idea in _BREAK_IDEAS:
             # Desk idea_side: break of support is a short, break of resistance a long.
             side = "sell" if zone.side == "support" else "buy"
         if (side == "buy" and snap.fragile_long) or (side == "sell" and snap.fragile_short):
             # 3.15.5: no new entries on the crowded side at an OI peak with a thin book.
-            return None
+            return self._refuse("fragility:crowded_side")
         if snap.symbol != "BTCUSDT" and not self.btc_veto.allow(
             alt_side=side,
             btc_broke=snap.btc_broke,
             btc_zone_side=snap.btc_zone_side,  # type: ignore[arg-type]
         ):
-            return None
+            return self._refuse("btc:break_against")
         macro = self.macro.decide(snap.now, snap.calendar)
         if not macro.allow:
-            return None
+            return self._refuse("macro:blocked")
         fact = resolve_first_fact(snap.zlg_label, snap.gesture_n)
         if self.require_jury and fact.tag == "shadow_gesture":
-            return None
+            return self._refuse("first_fact:shadow_gesture")
         if (
             self.require_jury
             and self.desk_mode in {"demo", "live"}
             and snap.card_bearing_verdict
             not in {"VERIFIED", "propose", "cut_size"}
         ):
-            return None
+            return self._refuse("card:bearing_not_verified")
         if prs_cut(snap.prs_y, threshold=Decimal("3")).action == "reject":
-            return None
+            return self._refuse("prs:thin_book")
         if idea == "breakout":
             if not BreakoutClose.allow(
                 enabled=snap.allow_break,
@@ -430,9 +440,9 @@ class BounceStrategy:
                 ),
                 first_minute=snap.first_minute,
             ):
-                return None
+                return self._refuse("breakout:close_rule")
         if snap.oko_voice == "VETO":
-            return None
+            return self._refuse("oko:veto")
         if self.require_jury or snap.jury is not None or snap.cav_label or snap.zlg_label:
             voice_fn = {
                 "bounce": voices_for_bounce,
@@ -456,9 +466,9 @@ class BounceStrategy:
             )
             label = decide(voices)
             if snap.jury is not None and snap.jury != "ACCORD":
-                return None
+                return self._refuse("jury:not_accord")
             if label != "ACCORD":
-                return None
+                return self._refuse("jury:label_not_accord")
             aplus = APlus.ok(
                 roles=(
                     voices.cav == 1,
@@ -488,7 +498,7 @@ class BounceStrategy:
                     side=side,
                 )
         except ValueError:
-            return None
+            return self._refuse("stop:structural_invalid")
         structural = stop
         try:
             # §6: volatility buffer + cluster avoidance on top of the structural level.
@@ -508,16 +518,16 @@ class BounceStrategy:
             )
             stop = smart.stop
         except ValueError:
-            return None
+            return self._refuse("stop:smart_invalid")
         if side == "buy" and snap.price <= stop:
-            return None
+            return self._refuse("stop:wrong_side_buy")
         if side == "sell" and snap.price >= stop:
-            return None
+            return self._refuse("stop:wrong_side_sell")
         tp = take_profit(side, snap.price, stop, snap.next_target, idea=idea)
         if tp is None:
-            return None
+            return self._refuse("tp:none")
         if not self.budget.allow_entry():
-            return None
+            return self._refuse("budget:spent")
         if idea == "bounce":
             tag = SETUP_TAG
         elif idea == _LEGACY_FADE:

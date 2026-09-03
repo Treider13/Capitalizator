@@ -24,7 +24,7 @@ class Screener:
         symbol: str,
         *,
         spread_frac: Decimal,
-        typical_move: Decimal,
+        typical_move: Decimal | None,
         unlock_tomorrow: bool = False,
         unlock_today: bool = False,
         delisted: bool = False,
@@ -37,7 +37,13 @@ class Screener:
             return False
         if delisted or funding_extreme or not volume_ok:
             return False
-        if spread_frac < 0 or typical_move <= 0:
+        if spread_frac < 0:
+            return False
+        if typical_move is None:
+            # No ATR yet: the volatility screen is not measured. Nothing is invented; the
+            # EV gate (fees vs the trade's own R) still decides downstream.
+            return True
+        if typical_move <= 0:
             return False
         cost = spread_frac + self.fees.rate("maker") * 2
         return cost < typical_move

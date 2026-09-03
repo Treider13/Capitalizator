@@ -1664,6 +1664,9 @@ class DeskLoop:
             if spr is not None and mid_px is not None and mid_px > 0:
                 fragility = self._fragility(st)
                 payload_row["fragility"] = fragility
+                typical_move, tm_source = self._typical_move(st, row.trade_px)
+                payload_row["typical_move"] = None if typical_move is None else str(typical_move)
+                payload_row["typical_move_source"] = tm_source
                 snap = BounceSnapshot(
                     now=closed_at,
                     symbol=st.symbol,
@@ -1679,6 +1682,11 @@ class DeskLoop:
                         symbol=st.symbol,
                     ),
                     spread_frac=spr / mid_px,
+                    # Measured, not the dataclass default: ATR14/price, else this bar's range.
+                    typical_move=typical_move,
+                    # The closed bar's liquidity label; a dead bar is not a market to enter.
+                    volume_ok=row.bar_quality != "illiquid",
+                    lev=self.risk_config.max_lev,
                     calendar=self.calendar,
                     unlock_today=self.unlocks.team_today(st.symbol, closed_at),
                     unlock_tomorrow=self.unlocks.team_tomorrow(st.symbol, closed_at),
@@ -1748,7 +1756,13 @@ class DeskLoop:
                     closed_at, key=window.budget_key, max_n=window.budget
                 )
                 intent = self.strategy.propose(snap)
-                if intent is not None:
+                if intent is None:
+                    # The strategy's own refusal is a journal fact, like every gate after it.
+                    payload_row["send_skip"] = (
+                        f"propose:{getattr(self.strategy, 'last_skip', None) or 'refused'}"
+                    )
+                    self.knowledge.put_journal_touch(row.touch_id, payload_row)
+                else:
                     trade_labels = self._trade_labels(
                         row, zone, window=window, atr=snap.atr, spread=spr,
                         liq_levels=snap.liq_levels, stop=intent.stop, now=closed_at,
@@ -2453,6 +2467,20 @@ class DeskLoop:
     def _atr_for(self, st: SymbolState) -> Decimal | None:
         work = [b for b in st.bars if b.tf == self.config.working_tf]
         return atr_of(work[-15:]) if len(work) >= 2 else None
+
+    def _typical_move(self, st: SymbolState, price: Decimal) -> tuple[Decimal | None, str]:
+        """(move, source): the symbol's typical move the spread screener compares costs
+        with, as a fraction of price — ATR14 of the working TF once 15 bars exist.
+        Before that there is no volatility fact: None (the screen is recorded as
+        unmeasured and the EV gate, which prices fees against the trade's actual R,
+        decides). Never the dataclass default 1%.
+        """
+        if price <= 0:
+            return None, "no_price"
+        atr = self._atr_for(st)
+        if atr is not None and atr > 0:
+            return atr / price, "atr14"
+        return None, "no_atr_yet"
 
     # --- correlation guard: rolling ρ of HTF close returns, refreshed daily -------------
     CORRELATION_REFRESH_S = 24 * 3600

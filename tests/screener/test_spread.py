@@ -92,3 +92,11 @@ def test_delisted_and_funding_extreme_reject() -> None:
         )
         is False
     )
+
+
+def test_unmeasured_typical_move_skips_the_screen_but_zero_still_rejects() -> None:
+    # None = no ATR yet: the volatility screen is not measured (the EV gate decides);
+    # a measured zero move is a flat market and is refused.
+    assert Screener().ok("BTCUSDT", spread_frac=Decimal("0.001"), typical_move=None) is True
+    assert Screener().ok("BTCUSDT", spread_frac=Decimal("0.001"), typical_move=Decimal("0")) is False
+    assert Screener().ok("BTCUSDT", spread_frac=Decimal("-0.001"), typical_move=None) is False
