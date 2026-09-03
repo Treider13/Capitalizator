@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from capitalizator.ops import chronos_data, i18n_ru
 from capitalizator.ops.contour import ContourNotReady
@@ -367,7 +367,8 @@ def _page(snap: dict[str, Any], *, token: str = "") -> str:
       <h2>Свеча (CAV) × Книга (ZLG) × Исход</h2>
       <table><tbody>{cav_html}</tbody></table>
       <h2>Жюри дня</h2><ul>{jury_html}</ul>
-      <p><a href="/settings">Настройки: ключи и источники</a>
+      <p><a href="/ops">Управление: команды, риск-меню, сессии, вселенная</a>
+      · <a href="/settings">Настройки: ключи и источники</a>
       · <a href="/api/glossary">Словарь кодов (JSON)</a> · входы: {blocked_txt}</p>
       <p>n касаний {int(snap.get("n_touches") or 0)}</p>
       <p>День учёбы {html.escape(learn_txt)}</p>
@@ -553,6 +554,41 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
         finally:
             knowledge.close()
     return None
+
+
+def render_ops(app: ConsoleApp, *, message: str | None = None) -> str:
+    """«Управление»: every operator capability as a form, current facts beside it."""
+    from capitalizator.ops.account_view import sessions_view, universe_view
+    from capitalizator.ops.ops_page import render_ops_html
+    from capitalizator.risk.config import load_risk_config
+
+    status = desk_snapshot(app.vault)
+    knowledge = open_knowledge(app.vault, create=False)
+    try:
+        keys = (
+            "exchange_state", "entries_blocked_since", "window_drift", "drift", "exam_last",
+            "night_last", "champion_candidate",
+        )
+        meta: dict[str, str | None] = dict.fromkeys(keys)
+        if knowledge.available():
+            meta = {k: knowledge.meta(k) for k in keys}
+        page = render_ops_html(
+            token=app.csrf_token,
+            status=status,
+            risk={"risk_config": load_risk_config(knowledge).to_payload()},
+            sessions=sessions_view(knowledge),
+            universe=universe_view(knowledge),
+            commands=knowledge.commands(limit=40) if knowledge.available() else [],
+            meta=meta,
+            message=message,
+        )
+    finally:
+        knowledge.close()
+    low = page.lower()
+    for word in ADVICE_WORDS:
+        if word in low:
+            raise ValueError("ops page must not advise")
+    return page
 
 
 def render_html(vault: Vault, *, day: str | None = None, token: str = "") -> str:
@@ -948,13 +984,20 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     ack = _token_ok(app, self, payload)
                     payload.pop("ack_token", None)
                     payload.pop("ack", None)
+                    payload.pop("confirm", None)  # «Управление» checkbox; not a field
+                    redirect = payload.pop("redirect", None) in {"1", "true", True}
+                    if path == "/api/risk" and redirect:
+                        # HTML form: empty input = leave unchanged
+                        payload = {k: v for k, v in payload.items() if str(v).strip() != ""}
                     try:
                         if path == "/api/risk":
                             out = app.set_risk(payload, ack=ack)
+                            note = f"риск-меню сохранено, версия {out['risk_config']['version']}"
                         elif path == "/api/universe":
                             out = app.apply_universe(
                                 str(payload.get("proposal_id") or ""), ack=ack
                             )
+                            note = "вселенная применена; вступит после рестарта стола и рекордера"
                         else:
                             out = app.command(
                                 str(payload.get("kind") or ""),
@@ -962,9 +1005,22 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                                 ack=ack,
                                 reason=str(payload.get("reason") or ""),
                             )
+                            note = f"команда поставлена в очередь (#{out['queued']['id']})"
                     except ValueError as exc:
                         code = 403 if "ack" in str(exc) else 400
+                        if redirect:
+                            self._send(
+                                303, b"", "text/plain; charset=utf-8",
+                                extra={"Location": "/ops?msg=" + quote(f"отказ: {exc}")},
+                            )
+                            return
                         self._send(code, str(exc).encode(), "text/plain; charset=utf-8")
+                        return
+                    if redirect:
+                        self._send(
+                            303, b"", "text/plain; charset=utf-8",
+                            extra={"Location": "/ops?msg=" + quote(note)},
+                        )
                         return
                     body = json.dumps(out, ensure_ascii=False, default=str).encode()
                     self._send(200, body, "application/json; charset=utf-8")
@@ -1053,6 +1109,10 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 elif path == "/touch":
                     snap = desk_snapshot(app.vault)
                     body = render_touch_html(snap.get("touch")).encode()
+                    code, ctype = 200, "text/html; charset=utf-8"
+                elif path == "/ops":
+                    msg = (parse_qs(parsed.query).get("msg") or [None])[0]
+                    body = render_ops(app, message=msg).encode()
                     code, ctype = 200, "text/html; charset=utf-8"
                 elif path == "/settings":
                     knowledge = open_knowledge(app.vault, create=False)

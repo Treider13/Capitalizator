@@ -58,6 +58,7 @@ select = ["E", "F", "I", "UP"]
 "src/capitalizator/ops/i18n_ru.py" = ["E501"]
 "src/capitalizator/ops/settings.py" = ["E501"]
 "src/capitalizator/ops/settings_page.py" = ["E501"]
+"src/capitalizator/ops/ops_page.py" = ["E501"]
 "src/capitalizator/ops/gen_status.py" = ["E501"]
 
 [tool.mypy]

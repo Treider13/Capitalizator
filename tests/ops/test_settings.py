@@ -216,3 +216,67 @@ def test_console_writes_need_the_process_token_and_a_loopback_origin(tmp_path: P
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_ops_page_exposes_every_operator_command_and_posts_through_the_token(tmp_path: Path) -> None:
+    """Everything that used to be API-only is a form on /ops: commands, risk menu,
+    universe apply, sessions and drift facts; a form post lands in the ONE queue."""
+    import threading
+    from http.client import HTTPConnection
+    from http.server import HTTPServer
+    from urllib.parse import urlencode
+
+    from capitalizator.ops.console import _handler, render_ops
+    from capitalizator.ops.knowledge import Knowledge, open_knowledge
+
+    vault = init_vault(tmp_path / "v")
+    kn0 = open_knowledge(vault)
+    # a stranger on the venue → the page offers «Принять позицию» for it
+    kn0.set_meta("exchange_state", json.dumps({"unknown_detail": [
+        {"symbol": "ETHUSDT", "side": "Buy", "size": "1", "avg_price": "4000", "stop_loss": None}
+    ], "unknown_positions": ["ETHUSDT"]}))
+    kn0.close()
+    app = ConsoleApp(vault)
+    page = render_ops(app)
+    for kind in Knowledge.COMMAND_KINDS:
+        assert f"name='kind' value='{kind}'" in page, kind
+    assert "name='symbol' value='ETHUSDT'" in page
+    for key in ("target_risk_pct", "max_lev", "participating_share", "require_ict_marks"):
+        assert f"name='{key}'" in page
+    assert "action='/api/risk'" in page and "Сессии" in page and "Вселенная" in page
+    assert app.csrf_token in page and "name='confirm'" in page
+
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    host, port = server.server_address[:2]
+    try:
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("GET", "/ops")
+        assert conn.getresponse().status == 200
+        conn.close()
+        body = urlencode({"kind": "pause_entries", "reason": "тест", "ack_token": app.csrf_token,
+                          "confirm": "on", "redirect": "1"})
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("POST", "/api/command", body=body,
+                     headers={"Content-Type": "application/x-www-form-urlencoded",
+                              "Origin": f"http://127.0.0.1:{port}"})
+        resp = conn.getresponse()
+        assert resp.status == 303 and resp.getheader("Location", "").startswith("/ops?msg=")
+        conn.close()
+        # the risk form leaves empty fields alone and refuses to lift above phase.yaml
+        body = urlencode({"target_risk_pct": "0.5", "max_lev": "", "ack_token": app.csrf_token,
+                          "confirm": "on", "redirect": "1"})
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("POST", "/api/risk", body=body,
+                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        resp = conn.getresponse()
+        assert resp.status == 303 and "%D0%BE%D1%82%D0%BA%D0%B0%D0%B7" in resp.getheader("Location", "")  # «отказ»
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+    kn = open_knowledge(vault)
+    rows = kn.commands(limit=5)
+    assert [r["kind"] for r in rows] == ["pause_entries"] and rows[0]["status"] == "pending"
+    assert rows[0]["payload"]["reason"] == "тест"
+    kn.close()

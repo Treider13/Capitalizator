@@ -2040,7 +2040,9 @@ class DeskLoop:
         return result, [{"event": "promote", **{k: result[k] for k in ("passed",)}}]
 
     def _consume_commands(self, now: datetime) -> list[dict[str, Any]]:
-        """Claim the table queue (console) and empty the meta JSON queue (sessions)."""
+        """Operator commands are claimed atomically from the one `desk_commands` table
+        (no read-modify-write on meta): a command posted between two desk ticks can
+        neither be lost nor run twice; its result is written back for the console."""
         out: list[dict[str, Any]] = []
         for cmd in self.knowledge.claim_commands(self.DESK_COMMANDS):
             kind = cmd["kind"]
@@ -2052,15 +2054,6 @@ class DeskLoop:
                 self.knowledge.mark_command(cmd["id"], "done", result)
             except Exception as exc:  # one bad command must not stop the others
                 self.knowledge.mark_command(cmd["id"], "failed", {"error": str(exc)})
-                out.append({"event": "command_failed", "kind": kind, "error": str(exc)})
-        for cmd in self.knowledge.pop_commands():
-            kind = str(cmd.get("kind") or "")
-            if kind not in self.DESK_COMMANDS:
-                continue
-            try:
-                _result, events = self._run_command(kind, cmd, cmd.get("symbol"), now)
-                out.extend(events)
-            except Exception as exc:
                 out.append({"event": "command_failed", "kind": kind, "error": str(exc)})
         return out
 

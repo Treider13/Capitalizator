@@ -105,7 +105,7 @@ def run_night(knowledge: Knowledge, *, day: str, now: datetime) -> dict[str, Any
     }
     knowledge.set_meta("intel_night", json.dumps(intel, sort_keys=True, default=str))
 
-    return {
+    out = {
         "day": day,
         "n_rows": len(rows),
         "report": body,
@@ -117,6 +117,13 @@ def run_night(knowledge: Knowledge, *, day: str, now: datetime) -> dict[str, Any
         "oko": oko,
         "intel_sources": len(intel["sources"]),
     }
+    # the console's «Управление» page shows the last night run without the report body
+    knowledge.set_meta(
+        "night_last",
+        json.dumps({**{k: v for k, v in out.items() if k != "report"}, "at": when.isoformat()},
+                   sort_keys=True, default=str),
+    )
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
