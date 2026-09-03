@@ -92,8 +92,10 @@ class TapeCursor:
     """
 
     RECENT_DAYS = 2
-    MAX_BYTES = 24 * 1024 * 1024  # jsonl bytes per pass
-    MAX_ROWS = 150_000  # parquet rows per pass
+    # sized so one pass stays well under the 30 s dead-man: a longer pass starves the
+    # desk heartbeat and the signer blocks entries with reason `desk` while catching up
+    MAX_BYTES = 8 * 1024 * 1024  # jsonl bytes per pass
+    MAX_ROWS = 60_000  # parquet rows per pass
     BOOK_HOURS = 2  # production first pass: book deltas only this recent
 
     def __init__(
