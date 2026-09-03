@@ -308,7 +308,9 @@ def test_two_parquet_writers_do_not_corrupt(tmp_path: Path) -> None:
     assert sink_a.accepted_count + sink_b.accepted_count == 10
 
 
-def test_btc_same_side_is_plus_one_not_zero() -> None:
+def test_btc_same_side_is_permission_and_break_against_is_veto() -> None:
+    """BTC is a filter (jury §3.1): the same side is permission (0), never evidence (+1);
+    a break against the alt idea is VETO."""
     voices = voices_for_bounce(
         cav="REJECT",
         n_cav=20,
@@ -318,7 +320,12 @@ def test_btc_same_side_is_plus_one_not_zero() -> None:
         btc_regime="long",
         btc_same_side=True,
     )
-    assert voices.btc == 1
+    assert voices.btc == 0
+    against = voices_for_bounce(
+        cav="REJECT", n_cav=20, zlg="DEFEND", n_zlg=20, tape_eaten=False,
+        btc_regime="long", btc_break_against=True,
+    )
+    assert against.btc == "VETO"
 
 
 def test_console_html_has_plan_screen(tmp_path: Path) -> None:
