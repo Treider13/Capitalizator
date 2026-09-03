@@ -102,7 +102,7 @@ from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 from capitalizator.risk.account import Account
 from capitalizator.risk.config import load_risk_config
-from capitalizator.risk.correlation import returns_from_closes
+from capitalizator.risk.correlation import CorrelationGuard, returns_from_closes
 from capitalizator.risk.schema import Intent
 from capitalizator.risk.session import cpi_day, us_data_known_at
 from capitalizator.risk.sessions import SessionPolicy, WindowState
@@ -239,8 +239,14 @@ class DeskLoop:
         self._k_atr_calibrated: dict[str, Decimal] = {}
         self._hold_hours: dict[str, Decimal] = {}
         # window → ISO time the drift was detected; cleared by the operator only.
+        # ack_n: loss-series length at the last release (detection restarts after it).
         self._window_drift: dict[str, str] = {}
+        self._drift_ack_n: dict[str, int] = {}
         self._drift = PageHinkley(delta=0.05, threshold=8.0)
+        # Day screen cache: (minute, frozenset) — the scan walks every symbol's bars.
+        self._screen_cache: tuple[datetime, frozenset[str]] | None = None
+        # Live funding intervals from the ticker; re-applied after an instruments-info merge.
+        self._live_funding_interval: dict[str, int] = {}
         self._correlation_at: datetime | None = None
         self.oko = OkoEye(working_tf=self.config.working_tf)
         self.shadow_writes: list[dict[str, Any]] = []
@@ -276,6 +282,7 @@ class DeskLoop:
         self._last_settle: datetime | None = None
         if knowledge.available():
             self._reload_instruments()
+            self._load_drift()
 
     def tick_for(self, symbol: str) -> Decimal:
         """Instrument tick. Legacy mode falls back to the constructor tick."""
@@ -1854,16 +1861,13 @@ class DeskLoop:
 
     # --- operator commands / config hot reload (D-37, D-12) -------------------------
     def _consume_commands(self, now: datetime) -> list[dict[str, Any]]:
-        raw = self.knowledge.meta("desk_commands")
-        if not raw:
+        # One transaction takes the queue and empties it: a console append that lands
+        # between "read" and "clear" is neither lost nor executed twice.
+        queue = self.knowledge.pop_commands()
+        if not queue:
             return []
-        try:
-            queue = json.loads(raw)
-        except json.JSONDecodeError:
-            queue = []
-        self.knowledge.set_meta("desk_commands", "[]")
         out: list[dict[str, Any]] = []
-        for cmd in queue if isinstance(queue, list) else []:
+        for cmd in queue:
             kind = str(cmd.get("kind") or "")
             symbol = cmd.get("symbol")
             if kind == "flatten":
@@ -1989,13 +1993,20 @@ class DeskLoop:
         self._hold_hours = median_hold_hours(rows)
         # Page-Hinkley on each window's loss series: a window whose loss rate rose is
         # cut to half size until the operator releases it (drift_release command).
+        # A release records the series length; detection then runs only on trades
+        # closed after it, so the same old losses cannot re-flag the window at once.
+        changed = False
         for window, bits in loss_series_by_window(rows).items():
-            if len(bits) < self.DRIFT_MIN_N or window in self._window_drift:
+            if window in self._window_drift:
                 continue
-            if self._drift.run(bits).drift:
+            fresh = bits[self._drift_ack_n.get(window, 0) :]
+            if len(fresh) < self.DRIFT_MIN_N:
+                continue
+            if self._drift.run(fresh).drift:
                 self._window_drift[window] = now.isoformat()
-        if self._window_drift:
-            self._ui_put("window_drift", json.dumps(self._window_drift, sort_keys=True))
+                changed = True
+        if changed:
+            self._persist_drift()
         if self._calibration:
             self._ui_put("calibration", to_meta(self._calibration))
         if self._k_atr_calibrated:
@@ -2028,6 +2039,10 @@ class DeskLoop:
         except json.JSONDecodeError:
             return
         n = self.instruments.merge_snapshot(snap)
+        # instruments-info lags Bybit's dynamic settlement frequency; the ticker's
+        # live interval wins over the hourly snapshot we just merged.
+        for symbol, minutes in self._live_funding_interval.items():
+            self.instruments.set_funding_interval(symbol, minutes)
         for symbol in list(self.refused_symbols):
             if self.instruments.has(symbol):
                 del self.refused_symbols[symbol]
@@ -2042,6 +2057,18 @@ class DeskLoop:
         self.risk_config = cfg
         self.account.config = cfg
         self.account.risk.max_open = cfg.max_open_positions
+        # Correlation guard follows the slot count and threshold of the new config.
+        if cfg.max_open_positions > 1:
+            guard = self.account.correlation
+            if guard is None:
+                self.account.correlation = CorrelationGuard.load(
+                    threshold=cfg.corr_block_threshold
+                )
+                self._correlation_at = None  # refresh ρ on the next tick
+            elif guard.threshold != cfg.corr_block_threshold:
+                guard.threshold = cfg.corr_block_threshold
+        else:
+            self.account.correlation = None
         assert self.account.halts is not None
         self.account.halts.day_limit = cfg.day_halt
         self.account.halts.week_limit = cfg.week_halt
@@ -2085,13 +2112,18 @@ class DeskLoop:
                 spread=spread,
                 zones=[z for z in known_zones if z.zone_id != zone.zone_id],
                 k_atr=self.k_atr_for(window, row_symbol),
-                max_stop_atr=self.risk_config.max_stop_atr,
+                # W3: the shadow measures, it does not filter — no max_stop_atr ceiling
+                # here (stop_atr is still recorded in the components for the data);
+                # the live path in _eval_cav_and_jury applies the ceiling.
+                max_stop_atr=None,
                 liq_levels=liq_levels,
                 entry=row.trade_px,
                 manual_frac=self.risk_config.manual_stop_frac,
                 mode=self.risk_config.stop_mode,
             )
             stop = smart.stop
+            if atr is not None and atr > 0:
+                smart.components["stop_atr"] = str(abs(row.trade_px - stop) / atr)
         except ValueError:
             return None
         if (side == "buy" and row.trade_px <= stop) or (side == "sell" and row.trade_px >= stop):
@@ -2292,9 +2324,12 @@ class DeskLoop:
         interval = payload.get("interval_min")
         if interval not in (None, ""):
             try:
-                self.instruments.set_funding_interval(symbol, int(interval))
+                minutes = int(str(interval))
             except (TypeError, ValueError):
-                pass
+                minutes = 0
+            if 0 < minutes <= 24 * 60:
+                self._live_funding_interval[symbol] = minutes
+                self.instruments.set_funding_interval(symbol, minutes)
         turnover = payload.get("turnover24h")
         if turnover not in (None, ""):
             try:
@@ -2321,6 +2356,11 @@ class DeskLoop:
     SCREEN_RVOL_MIN = Decimal("1.5")
 
     def screened_symbols(self, now: datetime) -> frozenset[str]:
+        # Working bars close on a 15m grid; one scan per minute is exact enough and
+        # keeps the per-touch cost independent of the number of symbols.
+        minute = require_utc(now).replace(second=0, microsecond=0)
+        if self._screen_cache is not None and self._screen_cache[0] == minute:
+            return self._screen_cache[1]
         out: set[str] = set()
         for symbol, st in self.symbols.items():
             work = [b for b in st.bars if b.tf == self.config.working_tf and b.close_ts <= now]
@@ -2338,7 +2378,9 @@ class DeskLoop:
             if len(st.oi) < 2 or st.oi[-1][1] <= st.oi[0][1]:
                 continue
             out.add(symbol)
-        return frozenset(out)
+        result = frozenset(out)
+        self._screen_cache = (minute, result)
+        return result
 
     DRIFT_MIN_N = 30
     DRIFT_SIZE_MULT = Decimal("0.5")
@@ -2350,14 +2392,48 @@ class DeskLoop:
         return window.size_mult
 
     def release_drift(self, window: str | None = None) -> list[str]:
-        """Operator command: clear drift flags (all, or one window). Returns what was cleared."""
+        """Operator command: clear drift flags (all, or one window). Returns what was cleared.
+
+        The current length of each released window's loss series is remembered so the
+        detector restarts from the next closed trade, not from the losses already seen.
+        """
         cleared = sorted(self._window_drift) if window is None else (
             [window] if window in self._window_drift else []
         )
+        if not cleared:
+            return []
+        series = loss_series_by_window(self.knowledge.paper_trades(source="shadow"))
         for w in cleared:
             del self._window_drift[w]
-        self._ui_put("window_drift", json.dumps(self._window_drift, sort_keys=True))
+            self._drift_ack_n[w] = len(series.get(w, []))
+        self._persist_drift()
         return cleared
+
+    DRIFT_META = "window_drift_state"
+
+    def _persist_drift(self) -> None:
+        state = {"flagged": self._window_drift, "ack_n": self._drift_ack_n}
+        body = json.dumps(state, sort_keys=True)
+        if self.knowledge.available():
+            self.knowledge.set_meta(self.DRIFT_META, body)
+        self._ui_put("window_drift", json.dumps(self._window_drift, sort_keys=True))
+
+    def _load_drift(self) -> None:
+        raw = self.knowledge.meta(self.DRIFT_META) if self.knowledge.available() else None
+        if not raw:
+            return
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        flagged = state.get("flagged") if isinstance(state, dict) else None
+        ack = state.get("ack_n") if isinstance(state, dict) else None
+        if isinstance(flagged, dict):
+            self._window_drift = {str(k): str(v) for k, v in flagged.items()}
+        if isinstance(ack, dict):
+            self._drift_ack_n = {
+                str(k): int(v) for k, v in ack.items() if isinstance(v, int) and v >= 0
+            }
 
     def hold_hours_for(self, idea: str, window: WindowState) -> Decimal:
         """Median paper hold of idea×window when n ≥ 30, else the 2h EV default."""

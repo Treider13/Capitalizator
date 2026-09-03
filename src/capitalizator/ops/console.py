@@ -512,19 +512,14 @@ class ConsoleApp:
             raise ValueError("flatten needs a symbol (or ALL)")
         knowledge = open_knowledge(self.vault, create=True)
         try:
-            raw = knowledge.meta("desk_commands")
-            queue = json.loads(raw) if raw else []
-            if not isinstance(queue, list):
-                queue = []
             cmd = {
                 "kind": kind,
                 "symbol": symbol,
                 "reason": reason or "operator",
                 "at": datetime.now(tz=UTC).isoformat(),
             }
-            queue.append(cmd)
-            knowledge.set_meta("desk_commands", json.dumps(queue))
-            return {"queued": cmd, "pending": len(queue)}
+            pending = knowledge.push_command(cmd)
+            return {"queued": cmd, "pending": pending}
         finally:
             knowledge.close()
 

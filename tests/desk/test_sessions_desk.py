@@ -241,10 +241,76 @@ def test_window_drift_halves_size_until_released(tmp_path: Path) -> None:
     if ev["sent"]:
         assert Decimal(row["size_mult_applied"]) == Decimal("0.5")
         assert Decimal(row["ev"]["hold_hours"]) == Decimal(4)
-    desk.knowledge.set_meta("desk_commands", json.dumps([{"kind": "drift_release", "symbol": "ALL"}]))
+    # the flag survives a desk restart
+    desk_b = DeskLoop(knowledge=desk.knowledge, user_mode="demo", tick_size=TICK)
+    assert "overlap" in desk_b._window_drift
+    desk.knowledge.push_command({"kind": "drift_release", "symbol": "ALL"})
     out = desk.tick(OVERLAP + timedelta(seconds=10))
     assert {"event": "drift_release", "windows": ["overlap"]} in out
     assert desk._window_drift == {} and desk.window_size_mult(window) == Decimal("1.0")
+    # the release is remembered: the same old losses do not re-flag on the next refresh
+    assert desk._drift_ack_n["overlap"] == 120
+    desk._calibration_at = None
+    desk.tick(OVERLAP + timedelta(minutes=11))
+    assert desk._window_drift == {}
+    assert json.loads(desk.knowledge.meta("window_drift_state"))["ack_n"] == {"overlap": 120}
+    desk_c = DeskLoop(knowledge=desk.knowledge, user_mode="demo", tick_size=TICK)
+    assert desk_c._window_drift == {} and desk_c._drift_ack_n == {"overlap": 120}
+
+
+def test_command_queue_push_and_pop_are_single_transactions(tmp_path: Path) -> None:
+    kn = open_knowledge(init_vault(tmp_path / "v"))
+    assert kn.pop_commands() == []
+    assert kn.push_command({"kind": "pause_entries", "symbol": None}) == 1
+    assert kn.push_command({"kind": "resume_entries", "symbol": None}) == 2
+    got = kn.pop_commands()
+    assert [c["kind"] for c in got] == ["pause_entries", "resume_entries"]
+    assert kn.pop_commands() == [] and kn.meta("desk_commands") == "[]"
+    # a corrupt queue is not a crash: it is treated as empty and replaced
+    kn.set_meta("desk_commands", "{not json")
+    assert kn.push_command({"kind": "pause_entries"}) == 1
+    kn.close()
+
+
+def test_risk_config_reload_toggles_the_correlation_guard(tmp_path: Path) -> None:
+    from capitalizator.risk.config import RiskConfig, save_risk_config
+
+    desk = _desk(tmp_path, "demo", SUP_BTC, "100000.1", OVERLAP)
+    assert desk.account.correlation is not None
+    save_risk_config(desk.knowledge, RiskConfig(max_open_positions=1), ack=True)
+    desk.tick(OVERLAP)
+    assert desk.account.correlation is None and desk.risk.max_open == 1
+    save_risk_config(
+        desk.knowledge,
+        RiskConfig(max_open_positions=2, corr_block_threshold=Decimal("0.9")),
+        ack=True,
+    )
+    desk.tick(OVERLAP + timedelta(seconds=1))
+    assert desk.account.correlation is not None
+    assert desk.account.correlation.threshold == Decimal("0.9")
+
+
+def test_live_funding_interval_survives_an_instruments_merge(tmp_path: Path) -> None:
+    from capitalizator.instruments import InstrumentRegistry, instrument_from_bybit
+
+    kn = open_knowledge(init_vault(tmp_path / "v"))
+    reg = InstrumentRegistry()
+    row = {"symbol": "DOGEUSDT", "status": "Trading", "priceFilter": {"tickSize": "0.00001"},
+           "lotSizeFilter": {"qtyStep": "1", "minOrderQty": "1", "minNotionalValue": "5"},
+           "leverageFilter": {"maxLeverage": "75"}, "fundingInterval": 480}
+    reg.put(instrument_from_bybit(row, fetched_at=OVERLAP))
+    kn.set_meta("instruments_snapshot", json.dumps(reg.to_snapshot()))
+    desk = DeskLoop(knowledge=kn, user_mode="off")
+    desk.on_event(MarketEvent(stream="funding", exchange="bybit", symbol="DOGEUSDT",
+                              exchange_ts=OVERLAP, recv_ts=OVERLAP,
+                              payload={"funding": "0.005", "interval_min": "60"}))
+    assert desk.instruments.get("DOGEUSDT").funding_interval_min == 60
+    # the signer republishes instruments-info (still 480) → the live value is kept
+    reg2 = InstrumentRegistry()
+    reg2.put(instrument_from_bybit(row, fetched_at=OVERLAP + timedelta(hours=1)))
+    kn.set_meta("instruments_snapshot", json.dumps(reg2.to_snapshot()))
+    desk.tick(OVERLAP + timedelta(hours=1))
+    assert desk.instruments.get("DOGEUSDT").funding_interval_min == 60
 
 
 def test_liquidation_clusters_need_twenty_rows_then_bucket_by_volume(tmp_path: Path) -> None:

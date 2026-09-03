@@ -272,6 +272,65 @@ class Knowledge:
             self._cx.rollback()
             raise
 
+    def push_command(self, cmd: Mapping[str, Any]) -> int:
+        """Append one operator command to `desk_commands` inside ONE write transaction.
+
+        The console (HTTP thread) appends while the desk pops; a read-modify-write
+        across two transactions could resurrect a command the desk had already
+        consumed (double flatten) or drop a fresh one. BEGIN IMMEDIATE serialises the
+        read and the write. Returns the queue length after the append.
+        """
+        if self._cx is None:
+            raise FileNotFoundError("no knowledge db")
+        body = json.dumps(dict(cmd), sort_keys=True, default=str)
+        if contains_advice(body):
+            raise ValueError("command must not advise")
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._cx.execute("SELECT v FROM meta WHERE k = ?", ("desk_commands",)).fetchone()
+            queue: list[Any] = []
+            if row is not None:
+                try:
+                    got = json.loads(str(row["v"]))
+                except json.JSONDecodeError:
+                    got = []
+                if isinstance(got, list):
+                    queue = got
+            queue.append(json.loads(body))
+            self._cx.execute(
+                "INSERT OR REPLACE INTO meta(k, v) VALUES (?, ?)",
+                ("desk_commands", json.dumps(queue, sort_keys=True, default=str)),
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+        return len(queue)
+
+    def pop_commands(self) -> list[dict[str, Any]]:
+        """Take every queued operator command and empty the queue in ONE transaction."""
+        if self._cx is None:
+            return []
+        self._cx.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._cx.execute("SELECT v FROM meta WHERE k = ?", ("desk_commands",)).fetchone()
+            queue: list[dict[str, Any]] = []
+            if row is not None:
+                try:
+                    got = json.loads(str(row["v"]))
+                except json.JSONDecodeError:
+                    got = []
+                if isinstance(got, list):
+                    queue = [c for c in got if isinstance(c, dict)]
+            self._cx.execute(
+                "INSERT OR REPLACE INTO meta(k, v) VALUES (?, ?)", ("desk_commands", "[]")
+            )
+            self._cx.commit()
+        except Exception:
+            self._cx.rollback()
+            raise
+        return queue
+
     def set_meta_many(self, rows: Mapping[str, str]) -> None:
         """One BEGIN IMMEDIATE for a batch of meta keys (UI snapshots, counters)."""
         if self._cx is None:
