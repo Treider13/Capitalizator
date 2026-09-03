@@ -91,10 +91,12 @@ class Account:
 
     # --- clocks -------------------------------------------------------------
     def roll(self, now: datetime) -> None:
-        """Day/week starts for the halts. UTC date, ISO week."""
-        when = require_utc(now)
-        day = when.date().isoformat()
-        week = f"{when.isocalendar().year}-W{when.isocalendar().week:02d}"
+        """Day/week starts for the halts — in the desk's session calendar (Moscow),
+        the same day the intent budget uses. A UTC roll put the −3% day and the
+        3-entry day in different days (audit §3.5)."""
+        local = require_utc(now).astimezone(MSK)
+        day = local.date().isoformat()
+        week = f"{local.isocalendar().year}-W{local.isocalendar().week:02d}"
         assert self.halts is not None
         changed = False
         if self._day != day:

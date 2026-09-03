@@ -1111,201 +1111,6 @@ class DeskLoop:
             return "b_marks"
         return None
 
-    def _b_gate(
-        self,
-        st: SymbolState,
-        touch: Touch,
-        zone: Zone,
-        card: CardLive | None,
-    ) -> list[dict[str, Any]] | None:
-        """LEGACY (pre D-18): veto / hold / red marks stopped ZLG and CAV.
-
-        The desk no longer calls this — it starved the 24/7 shadow of labels.
-        Kept for `ops/contour.observe` parity and old tests; not deleted.
-        """
-        if card is None:
-            return None
-        if card.bearing_verdict == "veto":
-            return self._b_veto_touch(st, touch, zone, card)
-        if card.bearing_verdict == "hold":
-            return self._b_hold_touch(st, touch, zone, card)
-        if card.bearing_verdict in {"propose", "cut_size"} and not card.context_ok():
-            return self._b_split_touch(st, touch, zone, card)
-        return None
-
-    def _b_veto_touch(
-        self,
-        st: SymbolState,
-        touch: Touch,
-        zone: Zone,
-        card: CardLive,
-    ) -> list[dict[str, Any]]:
-        self.registry._patch(
-            touch_id=touch.touch_id,
-            overwrite=True,
-            bearing_verdict="veto",
-            jury="VETO",
-            skip_reason="b_veto",
-            card_id=card.card_id,
-            fib_trend=card.fib_zone,
-            fvg_present=card.fvg_status == "filled",
-            sweep_wick=card.sweep_status == "done",
-            gex_bg=card.gex_bg,
-            poc=card.volume.poc,
-            vah=card.volume.vah,
-            val=card.volume.val,
-            ob_status=card.ob_status,
-            bos_status=card.bos_status,
-        )
-        action = self.manager.on_refute(load_bearing=True, verdict="veto")
-        line = touch_line(symbol=st.symbol, card=card, jury="VETO")
-        self._write_b_journal(touch, zone, card, jury="VETO", skip="b_veto", line=line)
-        st.state = "IDLE"
-        st.last_touch = None
-        return [
-            {
-                "event": "jury",
-                "touch_id": touch.touch_id,
-                "jury": "VETO",
-                "sent": False,
-                "touch_line": line,
-                "action": None if action is None else action.action,
-            }
-        ]
-
-    def _b_hold_touch(
-        self,
-        st: SymbolState,
-        touch: Touch,
-        zone: Zone,
-        card: CardLive,
-    ) -> list[dict[str, Any]]:
-        self.registry._patch(
-            touch_id=touch.touch_id,
-            overwrite=True,
-            bearing_verdict="hold",
-            jury="SILENCE",
-            skip_reason="b_hold",
-            card_id=card.card_id,
-            fib_trend=card.fib_zone,
-            fvg_present=card.fvg_status == "filled",
-            sweep_wick=card.sweep_status == "done",
-            gex_bg=card.gex_bg,
-            ob_status=card.ob_status,
-            bos_status=card.bos_status,
-        )
-        line = touch_line(symbol=st.symbol, card=card, jury="SILENCE")
-        self._write_b_journal(touch, zone, card, jury="SILENCE", skip="b_hold", line=line)
-        st.state = "IDLE"
-        st.last_touch = None
-        return [
-            {
-                "event": "jury",
-                "touch_id": touch.touch_id,
-                "jury": "SILENCE",
-                "sent": False,
-                "touch_line": line,
-            }
-        ]
-
-    def _b_split_touch(
-        self,
-        st: SymbolState,
-        touch: Touch,
-        zone: Zone,
-        card: CardLive,
-    ) -> list[dict[str, Any]]:
-        self.registry._patch(
-            touch_id=touch.touch_id,
-            overwrite=True,
-            bearing_verdict=card.card_voice(),
-            jury="SPLIT",
-            skip_reason="b_marks",
-            card_id=card.card_id,
-            fib_trend=card.fib_zone,
-            fvg_present=card.fvg_status == "filled",
-            sweep_wick=card.sweep_status == "done",
-            gex_bg=card.gex_bg,
-            ob_status=card.ob_status,
-            bos_status=card.bos_status,
-        )
-        line = touch_line(symbol=st.symbol, card=card, jury="SPLIT")
-        self._write_b_journal(touch, zone, card, jury="SPLIT", skip="b_marks", line=line)
-        st.state = "IDLE"
-        st.last_touch = None
-        return [
-            {
-                "event": "jury",
-                "touch_id": touch.touch_id,
-                "jury": "SPLIT",
-                "sent": False,
-                "touch_line": line,
-            }
-        ]
-
-    def _write_b_journal(
-        self,
-        touch: Touch,
-        zone: Zone,
-        card: CardLive,
-        *,
-        jury: str,
-        skip: str,
-        line: str,
-    ) -> None:
-        journal = empty_journal()
-        journal.update(
-            {
-                "zone_id": touch.zone_id,
-                "touch_ts": touch.ts.isoformat(),
-                "trade_px": str(touch.trade_px),
-                "trade_qty": str(touch.trade_qty),
-                "session_name": session_name(touch.ts),
-                "session_hour_utc": touch.ts.hour,
-                "poc": card.volume.poc,
-                "vah": card.volume.vah,
-                "val": card.volume.val,
-                "fib_trend": card.fib_zone,
-                "fib_in_05_1": card.fib_zone in {"OTE", "in_05_1"},
-                "fib_in_ote_gold": card.fib_zone == "OTE",
-                "rsi_tf": "htf",
-                "rsi_value": card.rsi_htf,
-                "fvg_present": card.fvg_status == "filled",
-                "sweep_wick": card.sweep_status == "done",
-                "gex_bg": card.gex_bg,
-                "cav_label": touch.cav_label,
-                "zlg_label": touch.gesture,
-                "jury": jury,
-                "bearing_verdict": card.card_voice(),
-                "card_id": card.card_id,
-                "skip_reason": skip,
-                "shadow_would": False,
-                "challenger_would": False,
-                "challenger_tag": None,
-                # B gate closes before the ОКО verdict; the window facts stay.
-                "oko_label": touch.oko_label,
-                "oko_book_trust": touch.oko_book_trust,
-                "oko_tape_trust": touch.oko_tape_trust,
-                "oko_fingerprint": touch.oko_fingerprint,
-                "oko_footprint": touch.oko_footprint,
-                "oko_footprint_side": touch.oko_footprint_side,
-            }
-        )
-        self.knowledge.put_journal_touch(
-            touch.touch_id,
-            {
-                **journal,
-                "touch_id": touch.touch_id,
-                "symbol": zone.symbol,
-                "touch_line": line,
-                "ob_status": card.ob_status,
-                "bos_status": card.bos_status,
-            },
-        )
-        day = row_day_utc(journal)
-        if day:
-            persist_day(self.knowledge, day)
-
     def _eval_cav_and_jury(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
         touch = st.last_touch
         if touch is None:
@@ -1701,6 +1506,8 @@ class DeskLoop:
             "challenger_would": payload_row["challenger_would"],
         }
         self.shadow_writes.append(self.shadow.write(payload))
+        if len(self.shadow_writes) > self.SHADOW_WRITES_MAX:
+            del self.shadow_writes[: len(self.shadow_writes) - self.SHADOW_WRITES_MAX]
         # W3: shadow and fade ideas trade on paper 24/7, whatever the user mode.
         paper_ids: dict[str, str] = {}
         if shadow_would:
@@ -1862,6 +1669,10 @@ class DeskLoop:
 
     # --- operator commands / config hot reload (D-37, D-12) -------------------------
     DESK_COMMANDS = ("flatten", "release_halts", "pause_entries", "resume_entries", "promote")
+    # Bounded in-memory tails for a 24/7 process (audit §5): the journal in SQLite is
+    # the record; these are working windows.
+    SHADOW_WRITES_MAX = 2000
+    WIDTH_HISTORY_MAX = 5000
 
     def _consume_commands(self, now: datetime) -> list[dict[str, Any]]:
         """Operator commands are claimed atomically (no read-modify-write on meta):
@@ -2456,6 +2267,8 @@ class DeskLoop:
             self._width_history.append(
                 WidthSample(zone_id=zone.zone_id, ts=row.ts, w_now=w_now)
             )
+            if len(self._width_history) > self.WIDTH_HISTORY_MAX:
+                del self._width_history[: len(self._width_history) - self.WIDTH_HISTORY_MAX]
         self.registry.fill_width(w_now=w_now, w_rank=w_rank, touch_id=row.touch_id)
         self.registry.fill_sweep_wick(
             flag=sweep_wick(zone=zone, bar=bar),
@@ -2670,21 +2483,6 @@ def _record_adds_from_diff(
                 st.adds.append(BookAdd(ts=ts, side=hit, px=px, qty=delta))
             elif delta < 0:
                 st.pulls.append(BookPull(ts=ts, side=hit, px=px, qty=-delta))
-
-
-def _record_adds(
-    st: SymbolState,
-    ts: datetime,
-    before: dict[tuple[str, Decimal], Decimal],
-) -> None:
-    """Positive size deltas after a diff are ZLG BookAdds. Pulls are not adds.
-    Full-book variant kept for reference/tests; the loop uses `_record_adds_from_diff`."""
-    for side in ("bid", "ask"):
-        for px, sz in st.book.levels(side).items():
-            delta = sz - before.get((side, px), Decimal("0"))
-            if delta > 0:
-                hit: Literal["bid", "ask"] = "bid" if side == "bid" else "ask"
-                st.adds.append(BookAdd(ts=ts, side=hit, px=px, qty=delta))
 
 
 def _f(value: float | None) -> str | None:
