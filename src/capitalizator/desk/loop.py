@@ -156,6 +156,8 @@ class BtcBus:
     """Read-only BTC bus for alts. Writer is the BTC symbol loop."""
 
     regime: str | None = None
+    # HTF direction behind `regime == "trend"`: long | short. None in a box / unknown.
+    direction: str | None = None
     broke_support: bool = False
     broke_resistance: bool = False
     bars: list[Bar] = field(default_factory=list)
@@ -722,6 +724,17 @@ class DeskLoop:
         self.knowledge.put_card_live(symbol, card.to_payload())
         return card
 
+    def btc_same_side(self, idea_side: str) -> bool:
+        """Is this idea on BTC's side? A box is neutral ground for both sides; a trend
+        agrees only with ideas in its direction; unknown HTF agrees with nothing."""
+        if self.btc.regime == "box":
+            return True
+        if self.btc.direction == "long":
+            return idea_side == "buy"
+        if self.btc.direction == "short":
+            return idea_side == "sell"
+        return False
+
     def _publish_btc_bus(self, st: SymbolState, bar: Bar) -> None:
         """BTC symbol loop writes the alt bus. Unknown HTF stays None."""
         closed_at = bar.close_ts + timedelta(microseconds=1)
@@ -734,6 +747,10 @@ class DeskLoop:
         )
         # Last non-None label is not today's fact. Unknown HTF / quiet day → None.
         self.btc.regime = label
+        # The direction behind "trend" (long / short) is what "same side as BTC" needs;
+        # a box or unknown HTF has none.
+        bias = self.zones_map.htf_bias("BTCUSDT", closed_at, st.bars)
+        self.btc.direction = bias if bias in {"long", "short"} else None
         if bar.tf != self.config.working_tf:
             return
         self.btc.broke_support = False
@@ -1283,17 +1300,22 @@ class DeskLoop:
         n_cav = self.registry.count_label("cav", live.cav_label, st.symbol)
         n_zlg = self.registry.count_label("zlg", live.gesture, st.symbol)
         idea_side = side_for(idea, zone.side)
-        # 2.9.3: long vs BTC support break; short vs BTC resistance break.
+        # 2.9.3: long vs BTC support break; short vs BTC resistance break — the same
+        # law BtcVeto applies inside `propose`, evaluated here for the jury voice.
         break_against = False
         if st.symbol != "BTCUSDT":
             break_against = (
                 self.btc.broke_support
-                if idea_side == "buy"
-                else self.btc.broke_resistance
+                and not self.btc_veto.allow(
+                    alt_side=idea_side, btc_broke=True, btc_zone_side="support"  # type: ignore[arg-type]
+                )
+            ) or (
+                self.btc.broke_resistance
+                and not self.btc_veto.allow(
+                    alt_side=idea_side, btc_broke=True, btc_zone_side="resistance"  # type: ignore[arg-type]
+                )
             )
-        # BtcRegime writes trend|box|news. long/short never land on the bus.
-        # BTCUSDT is not "same side" without a box label — that was a rubber stamp.
-        btc_same_side = self.btc.regime == "box"
+        btc_same_side = self.btc_same_side(idea_side)
         cpi_window = cpi_day(closed_at, self.calendar)
         wall_since, wall_until = self._wall_bounds(touch)
         wall_events = self.walls[st.symbol].events if st.symbol in self.walls else ()
@@ -1591,6 +1613,8 @@ class DeskLoop:
             "had_compress": compress_before,
             "zone_side": zone.side,
             "idea_side": idea_side,
+            "btc_direction": self.btc.direction,
+            "btc_same_side": btc_same_side,
             "wick_extreme": str(wick_extreme),
             "fade_side": fade_side,
             "fade_tag": "fade_spring" if fade_side else None,

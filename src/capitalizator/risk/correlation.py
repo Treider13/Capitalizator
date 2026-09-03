@@ -1,9 +1,10 @@
 """One idea per correlation group (sessions release, max_open_positions > 1).
 
 Static groups come from `infra/corr_groups.yaml`; dynamic pairs come from the
-Pearson correlation of hourly close-to-close returns over a rolling window (30 days
-of 1h bars = 720 returns, minimum 48 to say anything). Two symbols are "correlated"
-when they share a static group OR |ρ| ≥ threshold on ≥ 48 aligned returns.
+Pearson correlation of close-to-close returns over a rolling window. The desk feeds
+HTF (4h) closes — `DeskLoop.CORRELATION_BARS = 180` ≈ 30 days of 4h bars — refreshed
+once a day; the minimum is 48 aligned returns to say anything. Two symbols are
+"correlated" when they share a static group OR |ρ| ≥ threshold on ≥ 48 aligned returns.
 
 The rule is symmetric: a second idea on a correlated symbol is refused whatever
 its side — same side is the same bet twice, opposite side is a hedge, and the desk
