@@ -97,7 +97,7 @@ def test_http_get_and_post_readonly(tmp_path: Path) -> None:
             "POST",
             "/api/contour",
             body='{"action":"on"}',
-            headers={"Content-Type": "application/json"},
+            headers={"X-Ack-Token": app.csrf_token, "Content-Type": "application/json"},
         )
         resp = conn.getresponse()
         assert resp.status == 409
@@ -246,7 +246,7 @@ def test_http_enable_after_hours24(tmp_path: Path) -> None:
             "POST",
             "/api/contour",
             body='{"action":"on"}',
-            headers={"Content-Type": "application/json"},
+            headers={"X-Ack-Token": app.csrf_token, "Content-Type": "application/json"},
         )
         resp = conn.getresponse()
         assert resp.status == 200
@@ -287,7 +287,7 @@ def test_http_form_enable_redirects(tmp_path: Path) -> None:
             "POST",
             "/contour",
             body="action=on",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={"X-Ack-Token": app.csrf_token, "Content-Type": "application/x-www-form-urlencoded"},
         )
         resp = conn.getresponse()
         assert resp.status == 303
@@ -305,7 +305,7 @@ def test_http_form_enable_redirects(tmp_path: Path) -> None:
             "POST",
             "/contour",
             body="action=off",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={"X-Ack-Token": app.csrf_token, "Content-Type": "application/x-www-form-urlencoded"},
         )
         bad = conn.getresponse()
         assert bad.status == 400
@@ -331,7 +331,7 @@ def test_http_form_without_hours24_is_409_html(tmp_path: Path) -> None:
             "POST",
             "/contour",
             body="action=on",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={"X-Ack-Token": app.csrf_token, "Content-Type": "application/x-www-form-urlencoded"},
         )
         resp = conn.getresponse()
         assert resp.status == 409
@@ -364,7 +364,7 @@ def test_http_unknown_contour_meta_is_plain_500(tmp_path: Path) -> None:
             "POST",
             "/api/contour",
             body='{"action":"on"}',
-            headers={"Content-Type": "application/json"},
+            headers={"X-Ack-Token": app.csrf_token, "Content-Type": "application/json"},
         )
         resp = conn.getresponse()
         assert resp.status == 500

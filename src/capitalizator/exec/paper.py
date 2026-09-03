@@ -312,6 +312,11 @@ class PaperEngine:
         for pos in list(self.positions.values()):
             if pos.symbol != trade.symbol:
                 continue
+            # A print older than the twin belongs to the tape replayed after a restart,
+            # not to this trade: it can neither fill nor stop it (audit A2 — restored
+            # twins were stopped out by history and the venue position flattened).
+            if when < pos.created_at or (pos.filled_at is not None and when < pos.filled_at):
+                continue
             pos.prints_seen += 1
             if pos.state == "pending":
                 if when > pos.valid_until:

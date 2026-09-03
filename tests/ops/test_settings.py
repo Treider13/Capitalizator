@@ -41,7 +41,7 @@ def test_secrets_are_0600_masked_and_feed_the_signer(tmp_path: Path) -> None:
     assert view["llm.model"]["display"] == "claude-sonnet-4-5"
     page = render_settings_html(Settings(vault).view(), [])
     assert "SECRETXYZ987" not in page and "sk-ant-abcdef0123456789" not in page
-    assert "Подтверждение" in page and "не задано" in page
+    assert "Подтверждаю" in page and "не задано" in page
     # gateway/keys.py reads the synced bybit.json
     keys = load_keys(vault, env={})
     assert keys is not None and keys.api_key == "KEY123456789" and keys.mode == "testnet"
@@ -112,3 +112,46 @@ def test_intel_is_runnable_as_a_module() -> None:
     import capitalizator.intel as pkg
 
     assert (_P(pkg.__file__).parent / "__main__.py").is_file()
+
+
+def test_console_writes_need_the_process_token_and_a_loopback_origin(tmp_path: Path) -> None:
+    """Audit A8: a cross-site form from any browser tab used to pass with ack=yes."""
+    import threading
+    from http.client import HTTPConnection
+    from http.server import HTTPServer
+
+    from capitalizator.ops.console import _handler
+
+    vault = init_vault(tmp_path / "v")
+    app = ConsoleApp(vault)
+    server = HTTPServer(("127.0.0.1", 0), _handler(app))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    host, port = server.server_address[:2]
+
+    def post(path: str, body: str, **headers: str) -> int:
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("POST", path, body=body, headers={"Content-Type": "application/json", **headers})
+        code = conn.getresponse().status
+        conn.close()
+        return code
+
+    try:
+        # the old literal ack is refused
+        assert post("/api/command", '{"kind":"pause_entries","ack_token":"yes"}') == 403
+        # cross-site form: Origin from another host
+        assert post("/api/command", '{"kind":"pause_entries"}', Origin="http://evil.example",
+                    **{"X-Ack-Token": app.csrf_token}) == 403
+        # DNS rebinding: Host is not loopback
+        assert post("/api/command", '{"kind":"pause_entries"}', Host="attacker.tld:8082",
+                    **{"X-Ack-Token": app.csrf_token}) == 403
+        # same-origin with the token works
+        assert post("/api/command", '{"kind":"pause_entries"}', Origin=f"http://127.0.0.1:{port}",
+                    **{"X-Ack-Token": app.csrf_token}) == 200
+        # the token is readable same-origin
+        conn = HTTPConnection(host, port, timeout=2)
+        conn.request("GET", "/api/csrf")
+        assert json.loads(conn.getresponse().read())["ack_token"] == app.csrf_token
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()

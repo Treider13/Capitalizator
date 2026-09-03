@@ -9,6 +9,7 @@ WORKDIR /app
 COPY pyproject.toml README.md requirements.lock /app/
 COPY src /app/src
 COPY infra /app/infra
+# (.dockerignore keeps infra/deploy/.env* and the deploy dir out of the layer)
 RUN pip install --no-cache-dir -e ".[live]" && pip check
 USER trader
 # /data is the userdir (vault): knowledge/, tape/, reports/, secrets/. Mounted, never in the image.

@@ -33,7 +33,10 @@ a{color:#9fd3ff}.card{background:#121821;border:1px solid #1f2a37;border-radius:
 """
 
 
-def render_settings_html(fields: Sequence[dict[str, Any]], sources: Sequence[dict[str, Any]]) -> str:
+def render_settings_html(
+    fields: Sequence[dict[str, Any]], sources: Sequence[dict[str, Any]], *, token: str = ""
+) -> str:
+    tok = html.escape(token)
     groups: dict[str, list[dict[str, Any]]] = {}
     for f in fields:
         groups.setdefault(str(f["group"]), []).append(f)
@@ -67,8 +70,9 @@ def render_settings_html(fields: Sequence[dict[str, Any]], sources: Sequence[dic
             )
         parts.append("</tbody></table>")
         parts.append(
-            "<div class='ack'><label>Подтверждение (ack_token, любое непустое слово, что вы понимаете, что меняете): "
-            "<input name='ack_token' required/></label> <button type='submit'>Сохранить группу</button></div>"
+            f"<div class='ack'><input type='hidden' name='ack_token' value='{tok}'/>"
+            "<label><input type='checkbox' name='confirm' required/> Подтверждаю: понимаю, что меняю</label> "
+            "<button type='submit'>Сохранить группу</button></div>"
         )
         parts.append("</form></div>")
     # sources
@@ -95,10 +99,10 @@ def render_settings_html(fields: Sequence[dict[str, Any]], sources: Sequence[dic
             "<td>"
             f"<form method='post' action='/api/sources' style='display:inline'><input type='hidden' name='redirect' value='1'/>"
             f"<input type='hidden' name='action' value='{toggle}'/><input type='hidden' name='id' value='{sid}'/>"
-            f"<input type='hidden' name='ack_token' value='ui'/><button type='submit'>{'выключить' if enabled else 'включить'}</button></form> "
+            f"<input type='hidden' name='ack_token' value='{tok}'/><button type='submit'>{'выключить' if enabled else 'включить'}</button></form> "
             f"<form method='post' action='/api/sources' style='display:inline'><input type='hidden' name='redirect' value='1'/>"
             f"<input type='hidden' name='action' value='remove'/><input type='hidden' name='id' value='{sid}'/>"
-            f"<input type='hidden' name='ack_token' value='ui'/><button type='submit' class='warn'>удалить</button></form>"
+            f"<input type='hidden' name='ack_token' value='{tok}'/><button type='submit' class='warn'>удалить</button></form>"
             "</td></tr>"
         )
     parts.append("</tbody></table>")
@@ -112,7 +116,7 @@ def render_settings_html(fields: Sequence[dict[str, Any]], sources: Sequence[dic
         f"<select name='kind'>{options}</select> "
         "<input name='value' placeholder='https://… | сабреддит | @аккаунт | 0x…' required/> "
         "<input name='label' placeholder='метка (необязательно)'/> "
-        "<input name='ack_token' placeholder='ack' required/> "
+        f"<input type='hidden' name='ack_token' value='{tok}'/> "
         "<button type='submit'>Добавить</button></form>"
         "<div class='hint'>RSS — только https. Reddit — имя сабреддита без r/. X — имя аккаунта; читается через официальный API "
         "(нужен bearer выше). Hyperliquid — адрес кошелька; учитывается только когорта, не один кит. "

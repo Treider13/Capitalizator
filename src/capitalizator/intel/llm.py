@@ -233,6 +233,9 @@ def parse_extraction(content: str) -> tuple[list[Claim], bool, bool, str] | None
         horizon_s = str(horizon).lower() if horizon not in (None, "", "null") else None
         if horizon_s is not None and not HORIZON_RE.match(horizon_s):
             horizon_s = None
+        if horizon_s is not None and horizon_s.endswith("w"):
+            # the resolver knows s/m/h/d (card/first_fact): weeks become days
+            horizon_s = f"{int(horizon_s[:-1]) * 7}d"
         target = raw.get("target")
         try:
             target_s = None if target in (None, "", "null") else str(float(str(target)))

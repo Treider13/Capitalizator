@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import secrets
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -222,7 +223,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     return snap
 
 
-def _page(snap: dict[str, Any]) -> str:
+def _page(snap: dict[str, Any], *, token: str = "") -> str:
     template = (Path(__file__).with_name("chronos.html")).read_text(encoding="utf-8")
     taps = snap.get("taps") or {}
     hours24 = bool(snap.get("hours24"))
@@ -236,6 +237,7 @@ def _page(snap: dict[str, Any]) -> str:
         contour_form = (
             '<form method="post" action="/contour">'
             '<input type="hidden" name="action" value="on"/>'
+            f'<input type="hidden" name="ack_token" value="{html.escape(token)}"/>'
             f'<button type="submit"{disabled}>Включить контур</button>'
             "</form>"
         )
@@ -244,6 +246,7 @@ def _page(snap: dict[str, Any]) -> str:
         contour_form = (
             '<form method="post" action="/contour">'
             '<input type="hidden" name="action" value="on"/>'
+            f'<input type="hidden" name="ack_token" value="{html.escape(token)}"/>'
             '<button type="submit" disabled>Включить контур</button>'
             "</form>"
         )
@@ -376,6 +379,7 @@ def _page(snap: dict[str, Any]) -> str:
             "user_mode": snap.get("user_mode") or "off",
             "last_price": snap.get("last_price") or {},
             "session_window": snap.get("session_window") or {},
+            "ack_token": token,
         },
         ensure_ascii=False,
     )
@@ -518,8 +522,8 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
     return None
 
 
-def render_html(vault: Vault, *, day: str | None = None) -> str:
-    page = _page(desk_snapshot(vault, day=day))
+def render_html(vault: Vault, *, day: str | None = None, token: str = "") -> str:
+    page = _page(desk_snapshot(vault, day=day), token=token)
     low = page.lower()
     for word in ADVICE_WORDS:
         if word in low:
@@ -530,6 +534,10 @@ def render_html(vault: Vault, *, day: str | None = None) -> str:
 class ConsoleApp:
     def __init__(self, vault: Vault) -> None:
         self.vault = vault
+        # Per-process CSRF/ack token. Every write must carry it (header `X-Ack-Token`
+        # or field `ack_token`); pages embed it, `/api/csrf` hands it to same-origin
+        # scripts. A literal "yes" from any browser tab used to be enough (audit A8).
+        self.csrf_token = secrets.token_urlsafe(24)
 
     def healthz(self) -> int:
         return 200
@@ -659,6 +667,36 @@ def _is_local(handler: BaseHTTPRequestHandler) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
 
 
+_LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+
+
+def _write_allowed(handler: BaseHTTPRequestHandler) -> str | None:
+    """None when the write may proceed, else the refusal reason.
+
+    Peer must be loopback; `Host` must be a loopback host (DNS rebinding); when a
+    browser sends `Origin` it must be a loopback origin (cross-site form/XHR).
+    """
+    if not _is_local(handler):
+        return "localhost only"
+    host = (handler.headers.get("Host") or "").split(":")[0].lower()
+    if host and host not in {"127.0.0.1", "localhost", "[::1]", "::1"}:
+        return "bad host"
+    origin = handler.headers.get("Origin")
+    if origin:
+        try:
+            o_host = urlparse(origin).hostname or ""
+        except ValueError:
+            return "bad origin"
+        if o_host not in {"127.0.0.1", "localhost", "::1"}:
+            return "bad origin"
+    return None
+
+
+def _token_ok(app: ConsoleApp, handler: BaseHTTPRequestHandler, payload: dict[str, Any]) -> bool:
+    given = handler.headers.get("X-Ack-Token") or payload.get("ack_token")
+    return isinstance(given, str) and secrets.compare_digest(given, app.csrf_token)
+
+
 def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -706,8 +744,7 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 self._send(409, body, "application/json; charset=utf-8")
 
         def _set_mode(self, payload: dict[str, Any], *, redirect: bool) -> None:
-            raw_ack = payload.get("ack_token", payload.get("ack"))
-            ack = raw_ack in {True, "true", "1", 1, "yes"}
+            ack = _token_ok(app, self, payload)
             mode = str(payload.get("mode") or "")
             raw_n = payload.get("learn_n_days")
             learn_n = int(raw_n) if raw_n not in {None, ""} else None
@@ -744,10 +781,11 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 if path == "/order":
                     self._reject_write()
                     return
+                denied = _write_allowed(self)
+                if denied is not None:
+                    self._send(403, denied.encode(), "text/plain; charset=utf-8")
+                    return
                 if path in {"/api/mode", "/mode"}:
-                    if not _is_local(self):
-                        self._send(403, b"localhost only", "text/plain; charset=utf-8")
-                        return
                     try:
                         payload = _read_body(self)
                     except (ValueError, json.JSONDecodeError):
@@ -756,16 +794,14 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     self._set_mode(payload, redirect=path == "/mode")
                     return
                 if path in {"/api/settings", "/api/sources"}:
-                    if not _is_local(self):
-                        self._send(403, b"localhost only", "text/plain; charset=utf-8")
-                        return
                     try:
                         payload = _read_body(self)
                     except (ValueError, json.JSONDecodeError):
                         self._send(400, b"bad-json", "text/plain; charset=utf-8")
                         return
-                    raw_ack = payload.pop("ack_token", payload.pop("ack", None))
-                    ack = raw_ack in {True, "true", "1", 1, "yes"}
+                    ack = _token_ok(app, self, payload)
+                    payload.pop("ack_token", None)
+                    payload.pop("ack", None)
                     redirect = payload.pop("redirect", None) in {"1", "true", True}
                     try:
                         out = app.settings_post(path, payload, ack=ack)
@@ -782,16 +818,14 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     self._send(200, body, "application/json; charset=utf-8")
                     return
                 if path in {"/api/risk", "/api/command"}:
-                    if not _is_local(self):
-                        self._send(403, b"localhost only", "text/plain; charset=utf-8")
-                        return
                     try:
                         payload = _read_body(self)
                     except (ValueError, json.JSONDecodeError):
                         self._send(400, b"bad-json", "text/plain; charset=utf-8")
                         return
-                    raw_ack = payload.pop("ack_token", payload.pop("ack", None))
-                    ack = raw_ack in {True, "true", "1", 1, "yes"}
+                    ack = _token_ok(app, self, payload)
+                    payload.pop("ack_token", None)
+                    payload.pop("ack", None)
                     try:
                         if path == "/api/risk":
                             out = app.set_risk(payload, ack=ack)
@@ -813,9 +847,13 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     self._reject_write()
                     return
                 try:
-                    action = _read_action(self)
+                    payload = _read_body(self)
+                    action = str(payload.get("action") or "")
                 except (ValueError, json.JSONDecodeError):
                     self._send(400, b"bad-action", "text/plain; charset=utf-8")
+                    return
+                if not _token_ok(app, self, payload):
+                    self._send(403, b"ack token required", "text/plain; charset=utf-8")
                     return
                 if action != "on":
                     self._send(400, b"bad-action", "text/plain; charset=utf-8")
@@ -833,7 +871,7 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                         extra={"Location": "/"},
                     )
                 except ContourNotReady:
-                    body = render_html(app.vault).encode()
+                    body = render_html(app.vault, token=app.csrf_token).encode()
                     sent = True
                     self._send(409, body, "text/html; charset=utf-8")
             except Exception:
@@ -864,6 +902,13 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     payload = desk_snapshot(app.vault)
                     body = json.dumps(payload, ensure_ascii=False).encode()
                     code, ctype = 200, "application/json; charset=utf-8"
+                elif path == "/api/csrf":
+                    # same-origin scripts only can read this (no CORS headers are sent)
+                    if not _is_local(self):
+                        body, code, ctype = b"localhost only", 403, "text/plain; charset=utf-8"
+                    else:
+                        body = json.dumps({"ack_token": app.csrf_token}).encode()
+                        code, ctype = 200, "application/json; charset=utf-8"
                 elif path.startswith("/api/"):
                     payload = _api_get(app.vault, path, parse_qs(parsed.query))
                     if payload is None:
@@ -877,7 +922,7 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 elif path in {"/", "/index.html"}:
                     qs = parse_qs(parsed.query)
                     day = qs.get("day", [None])[0]
-                    body = render_html(app.vault, day=day).encode()
+                    body = render_html(app.vault, day=day, token=app.csrf_token).encode()
                     code, ctype = 200, "text/html; charset=utf-8"
                 elif path == "/touch":
                     snap = desk_snapshot(app.vault)
@@ -887,7 +932,8 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     knowledge = open_knowledge(app.vault, create=False)
                     try:
                         body = render_settings_html(
-                            Settings(app.vault).view(), load_sources(knowledge)
+                            Settings(app.vault).view(), load_sources(knowledge),
+                            token=app.csrf_token,
                         ).encode()
                     finally:
                         knowledge.close()

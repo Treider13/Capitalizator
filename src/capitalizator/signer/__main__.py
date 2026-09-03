@@ -22,6 +22,7 @@ from capitalizator.signer.process import (
     RECONCILE_S,
     drain_once,
     drain_validated,
+    gateway_mode_ok,
     on_signer_exit,
     park_no_gateway,
     serve_gateway_loop,
@@ -97,25 +98,35 @@ def main(argv: list[str] | None = None) -> int:
             serve_loop(knowledge=knowledge, vault=vault, should_stop=lambda: False)
             return 0
         if args.once or not args.serve:
-            if mode in {"demo", "live"}:
+            blocked = json.loads(knowledge.meta("entries_blocked") or "[]")
+            if mode in {"demo", "live"} and gateway_mode_ok(mode, gateway.mode) and not blocked:
                 drain_validated(knowledge, gateway.send, user_mode=mode, now=datetime.now(tz=UTC))
-            print(json.dumps(payload, ensure_ascii=False))
+            print(json.dumps({**payload, "entries_blocked": blocked}, ensure_ascii=False))
             return 0
         print(json.dumps({**payload, "serve": True}, ensure_ascii=False), flush=True)
-        serve_gateway_loop(
-            knowledge=knowledge,
-            vault=vault,
-            gateway=gateway,
-            tracker=tracker,
-            feed=feed,
-            should_stop=lambda: False,
-        )
+        try:
+            serve_gateway_loop(
+                knowledge=knowledge,
+                vault=vault,
+                gateway=gateway,
+                tracker=tracker,
+                feed=feed,
+                should_stop=lambda: False,
+            )
+        finally:
+            # Only the serving process owns resting entries: when IT goes, no entry may
+            # survive it. `--hello` / `--once` are inspections and cancel nothing (audit A4).
+            on_signer_exit(lambda: _cancel_quiet(gateway))
         return 0
     finally:
-        if gateway is not None:
-            # Process gone → no resting entry order may survive us. Stops stay.
-            on_signer_exit(lambda: gateway.cancel_entries(None, reason="signer_exit"))
         knowledge.close()
+
+
+def _cancel_quiet(gateway) -> None:  # type: ignore[no-untyped-def]
+    try:
+        gateway.cancel_entries(None, reason="signer_exit")
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

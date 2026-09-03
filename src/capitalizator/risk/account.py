@@ -98,6 +98,10 @@ class Account:
         day = local.date().isoformat()
         week = f"{local.isocalendar().year}-W{local.isocalendar().week:02d}"
         assert self.halts is not None
+        if self._day is not None and day < self._day:
+            # replayed history after a restart must not re-baseline the day or lift a
+            # day halt (audit A3): the calendar only moves forward
+            return
         changed = False
         if self._day != day:
             if self._day is not None:
@@ -235,6 +239,8 @@ class Account:
                 for o in self.open.values()
             ],
             "source_switches": list(self.source_switches),
+            "day_key": self._day,
+            "week_key": self._week,
             "config_id": self.config.config_id,
         }
 
@@ -276,6 +282,8 @@ class Account:
                     acct.halts.halted = True
                     acct.halts.reason = str(snap.get("halt_reason") or "")
                 acct.source_switches = list(snap.get("source_switches") or [])
+                acct._day = snap.get("day_key") or None
+                acct._week = snap.get("week_key") or None
                 # Open ideas survive a restart: `allow_entry` must know about the
                 # position the venue still holds (audit B3: "one position persisted"
                 # was written but never read back).

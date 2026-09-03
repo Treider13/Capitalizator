@@ -380,8 +380,8 @@
       const mode = ev.submitter && ev.submitter.value;
       await fetch("/api/mode", {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({mode, ack: true, learn_n_days: mode === "learn" ? 14 : null})
+        headers: {"Content-Type": "application/json", "X-Ack-Token": BOOT.ack_token || ""},
+        body: JSON.stringify({mode, ack_token: BOOT.ack_token || "", learn_n_days: mode === "learn" ? 14 : null})
       });
       refresh();
     });

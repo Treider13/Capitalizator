@@ -29,7 +29,7 @@ if [ -n "$PUBKEY" ]; then
 fi
 chmod 600 /home/trader/.ssh/authorized_keys 2>/dev/null || true
 chown -R trader:trader /home/trader/.ssh
-echo 'trader ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/trader && chmod 440 /etc/sudoers.d/trader
+rm -f /etc/sudoers.d/trader  # no passwordless root for the service user (audit F); docker group is enough to deploy
 
 log "docker"
 if ! command -v docker >/dev/null; then
@@ -94,6 +94,7 @@ cat > /etc/apt/apt.conf.d/52capitalizator <<'U'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Package-Blacklist { "docker-ce"; "docker-ce-cli"; "containerd.io"; "docker.io"; };
 U
 
 log "done. Next: sudo -u trader bash $DATA/app/infra/deploy/deploy.sh"

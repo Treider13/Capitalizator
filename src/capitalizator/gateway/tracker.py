@@ -39,6 +39,13 @@ def _ts(raw: object) -> datetime | None:
         return None
 
 
+def _same(a: Decimal | None, b: Decimal | None, exact: bool, tol: Decimal) -> bool:
+    x, y = a or Decimal("0"), b or Decimal("0")
+    if exact or x == 0 or y == 0:
+        return x == y
+    return abs(x - y) / max(abs(x), abs(y)) <= tol
+
+
 @dataclass
 class PositionSnapshot:
     symbol: str
@@ -97,6 +104,7 @@ class PositionTracker:
     # REST positions nobody (WS, desk) claims. Reported on every reconcile until an
     # operator acknowledges them; never silently adopted (audit B1).
     unknown: dict[str, PositionSnapshot] = field(default_factory=dict)
+    unknown_since: dict[str, datetime] = field(default_factory=dict)
     acknowledged: set[str] = field(default_factory=set)
 
     # --- WS topics -----------------------------------------------------------------
@@ -115,7 +123,11 @@ class PositionTracker:
                 symbol=symbol,
                 side=side,
                 size=size,
-                avg_price=_dec(row.get("avgPrice")),
+                # v5 private `position` topic carries `entryPrice`; REST position/list
+                # carries `avgPrice`. Reading only `avgPrice` here made every WS
+                # position None → a mismatch on every reconcile → entries blocked for
+                # ever after the first fill (audit A1).
+                avg_price=_dec(row.get("entryPrice") or row.get("avgPrice")),
                 stop_loss=_dec(row.get("stopLoss")),
                 take_profit=_dec(row.get("takeProfit")),
                 trailing_stop=_dec(row.get("trailingStop")),
@@ -179,6 +191,9 @@ class PositionTracker:
                     self.on_equity(total, when)
 
     # --- REST truth -----------------------------------------------------------------
+    WS_LIVE_S = 60.0
+    PRICE_TOL = Decimal("0.0001")  # 1 bp: venue rounding of avg/entry price
+
     def reconcile(
         self,
         rest_rows: Iterable[Mapping[str, Any]],
@@ -216,7 +231,11 @@ class PositionTracker:
             | set(expected or ())
             | self.acknowledged
         )
-        has_ws = self.last_ws_at is not None
+        # "WS is alive" = a frame within WS_LIVE_S, not "a frame ever arrived" (audit B3)
+        has_ws = (
+            self.last_ws_at is not None
+            and (now - self.last_ws_at).total_seconds() < self.WS_LIVE_S
+        )
         still_unknown: dict[str, PositionSnapshot] = {}
         for symbol in sorted(set(rest) | set(self.positions) | set(self.unknown)):
             a = self.positions.get(symbol)
@@ -229,11 +248,7 @@ class PositionTracker:
                         "field": "unknown_position",
                         "ws": "absent",
                         "rest": str(b.size),
-                        "since": (
-                            self.unknown[symbol].updated_at.isoformat()
-                            if symbol in self.unknown and self.unknown[symbol].updated_at
-                            else now.isoformat()
-                        ),
+                        "since": self.unknown_since.get(symbol, now).isoformat(),
                     }
                 )
                 continue
@@ -247,7 +262,7 @@ class PositionTracker:
                 continue
             for name in ("size", "avg_price", "stop_loss"):
                 va, vb = getattr(a, name), getattr(b, name)
-                if (va or Decimal("0")) != (vb or Decimal("0")):
+                if not _same(va, vb, name == "size", self.PRICE_TOL):
                     out.append({"symbol": symbol, "field": name, "ws": str(va), "rest": str(vb)})
         stamped = [{**m, "at": now.isoformat()} for m in out]
         self.mismatches.extend(stamped)
@@ -259,6 +274,10 @@ class PositionTracker:
             if symbol in still_unknown:
                 continue
             self.positions[symbol] = snap
+            if snap.flat:
+                # a closed position ends its acknowledgement: the next stranger on this
+                # symbol must be acknowledged again (audit B4)
+                self.acknowledged.discard(symbol)
         for symbol in list(self.positions):
             if symbol not in rest and not self.positions[symbol].flat and has_ws is False:
                 # No WS and REST says flat: the venue is the truth.
@@ -268,8 +287,12 @@ class PositionTracker:
                     unrealised_pnl=None, updated_at=now,
                 )
         for symbol, snap in still_unknown.items():
-            if symbol not in self.unknown:
-                snap.updated_at = snap.updated_at or now
+            # first_seen is OUR clock at first sighting, not the venue's updatedTime
+            # (which moves with funding/mark) — audit B2
+            self.unknown_since.setdefault(symbol, now)
+        for symbol in list(self.unknown_since):
+            if symbol not in still_unknown:
+                del self.unknown_since[symbol]
         self.unknown = still_unknown
         return stamped
 
