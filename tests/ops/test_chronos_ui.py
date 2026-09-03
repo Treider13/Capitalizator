@@ -9,11 +9,15 @@ from http.server import HTTPServer
 from pathlib import Path
 from threading import Thread
 
+import pytest
+
+from capitalizator.book.reconstruct import BookDirty
 from capitalizator.exec.replay import ReplayEngine
 from capitalizator.ops.chronos_data import replay_for
 from capitalizator.ops.console import ConsoleApp, _handler
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
+from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.sink_parquet import ParquetSink
 from capitalizator.types import MarketEvent
 
@@ -56,7 +60,7 @@ def test_replay_events_two_runs_match() -> None:
             exchange_ts=NOW,
             recv_ts=NOW,
             seq=2,
-            payload={"bids": [["100", "8"]], "asks": []},
+            payload={"bids": [["100", "0"], ["99.8", "5"]], "asks": []},
         ),
     ]
     a = ReplayEngine().run_events(evs)
@@ -66,13 +70,41 @@ def test_replay_events_two_runs_match() -> None:
     assert a[0].best() != a[1].best()
 
 
+def test_run_events_empty_is_empty() -> None:
+    assert ReplayEngine().run_events([]) == []
+
+
+def test_run_events_gap_does_not_invent() -> None:
+    evs = [
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            seq=1,
+            payload={"bids": [["100", "5"]], "asks": [["100.2", "5"]]},
+        ),
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            seq=3,
+            payload={"bids": [["99.8", "5"]], "asks": []},
+        ),
+    ]
+    with pytest.raises((BookDirty, SeqFault)):
+        ReplayEngine().run_events(evs)
+
+
 def test_replay_api_empty_and_tape(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     open_knowledge(vault).close()
     empty = replay_for(vault, symbol="BTCUSDT")
     assert empty["n"] == 0 and empty["ok"] is True
-    sink = ParquetSink(vault.tape)
-    sink.write(
+    ParquetSink(vault.tape).write(
         MarketEvent(
             stream="snapshot",
             exchange="bybit",
@@ -83,7 +115,6 @@ def test_replay_api_empty_and_tape(tmp_path: Path) -> None:
             payload={"bids": [["100", "5"]], "asks": [["100.2", "5"]]},
         )
     )
-    sink.flush()
     got = replay_for(vault, symbol="BTCUSDT")
     assert got["n"] == 1 and got["ok"] is True
     assert got["last_bid"] == "100"
