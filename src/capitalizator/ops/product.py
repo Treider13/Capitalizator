@@ -61,11 +61,19 @@ def set_user_mode(
     trading_before = trading_mode()
     knowledge = open_knowledge(vault, create=True)
     try:
+        prev = user_mode_from_knowledge(knowledge)
+        if mode == "live" and prev == "demo":
+            from capitalizator.ops.handoff import stamp_demo_to_live
+
+            stamp_demo_to_live(knowledge)
         knowledge.set_meta(META_USER_MODE, mode)
         knowledge.set_meta(META_ACK, ack_ts)
         if mode == "learn" and learn_n_days is not None:
             knowledge.set_meta(META_LEARN_N, str(int(learn_n_days)))
         out_mode = user_mode_from_knowledge(knowledge)
+        from capitalizator.ops.handoff import experience_snapshot
+
+        experience = experience_snapshot(knowledge)
     finally:
         knowledge.close()
     if phase_path().read_bytes() != phase_before:
@@ -77,6 +85,8 @@ def set_user_mode(
         "ack": True,
         "learn_n_days": learn_n_days,
         "trading_mode_yaml": trading_before,
+        "from_mode": prev,
+        "experience": experience,
     }
 
 

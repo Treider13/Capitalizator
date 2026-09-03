@@ -21,6 +21,7 @@ from capitalizator.ops.contour import status as contour_status
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.phase import load_phase, trading_mode
+from capitalizator.ops.handoff import experience_snapshot
 from capitalizator.ops.product import (
     hello_recorded,
     read_user_mode,
@@ -109,6 +110,17 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
     n_touches = 0
     journal: list[dict[str, Any]] = []
     overlays: list[dict[str, str | None]] = []
+    experience: dict[str, Any] = {
+        "n_touches": 0,
+        "n_episodes_demo": 0,
+        "n_episodes_live": 0,
+        "n_episodes_shadow": 0,
+        "n_overlay": 0,
+        "n_cards": 0,
+        "n_hash": 0,
+        "handoff_from": None,
+        "same_book": True,
+    }
     touch_snap: dict[str, Any] | None = None
     knowledge = open_knowledge(vault, create=False)
     try:
@@ -130,6 +142,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
             journal = knowledge.journal_rows()
             overlays = knowledge.overlay_rows()
             n_touches = len(journal)
+            experience = experience_snapshot(knowledge)
         touch_snap = latest_touch(knowledge) if knowledge.available() else None
     finally:
         knowledge.close()
@@ -186,6 +199,7 @@ def desk_snapshot(vault: Vault, *, day: str | None = None) -> dict[str, Any]:
         "last_price": chronos_data.last_prices(vault),
         "session_window": chronos_data.session_window(),
         "last_jury": chronos_data.last_jury(vault),
+        "experience": experience,
     }
     text = json.dumps(snap, ensure_ascii=False)
     if contains_advice(text):

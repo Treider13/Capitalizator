@@ -1,6 +1,6 @@
 # ops
 
-`product`: `user_mode` в SQLite (`off|learn|demo|live`). `infra/phase.yaml` не пишет. Кнопка консоли требует ack.
+`product`: `user_mode` в SQLite (`off|learn|demo|live`). `infra/phase.yaml` не пишет. Кнопка консоли требует ack. `demo→live` штампует handoff и оставляет ту же книгу (`ops/handoff.py`).
 
 `check_parquet_count`: путь к parquet и ожидаемое число строк. Код 0 только при точном совпадении.
 

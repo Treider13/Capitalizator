@@ -262,6 +262,18 @@ class Knowledge:
             out[table] = int(row["n"])
         return out
 
+    def claim_count(self, prefix: str) -> int:
+        """How many claim rows share this id prefix. Does not invent cards."""
+        if self._cx is None:
+            return 0
+        if not prefix or contains_advice(prefix):
+            raise ValueError("claim prefix refused")
+        row = self._cx.execute(
+            "SELECT COUNT(*) AS n FROM claim WHERE id LIKE ?",
+            (f"{prefix}%",),
+        ).fetchone()
+        return int(row["n"]) if row is not None else 0
+
     def integrity_ok(self) -> bool:
         if self._cx is None:
             return True

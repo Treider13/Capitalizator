@@ -119,6 +119,10 @@
     <div id="contour-status" class="empty">контур —</div>
     <div id="contour-action"></div>
   </section>
+  <section id="exp-box" style="margin:8px;">
+    <h2>Опыт демо → live</h2>
+    <div id="experience" class="empty">книга пуста</div>
+  </section>
   <div class="grid">
     <div class="col">
       <section>
@@ -307,6 +311,15 @@
       if (span != null) contourTxt += " · " + span + " с";
       document.getElementById("contour-status").textContent = contourTxt;
       document.getElementById("contour-status").className = contour === "on" ? "pill ok" : "empty";
+      const exp = st.experience || {};
+      let expTxt = "касаний " + (exp.n_touches || 0);
+      expTxt += " · демо " + (exp.n_episodes_demo || 0);
+      expTxt += " · live " + (exp.n_episodes_live || 0);
+      expTxt += " · карточек " + (exp.n_cards || 0);
+      if (exp.handoff_from) expTxt += " · передано с " + exp.handoff_from;
+      if (exp.same_book) expTxt += " · та же книга";
+      document.getElementById("experience").textContent = expTxt;
+      document.getElementById("experience").className = exp.n_touches || exp.handoff_from ? "pill ok" : "empty";
       const action = document.getElementById("contour-action");
       if (contour === "on") {
         action.innerHTML = "";
