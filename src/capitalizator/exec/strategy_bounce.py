@@ -121,6 +121,7 @@ class BounceSnapshot:
     k_atr: Decimal = K_ATR_DEFAULT
     max_stop_atr: Decimal | None = None
     liq_levels: tuple[Decimal, ...] = ()
+    manual_stop_frac: Decimal | None = None
     # Symbol policy inputs for SessionPolicy (None = unknown, majors still pass).
     next_funding_at: datetime | None = None
     universe_rank: Mapping[str, int] | None = None
@@ -507,6 +508,7 @@ class BounceStrategy:
                 liq_levels=snap.liq_levels,
                 max_stop_atr=snap.max_stop_atr,
                 entry=snap.price,
+                manual_frac=snap.manual_stop_frac,
                 mode=snap.stop_mode,
             )
             stop = smart.stop

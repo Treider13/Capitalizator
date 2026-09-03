@@ -243,5 +243,53 @@ def k_atr_by_window(
     return out
 
 
+def loss_series_by_window(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[int]]:
+    """window → chronological 0/1 series (1 = the filled trade lost) for drift detection."""
+    dated: dict[str, list[tuple[str, int]]] = {}
+    for _key, r, row in _filled_closed(rows):
+        labels = row.get("labels") if isinstance(row.get("labels"), Mapping) else {}
+        window = labels.get("window")
+        if not window:
+            continue
+        stamp = str(row.get("closed_at") or row.get("filled_at") or "")
+        dated.setdefault(str(window), []).append((stamp, 1 if r <= 0 else 0))
+    return {w: [bit for _s, bit in sorted(xs)] for w, xs in dated.items()}
+
+
+def median_hold_hours(
+    rows: Iterable[Mapping[str, Any]], *, min_n: int = MIN_N
+) -> dict[str, Decimal]:
+    """`idea|window` → median hold in hours over filled trades (n ≥ min_n).
+
+    Feeds the EV gate's expected funding: a class that holds six hours crosses more
+    settlements than the two-hour default assumes.
+    """
+    samples: dict[str, list[Decimal]] = {}
+    for key, _r, row in _filled_closed(rows):
+        hold = row.get("hold_s")
+        if hold in (None, ""):
+            continue
+        try:
+            hours = Decimal(str(hold)) / Decimal(3600)
+        except ArithmeticError:
+            continue
+        if hours <= 0:
+            continue
+        parts = key.split("|")
+        if parts[3] == ANY:
+            continue
+        samples.setdefault(f"{parts[0]}|{parts[3]}", []).append(hours)
+    out: dict[str, Decimal] = {}
+    for k, xs in samples.items():
+        if len(xs) < min_n:
+            continue
+        ordered = sorted(xs)
+        mid = len(ordered) // 2
+        out[k] = (
+            ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+        )
+    return out
+
+
 def to_meta(stats: Mapping[str, ClassStat]) -> str:
     return json.dumps({k: v.to_payload() for k, v in sorted(stats.items())}, sort_keys=True)

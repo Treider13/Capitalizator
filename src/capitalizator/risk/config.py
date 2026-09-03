@@ -21,7 +21,7 @@ from typing import Any
 from capitalizator.ops.knowledge import Knowledge
 
 META_KEY = "risk_config"
-STOP_MODES = frozenset({"structural", "volatility", "hybrid"})
+STOP_MODES = frozenset({"structural", "volatility", "hybrid", "manual_bounded"})
 TRAIL_MODES = frozenset({"structure", "exchange_trailing", "both"})
 
 
@@ -44,6 +44,9 @@ class RiskConfig:
     # A 1R win must be at least this many round-trip fees (EV gate).
     fee_multiple_min: Decimal = Decimal("5")
     stop_mode: str = "hybrid"
+    # manual_bounded: operator stop distance as a fraction of the entry price, bounded by
+    # the automatic hybrid stop (floor) and max_stop_atr (ceiling). Required in that mode.
+    manual_stop_frac: Decimal | None = None
     trail_mode: str = "both"
     # Finished stop may not sit farther than this many working-TF ATR from the entry;
     # a setup that needs more is refused, not fitted. None disables the ceiling.
@@ -80,6 +83,12 @@ class RiskConfig:
             raise ValueError("fee_multiple_min must be >= 1")
         if self.stop_mode not in STOP_MODES:
             raise ValueError(f"stop_mode must be one of {sorted(STOP_MODES)}")
+        if self.manual_stop_frac is not None and not (
+            Decimal("0.001") <= self.manual_stop_frac <= Decimal("0.2")
+        ):
+            raise ValueError("manual_stop_frac must be in [0.001, 0.2] or null")
+        if self.stop_mode == "manual_bounded" and self.manual_stop_frac is None:
+            raise ValueError("stop_mode manual_bounded needs manual_stop_frac")
         if self.trail_mode not in TRAIL_MODES:
             raise ValueError(f"trail_mode must be one of {sorted(TRAIL_MODES)}")
         if self.max_stop_atr is not None and not (
@@ -124,7 +133,7 @@ class RiskConfig:
         for key, value in raw.items():
             if key in dec:
                 kwargs[key] = Decimal(str(value))
-            elif key == "max_stop_atr":
+            elif key in {"max_stop_atr", "manual_stop_frac"}:
                 kwargs[key] = None if value in (None, "", "null", "none") else Decimal(str(value))
             elif key in {"max_open_positions", "max_intents_per_session", "version"}:
                 kwargs[key] = int(value)

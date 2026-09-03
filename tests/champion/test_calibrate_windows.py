@@ -80,6 +80,25 @@ def test_eligible_needs_forty_and_a_winning_lower_bound() -> None:
     assert eligible_windows(good, breakeven=breakeven, closed_windows=["asia"]) == {}
 
 
+def test_loss_series_and_median_hold_by_window() -> None:
+    from capitalizator.champion.calibrate import loss_series_by_window, median_hold_hours
+
+    rows = []
+    for i in range(35):
+        r = dict(_row("1" if i % 2 else "-1", window="asia"))
+        r["closed_at"] = f"2026-01-{(i % 28) + 1:02d}T00:00:00+00:00"
+        r["hold_s"] = str(3600 * (i + 1))  # 1h … 35h
+        rows.append(r)
+    rows.append(dict(_row("1", window=None)))  # no window → not in any series
+    series = loss_series_by_window(rows)
+    assert set(series) == {"asia"} and len(series["asia"]) == 35
+    assert set(series["asia"]) == {0, 1}
+    hold = median_hold_hours(rows)
+    assert hold == {"bounce|asia": Decimal(18)}
+    # below MIN_N → no estimate
+    assert median_hold_hours(rows[:10]) == {}
+
+
 def test_k_atr_by_window_is_the_p90_of_winning_mae_over_atr() -> None:
     rows = []
     for i in range(40):

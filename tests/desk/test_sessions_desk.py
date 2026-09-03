@@ -214,6 +214,39 @@ def test_second_idea_in_the_same_correlation_group_is_refused(tmp_path: Path) ->
     assert desk.account.allow_entry("BTCUSDT") == (False, "position_open_same_symbol")
 
 
+def test_window_drift_halves_size_until_released(tmp_path: Path) -> None:
+    desk = _desk(tmp_path, "demo", SUP_BTC, "100000.1", OVERLAP)
+    # 30 winners then 30 losers in the overlap window: the loss rate rose → drift
+    for i in range(60):
+        r = "1" if i < 30 else "-1"
+        for tag in ("bounce", "spring"):
+            desk.knowledge.put_paper_trade({
+                "paper_id": f"o{i}{tag}:shadow", "touch_id": f"o{i}{tag}", "source": "shadow",
+                "symbol": "BTCUSDT",
+                "closed_at": (OVERLAP - timedelta(days=3) + timedelta(minutes=i)).isoformat(),
+                "tag": tag, "entry_px": "100", "r_net": r, "realized": r, "fees": "0",
+                "funding": "0", "hold_s": str(3600 * 4), "mae_px": "99.7",
+                "labels": {"cav_label": "REJECT", "zlg_label": "DEFEND", "window": "overlap",
+                           "symbol_group": "majors", "atr": "1"},
+            })
+    desk.tick(OVERLAP - timedelta(minutes=1))
+    assert "overlap" in desk._window_drift
+    window = desk.policy.window(OVERLAP)
+    assert desk.window_size_mult(window) == Decimal("0.5")
+    assert desk.hold_hours_for("bounce", window) == Decimal(4)
+    assert json.loads(desk.knowledge.meta("window_drift")) == desk._window_drift
+    ev = _arm_and_close(desk, SUP_BTC, "100000.1", OVERLAP)
+    row = desk.knowledge.get_journal_touch(ev["touch_id"])
+    # this class is 50/50 over 60 → not refuted; the drift cut shows in the size
+    if ev["sent"]:
+        assert Decimal(row["size_mult_applied"]) == Decimal("0.5")
+        assert Decimal(row["ev"]["hold_hours"]) == Decimal(4)
+    desk.knowledge.set_meta("desk_commands", json.dumps([{"kind": "drift_release", "symbol": "ALL"}]))
+    out = desk.tick(OVERLAP + timedelta(seconds=10))
+    assert {"event": "drift_release", "windows": ["overlap"]} in out
+    assert desk._window_drift == {} and desk.window_size_mult(window) == Decimal("1.0")
+
+
 def test_liquidation_clusters_need_twenty_rows_then_bucket_by_volume(tmp_path: Path) -> None:
     desk = _desk(tmp_path, "demo", SUP_BTC, "100000.1", OVERLAP)
     st = desk.state_for("BTCUSDT")

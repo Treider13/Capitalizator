@@ -30,10 +30,13 @@ from capitalizator.champion.calibrate import (
     class_stats,
     eligible_windows,
     k_atr_by_window,
+    loss_series_by_window,
+    median_hold_hours,
     refuted,
     to_meta,
 )
 from capitalizator.champion.calibrate import lookup as calibration_lookup
+from capitalizator.champion.drift import PageHinkley
 from capitalizator.champion.shadow_day import (
     challenger_on,
     challenger_tag,
@@ -234,6 +237,10 @@ class DeskLoop:
         self._calibration: dict[str, ClassStat] = {}
         self._calibration_at: datetime | None = None
         self._k_atr_calibrated: dict[str, Decimal] = {}
+        self._hold_hours: dict[str, Decimal] = {}
+        # window → ISO time the drift was detected; cleared by the operator only.
+        self._window_drift: dict[str, str] = {}
+        self._drift = PageHinkley(delta=0.05, threshold=8.0)
         self._correlation_at: datetime | None = None
         self.oko = OkoEye(working_tf=self.config.working_tf)
         self.shadow_writes: list[dict[str, Any]] = []
@@ -1731,6 +1738,7 @@ class DeskLoop:
                     stop_mode=self.risk_config.stop_mode,
                     k_atr=self.k_atr_for(window, st.symbol),
                     max_stop_atr=self.risk_config.max_stop_atr,
+                    manual_stop_frac=self.risk_config.manual_stop_frac,
                     liq_levels=self.liquidation_levels(st, closed_at),
                     next_funding_at=self.next_funding.get(st.symbol),
                     universe_rank=self.universe_rank(),
@@ -1762,7 +1770,7 @@ class DeskLoop:
                     # wins (the strategy takes min with MacroRules / B / ОКО as well).
                     macro_multiplier=min(
                         Decimal("1") if card is None else card.macro_multiplier,
-                        window.size_mult,
+                        self.window_size_mult(window),
                     ),
                     b_marks_ok=(
                         True
@@ -1882,6 +1890,11 @@ class DeskLoop:
             elif kind == "resume_entries":
                 self.entries_paused = False
                 out.append({"event": "resume_entries"})
+            elif kind == "drift_release":
+                target = cmd.get("symbol")
+                window = None if target in (None, "", "ALL") else str(target)
+                cleared = self.release_drift(window)
+                out.append({"event": "drift_release", "windows": cleared})
         return out
 
     # --- exchange truth → account (live/demo) --------------------------------------
@@ -1972,6 +1985,17 @@ class DeskLoop:
         self._calibration = class_stats(rows)
         # Stop buffer per window from the MAE of winning paper trades (widen only).
         self._k_atr_calibrated = k_atr_by_window(rows)
+        # Expected hold per idea×window for the EV gate's funding term.
+        self._hold_hours = median_hold_hours(rows)
+        # Page-Hinkley on each window's loss series: a window whose loss rate rose is
+        # cut to half size until the operator releases it (drift_release command).
+        for window, bits in loss_series_by_window(rows).items():
+            if len(bits) < self.DRIFT_MIN_N or window in self._window_drift:
+                continue
+            if self._drift.run(bits).drift:
+                self._window_drift[window] = now.isoformat()
+        if self._window_drift:
+            self._ui_put("window_drift", json.dumps(self._window_drift, sort_keys=True))
         if self._calibration:
             self._ui_put("calibration", to_meta(self._calibration))
         if self._k_atr_calibrated:
@@ -2064,6 +2088,7 @@ class DeskLoop:
                 max_stop_atr=self.risk_config.max_stop_atr,
                 liq_levels=liq_levels,
                 entry=row.trade_px,
+                manual_frac=self.risk_config.manual_stop_frac,
                 mode=self.risk_config.stop_mode,
             )
             stop = smart.stop
@@ -2315,6 +2340,29 @@ class DeskLoop:
             out.add(symbol)
         return frozenset(out)
 
+    DRIFT_MIN_N = 30
+    DRIFT_SIZE_MULT = Decimal("0.5")
+
+    def window_size_mult(self, window: WindowState) -> Decimal:
+        """Window multiplier, halved while the window's loss series is in drift."""
+        if window.name in self._window_drift:
+            return window.size_mult * self.DRIFT_SIZE_MULT
+        return window.size_mult
+
+    def release_drift(self, window: str | None = None) -> list[str]:
+        """Operator command: clear drift flags (all, or one window). Returns what was cleared."""
+        cleared = sorted(self._window_drift) if window is None else (
+            [window] if window in self._window_drift else []
+        )
+        for w in cleared:
+            del self._window_drift[w]
+        self._ui_put("window_drift", json.dumps(self._window_drift, sort_keys=True))
+        return cleared
+
+    def hold_hours_for(self, idea: str, window: WindowState) -> Decimal:
+        """Median paper hold of idea×window when n ≥ 30, else the 2h EV default."""
+        return self._hold_hours.get(f"{idea}|{window.name}", Decimal("2"))
+
     def k_atr_for(self, window: WindowState, symbol: str) -> Decimal:
         """Window k_atr, widened (never narrowed) by the MAE calibration of this class."""
         calibrated = self._k_atr_calibrated.get(window.name)
@@ -2374,7 +2422,7 @@ class DeskLoop:
             if pos.state != "open":
                 continue
             if (
-                self.risk_config.stop_mode == "hybrid"
+                self.risk_config.stop_mode in {"hybrid", "manual_bounded"}
                 and pos.structural is not None
                 and soft_exit(side=pos.side, structural=pos.structural, bar=bar)
             ):
@@ -2530,6 +2578,8 @@ class DeskLoop:
         if not qok:
             info["send_skip"] = f"size_mult:{qwhy}"
             return None, info
+        window_name = str(labels.get("window") or "")
+        hold = self._hold_hours.get(f"{intent.tag}|{window_name}", Decimal("2"))
         ev = ev_evaluate(
             qty=qty,
             entry=intent.entry,
@@ -2537,12 +2587,14 @@ class DeskLoop:
             tick=inst.tick,
             role="maker",
             funding_rate=self.funding.get(symbol),
+            hold_hours=hold,
             funding_interval_min=inst.funding_interval_min,
             fee_multiple_min=cfg.fee_multiple_min,
         )
         info["ev"] = {
             "ok": ev.ok,
             "reason": ev.reason,
+            "hold_hours": str(hold),
             "r_gross": str(ev.r_gross),
             "fees": str(ev.fees),
             "funding": str(ev.funding),

@@ -29,6 +29,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 from capitalizator.zones.model import Bar, Zone
 
+MODES = frozenset({"structural", "volatility", "hybrid", "manual_bounded"})
 K_ATR_DEFAULT = Decimal("0.5")  # provenance: docs 0.5–0.7 ATR; status paper until calibrated
 CLUSTER_TICKS_DEFAULT = 5  # provenance: prs_delta_ticks (registry.yaml) — the "near" band
 SPREAD_MULT_DEFAULT = Decimal("3")
@@ -92,10 +93,13 @@ def initial_stop(
     liq_levels: Sequence[Decimal] = (),
     max_stop_atr: Decimal | None = None,
     entry: Decimal | None = None,
+    manual_frac: Decimal | None = None,
 ) -> StopDecision:
     """Widen the structural stop by a volatility buffer and push it past clusters.
 
-    mode: structural (no buffer, no push) | volatility (buffer only) | hybrid (all).
+    mode: structural (no buffer, no push) | volatility (buffer only) | hybrid (all) |
+    manual_bounded (operator distance `manual_frac` × entry, bounded: never tighter
+    than the hybrid stop, never farther than `max_stop_atr`; clusters still avoided).
     The result is never tighter than `structural`.
 
     `k_atr` is the window's buffer (sessions.yaml, widened by calibration).
@@ -114,7 +118,44 @@ def initial_stop(
         raise ValueError("k_atr must be > 0")
     if max_stop_atr is not None and max_stop_atr <= 0:
         raise ValueError("max_stop_atr must be > 0")
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {sorted(MODES)}")
     comps: dict[str, str] = {"structural": str(structural), "mode": mode}
+    if mode == "manual_bounded":
+        if manual_frac is None or manual_frac <= 0:
+            raise ValueError("manual_bounded needs manual_frac > 0")
+        if entry is None or entry <= 0:
+            raise ValueError("manual_bounded needs the entry price")
+        # The automatic hybrid stop is the floor: an operator distance inside the
+        # structure + buffer is not a stop, it is a donation to the sweep.
+        auto = initial_stop(
+            side=side, structural=structural, tick=tick, atr=atr, spread=spread, zones=zones,
+            k_atr=k_atr, cluster_ticks=cluster_ticks, spread_mult=spread_mult, mode="hybrid",
+            liq_levels=liq_levels, max_stop_atr=None, entry=entry,
+        )
+        dist = (entry * manual_frac / tick).to_integral_value(rounding=ROUND_CEILING) * tick
+        manual = entry - dist if side == "buy" else entry + dist
+        stop = min(manual, auto.stop) if side == "buy" else max(manual, auto.stop)
+        comps.update(auto.components)
+        comps["mode"] = mode
+        comps["manual_frac"] = str(manual_frac)
+        comps["manual_stop"] = str(manual)
+        comps["bounded_by_auto"] = str(stop == auto.stop and stop != manual)
+        if max_stop_atr is not None and atr is not None and atr > 0:
+            dist_atr = abs(entry - stop) / atr
+            comps["stop_atr"] = str(dist_atr)
+            comps["max_stop_atr"] = str(max_stop_atr)
+            if dist_atr > max_stop_atr:
+                raise ValueError(
+                    f"stop_too_wide: {dist_atr} ATR from entry > max {max_stop_atr} ATR"
+                )
+        return StopDecision(
+            stop=stop,
+            structural=structural,
+            buffer=abs(stop - structural),
+            moved_for_cluster=auto.moved_for_cluster,
+            components=comps,
+        )
     buffer = Decimal("0")
     if mode in {"volatility", "hybrid"}:
         candidates = [tick]

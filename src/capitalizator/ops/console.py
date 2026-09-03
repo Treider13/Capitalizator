@@ -500,10 +500,13 @@ class ConsoleApp:
     def command(
         self, kind: str, *, symbol: str | None, ack: bool, reason: str = ""
     ) -> dict[str, Any]:
-        """flatten | release_halts | pause_entries | resume_entries → picked up by the desk tick."""
+        """flatten | release_halts | pause_entries | resume_entries | drift_release
+        → picked up by the desk tick. drift_release takes a window name in `symbol` (or ALL)."""
         if not ack:
             raise ValueError("ack required")
-        if kind not in {"flatten", "release_halts", "pause_entries", "resume_entries"}:
+        if kind not in {
+            "flatten", "release_halts", "pause_entries", "resume_entries", "drift_release"
+        }:
             raise ValueError(f"unknown command: {kind}")
         if kind == "flatten" and not symbol:
             raise ValueError("flatten needs a symbol (or ALL)")
