@@ -95,3 +95,20 @@ def test_russian_glossary_covers_desk_codes() -> None:
     for g in glossary():  # hints describe facts, never advise
         low = (g["name"] + " " + g["hint"]).lower()
         assert "купи" not in low and "продай" not in low
+
+
+def test_glossary_endpoint_passes_the_advice_filter() -> None:
+    import json
+
+    from capitalizator.ops.daily_map_report import contains_advice
+
+    assert not contains_advice(json.dumps(glossary(), ensure_ascii=False))
+
+
+def test_intel_is_runnable_as_a_module() -> None:
+    """`python -m capitalizator.intel` must exist (the VPS service restart-looped without it)."""
+    from pathlib import Path as _P
+
+    import capitalizator.intel as pkg
+
+    assert (_P(pkg.__file__).parent / "__main__.py").is_file()
