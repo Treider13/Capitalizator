@@ -94,7 +94,7 @@ def test_subscribe_many_covers_desk_universe() -> None:
     uni = load_desk_universe()
     payload = subscribe_desk(uni.symbols)
     assert payload["op"] == "subscribe"
-    assert len(payload["args"]) == 24 * 5
+    assert len(payload["args"]) == 10 * 5
     assert "allLiquidation.BTCUSDT" in payload["args"]
     one = subscribe_many(["BTCUSDT"], ["trades", "book"])
     assert "publicTrade.BTCUSDT" in one["args"]

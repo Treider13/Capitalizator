@@ -53,11 +53,11 @@ def test_twenty_five_rejected() -> None:
         validate_universe({"exchange": "bybit", "category": "linear", "symbols": symbols})
 
 
-def test_twenty_four_is_legal_shape() -> None:
+def test_ten_is_the_desk() -> None:
     from capitalizator.screener.universe import default_desk_path, load_desk_universe
 
     uni = load_desk_universe()
-    assert len(uni.symbols) == 24
+    assert len(uni.symbols) == 10
     assert uni.symbols[0] == "BTCUSDT"
     assert uni.symbols[1] == "ETHUSDT"
     assert default_desk_path().name == "universe.yaml"

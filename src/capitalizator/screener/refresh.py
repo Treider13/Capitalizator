@@ -1,16 +1,18 @@
-"""Weekly universe proposal: top-N linear USDT perps by 24h turnover, by rule.
+"""Daily universe proposal: top-10 linear USDT perps by 24h turnover, by rule.
 
-Rule (sessions release, operator-approved list, not a daily churn):
+Rule:
   * candidates = instruments-info rows with status Trading, linear USDT perpetual;
   * history ≥ `history_min_days` on Bybit (`launchTime` from instruments-info);
   * ranked by `turnover24h` from /v5/market/tickers; majors are always included;
-  * the top `size` fill the list; symbols that fall out are reported with the reason.
+  * the top `size` (10) fill the list; a current alt may stay if it is still
+    inside `size + hysteresis` (default 12) so a one-day rank wobble does not
+    churn the tape;
+  * symbols that fall out are reported with the reason.
 
-The proposal is written to knowledge meta `universe_proposal` and is applied only by
-a human `ack` through the console (`apply_universe`), which rewrites
-`infra/universe.yaml` through the same validator the desk loads it with and appends
-a hash-chain link. The desk and recorder read the file at start: an applied
-proposal takes effect on their next restart, and the proposal says so.
+The proposal is written to knowledge meta `universe_proposal`. The signer
+applies it the same day (`publish_and_apply`); a human can still ack through
+the console. Either path rewrites the applied `universe.yaml` and is hot:
+the recorder resubscribes, `load_desk_universe()` sees the new file, no restart.
 """
 
 from __future__ import annotations
@@ -39,9 +41,10 @@ from capitalizator.types import require_utc
 
 META_PROPOSAL = "universe_proposal"
 META_APPLIED = "universe_applied"
-DEFAULT_SIZE = 20
+DEFAULT_SIZE = 10
 HISTORY_MIN_DAYS = 30
-REFRESH_S = 7 * 24 * 3600
+REFRESH_S = 24 * 3600
+HYSTERESIS = 2  # keep a current alt if still in top (size + this)
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,7 @@ class UniverseProposal:
     dropped: tuple[str, ...]
     rejected: dict[str, str] = field(default_factory=dict)  # symbol → why not a candidate
     current: tuple[str, ...] = ()
+    hysteresis: int = 0
 
     @property
     def proposal_id(self) -> str:
@@ -84,7 +88,8 @@ class UniverseProposal:
             "rejected": dict(sorted(self.rejected.items())),
             "current": list(self.current),
             "changes": bool(self.added or self.dropped),
-            "takes_effect": "on desk/recorder restart after apply",
+            "takes_effect": "hot",
+            "hysteresis": self.hysteresis,
         }
 
 
@@ -147,10 +152,13 @@ def propose(
     size: int = DEFAULT_SIZE,
     history_min_days: int = HISTORY_MIN_DAYS,
     majors: Iterable[str] = REQUIRED_SYMBOLS,
+    hysteresis: int = HYSTERESIS,
 ) -> UniverseProposal:
     when = require_utc(now)
     if not (2 <= size <= MAX_SYMBOLS):
         raise ValueError(f"size must be in [2, {MAX_SYMBOLS}]")
+    if hysteresis < 0:
+        raise ValueError("hysteresis must be >= 0")
     pool, rejected = candidates(instruments, tickers)
     majors_t = tuple(majors)
     for m in majors_t:
@@ -170,7 +178,16 @@ def propose(
             continue
         eligible.append(c)
     ranked = sorted(eligible, key=lambda c: (-c.turnover24h, c.symbol))
+    rank_of = {c.symbol: i + 1 for i, c in enumerate(ranked)}
+    cutoff = size + hysteresis
     chosen: list[str] = list(majors_t)
+    current_alts = [s for s in current.symbols if s not in majors_t]
+    current_alts.sort(key=lambda s: (rank_of.get(s, 10**9), s))
+    for symbol in current_alts:
+        if symbol not in pool:
+            continue
+        if rank_of.get(symbol, 10**9) <= cutoff and len(chosen) < size:
+            chosen.append(symbol)
     for c in ranked:
         if len(chosen) >= size:
             break
@@ -190,6 +207,7 @@ def propose(
         dropped=tuple(sorted(cur - new)),
         rejected={k: v for k, v in rejected.items() if k in cur or k in new},
         current=tuple(current.symbols),
+        hysteresis=hysteresis,
     )
 
 
@@ -201,12 +219,48 @@ def publish_proposal(
     tickers: Iterable[Mapping[str, Any]],
     universe_path: Path | None = None,
     size: int = DEFAULT_SIZE,
+    hysteresis: int = HYSTERESIS,
 ) -> UniverseProposal:
     current = load_universe(universe_path or default_desk_path())
     proposal = propose(
-        now=now, instruments=instruments, tickers=tickers, current=current, size=size
+        now=now,
+        instruments=instruments,
+        tickers=tickers,
+        current=current,
+        size=size,
+        hysteresis=hysteresis,
     )
     knowledge.set_meta(META_PROPOSAL, json.dumps(proposal.to_payload(), sort_keys=True))
+    return proposal
+
+
+def publish_and_apply(
+    knowledge: Knowledge,
+    *,
+    now: datetime,
+    instruments: Iterable[Mapping[str, Any]],
+    tickers: Iterable[Mapping[str, Any]],
+    universe_path: Path | None = None,
+    size: int = DEFAULT_SIZE,
+    hysteresis: int = HYSTERESIS,
+) -> UniverseProposal:
+    """Daily path: propose and apply in one step. The file change is hot."""
+    proposal = publish_proposal(
+        knowledge,
+        now=now,
+        instruments=instruments,
+        tickers=tickers,
+        universe_path=universe_path,
+        size=size,
+        hysteresis=hysteresis,
+    )
+    apply_universe(
+        knowledge,
+        proposal_id=proposal.proposal_id,
+        ack=True,
+        now=now,
+        universe_path=universe_path,
+    )
     return proposal
 
 
@@ -218,7 +272,11 @@ def apply_universe(
     now: datetime,
     universe_path: Path | None = None,
 ) -> Universe:
-    """Human step: rewrite infra/universe.yaml from the stored proposal. Validated, chained."""
+    """Rewrite the applied universe.yaml from the stored proposal. Validated, chained.
+
+    Hot: the next `load_desk_universe()` and the recorder's `set_symbols` see
+    the new list. No process restart.
+    """
     if not ack:
         raise ValueError("ack required to change the universe")
     raw = knowledge.meta(META_PROPOSAL)

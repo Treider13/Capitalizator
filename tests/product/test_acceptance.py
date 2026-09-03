@@ -398,10 +398,10 @@ def test_15_mid_equals_print_is_silence() -> None:
     assert got.gesture == "SILENCE"
 
 
-def test_16_twenty_four_ok_twenty_five_rejected() -> None:
+def test_16_ten_ok_eleven_rejected() -> None:
     uni = load_desk_universe()
-    assert len(uni.symbols) == 24
-    symbols = ["BTCUSDT", "ETHUSDT"] + [f"ALT{i}USDT" for i in range(23)]
+    assert len(uni.symbols) == 10
+    symbols = ["BTCUSDT", "ETHUSDT"] + [f"ALT{i}USDT" for i in range(9)]
     with pytest.raises(UniverseError, match="wide universe"):
         validate_universe({"exchange": "bybit", "category": "linear", "symbols": symbols})
     with pytest.raises(UniverseError, match="HTX"):

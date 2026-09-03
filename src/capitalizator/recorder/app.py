@@ -75,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         "--universe",
         choices=("week0", "desk"),
         default=os.environ.get("CAP_UNIVERSE", "week0"),
-        help="week0 = BTC+ETH (PHASE-BUILD canon until 24h of tape); desk = the 24-symbol list",
+        help="week0 = BTC+ETH (PHASE-BUILD canon until 24h of tape); desk = the top-10 list",
     )
     args = parser.parse_args(argv)
     app = RecorderApp()
@@ -126,7 +126,16 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(json.dumps(hello), flush=True)
         try:
-            rec.run(should_stop=lambda: stopped["v"], testnet=args.testnet)
+            def _universe() -> list[str]:
+                if args.universe == "week0":
+                    return list(load_universe(default_week0_path()).symbols)
+                return list(load_desk_universe().symbols)
+
+            rec.run(
+                should_stop=lambda: stopped["v"],
+                testnet=args.testnet,
+                universe_fn=_universe,
+            )
         finally:
             if knowledge is not None:
                 knowledge.close()

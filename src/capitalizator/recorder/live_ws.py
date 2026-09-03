@@ -85,7 +85,7 @@ class LiveRecorder:
             raise ValueError("symbols required")
         if self.sink is None:
             # Live feed (jsonl, per event) for the desk; parquet archive parts once a
-            # minute (compacted later). 1 s parts × 24 symbols × 4 streams = 5 800
+            # minute (compacted later). 1 s parts × 10 symbols × 4 streams — the old
             # files/min on the VPS (2026-09-03) — the desk's own cursor choked on them.
             self.sink = BufferedParquetSink(
                 self.data_root, flush_every_s=60.0, max_rows=200_000, live_jsonl=True
@@ -100,15 +100,53 @@ class LiveRecorder:
     def start(self) -> None:
         self.started_at = datetime.now(tz=UTC)
         self.ws = self.ws_factory()
-        syms = list(self.symbols)
+        self._subscribe(list(self.symbols))
+        if hasattr(self.ws, "start"):
+            self.ws.start()
+
+    def _subscribe(self, symbols: Sequence[str]) -> None:
+        if self.ws is None or not symbols:
+            return
+        syms = list(symbols)
         for chunk in (syms[i : i + SUBSCRIBE_CHUNK] for i in range(0, len(syms), SUBSCRIBE_CHUNK)):
             self.ws.trade_stream(chunk, self._cb("trades"))
             self.ws.orderbook_stream(BOOK_DEPTH, chunk, self._cb("book"))
             self.ws.ticker_stream(chunk, self._cb("ticker"))
             if hasattr(self.ws, "liquidation_stream"):
                 self.ws.liquidation_stream(chunk, self._cb("liquidation"))
-        if hasattr(self.ws, "start"):
-            self.ws.start()
+
+    def _topics_for(self, symbols: Sequence[str]) -> list[str]:
+        out: list[str] = []
+        for symbol in symbols:
+            out.extend(
+                (
+                    f"publicTrade.{symbol}",
+                    f"orderbook.{BOOK_DEPTH}.{symbol}",
+                    f"tickers.{symbol}",
+                    f"allLiquidation.{symbol}",
+                )
+            )
+        return out
+
+    def set_symbols(self, symbols: Sequence[str]) -> dict[str, tuple[str, ...]]:
+        """Hot universe change: subscribe added names, drop removed ones. No restart."""
+        wanted = tuple(str(s) for s in symbols)
+        if not wanted:
+            raise ValueError("symbols required")
+        old = tuple(self.symbols)
+        if wanted == old:
+            return {"added": (), "dropped": ()}
+        added = tuple(s for s in wanted if s not in set(old))
+        dropped = tuple(s for s in old if s not in set(wanted))
+        self.symbols = wanted
+        if self.ws is not None:
+            if added:
+                self._subscribe(added)
+            if dropped and hasattr(self.ws, "drop_topics"):
+                self.ws.drop_topics(self._topics_for(dropped))
+            for symbol in dropped:
+                self.books.pop(symbol, None)
+        return {"added": added, "dropped": dropped}
 
     def _cb(self, stream: str) -> Callable[[Frame], None]:
         def handle(frame: Frame) -> None:
@@ -300,6 +338,7 @@ class LiveRecorder:
         idle_s: float = 0.05,
         sleep: Callable[[float], None] = time.sleep,
         testnet: bool = False,
+        universe_fn: Callable[[], Sequence[str]] | None = None,
     ) -> None:
         # the hole between the previous process's last trade and now is OURS to mark
         self.mark_time_gap(now=datetime.now(tz=UTC), reason="start")
@@ -307,6 +346,8 @@ class LiveRecorder:
         self.publish_instruments(testnet=testnet, force=True)
         try:
             while not should_stop():
+                if universe_fn is not None:
+                    self.set_symbols(universe_fn())
                 n = self.drain()
                 self.mark_reconnects()
                 self.publish_status()

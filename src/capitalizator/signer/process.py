@@ -104,7 +104,7 @@ def validate_queue_payload(
     universe: Universe | None = None,
     trading_mode: str = "demo",
 ) -> dict[str, Any]:
-    """Desk 24-symbol universe. week0 stays the isolated Signer() default."""
+    """Desk top-10 universe. week0 stays the isolated Signer() default."""
     raw = unsigned_from_intent(payload, allow_default_qty=False, trading_mode=trading_mode)
     order = Signer(universe=universe or load_desk_universe()).validate(raw)
     return order.model_dump(mode="json")
@@ -422,10 +422,10 @@ INSTRUMENTS_REFRESH_S = 3600
 
 
 def publish_universe_proposal(knowledge: Knowledge, gateway: Any, *, now: datetime) -> int:
-    """Weekly top-N-by-turnover proposal → meta for the console. Human applies it."""
-    from capitalizator.screener.refresh import publish_proposal
+    """Daily top-10-by-turnover: propose and apply (hot). Hysteresis in refresh.propose."""
+    from capitalizator.screener.refresh import publish_and_apply
 
-    proposal = publish_proposal(
+    proposal = publish_and_apply(
         knowledge, now=now, instruments=gateway.instruments(), tickers=gateway.tickers()
     )
     return len(proposal.symbols)

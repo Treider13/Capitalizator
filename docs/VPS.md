@@ -6,7 +6,7 @@
 
 1. Каталог пользователя: `python -m capitalizator.ops.console --userdir ./user_data --init`
 2. Ключи только в Vault (`user_data/secrets/`), не в репозитории. Симлинк / FIFO / hardlink — отказ.
-3. Вселенная: `infra/universe.yaml` = 24 линейных USDT-перпа. `universe.week0.yaml` не трогать.
+3. Вселенная: `infra/universe.yaml` = топ-10 линейных USDT-перпов. `universe.week0.yaml` не трогать.
 4. `user_mode=off` в SQLite. Демо/реал — только `POST /api/mode` с `ack=true` с localhost.
 5. Testnet hello: лимит+cancel на демо, затем `mark_hello`. Без hello консоль показывает баннер, send закрыт.
 6. Рекордер: `--minutes` + `--data-root` (без JSONL — живая лента). Сокет инжектируется на VPS.

@@ -111,6 +111,7 @@ from capitalizator.risk.schema import Intent
 from capitalizator.risk.session import cpi_day, us_data_known_at
 from capitalizator.risk.sessions import SessionPolicy, WindowState
 from capitalizator.risk.sizing import size_position
+from capitalizator.screener.universe import load_desk_universe
 from capitalizator.tape.classify import TapeClassifier
 from capitalizator.tape.ofi import OFI
 from capitalizator.types import MarketEvent, require_utc
@@ -2904,6 +2905,9 @@ class DeskLoop:
         info: dict[str, Any] = {"send_skip": None}
         if self.entries_paused:
             info["send_skip"] = "paused_by_operator"
+            return None, info
+        if symbol not in load_desk_universe().symbols:
+            info["send_skip"] = "universe:not_listed"
             return None, info
         ok, why = self.account.allow_entry(symbol)
         if not ok:

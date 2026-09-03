@@ -4,7 +4,7 @@ Canonical shape (PHASE-BUILD):
     exchange: bybit
     category: linear
     symbols: [BTCUSDT, ETHUSDT]
-    # 8–15 альтов добавить после 0.1.7
+    # Desk file: BTC+ETH+8 alts (top-10). week0 stays BTC+ETH.
 
 This module validates that shape. It does not measure spread/volume.
 It does not mark 0.2.6 live-green.
@@ -21,7 +21,8 @@ from typing import Any
 import yaml
 
 REQUIRED_SYMBOLS = ("BTCUSDT", "ETHUSDT")
-MAX_SYMBOLS = 24
+# Desk trades the top-10 linear USDT perps (BTC+ETH+8 alts). Never 50, never 200.
+MAX_SYMBOLS = 10
 SYMBOL_RE = re.compile(r"^[A-Z0-9]+USDT$")
 FORBIDDEN_EXCHANGES = frozenset({"htx", "huobi"})
 

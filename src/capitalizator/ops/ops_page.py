@@ -302,10 +302,10 @@ def render_ops_html(
             f"{_e(', '.join(str(s) for s in symbols))}</p>"
             "<form class='inline' method='post' action='/api/universe'>"
             + _confirm(token, {"proposal_id": pid})
-            + "<button type='submit'>Применить предложение (вступит после рестарта стола/рекордера)</button></form>"
+            + "<button type='submit'>Применить предложение (сразу, без рестарта)</button></form>"
         )
     else:
-        out.append("<p class='muted'>Предложения нет: сигнер публикует его еженедельно, когда есть ключ и тикеры.</p>")
+        out.append("<p class='muted'>Предложения нет: сигнер публикует и применяет его ежедневно (топ-10, гистерезис), когда есть ключ и тикеры.</p>")
     if universe.get("proposal_error"):
         out.append(f"<p class='bad'>Ошибка предложения: {_e(universe.get('proposal_error'))}</p>")
     applied = universe.get("applied") or {}
