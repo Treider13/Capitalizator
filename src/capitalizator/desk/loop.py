@@ -348,6 +348,7 @@ class DeskLoop:
         self._liquidity_stamped: dict[str, dict[str, Any]] = {}
         self._ui_pending: dict[str, str] = {}
         self._ui_last_flush: datetime | None = None
+        self._ui_last_wall_flush: datetime | None = None
         self._ui_book_published: set[str] = set()
         self.zone_cache: dict[str, tuple[tuple[Any, ...], tuple[Zone, ...]]] = {}
         self._persisted_zone_ids: dict[str, frozenset[str]] = {}
@@ -451,7 +452,7 @@ class DeskLoop:
             ensure_ascii=False,
         )
 
-    def _queue_ready_books(self, when: datetime) -> None:
+    def _queue_ready_books(self, when: datetime, *, persist_empty: bool) -> None:
         """Last-value book on the same UI tick as last_price.
 
         Bybit (2026) pushes depth on its own stream (L50 ~20ms, L200 ~100ms),
@@ -465,23 +466,32 @@ class DeskLoop:
             if st.book.ready:
                 self._ui_book_published.add(st.symbol)
                 self._ui_put(f"book:{st.symbol}", self._book_ui_payload(st, when))
-            elif st.symbol in self._ui_book_published:
+            elif persist_empty and st.symbol in self._ui_book_published:
                 self._ui_put(f"book:{st.symbol}", self._book_ui_empty(st.symbol))
 
     def flush_ui(self, now: datetime, *, force: bool = False) -> int:
         """Write last_price / book snapshots in one transaction, at most every 0.5s."""
         if (not self._ui_pending and not self._uptime_dirty) or not self.knowledge.available():
             return 0
-        if not force and not self._ui_due(now):
+        wall = datetime.now(tz=UTC)
+        wall_due = (
+            self._ui_last_wall_flush is None
+            or (wall - self._ui_last_wall_flush).total_seconds() >= self.UI_FLUSH_S
+        )
+        if not force and not self._ui_due(now) and not wall_due:
             return 0
         if self._uptime_dirty:
             self._ui_pending["tape_uptime"] = self.uptime.to_json()
             self._uptime_dirty = False
-        self._queue_ready_books(now)
+        # Catch-up ticks (force=False) must not persist empty over last-value:
+        # skipped old book_diff after an older snapshot raises BookDirty and
+        # would wipe the live 20-level book the VPS already had.
+        self._queue_ready_books(now, persist_empty=force)
         n = len(self._ui_pending)
         self.knowledge.set_meta_many(self._ui_pending)
         self._ui_pending = {}
         self._ui_last_flush = now
+        self._ui_last_wall_flush = wall
         return n
 
     def hello_ok(self) -> bool:
@@ -1009,8 +1019,9 @@ class DeskLoop:
         self.paper.on_clock(when)
         out: list[dict[str, Any]] = []
         if self.knowledge.available():
-            # Gateway watchdog reads this: a silent desk cancels entry orders (§7 / Н-4).
-            self._ui_put("desk_heartbeat", when.isoformat())
+            # Gateway watchdog: process liveness, not tape time. Catch-up ticks
+            # used exchange_ts here and the signer blocked `desk` for a live box.
+            self._ui_put("desk_heartbeat", datetime.now(tz=UTC).isoformat())
             if force_flush:
                 # Always written on a clock tick: a symbol that gained facts leaves the banner.
                 self._ui_put("refused_symbols", json.dumps(self.refused_symbols, sort_keys=True))
