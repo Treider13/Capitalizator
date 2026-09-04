@@ -282,6 +282,10 @@ class DeskLoop:
         # Symbols the venue has shown a position or a fill for (venue_flat needs proof
         # the venue ever held the idea before it may close the twin).
         self._venue_seen: set[str] = set()
+        # Naked venue stop: symbol → {since, amended, flattened}. Clock is the
+        # signer's reconcile `at`, not the desk tick — same snapshot must not
+        # increment a retry or flatten (audit SL-ack).
+        self._sl_ack: dict[str, dict[str, Any]] = {}
         self._paper_dirty = False
         if knowledge.available():
             self.oko.load(knowledge)
@@ -306,6 +310,18 @@ class DeskLoop:
                     self._venue_seen = set(json.loads(raw_seen))
                 except (json.JSONDecodeError, TypeError):
                     self._venue_seen = set()
+            raw_sl = knowledge.meta("sl_ack")
+            if raw_sl:
+                try:
+                    loaded = json.loads(raw_sl)
+                except json.JSONDecodeError:
+                    loaded = None
+                if isinstance(loaded, dict):
+                    self._sl_ack = {
+                        str(sym): dict(body)
+                        for sym, body in loaded.items()
+                        if isinstance(body, dict)
+                    }
             for symbol, raw in knowledge.last_prices().items():
                 try:
                     px = Decimal(str(raw))
@@ -983,6 +999,7 @@ class DeskLoop:
                 # not per print (audit E).
                 self._ui_put("paper_open", json.dumps(self.paper.snapshot(), sort_keys=True))
                 self._ui_put("venue_seen", json.dumps(sorted(self._venue_seen)))
+                self._ui_put("sl_ack", json.dumps(self._sl_ack, sort_keys=True))
         self.flush_ui(when, force=force_flush)
         # Settling pending touches walks every touch; once per second of clock is
         # enough (outcomes are 15m closes / 8-tick moves / 6h timeouts).
@@ -2188,7 +2205,9 @@ class DeskLoop:
         * equity → Account.set_equity (sizing and halts run on real equity, not paper);
         * an intent the venue refused (`failed`) frees its open idea at once;
         * a filled twin whose venue position is gone (stop/TP/liquidation on the venue)
-          is closed here so the account, the one-position rule and the journal agree.
+          is closed here so the account, the one-position rule and the journal agree;
+        * a venue position without a confirmed Mark SL: one OMS `amend_stop`, then
+          flatten on the next reconcile snapshot (signer still never exits itself).
         Shadow/fade twins are untouched: they never went to the venue.
         """
         if self.user_mode not in {"demo", "live"}:
@@ -2259,7 +2278,130 @@ class DeskLoop:
                 self.paper.flatten(symbol, px, now, reason="venue_flat")
                 out.append({"event": "venue_flat", "symbol": symbol})
             self._venue_seen.discard(symbol)
+        out.extend(self._handle_stop_missing(state, state_at, now))
         return out
+
+    def _demo_twins_for_sl(self, symbol: str) -> list[PaperPosition]:
+        """Our live idea on this symbol: a demo twin that still carries a stop.
+
+        Pending (unfilled on paper) still counts — `stop_missing` means the venue
+        already has size; the twin holds the stop we asked the gateway to attach.
+        Shadow / fade never went to the venue.
+        """
+        return [
+            p
+            for p in self.paper.open_for(symbol, source="demo")
+            if p.stop is not None and p.stop > 0 and p.state in {"open", "pending"}
+        ]
+
+    def _handle_stop_missing(
+        self, state: Mapping[str, Any], state_at: datetime, now: datetime
+    ) -> list[dict[str, Any]]:
+        """Venue position without a confirmed Mark SL: retry once, then flatten.
+
+        First reconcile snapshot → OMS `amend_stop` (twin.stop). A later snapshot
+        that still lists the symbol → OMS `flatten` + paper flatten. Same snapshot
+        must not retry or flatten (desk ticks faster than `reconcile_s`). Unknown
+        venue positions (no demo twin) stay with the operator / signer block.
+        """
+        missing = {str(s) for s in (state.get("stop_missing") or []) if s}
+        out: list[dict[str, Any]] = []
+        for symbol in list(self._sl_ack):
+            if symbol not in missing:
+                del self._sl_ack[symbol]
+        if not missing:
+            return out
+        for symbol in sorted(missing):
+            twins = self._demo_twins_for_sl(symbol)
+            if not twins:
+                self._sl_ack.pop(symbol, None)
+                continue
+            rec = self._sl_ack.get(symbol)
+            if rec is None:
+                rec = {"since": state_at.isoformat(), "amended": False, "flattened": False}
+                self._sl_ack[symbol] = rec
+            if rec.get("flattened"):
+                continue
+            twin = twins[0]
+            if not rec.get("amended"):
+                self._oms(
+                    twin, "amend_stop", now, stop=str(twin.stop), reason="sl_retry"
+                )
+                rec["amended"] = True
+                rec["since"] = state_at.isoformat()
+                rec["touch_id"] = twin.touch_id
+                rec["stop"] = str(twin.stop)
+                rec["attempts"] = 1
+                self._note_sl_ack(
+                    twin, now, event="sl_retry", stop=str(twin.stop), attempts=1
+                )
+                out.append(
+                    {
+                        "event": "sl_retry",
+                        "symbol": symbol,
+                        "stop": str(twin.stop),
+                        "touch_id": twin.touch_id,
+                    }
+                )
+                continue
+            try:
+                since = datetime.fromisoformat(str(rec["since"]).replace("Z", "+00:00"))
+            except (KeyError, ValueError, TypeError):
+                since = state_at
+            if state_at <= since:
+                continue
+            self._oms(twin, "flatten", now, reason="sl_unconfirmed")
+            px = self.last_price.get(symbol, twin.entry_px or twin.limit_px)
+            self.paper.flatten(symbol, px, now, reason="sl_unconfirmed")
+            rec["flattened"] = True
+            rec["attempts"] = int(rec.get("attempts") or 1) + 1
+            rec["flattened_at"] = now.isoformat()
+            attempts = int(rec["attempts"])
+            self._note_sl_ack(
+                twin,
+                now,
+                event="sl_unconfirmed",
+                stop=str(twin.stop),
+                attempts=attempts,
+            )
+            out.append(
+                {
+                    "event": "sl_unconfirmed",
+                    "symbol": symbol,
+                    "attempts": attempts,
+                    "touch_id": twin.touch_id,
+                }
+            )
+        return out
+
+    def _note_sl_ack(
+        self,
+        twin: PaperPosition,
+        now: datetime,
+        *,
+        event: str,
+        stop: str,
+        attempts: int,
+    ) -> None:
+        """Journal + meta so Chronos and the banner see retry / forced flatten."""
+        if not self.knowledge.available():
+            return
+        body = {
+            "event": event,
+            "at": now.isoformat(),
+            "symbol": twin.symbol,
+            "touch_id": twin.touch_id,
+            "stop": stop,
+            "attempts": attempts,
+        }
+        self.knowledge.set_meta("sl_ack_last", json.dumps(body, sort_keys=True))
+        if event == "sl_unconfirmed":
+            self.knowledge.set_meta("sl_unconfirmed", json.dumps(body, sort_keys=True))
+        row = self.knowledge.get_journal_touch(twin.touch_id)
+        if row is None:
+            return
+        row["sl_ack"] = body
+        self.knowledge.put_journal_touch(twin.touch_id, row)
 
     CALIBRATION_REFRESH_S = 600.0
 
@@ -3138,7 +3280,8 @@ class DeskLoop:
             # (3) The twin is the desk's decision; the venue must follow it. flatten on
             # the venue = cancel resting entries + close whatever position is left, so a
             # stop/TP/time/expiry/veto here never leaves an orphan order or position.
-            if pos.exit_reason not in {"soft", "b_veto"}:  # those already queued flatten
+            if pos.exit_reason not in {"soft", "b_veto", "sl_unconfirmed"}:
+                # those already queued flatten (soft / B veto / missing venue SL)
                 self._oms(pos, "flatten", when, reason=f"twin_{pos.exit_reason}")
             self.account.on_flat(pos.symbol)
 

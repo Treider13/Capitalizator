@@ -154,6 +154,13 @@ def account_view(knowledge: Knowledge, *, now: datetime | None = None) -> dict[s
             banners.append(f"СВЕРКА: {n_mm} расхождений — входы заблокированы")
         if exchange.get("stop_missing"):
             banners.append("СТОП НЕ ПОДТВЕРЖДЁН биржей: " + ", ".join(exchange["stop_missing"]))
+    sl_flat = _json(knowledge.meta("sl_unconfirmed")) if knowledge.available() else None
+    if sl_flat and sl_flat.get("symbol"):
+        banners.append(
+            "ПОЗИЦИЯ ЗАКРЫТА: биржа не подтвердила стоп ("
+            + str(sl_flat["symbol"])
+            + ")"
+        )
     if account is None:
         banners.append("СЧЁТ: снимка нет")
     else:

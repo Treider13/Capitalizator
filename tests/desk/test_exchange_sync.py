@@ -345,3 +345,152 @@ def test_drift_in_the_shadow_error_series_cuts_the_live_target_risk(tmp_path: Pa
     calm = [{**r, "r_net": "1" if i % 10 >= 3 else "-1"} for i, r in enumerate(rows)]
     desk._refresh_drift(calm, t0)
     assert desk.drift_active is False and desk.effective_target_risk() == Decimal("0.01")
+
+
+def _exchange_state(at: datetime, *, stop_missing: bool) -> str:
+    pos = {
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "size": "0.3",
+        "avg_price": "100000.1",
+        "stop_loss": "" if stop_missing else "98990",
+    }
+    return json.dumps(
+        {
+            "at": at.isoformat(),
+            "equity": "100000",
+            "positions": [pos],
+            "stop_missing": ["BTCUSDT"] if stop_missing else [],
+            "mismatches": [],
+        }
+    )
+
+
+def test_missing_venue_stop_retries_then_flattens(tmp_path: Path) -> None:
+    """SL-ack: first reconcile → amend_stop; next snapshot still naked → flatten.
+
+    Same exchange_state `at` must not enqueue a second amend or a flatten (desk
+    ticks faster than signer reconcile_s).
+    """
+    desk = _desk(tmp_path, "demo", SUP, "100000.1")
+    ev = _arm_and_close(desk, SUP, "100000.1")
+    assert ev["sent"] is True
+    row = desk.knowledge.get_journal_touch(ev["touch_id"])
+    twin = desk.paper.positions[row["paper_ids"]["demo"]]
+    filled = WINDOW + timedelta(minutes=6)
+    desk.on_trade(_trade(filled, "100000.1"), [SUP])
+    assert twin.state == "open" and twin.stop > 0
+
+    first = filled + timedelta(seconds=30)
+    desk.knowledge.set_meta("exchange_state", _exchange_state(first, stop_missing=True))
+    out = desk.tick(first)
+    assert {"event": "sl_retry", "symbol": "BTCUSDT", "stop": str(twin.stop),
+            "touch_id": twin.touch_id} in out
+    assert twin.state == "open"
+    amends = [
+        c for c in desk.knowledge.oms_rows()
+        if c["kind"] == "amend_stop" and c["payload"].get("reason") == "sl_retry"
+    ]
+    assert len(amends) == 1
+    assert amends[0]["symbol"] == "BTCUSDT"
+    assert Decimal(amends[0]["payload"]["stop"]) == twin.stop
+    flats = [c for c in desk.knowledge.oms_rows() if c["payload"].get("reason") == "sl_unconfirmed"]
+    assert flats == []
+
+    # same snapshot, later desk tick: do not retry, do not flatten
+    desk.tick(first + timedelta(seconds=20))
+    amends = [
+        c for c in desk.knowledge.oms_rows()
+        if c["kind"] == "amend_stop" and c["payload"].get("reason") == "sl_retry"
+    ]
+    assert len(amends) == 1
+    assert twin.state == "open"
+
+    later = first + timedelta(seconds=60)
+    desk.knowledge.set_meta("exchange_state", _exchange_state(later, stop_missing=True))
+    out = desk.tick(later)
+    assert any(e.get("event") == "sl_unconfirmed" and e.get("symbol") == "BTCUSDT" for e in out)
+    assert twin.state == "closed" and twin.exit_reason == "sl_unconfirmed"
+    flats = [
+        c for c in desk.knowledge.oms_rows()
+        if c["kind"] == "flatten" and c["payload"].get("reason") == "sl_unconfirmed"
+    ]
+    assert len(flats) == 1
+    assert desk.account.open == {}
+    noted = json.loads(desk.knowledge.meta("sl_unconfirmed") or "{}")
+    assert noted["event"] == "sl_unconfirmed" and noted["symbol"] == "BTCUSDT"
+    journal = desk.knowledge.get_journal_touch(twin.touch_id)
+    assert journal["sl_ack"]["event"] == "sl_unconfirmed"
+
+    # still missing after flatten: do not enqueue another flatten / amend
+    desk.knowledge.set_meta(
+        "exchange_state", _exchange_state(later + timedelta(seconds=60), stop_missing=True)
+    )
+    desk.tick(later + timedelta(seconds=61))
+    flats = [
+        c for c in desk.knowledge.oms_rows()
+        if c["kind"] == "flatten" and c["payload"].get("reason") == "sl_unconfirmed"
+    ]
+    assert len(flats) == 1
+
+
+def test_missing_venue_stop_clears_when_sl_appears(tmp_path: Path) -> None:
+    desk = _desk(tmp_path, "demo", SUP, "100000.1")
+    ev = _arm_and_close(desk, SUP, "100000.1")
+    row = desk.knowledge.get_journal_touch(ev["touch_id"])
+    twin = desk.paper.positions[row["paper_ids"]["demo"]]
+    filled = WINDOW + timedelta(minutes=6)
+    desk.on_trade(_trade(filled, "100000.1"), [SUP])
+    first = filled + timedelta(seconds=30)
+    desk.knowledge.set_meta("exchange_state", _exchange_state(first, stop_missing=True))
+    desk.tick(first)
+    assert any(
+        c["kind"] == "amend_stop" and c["payload"].get("reason") == "sl_retry"
+        for c in desk.knowledge.oms_rows()
+    )
+    later = first + timedelta(seconds=60)
+    desk.knowledge.set_meta("exchange_state", _exchange_state(later, stop_missing=False))
+    out = desk.tick(later)
+    assert not any(e.get("event") == "sl_unconfirmed" for e in out)
+    assert twin.state == "open" and "BTCUSDT" in desk.account.open
+    assert "BTCUSDT" not in desk._sl_ack
+
+
+def test_missing_venue_stop_ack_survives_desk_restart(tmp_path: Path) -> None:
+    """A restart after amend_stop must not forget the grace: next snapshot flattens."""
+    desk = _desk(tmp_path, "demo", SUP, "100000.1")
+    ev = _arm_and_close(desk, SUP, "100000.1")
+    row = desk.knowledge.get_journal_touch(ev["touch_id"])
+    pid = row["paper_ids"]["demo"]
+    filled = WINDOW + timedelta(minutes=6)
+    desk.on_trade(_trade(filled, "100000.1"), [SUP])
+    first = filled + timedelta(seconds=30)
+    desk.knowledge.set_meta("exchange_state", _exchange_state(first, stop_missing=True))
+    desk.tick(first)
+    assert desk.paper.positions[pid].state == "open"
+    again = DeskLoop(knowledge=desk.knowledge, user_mode="demo", tick_size=TICK)
+    assert "BTCUSDT" in again._sl_ack and again._sl_ack["BTCUSDT"].get("amended")
+    later = first + timedelta(seconds=60)
+    again.knowledge.set_meta("exchange_state", _exchange_state(later, stop_missing=True))
+    out = again.tick(later)
+    assert any(e.get("event") == "sl_unconfirmed" for e in out)
+    closed = next(p for p in again.paper.closed if p.paper_id == pid)
+    assert closed.state == "closed" and closed.exit_reason == "sl_unconfirmed"
+    amends = [
+        c for c in again.knowledge.oms_rows()
+        if c["kind"] == "amend_stop" and c["payload"].get("reason") == "sl_retry"
+    ]
+    assert len(amends) == 1
+
+
+def test_missing_venue_stop_without_our_twin_does_not_flatten(tmp_path: Path) -> None:
+    """Unknown / stranger position: signer blocks; desk does not flatten."""
+    desk = _desk(tmp_path, "demo", SUP, "100000.1")
+    when = WINDOW + timedelta(minutes=6)
+    desk.knowledge.set_meta("exchange_state", _exchange_state(when, stop_missing=True))
+    out = desk.tick(when)
+    assert not any(e.get("event") in {"sl_retry", "sl_unconfirmed"} for e in out)
+    assert not any(
+        c["payload"].get("reason") in {"sl_retry", "sl_unconfirmed"}
+        for c in desk.knowledge.oms_rows()
+    )

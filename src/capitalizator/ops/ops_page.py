@@ -207,6 +207,12 @@ def render_ops_html(
         )
     if stop_missing:
         out.append(f"<p class='bad'>Без подтверждённого стопа на бирже: {_e(', '.join(stop_missing))}</p>")
+    sl_flat = _json(meta.get("sl_unconfirmed"), {}) or {}
+    if sl_flat.get("symbol"):
+        out.append(
+            f"<p class='bad'>Позиция закрыта принудительно: стоп не подтверждён "
+            f"({_e(sl_flat.get('symbol'))}, попыток {_e(sl_flat.get('attempts') or '—')})</p>"
+        )
     if mismatches:
         out.append(
             "<p class='bad'>Расхождения WS/REST: "
