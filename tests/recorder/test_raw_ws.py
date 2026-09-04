@@ -273,6 +273,69 @@ def test_tape_replay_is_bounded_per_pass_and_resumes(tmp_path: Path) -> None:
     assert seqs == list(range(300))
 
 
+def test_live_book_is_read_while_trade_parquet_is_still_backlogged(tmp_path: Path) -> None:
+    """Chrono walk of two days of trades ate the budget before today's book jsonl.
+
+    Live VPS: BACKLOG=1 for minutes, heartbeat live, book:BTCUSDT empty. Book is
+    only valid from its snapshot — that file (and the live tail) must land this pass.
+    """
+    from datetime import timedelta
+
+    from capitalizator.desk.tape import TapeCursor
+    from capitalizator.recorder.sink_parquet import BufferedParquetSink
+    from capitalizator.types import MarketEvent
+
+    now = datetime(2026, 9, 4, 21, 50, tzinfo=UTC)
+    old = BufferedParquetSink(tmp_path, flush_every_s=60, max_rows=100_000)
+    t_old = now - timedelta(hours=20)
+    for i in range(400):
+        ts = t_old + timedelta(seconds=i)
+        old.write(
+            MarketEvent(
+                stream="trades",
+                exchange="bybit",
+                symbol="ETHUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                seq=i,
+                payload={"px": "3000", "qty": "1", "side": "buy"},
+            )
+        )
+    old.flush()
+    old.close()
+    live = BufferedParquetSink(tmp_path, flush_every_s=60, max_rows=10_000, live_jsonl=True)
+    snap_ts = now - timedelta(minutes=5)
+    live.write(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=snap_ts,
+            recv_ts=snap_ts,
+            seq=10,
+            payload={"bids": [["79753.8", "12"]], "asks": [["79753.9", "8"]]},
+        )
+    )
+    live.write(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=now,
+            recv_ts=now,
+            seq=11,
+            payload={"b": [["79754.0", "4"]], "a": []},
+        )
+    )
+    live.flush()
+    cur = TapeCursor(replay_all_first=False, max_rows=80, book_hours=2)
+    batch = cur.fresh_rows(tmp_path, now=now)
+    assert cur.backlog
+    streams = {e.stream for e in batch if e.symbol == "BTCUSDT"}
+    assert "snapshot" in streams
+    assert "book_diff" in streams
+
+
 def test_tape_walk_survives_a_writer_temp_file_vanishing(tmp_path: Path) -> None:
     """The recorder writes `hour=HH.<n>.parquet.<hex>.tmp` and renames it; the desk's
     walk saw the name and then stat() failed → the desk process died (VPS 2026-09-03)."""
