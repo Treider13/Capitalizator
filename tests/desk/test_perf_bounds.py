@@ -174,6 +174,38 @@ def test_trades_do_not_starve_ui_book(tmp_path: Path) -> None:
     assert ["100060", "8"] in got["asks"]
 
 
+def test_gap_clears_ui_book_instead_of_leaving_stale_levels(tmp_path: Path) -> None:
+    """Bybit: new snapshot / u=1 restart resets the local book. Stale L2 on Chronos is a lie."""
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0,
+            recv_ts=T0,
+            seq=1,
+            payload={"bids": [["99999", "5"]], "asks": [["100001", "5"]]},
+        )
+    )
+    desk.tick(T0 + timedelta(seconds=1))
+    assert desk.knowledge.book_levels("BTCUSDT")["bids"][0] == ["99999", "5"]
+    desk.on_event(
+        MarketEvent(
+            stream="gap",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(seconds=2),
+            recv_ts=T0 + timedelta(seconds=2),
+            payload={},
+        )
+    )
+    assert not desk.state_for("BTCUSDT").book.ready
+    desk.tick(T0 + timedelta(seconds=3))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got == {"symbol": "BTCUSDT", "bids": [], "asks": [], "ts": None}
+
+
 def test_meta_writes_are_batched_not_per_print(tmp_path: Path) -> None:
     desk = _desk(tmp_path)
     kn = desk.knowledge

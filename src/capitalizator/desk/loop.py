@@ -443,16 +443,27 @@ class DeskLoop:
             ensure_ascii=False,
         )
 
+    def _book_ui_empty(self, symbol: str) -> str:
+        return json.dumps(
+            {"symbol": symbol, "bids": [], "asks": [], "ts": None},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
     def _queue_ready_books(self, when: datetime) -> None:
         """Last-value book on the same UI tick as last_price.
 
         Bybit (2026) pushes depth on its own stream (L50 ~20ms, L200 ~100ms),
         not as a side effect of public trades. Sharing `_ui_due` with last_price
         let BTC prints own the 0.5s clock so `book:{symbol}` never landed.
+        A dirty book (gap / u=1 restart) must not keep the last levels on the page:
+        the venue contract is reset-local, not patch.
         """
         for st in self.symbols.values():
             if st.book.ready:
                 self._ui_put(f"book:{st.symbol}", self._book_ui_payload(st, when))
+            else:
+                self._ui_put(f"book:{st.symbol}", self._book_ui_empty(st.symbol))
 
     def flush_ui(self, now: datetime, *, force: bool = False) -> int:
         """Write last_price / book snapshots in one transaction, at most every 0.5s."""
