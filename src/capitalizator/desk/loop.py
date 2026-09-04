@@ -328,6 +328,8 @@ class DeskLoop:
         self.walls: dict[str, WallWatch] = {}
         self.prs: dict[str, PRS] = {}
         self._width_history: list[WidthSample] = []
+        # 8s liquidity blob, stamped at ZLG. book_history slides after LABEL_ZLG.
+        self._liquidity_stamped: dict[str, dict[str, Any]] = {}
         self._ui_pending: dict[str, str] = {}
         self._ui_last_flush: datetime | None = None
         self.zone_cache: dict[str, tuple[tuple[Any, ...], tuple[Zone, ...]]] = {}
@@ -1790,7 +1792,7 @@ class DeskLoop:
             "shadow_would_marks": shadow_would_marks,
             "decision_ms": (closed_at - touch.ts).total_seconds() * 1000.0,
             "paper_gates": paper_gates_snapshot(n_zlg=n_zlg, gesture=row.gesture),
-            "liquidity": self._liquidity_of(st, row),
+            "liquidity": self._liquidity_stamped.get(row.touch_id) or self._liquidity_of(st, row),
         }
         payload_row = {**journal, **extra}
         payload_row["challenger_would"] = challenger_on(payload_row)
@@ -3326,6 +3328,7 @@ class DeskLoop:
         """OFI / CVD / phase belong to the 8s touch window, not the last 8s before CAV."""
         prints, path = self._touch_window(st, touch, seconds=self.config.zlg_window_s)
         liq = self._liquidity_of(st, touch)
+        self._liquidity_stamped[touch.touch_id] = liq
         prs_tau = None
         src = next((trade for trade in prints if trade.exchange_ts == touch.ts), None)
         if src is not None and st.book_pre is not None and st.book_pre.ready:

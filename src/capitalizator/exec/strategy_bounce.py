@@ -294,6 +294,8 @@ class BounceStrategy:
         self.risk = risk
         self.halts = halts
         self.session = session or SessionPolicy.load()
+        # Desk path reads the applied file. An injected Screener (F1 fixtures) stays as given.
+        self._screener_from_file = screener is None and require_jury
         self.screener = screener or Screener(
             universe=load_desk_universe() if require_jury else None
         )
@@ -369,6 +371,10 @@ class BounceStrategy:
         if not self.halts.allow_entry():
             return self._refuse("halts:closed")
         spot_rail = snap.venue == "spot_proposal" and snap.spot_acked
+        if self._screener_from_file:
+            # Hot apply: recorder and _size_and_gate already re-read the file.
+            # propose must see the same list or a newly added alt dies here.
+            self.screener.universe = load_desk_universe()
         if not spot_rail and not self.screener.ok(
             snap.symbol,
             spread_frac=snap.spread_frac,

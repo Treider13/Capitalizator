@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -161,6 +162,77 @@ def test_publish_and_apply_is_the_daily_path(tmp_path: Path) -> None:
     assert load_universe(yaml_path).symbols == p.symbols
     assert json.loads(kn.meta("universe_applied"))["proposal_id"] == p.proposal_id
     kn.close()
+
+
+def test_desk_screener_sees_hot_file_on_propose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hot apply must reach propose, not only the next load_desk_universe() / recorder."""
+    from capitalizator.exec.strategy_bounce import BounceSnapshot, BounceStrategy
+    from capitalizator.risk.halts import Halts
+    from capitalizator.risk.schema import RiskEngine
+    from capitalizator.screener.filters import Screener
+    from capitalizator.screener.universe import validate_universe
+    from capitalizator.zones.model import Zone
+
+    monkeypatch.setenv("CAP_USERDIR", str(tmp_path))
+    yaml_path = tmp_path / "universe.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {"exchange": "bybit", "category": "linear",
+             "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"]}
+        )
+    )
+    strat = BounceStrategy(
+        risk=RiskEngine(),
+        halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
+        require_card=False,
+        require_jury=True,
+    )
+    assert strat.screener.universe.symbols == ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {"exchange": "bybit", "category": "linear",
+             "symbols": ["BTCUSDT", "ETHUSDT", "SUIUSDT"]}
+        )
+    )
+    when = datetime(2026, 8, 31, 14, 10, tzinfo=UTC)
+
+    def _snap(symbol: str, zone: Zone | None) -> BounceSnapshot:
+        return BounceSnapshot(
+            now=when,
+            symbol=symbol,
+            price=Decimal("1.5"),
+            tick=Decimal("0.0001"),
+            trading_mode="demo",
+            zone=zone,
+            zones=() if zone is None else (zone,),
+            spread_frac=Decimal("0.0001"),
+            typical_move=Decimal("0.01"),
+        )
+
+    # Added alt: membership must not refuse. Next gate is the zone (none here).
+    assert strat.propose(_snap("SUIUSDT", None)) is None
+    assert strat.last_skip == "zone:none_or_other_symbol"
+    # Dropped alt: same file read must refuse membership.
+    assert strat.propose(_snap("SOLUSDT", None)) is None
+    assert strat.last_skip == "screener"
+
+    frozen = BounceStrategy(
+        risk=RiskEngine(),
+        halts=Halts(start_equity=Decimal("100000")),
+        desk_mode="demo",
+        require_card=False,
+        require_jury=True,
+        screener=Screener(
+            universe=validate_universe(
+                {"exchange": "bybit", "category": "linear",
+                 "symbols": ["BTCUSDT", "ETHUSDT"]}
+            )
+        ),
+    )
+    assert frozen.propose(_snap("SUIUSDT", None)) is None
+    assert frozen.last_skip == "screener"
 
 
 def test_recorder_set_symbols_subscribes_added_and_drops_removed(tmp_path: Path) -> None:
