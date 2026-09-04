@@ -1,0 +1,8 @@
+[Unit]
+Description=Sync system clock to Bybit venue time
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sync-bybit-clock.sh

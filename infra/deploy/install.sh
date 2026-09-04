@@ -2,7 +2,7 @@
 # Idempotent VPS bootstrap (Ubuntu 24.04/26.04). Run as root ONCE, re-running is safe.
 #   bash install.sh <ssh-public-key> [allow-from-ip]
 # Creates user `trader`, hardens SSH (keys only, no root), UFW (22 only, optionally from one IP),
-# fail2ban, chrony + UTC, Docker, the data directory, and clones/updates the repo.
+# fail2ban, UTC + Bybit clock (not chrony), Docker, the data directory, and clones/updates the repo.
 set -euo pipefail
 PUBKEY="${1:-}"; ALLOW_FROM="${2:-}"
 REPO="${CAP_REPO:-https://github.com/Treider13/Capitalizator.git}"
@@ -15,10 +15,10 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq ufw fail2ban chrony unattended-upgrades git ca-certificates curl gnupg >/dev/null
 
-log "time: UTC + chrony"
+log "time: UTC (chrony off — hypervisor NTP can sit ~70s off Bybit → 10002)"
 timedatectl set-timezone UTC
-systemctl enable --now chrony >/dev/null
-chronyc makestep >/dev/null 2>&1 || true   # the venue signs with a 5 s window; step the clock now
+systemctl disable --now chrony >/dev/null 2>&1 || true
+systemctl disable --now systemd-timesyncd >/dev/null 2>&1 || true
 
 log "user trader"
 id trader >/dev/null 2>&1 || adduser --disabled-password --gecos "" trader
@@ -57,6 +57,16 @@ elif [ -f "$DATA/app/pyproject.toml" ]; then
 else
   sudo -u trader git clone -q --branch "$BRANCH" "$REPO" "$DATA/app" \
     || { echo "clone failed (private repo?). Upload the tree to $DATA/app or add a deploy key, then re-run."; exit 1; }
+fi
+
+log "Bybit clock at boot + every 10 min"
+if [ -f "$DATA/app/infra/deploy/sync-bybit-clock.sh" ]; then
+  install -m 755 "$DATA/app/infra/deploy/sync-bybit-clock.sh" /usr/local/sbin/sync-bybit-clock.sh
+  install -m 644 "$DATA/app/infra/deploy/bybit-clock.service" /etc/systemd/system/bybit-clock.service
+  install -m 644 "$DATA/app/infra/deploy/bybit-clock.timer" /etc/systemd/system/bybit-clock.timer
+  systemctl daemon-reload
+  systemctl enable --now bybit-clock.timer >/dev/null
+  /usr/local/sbin/sync-bybit-clock.sh || true
 fi
 
 log "operator SSH keys from the repo"
