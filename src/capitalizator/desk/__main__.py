@@ -94,8 +94,8 @@ def serve_loop(
         consume_tape(desk, vault.tape, seen=seen, extra_zones=zones, now=when, cursor=cursor)
         desk.tick(when)
         ticks += 1
-        if ticks % 30 == 0 and knowledge.available():
-            # the console shows whether the desk is still catching up on the tape
+        if knowledge.available():
+            # one key; must be every pass — a 30-tick cadence hid a multi-minute backlog
             knowledge.set_meta("desk_backlog", "1" if cursor.backlog else "0")
         if on_tick is not None:
             on_tick(desk)

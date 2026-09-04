@@ -275,6 +275,56 @@ def test_time_gap_does_not_wipe_ready_book_or_ui(tmp_path: Path) -> None:
     assert ["79754.1", "3"] in got["asks"]
 
 
+def test_catchup_tick_heartbeat_is_wall_clock_not_tape_time(tmp_path: Path) -> None:
+    """Signer dead-man reads desk_heartbeat as process liveness, not tape ts."""
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.tick(T0, force_flush=False)
+    raw = desk.knowledge.meta("desk_heartbeat")
+    assert raw is not None
+    hb = datetime.fromisoformat(raw)
+    assert hb != T0
+    assert abs((datetime.now(tz=UTC) - hb).total_seconds()) < 5
+
+
+def test_catchup_tick_does_not_persist_empty_after_seq_hole(tmp_path: Path) -> None:
+    """A long replay must not wipe last-value just because a skipped delta dirtied RAM."""
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0,
+            recv_ts=T0,
+            seq=1,
+            payload={"bids": [["79753.8", "12"]], "asks": [["79753.9", "8"]]},
+        )
+    )
+    desk.tick(T0 + timedelta(seconds=1))
+    desk.on_event(
+        MarketEvent(
+            stream="gap",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(seconds=2),
+            recv_ts=T0 + timedelta(seconds=2),
+            payload={"missing_stream": "orderbook.200", "seq_from": 2, "seq_to": 9},
+        )
+    )
+    assert not desk.state_for("BTCUSDT").book.ready
+    desk.tick(T0 + timedelta(seconds=3), force_flush=False)
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["79753.8", "12"]
+    desk.tick(T0 + timedelta(seconds=4))
+    assert desk.knowledge.book_levels("BTCUSDT") == {
+        "symbol": "BTCUSDT",
+        "bids": [],
+        "asks": [],
+        "ts": None,
+    }
+
+
 def test_never_ready_book_does_not_overwrite_last_ui_levels(tmp_path: Path) -> None:
     """A process that has not yet seen a snapshot must not persist empty over last-value."""
     kn = open_knowledge(init_vault(tmp_path / "d"))
