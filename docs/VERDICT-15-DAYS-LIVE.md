@@ -4,7 +4,7 @@
 **Роль:** архитектурный разбор по коду, не предложение новых фич.  
 **Железное правило:** если механизма нет в `src/` — так и сказано. Если есть — описано, как работает и что даёт за 15 дней.
 
-Связано: [`INVENTION-OKO.md`](INVENTION-OKO.md), [`ARCHITECTURE-AZ.md`](ARCHITECTURE-AZ.md), [`IMPLEMENTATION.md`](IMPLEMENTATION.md), [`FUTURES-BOTS-RESULTS.md`](FUTURES-BOTS-RESULTS.md), [`CENSUS-PRACTICE-REPOS.md`](CENSUS-PRACTICE-REPOS.md), [`FORUMS-LEVELS-BOUNCE-BTC.md`](FORUMS-LEVELS-BOUNCE-BTC.md).  
+Связано: [`PLAN-20-DAYS.md`](PLAN-20-DAYS.md) (что делать с 20 днями, не отвергая календарь), [`INVENTION-OKO.md`](INVENTION-OKO.md), [`ARCHITECTURE-AZ.md`](ARCHITECTURE-AZ.md), [`IMPLEMENTATION.md`](IMPLEMENTATION.md), [`FUTURES-BOTS-RESULTS.md`](FUTURES-BOTS-RESULTS.md), [`CENSUS-PRACTICE-REPOS.md`](CENSUS-PRACTICE-REPOS.md), [`FORUMS-LEVELS-BOUNCE-BTC.md`](FORUMS-LEVELS-BOUNCE-BTC.md).  
 Канон порогов: [`infra/gates.yaml`](../infra/gates.yaml), [`infra/registry.yaml`](../infra/registry.yaml), [`infra/phase.yaml`](../infra/phase.yaml).
 
 ---
