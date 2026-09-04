@@ -46,6 +46,14 @@ def test_secrets_are_0600_masked_and_feed_the_signer(tmp_path: Path) -> None:
     keys = load_keys(vault, env={})
     assert keys is not None and keys.api_key == "KEY123456789" and keys.mode == "testnet"
     # empty value deletes; bad mode refused
+    with pytest.raises(ValueError, match="llm.provider"):
+        app.settings_post("/api/settings", {"llm.provider": "gemini"}, ack=True)
+    app.settings_post("/api/settings", {"llm.provider": "deepseek", "llm.model": "deepseek-v4-flash"}, ack=True)
+    view = {f["key"]: f for f in _api_get(vault, "/api/settings", {})["fields"]}
+    assert view["llm.provider"]["display"] == "deepseek"
+    assert view["llm.model"]["display"] == "deepseek-v4-flash"
+    page = render_settings_html(Settings(vault).view(), [])
+    assert "deepseek" in page and "deepseek-v4-flash" in page
     with pytest.raises(ValueError, match="bybit.mode"):
         app.settings_post("/api/settings", {"bybit.mode": "mainnet"}, ack=True)
     app.settings_post("/api/settings", {"bybit.mode": "demo"}, ack=True)

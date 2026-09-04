@@ -12,9 +12,10 @@ extraction (the post stays unparsed — canon: text without fields is not a call
 verifier never reads the model's words as facts — the desk resolves claims against
 its own tape (`authors.resolve`).
 
-Providers: anthropic (Messages API) and openai (Chat Completions), both over
-urllib; the key comes from Settings (`llm.api_key`) and lives only in this process.
-Spend is metered from the providers' usage fields against `llm.monthly_budget_usd`.
+Providers: anthropic (Messages API), openai and deepseek (Chat Completions),
+all over urllib; the key comes from Settings (`llm.api_key`) and lives only in
+this process. Spend is metered from the providers' usage fields against
+`llm.monthly_budget_usd`.
 """
 
 from __future__ import annotations
@@ -43,10 +44,17 @@ ASSET_RE = re.compile(r"^[A-Z0-9]{2,15}USDT$")
 HORIZON_RE = re.compile(r"^\d+(m|h|d|w)$")
 EVENT_CLASSES = {"CPI", "FOMC", "SEC", "listing", "hack", "outage", "none"}
 
+PROVIDERS = frozenset({"anthropic", "openai", "deepseek"})
+CHAT_COMPLETIONS = {
+    "openai": "https://api.openai.com/v1/chat/completions",
+    "deepseek": "https://api.deepseek.com/chat/completions",
+}
+
 # USD per 1M tokens (input, output) — approximate list prices, used only for the budget meter.
 PRICES = {
     "anthropic": (3.0, 15.0),
     "openai": (2.0, 8.0),
+    "deepseek": (0.28, 0.66),
 }
 
 
@@ -103,8 +111,8 @@ class LLMClient:
         post: Poster = default_post,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
-        if provider not in {"anthropic", "openai"}:
-            raise ValueError("provider must be anthropic|openai")
+        if provider not in PROVIDERS:
+            raise ValueError("provider must be anthropic|openai|deepseek")
         if not api_key or not model:
             raise ValueError("llm api_key and model are required")
         self.provider = provider
@@ -164,16 +172,18 @@ class LLMClient:
             t_in = int(usage.get("input_tokens") or 0)
             t_out = int(usage.get("output_tokens") or 0)
             return content, t_in, t_out
-        body = json.dumps(
-            {
-                "model": self.model,
-                "temperature": 0,
-                "response_format": {"type": "json_object"},
-                "messages": [{"role": "user", "content": prompt}],
-            }
-        ).encode()
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        # V4 thinking is on by default; extraction is a JSON schema, not a reasoner.
+        if self.provider == "deepseek":
+            payload["thinking"] = {"type": "disabled"}
+        body = json.dumps(payload).encode()
         raw = self._post(
-            "https://api.openai.com/v1/chat/completions",
+            CHAT_COMPLETIONS[self.provider],
             body,
             {"content-type": "application/json", "authorization": f"Bearer {self.api_key}"},
         )

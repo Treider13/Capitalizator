@@ -117,6 +117,39 @@ def test_llm_client_meters_budget_and_parses_provider_replies(tmp_path: Path) ->
     kn.close()
 
 
+def test_deepseek_uses_official_chat_url_and_disables_thinking(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "v")
+    kn = open_knowledge(vault)
+    seen: list[tuple[str, dict, dict]] = []
+
+    def post(url: str, body: bytes, headers: dict) -> bytes:
+        seen.append((url, json.loads(body.decode()), headers))
+        return json.dumps({
+            "choices": [{"message": {"content": '{"claims":[],"motive":{},"event_class":"none"}'}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        }).encode()
+
+    llm = LLMClient(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="sk-ds-test",
+        monthly_budget_usd=5.0,
+        knowledge=kn,
+        post=post,
+        clock=lambda: NOW,
+    )
+    ext = llm.extract("no claim here")
+    assert ext is not None and ext.claims == ()
+    assert len(seen) == 1
+    url, payload, headers = seen[0]
+    assert url == "https://api.deepseek.com/chat/completions"
+    assert headers["authorization"] == "Bearer sk-ds-test"
+    assert payload["model"] == "deepseek-v4-flash"
+    assert payload["thinking"] == {"type": "disabled"}
+    assert payload["response_format"] == {"type": "json_object"}
+    kn.close()
+
+
 def test_cycle_stores_items_extracts_claims_and_resolves_on_our_prices(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "v")
     kn = open_knowledge(vault)
