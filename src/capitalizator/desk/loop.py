@@ -634,8 +634,11 @@ class DeskLoop:
                         before[(side_name, px)] = levels.get(px, Decimal("0"))
             try:
                 st.book.apply_diff(bids, asks, seq=int(seq))
-            except (BookDirty, SeqFault):
+            except BookDirty:
+                # True hole / u=1: reset-local. Stale u is ignored inside Book.
                 st.book = Book(tick_size=str(self.tick_for(st.symbol)))
+                return
+            except SeqFault:
                 return
             _record_adds_from_diff(st, event.exchange_ts, before, bids, asks)
             if st.state == "IDLE" and (len(st.adds) > 256 or len(st.pulls) > 256):

@@ -325,6 +325,71 @@ def test_catchup_tick_does_not_persist_empty_after_seq_hole(tmp_path: Path) -> N
     }
 
 
+def test_stale_book_u_after_newer_snapshot_does_not_wipe_ui(tmp_path: Path) -> None:
+    """Live SOL: hour=22 snapshot then leftover hour=20/21 diffs (older `u`).
+
+    Bybit: those diffs are already in the snapshot. Wiping RAM + persist_empty
+    left Chronos with bids=[] while trades and a fresh snapshot were on tape.
+    """
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(hours=2),
+            recv_ts=T0 + timedelta(hours=2),
+            seq=9000,
+            payload={"bids": [["101.6", "4"]], "asks": [["101.7", "3"]]},
+        )
+    )
+    desk.tick(T0 + timedelta(hours=2, seconds=1))
+    assert desk.knowledge.book_levels("BTCUSDT")["bids"][0] == ["101.6", "4"]
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(hours=1),
+            recv_ts=T0 + timedelta(hours=1),
+            seq=4000,
+            payload={"b": [["99.0", "9"]], "a": []},
+        )
+    )
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(hours=2, seconds=2),
+            recv_ts=T0 + timedelta(hours=2, seconds=2),
+            seq=9000,
+            payload={"b": [["101.5", "1"]], "a": []},
+        )
+    )
+    assert desk.state_for("BTCUSDT").book.ready
+    desk.tick(T0 + timedelta(hours=2, seconds=3))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["101.6", "4"]
+    assert got["asks"][0] == ["101.7", "3"]
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(hours=2, seconds=4),
+            recv_ts=T0 + timedelta(hours=2, seconds=4),
+            seq=9001,
+            payload={"b": [["101.61", "2"]], "a": []},
+        )
+    )
+    desk.tick(T0 + timedelta(hours=2, seconds=5))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["101.61", "2"]
+
+
 def test_never_ready_book_does_not_overwrite_last_ui_levels(tmp_path: Path) -> None:
     """A process that has not yet seen a snapshot must not persist empty over last-value."""
     kn = open_knowledge(init_vault(tmp_path / "d"))

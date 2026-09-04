@@ -9,7 +9,6 @@ from __future__ import annotations
 from decimal import Decimal
 from hashlib import sha256
 
-from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 
 Side = str
@@ -65,8 +64,14 @@ class Book:
             raise BookDirty("book has no update id")
         if seq == 1 and self._seq != 1:
             raise BookDirty("bybit u=1 restart; resync required")
+        # Bybit (2026): a new snapshot already contains every older `u`.
+        # Level-1 even re-pushes a snapshot with the same `u` after 3s idle.
+        # https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
+        # An old parquet diff after a later snapshot is that case — ignore,
+        # do not raise. The desk used to wipe RAM and persist an empty Chronos
+        # book (live SOLUSDT: snapshot hour=22, then leftover hour=20/21 diffs).
         if seq <= self._seq:
-            raise SeqFault(f"book u not monotonic: {self._seq} -> {seq}")
+            return
         if seq > self._seq + 1:
             raise BookDirty(f"book u gap {self._seq} -> {seq}; resync required")
         self._put_side(self._bids, bids)
