@@ -20,7 +20,7 @@ from typing import Any
 
 from capitalizator.book.reconstruct import Book
 from capitalizator.recorder.book_diff import BookDiffNormalizer
-from capitalizator.recorder.rest_snapshot import BookSnapshot
+from capitalizator.recorder.rest_snapshot import BookSnapshot, _levels
 from capitalizator.recorder.ws_trades import BybitTradesWs
 from capitalizator.types import MarketEvent, require_utc
 
@@ -52,10 +52,10 @@ class ReplayEngine:
         return checkpoints
 
     def run_events(self, events: Sequence[MarketEvent]) -> list[BookCheckpoint]:
-        """Same reconstruct as `run`, from already-normalized tape events.
+        """Apply snapshot/book_diff events to a Book, in the given order.
 
-        snapshot + book_diff only. Other streams are skipped. Empty → [].
-        A gap still raises — we do not invent a book.
+        Levels go through rest_snapshot._levels — the same function `run` uses
+        via BookDiffNormalizer. Empty → []. A gap still raises.
         """
         book = Book()
         checkpoints: list[BookCheckpoint] = []
@@ -87,20 +87,9 @@ def _event_snapshot(event: MarketEvent) -> BookSnapshot:
         symbol=event.symbol,
         exchange_ts=event.exchange_ts,
         seq=int(seq),
-        bids=_levels(event.payload.get("bids") or event.payload.get("b") or []),
-        asks=_levels(event.payload.get("asks") or event.payload.get("a") or []),
+        bids=_levels(list(event.payload.get("bids") or event.payload.get("b") or [])),
+        asks=_levels(list(event.payload.get("asks") or event.payload.get("a") or [])),
     )
-
-
-def _levels(rows: object) -> tuple[tuple[str, str], ...]:
-    if not isinstance(rows, list | tuple):
-        return ()
-    out: list[tuple[str, str]] = []
-    for row in rows:
-        if not isinstance(row, list | tuple) or len(row) < 2:
-            continue
-        out.append((str(row[0]), str(row[1])))
-    return tuple(out)
 
 
 def _load_book_frames(path: Path) -> list[dict[str, Any]]:

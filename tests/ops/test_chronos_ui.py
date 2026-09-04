@@ -18,7 +18,7 @@ from capitalizator.ops.console import ConsoleApp, _handler
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
 from capitalizator.recorder.gap import SeqFault
-from capitalizator.recorder.sink_parquet import ParquetSink
+from capitalizator.recorder.sink_parquet import BufferedParquetSink, ParquetSink
 from capitalizator.types import MarketEvent
 
 HTML = Path(__file__).resolve().parents[2] / "src" / "capitalizator" / "ops" / "chronos.html"
@@ -72,6 +72,22 @@ def test_replay_events_two_runs_match() -> None:
 
 def test_run_events_empty_is_empty() -> None:
     assert ReplayEngine().run_events([]) == []
+
+
+def test_run_events_bad_level_raises() -> None:
+    evs = [
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            seq=1,
+            payload={"bids": [["100"]], "asks": [["100.2", "5"]]},
+        )
+    ]
+    with pytest.raises(ValueError, match="level must be"):
+        ReplayEngine().run_events(evs)
 
 
 def test_run_events_gap_does_not_invent() -> None:
@@ -144,6 +160,80 @@ def test_replay_api_empty_and_tape(tmp_path: Path) -> None:
         assert 'id="symbol"' in page
         assert 'id="knobs"' in page
         assert 'id="paper-stats"' in page
+        assert "бумага (все)" not in page
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_replay_same_ts_orders_snapshot_before_diff(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    sink = ParquetSink(vault.tape)
+    sink.write(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            seq=1,
+            payload={"bids": [["100", "5"]], "asks": [["100.2", "5"]]},
+        )
+    )
+    sink.write(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            seq=2,
+            payload={"bids": [["100", "0"], ["99.8", "5"]], "asks": []},
+        )
+    )
+    got = replay_for(vault, symbol="BTCUSDT")
+    assert got["ok"] is True
+    assert got["n"] == 2
+    assert got["last_bid"] == "99.8"
+
+
+def test_replay_reads_live_jsonl_and_does_not_double_count(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    live = BufferedParquetSink(
+        vault.tape, flush_every_s=60, max_rows=10_000, live_jsonl=True
+    )
+    ev = MarketEvent(
+        stream="snapshot",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=NOW,
+        recv_ts=NOW,
+        seq=1,
+        payload={"bids": [["100", "5"]], "asks": [["100.2", "5"]]},
+    )
+    live.write(ev)
+    live.close()
+    only_jsonl = replay_for(vault, symbol="BTCUSDT")
+    assert only_jsonl["n"] == 1 and only_jsonl["ok"] is True
+    assert only_jsonl["last_bid"] == "100"
+    flushed = BufferedParquetSink(
+        vault.tape, flush_every_s=60, max_rows=1, live_jsonl=True
+    )
+    flushed.write(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            seq=2,
+            payload={"bids": [["100", "0"], ["99.8", "5"]], "asks": []},
+        )
+    )
+    flushed.close()
+    both = replay_for(vault, symbol="BTCUSDT")
+    assert both["ok"] is True
+    assert both["n"] == 2
+    assert both["last_bid"] == "99.8"

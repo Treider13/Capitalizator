@@ -308,7 +308,6 @@ def _page(snap: dict[str, Any], *, token: str = "") -> str:
     money = snap.get("money") or {}
     acct = money.get("account") or {}
     exch = money.get("exchange") or {}
-    paper = (money.get("paper") or {}).get("all") or {}
     banner_items = "".join(
         f"<li class=\"warn\">{html.escape(str(b))}</li>" for b in (money.get("banners") or [])
     ) or '<li class="empty">предупреждений нет</li>'
@@ -374,9 +373,6 @@ def _page(snap: dict[str, Any], *, token: str = "") -> str:
       <p>{equity_line}</p>
       <p>день {_pct(acct.get("day_pnl_pct"))} · неделя {_pct(acct.get("week_pnl_pct"))}
       · просадка от пика {_pct(acct.get("drawdown_from_peak"))} · кран: {halt_txt}</p>
-      <p>бумага (все): n={paper.get("n", 0)} winrate={_e(paper.get("winrate"))}
-      ДИ95={_e(paper.get("winrate_ci95"))} avgR={_e(paper.get("avg_r_net"))}
-      PF={_e(paper.get("profit_factor"))} комиссии={_e(paper.get("fees"))}</p>
       <h2>Позиции</h2>
       <table><thead><tr><th>символ</th><th>сторона</th><th>размер</th><th>вход</th>
       <th>стоп (биржа)</th><th>ликвидация</th><th>uPnL</th></tr></thead>

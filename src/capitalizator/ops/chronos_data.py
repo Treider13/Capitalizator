@@ -2,23 +2,29 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
+
+import pyarrow.parquet as pq
 
 from capitalizator.authors.ingest import AuthorsIngest
 from capitalizator.book.reconstruct import BookDirty
 from capitalizator.desk.bars import TF_MINUTES, closed_bars_from_trades
-from capitalizator.desk.tape import load_tape
+from capitalizator.desk.tape import _parse, load_tape
 from capitalizator.exec.replay import ReplayEngine
 from capitalizator.llm.daily_summary import DailySummary
 from capitalizator.news_macro.ingest import NewsIngest, default_macro_path
 from capitalizator.ops.daily_map_report import contains_advice
 from capitalizator.ops.gates_from_sqlite import gates_from_sqlite
 from capitalizator.ops.knowledge import open_knowledge
-from capitalizator.ops.vault import Vault
+from capitalizator.ops.vault import Vault, VaultError, iter_regular_files
 from capitalizator.recorder.gap import SeqFault
+from capitalizator.recorder.rows import rows_fast
 from capitalizator.risk.session import MSK
+from capitalizator.types import MarketEvent
 from capitalizator.zones.config import load_registry
 from capitalizator.zones.engine import MAP_VOTE_METHODS, ZoneEngine
 from capitalizator.zones.model import Bar
@@ -237,13 +243,74 @@ def zones_for(vault: Vault, *, symbol: str, now: datetime | None = None) -> list
     return list(merged.values())
 
 
+def _jsonl_events(path: Path) -> list[MarketEvent]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out: list[MarketEvent] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            row["exchange_ts"] = datetime.fromisoformat(str(row["exchange_ts"]))
+            row["recv_ts"] = datetime.fromisoformat(str(row["recv_ts"]))
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            continue
+        event = _parse(row)
+        if event is not None:
+            out.append(event)
+    return out
+
+
+def _replay_tape_events(tape: Path) -> list[MarketEvent]:
+    """Parquet archive plus live hour=HH.jsonl. Jsonl wins for its hour — same as TapeCursor.
+
+    `load_tape` stays parquet-only (bars / last price). Replay must see the live feed.
+    """
+    if tape.is_symlink() or not tape.is_dir():
+        return []
+    try:
+        paths = list(iter_regular_files(tape))
+    except VaultError:
+        return []
+    live_hours = {path.parent / path.stem for path in paths if path.suffix == ".jsonl"}
+    events: list[MarketEvent] = []
+    for path in paths:
+        if path.suffix == ".jsonl":
+            events.extend(_jsonl_events(path))
+            continue
+        if path.suffix != ".parquet":
+            continue
+        hour_key = path.parent / path.name.split(".")[0]
+        if hour_key in live_hours:
+            continue
+        try:
+            table = pq.ParquetFile(path).read()
+        except (OSError, ValueError):
+            continue
+        for row in rows_fast(table):
+            event = _parse(row)
+            if event is not None:
+                events.append(event)
+    return events
+
+
+def _book_order(event: MarketEvent) -> tuple[datetime, int, int]:
+    seq = event.seq if event.seq is not None else -1
+    kind = 0 if event.stream == "snapshot" else 1
+    return (event.exchange_ts, seq, kind)
+
+
 def replay_for(vault: Vault, *, symbol: str) -> dict[str, Any]:
     """Replay recorded snapshot+diff for one symbol. Empty tape is empty, not invented."""
     events = [
         e
-        for e in load_tape(vault.tape)
+        for e in _replay_tape_events(vault.tape)
         if e.symbol == symbol and e.stream in {"snapshot", "book_diff"}
     ]
+    events.sort(key=_book_order)
     if not events:
         return {
             "symbol": symbol,
