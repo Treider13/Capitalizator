@@ -466,12 +466,16 @@ def serve_gateway_loop(
     reconcile_s: int | None = None,
     alerter: Alerter | None = None,
     wake: Wake | StampWake | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> None:
     """Real signer loop: watchdog, intent drain via the gateway, OMS drain, reconcile.
 
     Blocks new entries (never stops or exits) when:
-      * the desk heartbeat is silent, the private socket is down, or the REST
-        reconcile has not succeeded within dead_man_s (watchdog, per episode);
+      * the desk heartbeat is silent, the private socket is down, or the last
+        REST positions() failed and has not recovered within dead_man_s;
+        a *successful* reconcile keeps `rest` alive until the next attempt
+        (time.yaml has reconcile_s=60 > dead_man_s=30 — beating only on the
+        reconcile tick falsely blocked entries for half of every minute);
       * a reconcile reported a mismatch / an unknown venue position / a position
         without a confirmed venue stop — **sticky** until an operator posts
         `release_signer` (with ack) — audit B1;
@@ -490,6 +494,7 @@ def serve_gateway_loop(
     last_recon: datetime | None = None
     last_instruments: datetime | None = None
     last_universe: datetime | None = None
+    rest_ok = False
     # reason → first seen (iso). Persisted: a signer restart must not clear a block
     # an operator has not released.
     sticky: dict[str, str] = {}
@@ -514,7 +519,7 @@ def serve_gateway_loop(
         knowledge.set_meta("signer_requeued", str(requeued))
     waiter = wake if wake is not None else signer_wake(vault)
     while not should_stop():
-        when = now if now is not None else datetime.now(tz=UTC)
+        when = clock() if clock is not None else (now if now is not None else datetime.now(tz=UTC))
         require_utc(when)
         mode = read_user_mode(vault)
         due = (
@@ -575,8 +580,7 @@ def serve_gateway_loop(
         # --- REST truth ------------------------------------------------------------
         if last_recon is None or (when - last_recon).total_seconds() >= recon_every:
             state = publish_exchange_state(knowledge, gateway, tracker, now=when)
-            if "positions_error" not in state:
-                dead.beat("rest", when)
+            rest_ok = "positions_error" not in state
             if state.get("mismatches"):
                 sticky.setdefault("reconcile_mismatch", when.isoformat())
             for sym in state.get("unknown_positions") or []:
@@ -585,6 +589,8 @@ def serve_gateway_loop(
                 sticky.setdefault(f"stop_missing:{sym}", when.isoformat())
             resolve_unknown_intents(knowledge, gateway, now=when)
             last_recon = when
+        if rest_ok:
+            dead.beat("rest", when)
         stale = dead.check(when)
         blocked = sorted(set(stale) | set(sticky))
         mode = read_user_mode(vault)

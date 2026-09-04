@@ -531,6 +531,36 @@ def _run_loop(kn, vault, gw, tr, *, now, iterations: int) -> None:
                        should_stop=stop, idle_s=0, now=now)
 
 
+def test_rest_watchdog_holds_between_reconcile_ticks(tmp_path: Path) -> None:
+    """dead_man_s=30 < reconcile_s=60: a good positions() must not flap `rest`."""
+    vault = init_vault(tmp_path / "v")
+    kn = open_knowledge(vault)
+    mark_hello(vault, ok=True)
+    set_user_mode(vault, "demo", ack=True)
+    s = FakeSession()
+    gw = _gw(s, mode="demo")
+    tr = PositionTracker()
+    state = {"n": 0, "t": NOW}
+
+    def clock() -> datetime:
+        kn.set_meta("desk_heartbeat", state["t"].isoformat())
+        return state["t"]
+
+    def stop() -> bool:
+        state["n"] += 1
+        if state["n"] > 1:
+            state["t"] = NOW + timedelta(seconds=15 * (state["n"] - 1))
+        return state["n"] > 4
+
+    serve_gateway_loop(
+        knowledge=kn, vault=vault, gateway=gw, tracker=tr, feed=None,
+        should_stop=stop, idle_s=0, clock=clock, dead_man_s=30, reconcile_s=60,
+    )
+    assert "rest" not in json.loads(kn.meta("entries_blocked") or "[]")
+    assert "positions_error" not in json.loads(kn.meta("exchange_state") or "{}")
+    kn.close()
+
+
 def test_gateway_loop_block_is_sticky_until_operator_release(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "v")
     kn = open_knowledge(vault)
