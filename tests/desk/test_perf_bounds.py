@@ -255,6 +255,24 @@ def test_time_gap_does_not_wipe_ready_book_or_ui(tmp_path: Path) -> None:
     assert got is not None
     assert got["bids"][0] == ["79753.8", "12"]
     assert got["asks"][0] == ["79753.9", "8"]
+    nxt = hole + timedelta(milliseconds=100)
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=nxt,
+            recv_ts=nxt,
+            seq=2,
+            payload={"b": [["79754.0", "4"]], "a": [["79754.1", "3"]]},
+        )
+    )
+    assert desk.state_for("BTCUSDT").book.ready
+    desk.tick(nxt + timedelta(seconds=1))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["79754.0", "4"]
+    assert ["79754.1", "3"] in got["asks"]
 
 
 def test_never_ready_book_does_not_overwrite_last_ui_levels(tmp_path: Path) -> None:
