@@ -427,19 +427,43 @@ class DeskLoop:
             or (now - self._ui_last_flush).total_seconds() >= self.UI_FLUSH_S
         )
 
+    def _book_ui_payload(self, st: SymbolState, when: datetime) -> str:
+        bids = sorted(
+            ((str(px), str(sz)) for px, sz in st.book.levels("bid").items()),
+            key=lambda row: Decimal(row[0]),
+            reverse=True,
+        )[:20]
+        asks = sorted(
+            ((str(px), str(sz)) for px, sz in st.book.levels("ask").items()),
+            key=lambda row: Decimal(row[0]),
+        )[:20]
+        return json.dumps(
+            {"symbol": st.symbol, "bids": bids, "asks": asks, "ts": when.isoformat()},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+    def _queue_ready_books(self, when: datetime) -> None:
+        """Last-value book on the same UI tick as last_price.
+
+        Bybit (2026) pushes depth on its own stream (L50 ~20ms, L200 ~100ms),
+        not as a side effect of public trades. Sharing `_ui_due` with last_price
+        let BTC prints own the 0.5s clock so `book:{symbol}` never landed.
+        """
+        for st in self.symbols.values():
+            if st.book.ready:
+                self._ui_put(f"book:{st.symbol}", self._book_ui_payload(st, when))
+
     def flush_ui(self, now: datetime, *, force: bool = False) -> int:
         """Write last_price / book snapshots in one transaction, at most every 0.5s."""
         if (not self._ui_pending and not self._uptime_dirty) or not self.knowledge.available():
             return 0
-        if (
-            not force
-            and self._ui_last_flush is not None
-            and (now - self._ui_last_flush).total_seconds() < self.UI_FLUSH_S
-        ):
+        if not force and not self._ui_due(now):
             return 0
         if self._uptime_dirty:
             self._ui_pending["tape_uptime"] = self.uptime.to_json()
             self._uptime_dirty = False
+        self._queue_ready_books(now)
         n = len(self._ui_pending)
         self.knowledge.set_meta_many(self._ui_pending)
         self._ui_pending = {}
@@ -511,22 +535,8 @@ class DeskLoop:
         if st.last_touch is not None and st.state == "ARM_ZLG":
             keep_from = st.last_touch.ts
         st.book_history = [row for row in st.book_history if row[0] >= keep_from]
-        if self.knowledge.available() and self._ui_due(when):
-            # Build the UI book JSON only when a flush is due (was: sort + dumps per diff).
-            bids = sorted(
-                ((str(px), str(sz)) for px, sz in st.book.levels("bid").items()),
-                reverse=True,
-            )[:20]
-            asks = sorted((str(px), str(sz)) for px, sz in st.book.levels("ask").items())[:20]
-            self._ui_put(
-                f"book:{st.symbol}",
-                json.dumps(
-                    {"symbol": st.symbol, "bids": bids, "asks": asks, "ts": when.isoformat()},
-                    sort_keys=True,
-                    ensure_ascii=False,
-                ),
-            )
-            self.flush_ui(when)
+        # UI book is last-value on the shared flush tick (flush_ui). Do not gate
+        # it on _ui_due: trades reset that clock and starved book:{symbol}.
 
     def _wall_threshold(self, symbol: str) -> Decimal | None:
         """One level is a wall when it is loud for *this* book.

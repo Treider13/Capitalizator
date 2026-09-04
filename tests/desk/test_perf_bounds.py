@@ -116,6 +116,64 @@ def test_resync_with_levels_rebuilds_the_book_instead_of_wiping(tmp_path: Path) 
     assert bare[0]["book_dirty"] is True and not desk.state_for("BTCUSDT").book.ready
 
 
+def test_trades_do_not_starve_ui_book(tmp_path: Path) -> None:
+    """Serve ticks first, then BTC prints own the 0.5s flush. Book must still land.
+
+    Live Chronos showed ZLG RETREAT (RAM book) and `book:BTCUSDT` missing — the
+    trade path flushed last_price and never queued depth. Bybit keeps orderbook
+    on its own WS (L50 ~20ms); the UI tick is last-value of both streams.
+    """
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.tick(T0)
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(milliseconds=100),
+            recv_ts=T0 + timedelta(milliseconds=100),
+            seq=1,
+            payload={"bids": [["99999", "5"]], "asks": [["100001", "5"]]},
+        )
+    )
+    assert desk.state_for("BTCUSDT").book.ready
+    for i in range(40):
+        ts = T0 + timedelta(milliseconds=200 + 20 * i)
+        desk.on_trade(
+            MarketEvent(
+                stream="trades",
+                exchange="bybit",
+                symbol="BTCUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                payload={"px": str(Decimal("100000") + i), "qty": "0.01", "side": "buy"},
+            ),
+            [],
+        )
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["99999", "5"]
+    assert got["asks"][0] == ["100001", "5"]
+    later = T0 + timedelta(seconds=2)
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=later,
+            recv_ts=later,
+            seq=2,
+            payload={"b": [["100050", "9"]], "a": [["100060", "8"]]},
+        )
+    )
+    desk.tick(later + timedelta(seconds=1))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["100050", "9"]
+    assert got["asks"][0] == ["100001", "5"]
+    assert ["100060", "8"] in got["asks"]
+
+
 def test_meta_writes_are_batched_not_per_print(tmp_path: Path) -> None:
     desk = _desk(tmp_path)
     kn = desk.knowledge
