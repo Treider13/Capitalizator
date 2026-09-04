@@ -38,24 +38,18 @@ class BookCheckpoint:
 class ReplayEngine:
     def run(self, path: Path) -> list[BookCheckpoint]:
         frames = _load_book_frames(path)
-        book = Book()
         normalizer = BookDiffNormalizer()
-        checkpoints: list[BookCheckpoint] = []
+        events: list[MarketEvent] = []
         for frame in frames:
             kind, snap = normalizer.parse_frame(frame)
-            if kind == "snapshot":
-                book.apply_snapshot(snap)
-            else:
-                book.apply_diff(snap.bids, snap.asks, seq=snap.seq)
-            bid, ask = book.best()
-            checkpoints.append(BookCheckpoint(seq=book.seq, best_bid=bid, best_ask=ask))
-        return checkpoints
+            events.append(normalizer.to_event(kind, snap, recv_ts=snap.exchange_ts))
+        return self.run_events(events)
 
     def run_events(self, events: Sequence[MarketEvent]) -> list[BookCheckpoint]:
         """Apply snapshot/book_diff events to a Book, in the given order.
 
-        Levels go through rest_snapshot._levels — the same function `run` uses
-        via BookDiffNormalizer. Empty → []. A gap still raises.
+        `run` parses raw WS jsonl into these events, then calls this. Empty → [].
+        A gap still raises.
         """
         book = Book()
         checkpoints: list[BookCheckpoint] = []

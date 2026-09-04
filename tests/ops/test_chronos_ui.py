@@ -12,6 +12,7 @@ from threading import Thread
 import pytest
 
 from capitalizator.book.reconstruct import BookDirty
+from capitalizator.desk.tape import event_from_jsonl_line
 from capitalizator.exec.replay import ReplayEngine
 from capitalizator.ops.chronos_data import replay_for
 from capitalizator.ops.console import ConsoleApp, _handler
@@ -68,6 +69,12 @@ def test_replay_events_two_runs_match() -> None:
     assert a == b
     assert len(a) == 2
     assert a[0].best() != a[1].best()
+
+
+def test_event_from_jsonl_line_skips_garbage() -> None:
+    assert event_from_jsonl_line("") is None
+    assert event_from_jsonl_line("{") is None
+    assert event_from_jsonl_line("{}") is None
 
 
 def test_run_events_empty_is_empty() -> None:

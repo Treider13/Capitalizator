@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -13,7 +12,7 @@ import pyarrow.parquet as pq
 from capitalizator.authors.ingest import AuthorsIngest
 from capitalizator.book.reconstruct import BookDirty
 from capitalizator.desk.bars import TF_MINUTES, closed_bars_from_trades
-from capitalizator.desk.tape import _parse, load_tape
+from capitalizator.desk.tape import _parse, event_from_jsonl_line, load_tape
 from capitalizator.exec.replay import ReplayEngine
 from capitalizator.llm.daily_summary import DailySummary
 from capitalizator.news_macro.ingest import NewsIngest, default_macro_path
@@ -250,15 +249,7 @@ def _jsonl_events(path: Path) -> list[MarketEvent]:
         return []
     out: list[MarketEvent] = []
     for line in text.splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-            row["exchange_ts"] = datetime.fromisoformat(str(row["exchange_ts"]))
-            row["recv_ts"] = datetime.fromisoformat(str(row["recv_ts"]))
-        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-            continue
-        event = _parse(row)
+        event = event_from_jsonl_line(line)
         if event is not None:
             out.append(event)
     return out

@@ -25,6 +25,19 @@ Seen = set[tuple[str, str, str, int | None]]
 _MSK = ZoneInfo("Europe/Moscow")
 
 
+def event_from_jsonl_line(line: str) -> MarketEvent | None:
+    """One live-feed line (`hour=HH.jsonl`) → event, or None if the line is not a row."""
+    if not line.strip():
+        return None
+    try:
+        row = json.loads(line)
+        row["exchange_ts"] = datetime.fromisoformat(str(row["exchange_ts"]))
+        row["recv_ts"] = datetime.fromisoformat(str(row["recv_ts"]))
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+    return _parse(row)
+
+
 def _parse(row: dict) -> MarketEvent | None:
     try:
         payload = json.loads(row["payload_json"])
@@ -283,13 +296,7 @@ class TapeCursor:
             if not raw:
                 continue
             line = raw.decode("utf-8", errors="replace")
-            try:
-                row = json.loads(line)
-                row["exchange_ts"] = datetime.fromisoformat(row["exchange_ts"])
-                row["recv_ts"] = datetime.fromisoformat(row["recv_ts"])
-            except (ValueError, KeyError, TypeError):
-                continue
-            event = _parse(row)
+            event = event_from_jsonl_line(line)
             if event is not None:
                 out.append(event)
         return out, len(chunk)

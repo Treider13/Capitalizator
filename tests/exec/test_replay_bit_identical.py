@@ -10,6 +10,7 @@ import pytest
 
 from capitalizator.book.reconstruct import BookDirty
 from capitalizator.exec.replay import ReplayEngine
+from capitalizator.recorder.book_diff import BookDiffNormalizer
 from capitalizator.recorder.gap import SeqFault
 
 TAPE_RECV = datetime(2026, 8, 30, 13, 30, tzinfo=UTC)
@@ -21,6 +22,21 @@ WS_BOOK = Path(__file__).resolve().parents[1] / "fixtures" / "ws" / "btc_book_sn
 def test_small_hour_is_the_same_bytes_as_ws_book_fixture() -> None:
     """day_btc_small is the recorded-hour stand-in, not a second invented tape."""
     assert (FIXTURE / "book.jsonl").read_bytes() == WS_BOOK.read_bytes()
+
+
+def test_run_and_run_events_same_best() -> None:
+    engine = ReplayEngine()
+    via_file = engine.run(FIXTURE)
+    normalizer = BookDiffNormalizer()
+    events = []
+    for line in (FIXTURE / "book.jsonl").read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        kind, snap = normalizer.parse_frame(json.loads(line))
+        events.append(normalizer.to_event(kind, snap, recv_ts=TAPE_RECV))
+    via_events = engine.run_events(events)
+    assert via_file == via_events
+    assert [c.best() for c in via_file] == [c.best() for c in via_events]
 
 
 def test_two_runs_same_best() -> None:
