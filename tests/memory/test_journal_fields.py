@@ -482,3 +482,8 @@ def test_journal_is_invisible_to_jury_and_hash() -> None:
         "zlg",
         "btc",
     }
+
+
+def test_fill_unknown_touch_id_is_noop() -> None:
+    """A stale last_touch must not crash the desk (KeyError used to)."""
+    assert _reg().fill_cav(cav_label="REJECT", touch_id="missing") == []

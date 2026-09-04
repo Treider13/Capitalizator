@@ -721,7 +721,9 @@ class Registry:
         if require_touch_id:
             self._require_touch_id_if_many(touch_id, what="fill")
         if touch_id is not None and not any(t.touch_id == touch_id for t in self.touches):
-            raise KeyError(touch_id)
+            # Stale last_touch after journal replay: nothing to stamp. Raising
+            # KeyError killed the desk process on every 8s / bar-close tick.
+            return []
         changed: list[Touch] = []
         next_rows: list[Touch] = []
         for touch in self.touches:

@@ -1308,8 +1308,9 @@ class DeskLoop:
         probe = st.book_pre or st.book
         if validate(probe).ok:
             self._oko_observe(st, touch, now)
-        touch = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
-        st.last_touch = touch
+        touch = self._bind_last_touch(st)
+        if touch is None:
+            return []
         book = st.book_pre or st.book
         bid, ask = book.best() if book.ready else (None, None)
         mid = ((bid + ask) / 2) if bid is not None and ask is not None else touch.trade_px
@@ -1369,6 +1370,9 @@ class DeskLoop:
 
     def _oko_observe(self, st: SymbolState, touch: Touch, now: datetime) -> None:
         """Retina + Shadow on the frozen 8s window. Same clock as ZLG / OFI / PRS."""
+        if self._bind_last_touch(st) is None:
+            return
+        touch = st.last_touch
         st.oko_window = None
         raw = self._oko_raw_window(st, touch)
         if raw is None:
