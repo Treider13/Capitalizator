@@ -274,10 +274,10 @@ def test_tape_replay_is_bounded_per_pass_and_resumes(tmp_path: Path) -> None:
 
 
 def test_live_book_is_read_while_trade_parquet_is_still_backlogged(tmp_path: Path) -> None:
-    """Chrono walk of two days of trades ate the budget before today's book jsonl.
+    """Live jsonl is the book tail. Trade parquet backlog must not skip it.
 
-    Live VPS: BACKLOG=1 for minutes, heartbeat live, book:BTCUSDT empty. Book is
-    only valid from its snapshot — that file (and the live tail) must land this pass.
+    Bybit: orderbook snapshot/delta is not publicTrade. This class already
+    tails jsonl every pass; a chrono+budget walk was not doing that.
     """
     from datetime import timedelta
 
