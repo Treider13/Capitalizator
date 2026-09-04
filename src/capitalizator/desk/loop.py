@@ -1285,7 +1285,7 @@ class DeskLoop:
         return out
 
     def _label_zlg(self, st: SymbolState, now: datetime) -> list[dict[str, Any]]:
-        touch = st.last_touch
+        touch = self._bind_last_touch(st)
         if touch is None:
             return []
         zone = self.registry.zone(touch.zone_id)
@@ -1421,8 +1421,27 @@ class DeskLoop:
             return "b_marks"
         return None
 
-    def _eval_cav_and_jury(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
+    def _bind_last_touch(self, st: SymbolState) -> Touch | None:
+        """Registry row for the armed touch, or clear a stale pointer.
+
+        `_drop_resolved_touches` and journal replay can remove a touch_id while
+        `SymbolState.last_touch` still points at it. fill_cav then KeyError'd and
+        killed the process (crash loop on every bar close).
+        """
         touch = st.last_touch
+        if touch is None:
+            return None
+        live = next((t for t in self.registry.touches if t.touch_id == touch.touch_id), None)
+        if live is None:
+            st.last_touch = None
+            st.state = "IDLE"
+            st.zlg_card = None
+            return None
+        st.last_touch = live
+        return live
+
+    def _eval_cav_and_jury(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
+        touch = self._bind_last_touch(st)
         if touch is None:
             return []
         zone = self.registry.zone(touch.zone_id)
@@ -3129,6 +3148,11 @@ class DeskLoop:
             keep.append(touch)
         if drop:
             self.registry.touches = [t for t in self.registry.touches if t.touch_id not in drop]
+            for st in self.symbols.values():
+                if st.last_touch is not None and st.last_touch.touch_id in drop:
+                    st.last_touch = None
+                    st.state = "IDLE"
+                    st.zlg_card = None
         return keep
 
     def _trail_state(self, pos: PaperPosition) -> TrailState:
