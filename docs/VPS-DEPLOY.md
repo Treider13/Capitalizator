@@ -1,5 +1,7 @@
 # Развёртывание на VPS (один раз, потом только `deploy.sh`)
 
+Пошагово для новичка простыми словами: [`NOVICE-START.md`](NOVICE-START.md).
+
 Всё живёт в `/srv/capitalizator`:
 
 ```

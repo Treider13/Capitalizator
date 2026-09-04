@@ -3,7 +3,7 @@
 **Дата:** 2026-09-04.  
 **Календарь:** день 1 = 2026-09-04 (пт) … день 20 = 2026-09-23 (ср).  
 **Закон:** ядро A не трогаем. Ускорение только лентой, режимами `learn`/`demo`, контуром C, калибровкой, журналом и ручным разбором.  
-**Связано:** [`VERDICT-15-DAYS-LIVE.md`](VERDICT-15-DAYS-LIVE.md) (почему 15 дней ≠ live), [`VPS-DEPLOY.md`](VPS-DEPLOY.md), [`SESSIONS.md`](SESSIONS.md), [`PRODUCT.md`](PRODUCT.md).
+**Связано:** [`VERDICT-15-DAYS-LIVE.md`](VERDICT-15-DAYS-LIVE.md) (почему 15 дней ≠ live), [`NOVICE-START.md`](NOVICE-START.md) (установка с нуля простыми словами), [`VPS-DEPLOY.md`](VPS-DEPLOY.md), [`SESSIONS.md`](SESSIONS.md), [`PRODUCT.md`](PRODUCT.md).
 
 **Цель 20 дней (принимаем, не отвергаем):**
 
