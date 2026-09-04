@@ -3,7 +3,7 @@
 С нуля на **Ubuntu-ноутбуке и VPS SpaceWeb**: [`NOVICE-START.md`](NOVICE-START.md).
 
 Ниже — уже живой сервер HOSTKEY (не панель SpaceWeb): `91.229.105.226` (Амстердам, Ubuntu 26.04). Пользователи ОС: `root` (пароль — сменить) и
-`trader` (для работы; ваши два публичных ключа уже добавлены в `/home/trader/.ssh/authorized_keys`).
+`trader` (для работы; публичные ключи в `/home/trader/.ssh/authorized_keys`, в том числе ноутбук LOQ — `infra/deploy/operator_keys/treider-loq.pub`).
 Логин `dronpardon` — это панель HOSTKEY, не ОС.
 
 ## 1. Подключение

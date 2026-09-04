@@ -59,6 +59,20 @@ else
     || { echo "clone failed (private repo?). Upload the tree to $DATA/app or add a deploy key, then re-run."; exit 1; }
 fi
 
+log "operator SSH keys from the repo"
+KEYS_DIR="$DATA/app/infra/deploy/operator_keys"
+if [ -d "$KEYS_DIR" ]; then
+  shopt -s nullglob
+  for f in "$KEYS_DIR"/*.pub; do
+    key="$(tr -d '\r' < "$f" | head -n1)"
+    [ -n "$key" ] || continue
+    grep -qxF "$key" /home/trader/.ssh/authorized_keys 2>/dev/null || echo "$key" >> /home/trader/.ssh/authorized_keys
+  done
+  shopt -u nullglob
+  chmod 600 /home/trader/.ssh/authorized_keys
+  chown -R trader:trader /home/trader/.ssh
+fi
+
 log "firewall"
 ufw --force default deny incoming >/dev/null
 ufw --force default allow outgoing >/dev/null
