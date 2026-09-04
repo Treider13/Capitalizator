@@ -1,17 +1,19 @@
 """L2 book from snapshot + diffs. Zero size deletes. No ghost levels.
 
-Law is Bybit `orderbook.{depth}` (what the recorder subscribes), not Full-OB:
+Law is Bybit `orderbook.{depth}` (recorder topic `orderbook.200`), not Full-OB:
 
   https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
 
-  * `type=snapshot` or `u=1` → replace the local book (service restart).
-  * `type=delta` → patch: size 0 deletes, else insert/update.
-  * Same `u` may repeat (L1 idle re-push). Older `u` is already in the book.
+  * After subscribe: a `snapshot`, then `delta`. A later `snapshot` resets.
+  * Delta: size 0 deletes the price; else insert/update.
+  * `u=1` is snapshot data after a service restart — overwrite the local book
+    with that message. This page does not say fetch REST (that is Full-OB).
+  * Same `u` may repeat on L1 idle. The page does not say wipe on a skipped `u`.
 
-CCXT `handleOrderBook` (2026): snapshot → `reset`, else `handleDeltas`. No wipe
-on a skipped `u`. Nautilus Bybit adapter: snapshot CLEAR+ADD, delta UPDATE;
-stale sequence is a high-water mark, the book is not emptied. Hummingbot Bybit
-perp: `orderbook.200`, REST snapshot, WS deltas; they do not clear on Bybit `u`.
+CCXT `pro/bybit.ts` `handleOrderBook`: `type===snapshot` → `reset`, else
+`handleDeltas`. No `u` wipe. Nautilus `websocket/parse.rs`: snapshot → CLEAR+ADD,
+else UPDATE. Hummingbot Bybit perp: WS `orderbook.200`; REST `/v5/market/orderbook`
+for its snapshot message; local nonce, not Bybit `u`.
 """
 
 from __future__ import annotations
@@ -71,8 +73,8 @@ class Book:
             raise BookDirty("diff before snapshot")
         if seq <= self._seq:
             return
-        # CCXT / Nautilus: apply the delta even if `u` skipped a number.
-        # Emptying the book here is what blanked live SOLUSDT on Chronos.
+        # Official orderbook.200 and CCXT apply the delta. They do not empty
+        # the book because `u` skipped a number (that wipe blanked SOLUSDT).
         self._put_side(self._bids, bids)
         self._put_side(self._asks, asks)
         self._seq = seq

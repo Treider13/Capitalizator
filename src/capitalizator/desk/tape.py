@@ -102,9 +102,9 @@ class TapeCursor:
     read in one list they were 3.2 GB of RSS and the OOM killer restarted the desk
     every 30 s (VPS, 2026-09-03). Old `book_diff` rows are skipped on a production
     first pass (`book_hours`): a book is only valid from its next snapshot anyway.
-    Within that window origin (`snapshot` / `resync`) is read first and deltas
-    start at that timestamp — a chrono walk of pre-snapshot `book_diff` never
-    reached the snapshot on a live desk restart.
+    Official orderbook.200: snapshot, then delta. Origin jsonl is read first so a
+    restart does not spend the byte budget on `book_diff` and never apply the
+    snapshot (live SOLUSDT stayed empty). No time-seek stitch.
     """
 
     RECENT_DAYS = 2
@@ -140,7 +140,6 @@ class TapeCursor:
         self._production = not replay_all_first
         self.book_hours = self.BOOK_HOURS if book_hours is None else book_hours
         self._skipped_book: set[Path] = set()
-        self._book_origin_ts: dict[str, datetime] = {}
         self.backlog = False  # True while a pass hit its budget (replay still catching up)
 
     def _recent(self, path: Path, now: datetime | None) -> bool:
@@ -182,10 +181,8 @@ class TapeCursor:
         budget_bytes = self.max_bytes
         budget_rows = self.max_rows
         self.backlog = False
-        # Official orderbook.200: snapshot then deltas. A desk restart that
-        # chrono-walks two hours of book_diff from byte 0 never reaches the
-        # snapshot (VPS SOLUSDT stayed `bids=[]` while 9 last-value books
-        # aged). Origin files are small; they do not share the delta budget.
+        # Official: snapshot, then delta. Origin jsonl is small; it does not
+        # share the delta/trade budget.
         # https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
         origin_jsonl = [p for p in jsonl_paths if _book_role(p) == "origin"]
         delta_jsonl = [p for p in jsonl_paths if _book_role(p) == "delta"]
@@ -195,11 +192,9 @@ class TapeCursor:
                 continue
             got, used = self._tail_jsonl(path, max(self.max_bytes, 1 << 20))
             events.extend(got)
-            self._remember_origin(got)
         for path in delta_jsonl:
             if self._skip_old_book(path, now):
                 continue
-            self._seed_delta_from_origin(path)
             if budget_bytes <= 0:
                 self.backlog = True
                 break
@@ -233,8 +228,6 @@ class TapeCursor:
             row_cap = max(budget_rows, 50_000) if is_book else budget_rows
             got, used = self._read_parquet(path, row_cap)
             events.extend(got)
-            if _book_role(path) == "origin":
-                self._remember_origin(got)
             if not is_book:
                 budget_rows -= used
         events.sort(key=lambda e: (e.exchange_ts, e.symbol, e.stream))
@@ -258,28 +251,6 @@ class TapeCursor:
             self._skipped_book.add(path)
             return True
         return False
-
-    def _remember_origin(self, events: Sequence[MarketEvent]) -> None:
-        for event in events:
-            if event.stream not in self._BOOK_ORIGIN:
-                continue
-            prev = self._book_origin_ts.get(event.symbol)
-            if prev is None or event.exchange_ts >= prev:
-                self._book_origin_ts[event.symbol] = event.exchange_ts
-
-    def _seed_delta_from_origin(self, path: Path) -> None:
-        """Skip book_diff bytes from before this process's latest snapshot.
-
-        Same law as the class docstring: a book is only valid from its next
-        snapshot. Pre-snapshot deltas are BookDirty and burned the 8 MiB budget.
-        """
-        if not self._production or path in self._tail:
-            return
-        symbol = _path_symbol(path)
-        origin = self._book_origin_ts.get(symbol) if symbol else None
-        if origin is None:
-            return
-        self._tail[path] = _jsonl_offset_at_or_after(path, origin)
 
     def _read_parquet(self, path: Path, budget_rows: int) -> tuple[list[MarketEvent], int]:
         self.files_scanned += 1
@@ -402,83 +373,6 @@ def _book_role(path: Path) -> str | None:
     if stream in TapeCursor._BOOK_DELTA:
         return "delta"
     return None
-
-
-def _path_symbol(path: Path) -> str | None:
-    parts = path.parts
-    for i, part in enumerate(parts):
-        if part in TapeCursor._BOOK_PARTS and i > 0:
-            return parts[i - 1]
-    return None
-
-
-def _jsonl_line_start(fh, mid: int) -> int:
-    """Start of the complete line that contains byte `mid` (or 0)."""
-    if mid <= 0:
-        return 0
-    pos = mid
-    while pos > 0:
-        start = max(0, pos - 4096)
-        fh.seek(start)
-        data = fh.read(pos - start)
-        nl = data.rfind(b"\n")
-        if nl != -1:
-            return start + nl + 1
-        pos = start
-    return 0
-
-
-def _jsonl_offset_at_or_after(path: Path, when: datetime) -> int:
-    """Byte offset of the first complete line with exchange_ts >= when.
-
-    Live `hour=HH.jsonl` is append-only. Lines before the snapshot are not a
-    stitch origin — they are discarded. All-older files return EOF.
-    """
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return 0
-    if size == 0:
-        return 0
-    lo = 0
-    hi = size
-    found = size
-    try:
-        fh = open(path, "rb")
-    except OSError:
-        return 0
-    with fh:
-        while lo < hi:
-            mid = (lo + hi) // 2
-            fh.seek(mid)
-            if mid > 0:
-                fh.readline()
-            pos = fh.tell()
-            if pos >= size:
-                pos = _jsonl_line_start(fh, mid)
-                fh.seek(pos)
-            raw = fh.readline()
-            if not raw:
-                hi = mid
-                continue
-            event = event_from_jsonl_line(raw.decode("utf-8", errors="replace"))
-            if event is None:
-                nxt = pos + len(raw)
-                if nxt <= lo:
-                    hi = mid
-                else:
-                    lo = nxt
-                continue
-            if event.exchange_ts >= when:
-                found = pos
-                hi = mid
-            else:
-                nxt = pos + len(raw)
-                if nxt <= lo:
-                    hi = mid
-                else:
-                    lo = nxt
-    return found
 
 
 def _chrono_key(path: Path) -> tuple[str, str, str]:

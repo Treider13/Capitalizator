@@ -632,8 +632,8 @@ class DeskLoop:
             try:
                 st.book.apply_diff(bids, asks, seq=int(seq))
             except BookDirty:
-                # No snapshot yet. CCXT would patch an empty book; we do not invent
-                # levels. Keep last-value in sqlite until a snapshot / u=1 arrives.
+                # Official orderbook.200: snapshot first. No snapshot yet — do not
+                # invent levels. Last sqlite value stays until snapshot / u=1.
                 return
             except SeqFault:
                 return

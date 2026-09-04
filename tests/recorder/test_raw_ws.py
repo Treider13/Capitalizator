@@ -337,10 +337,10 @@ def test_live_book_is_read_while_trade_parquet_is_still_backlogged(tmp_path: Pat
 
 
 def test_production_restart_reads_snapshot_before_old_book_diffs(tmp_path: Path) -> None:
-    """VPS 2026-09-04: desk restart drowned in hour=20 book_diff; SOL stayed empty.
+    """Official orderbook.200: snapshot first, then delta.
 
-    Official orderbook.200: the book is valid from its next snapshot. Pre-snapshot
-    deltas are BookDirty. They must not spend the first-pass byte budget.
+    A chrono walk of book_diff (name sorts before snapshot) spent the 8 MiB
+    budget and never applied the snapshot — live SOLUSDT stayed empty.
     """
     from datetime import timedelta
 
@@ -391,10 +391,7 @@ def test_production_restart_reads_snapshot_before_old_book_diffs(tmp_path: Path)
     cur = TapeCursor(replay_all_first=False, max_bytes=4096, book_hours=2)
     batch = cur.fresh_rows(tmp_path, now=t0 + timedelta(minutes=10))
     snaps = [e for e in batch if e.stream == "snapshot"]
-    diffs = [e for e in batch if e.stream == "book_diff"]
     assert len(snaps) == 1 and snaps[0].seq == 252
-    assert [e.seq for e in diffs] == [253]
-    assert all(e.seq == 253 for e in diffs)
 
 
 def test_tape_walk_survives_a_writer_temp_file_vanishing(tmp_path: Path) -> None:
