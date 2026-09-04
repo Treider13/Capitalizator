@@ -43,6 +43,7 @@ FIELDS: dict[str, tuple[str, str, bool, str]] = {
     "reddit.client_secret": ("Источники", "Reddit client secret", True, ""),
     "telegram.bot_token": ("Оповещения", "Telegram bot token", True, "Исходящие оповещения от сигнера при изменении фактов: входы заблокированы/сняты, кран, срабатывание сторожа. Чтение каналов запрещено каноном."),
     "telegram.chat_id": ("Оповещения", "Telegram chat id", False, "Куда слать. Тестовое сообщение — кнопкой «Проверить Telegram» на этой странице."),
+    "intel.resolve_threshold_pct": ("Источники", "Порог попадания автора, доля цены", False, "2.12.2: вызов автора засчитан, если цена прошла ±эту долю в его сторону к горизонту. По умолчанию 0.01 (1%). Диапазон (0, 1)."),
 }
 
 SOURCE_KINDS = ("rss", "reddit", "x_account", "hl_wallet", "tradingview_own")
@@ -140,6 +141,9 @@ class Settings:
                 raise ValueError("llm.provider must be anthropic|openai|none")
             if key == "llm.monthly_budget_usd" and value:
                 float(value)
+            if key == "intel.resolve_threshold_pct" and value:
+                if not (0 < float(value) < 1):
+                    raise ValueError("intel.resolve_threshold_pct must be in (0, 1)")
             if value == "":
                 if key in current:
                     del current[key]

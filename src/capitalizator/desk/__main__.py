@@ -16,6 +16,7 @@ from capitalizator.news_macro.ingest import load_desk_calendar
 from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.product import read_user_mode
 from capitalizator.ops.vault import Vault, init_vault, load_vault
+from capitalizator.ops.wake import StampWake, Wake, desk_wake, idle
 from capitalizator.screener.universe import load_desk_universe
 from capitalizator.zones.model import Zone
 
@@ -62,6 +63,7 @@ def serve_loop(
     now: datetime | None = None,
     extra_zones: Sequence[Zone] = (),
     replay_all_first: bool = True,
+    wake: Wake | StampWake | None = None,
 ) -> DeskLoop:
     """Stay up. Read parquet tape, tick ZLG, re-read user_mode. No invented rows.
 
@@ -78,6 +80,7 @@ def serve_loop(
     zones = tuple(extra_zones)
     cursor = TapeCursor(replay_all_first=replay_all_first)
     ticks = 0
+    waiter = wake if wake is not None else desk_wake(vault)
     while not should_stop():
         desk.user_mode = read_user_mode(vault)
         if desk.user_mode in {"demo", "live"}:
@@ -94,7 +97,7 @@ def serve_loop(
         if on_tick is not None:
             on_tick(desk)
         if idle_s and not cursor.backlog:
-            sleep(idle_s)  # while catching up, the next pass follows at once
+            idle(waiter, idle_s, should_stop=should_stop)
     return desk
 
 

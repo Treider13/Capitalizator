@@ -38,7 +38,7 @@ def parse_rss(
         title = (item.findtext("title") or "").strip()
         link = (item.findtext("link") or source).strip()
         refuse_url(link if "://" in link else source)
-        klass = _class(title)
+        klass = classify_title(title)
         event_id = f"rss-{source.split('/')[-1]}-{i}"
         rows.append(
             NewsRow(
@@ -57,7 +57,7 @@ def parse_rss(
     return rows
 
 
-def _class(title: str) -> str:
+def classify_title(title: str) -> str:
     low = title.lower()
     if "fomc" in low or "powell" in low or "federal reserve" in low:
         return "FOMC"

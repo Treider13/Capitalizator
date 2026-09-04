@@ -50,7 +50,8 @@ def test_top_n_by_turnover_majors_always_history_required() -> None:
         _tick("OLDUSDT", "0.5"), _tick("NEWUSDT", "999"), _tick("DEADUSDT", "999"),
         _tick("XRPUSDT", "40"),
     ]
-    p = propose(now=NOW, instruments=instruments, tickers=tickers, current=CURRENT, size=4)
+    p = propose(now=NOW, instruments=instruments, tickers=tickers, current=CURRENT,
+                size=4, hysteresis=0)
     # majors first, then by turnover: SOL (50) and XRP (40); NEW is too young, DEAD not trading
     assert p.symbols == ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
     assert p.added == ("XRPUSDT",) and p.dropped == ("OLDUSDT",)
@@ -79,7 +80,7 @@ def test_publish_then_apply_rewrites_yaml_only_with_ack(tmp_path: Path) -> None:
     tickers = [_tick("BTCUSDT", "9"), _tick("ETHUSDT", "8"), _tick("SOLUSDT", "7"),
                _tick("OLDUSDT", "1")]
     p = publish_proposal(kn, now=NOW, instruments=instruments, tickers=tickers,
-                         universe_path=yaml_path, size=3)
+                         universe_path=yaml_path, size=3, hysteresis=0)
     stored = json.loads(kn.meta(META_PROPOSAL))
     assert stored["symbols"] == ["BTCUSDT", "ETHUSDT", "SOLUSDT"] and stored["dropped"] == ["OLDUSDT"]
     with pytest.raises(ValueError, match="ack"):

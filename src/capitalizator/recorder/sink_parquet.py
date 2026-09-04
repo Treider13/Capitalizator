@@ -11,6 +11,7 @@ import io
 import json
 import os
 import stat
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -77,10 +78,17 @@ def live_row(row: dict) -> dict:
 
 
 class ParquetSink:
-    def __init__(self, data_root: Path) -> None:
+    def __init__(
+        self, data_root: Path, *, on_write: Callable[[], None] | None = None
+    ) -> None:
         self.data_root = data_root
         self.accepted_count = 0
         self._rows: dict[Path, list[dict]] = {}
+        self._on_write = on_write
+
+    def _notify(self) -> None:
+        if self._on_write is not None:
+            self._on_write()
 
     def write(self, event: MarketEvent) -> Path:
         path = partition_path(self.data_root, event)
@@ -134,6 +142,7 @@ class ParquetSink:
             tmp_name = None
             self._rows[path] = rows
             self.accepted_count += 1
+            self._notify()
             return path
         except VaultError as exc:
             if fd >= 0:
@@ -175,12 +184,14 @@ class BufferedParquetSink:
         flush_every_s: float = 1.0,
         max_rows: int = 5000,
         live_jsonl: bool = False,
+        on_write: Callable[[], None] | None = None,
     ):
         if flush_every_s <= 0 or max_rows <= 0:
             raise ValueError("flush_every_s and max_rows must be > 0")
         self.data_root = data_root
         self.flush_every_s = flush_every_s
         self.max_rows = max_rows
+        self._on_write = on_write
         # Live feed: every event is also appended, at once, to `hour=HH.jsonl` next to
         # the parquet parts. The desk tails it by byte offset (O(1) per tick) while the
         # parquet archive can flush rarely and compact — 24 symbols × 4 streams × 1 s
@@ -201,10 +212,15 @@ class BufferedParquetSink:
         self.accepted_count += 1
         if self.live_jsonl:
             self._append_live(path, row)
+            self._notify()
         if sum(len(rows) for rows in self._buf.values()) >= self.max_rows:
             self.flush()
         elif now_monotonic is not None:
             self.maybe_flush(now_monotonic)
+
+    def _notify(self) -> None:
+        if self._on_write is not None:
+            self._on_write()
 
     # --- live jsonl ------------------------------------------------------------------
     def _append_live(self, hour_path: Path, row: dict) -> None:
@@ -259,6 +275,8 @@ class BufferedParquetSink:
             written += len(rows)
             del self._buf[hour_path]
         self.flushed_count += written
+        if written and not self.live_jsonl:
+            self._notify()
         return written
 
     def _write_part(self, hour_path: Path, rows: list[dict]) -> Path:

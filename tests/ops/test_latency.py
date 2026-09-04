@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from capitalizator.ops.latency import lag_report, percentile
+from capitalizator.ops.latency import decision_report, lag_report, percentile
 from capitalizator.types import MarketEvent
 
 
@@ -39,3 +39,17 @@ def test_lag_report_on_known_offsets() -> None:
 def test_empty_is_error() -> None:
     with pytest.raises(ValueError, match="no events"):
         lag_report([])
+
+
+def test_decision_report_on_journal_rows() -> None:
+    rows = [{"decision_ms": float(i)} for i in range(1, 101)]
+    report = decision_report(rows)
+    assert report["n"] == 100
+    assert report["p50_ms"] == 50
+    assert report["p95_ms"] == 95
+
+
+def test_decision_report_skips_missing_and_empty_is_error() -> None:
+    assert decision_report([{"decision_ms": 10}, {"jury": "ACCORD"}])["n"] == 1
+    with pytest.raises(ValueError, match="no decisions"):
+        decision_report([{"jury": "ACCORD"}])

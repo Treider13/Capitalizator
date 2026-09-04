@@ -255,11 +255,11 @@ def test_resolve_keeps_journal_fields() -> None:
 
     brk = _reg()
     _journal(brk)
-    close_ts = PRINT + timedelta(minutes=15)
+    close_ts = PRINT + timedelta(hours=8)
     bar = Bar(
         symbol="BTCUSDT",
-        tf="15m",
-        open_ts=close_ts - timedelta(minutes=15),
+        tf="1d",
+        open_ts=close_ts - timedelta(days=1),
         close_ts=close_ts,
         open=Decimal("99.9"),
         high=Decimal("99.9"),

@@ -244,11 +244,11 @@ def test_console_demo_without_hello_is_403(tmp_path: Path) -> None:
         server.server_close()
 
 
-def test_console_snapshot_lists_24_symbols(tmp_path: Path) -> None:
+def test_console_snapshot_lists_10_symbols(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     open_knowledge(vault).close()
     snap = desk_snapshot(vault)
-    assert snap["n_symbols"] == 24
+    assert snap["n_symbols"] == 10
     assert snap["symbols"][0] == "BTCUSDT"
     assert "Демо: нет hello" in snap["hello_banner"]
     assert "мало n" in snap["hello_banner"]
@@ -349,7 +349,7 @@ def test_console_html_has_plan_screen(tmp_path: Path) -> None:
     assert "max_lev: 3" in page
     assert "target_risk: 0.01" in page
     snap = desk_snapshot(vault)
-    assert snap["n_symbols"] == 24
+    assert snap["n_symbols"] == 10
     assert "tape_holes" in snap
     assert "cav_zlg" in snap
     assert "jury_today" in snap
@@ -459,7 +459,7 @@ def test_desk_screener_accepts_sol(tmp_path: Path) -> None:
         require_jury=True,
     )
     assert "SOLUSDT" in strat.screener.universe.symbols
-    assert len(load_desk_universe().symbols) == 24
+    assert len(load_desk_universe().symbols) == 10
     desk_strat = DeskLoop(
         knowledge=open_knowledge(init_vault(tmp_path / "desk")),
         user_mode="demo",
@@ -791,7 +791,7 @@ def test_ticker_emits_mark_with_funding_and_oi() -> None:
 
 
 def test_live_ws_subscribes_the_whole_universe_including_liquidations(tmp_path: Path) -> None:
-    """§2 / wave 2: the live recorder covers all 24 symbols × 4 public streams. The old
+    """§2 / wave 2: the live recorder covers all 10 symbols × 4 public streams. The old
     `--minutes` path printed `"live": true` after writing nothing and is refused now."""
     import pytest
 
@@ -817,9 +817,9 @@ def test_live_ws_subscribes_the_whole_universe_including_liquidations(tmp_path: 
     rec = LiveRecorder(symbols=symbols, data_root=tmp_path, ws_factory=lambda: spy,
                        fetch_snapshot=lambda s: None)
     rec.start()
-    assert len(symbols) == 24
-    assert len(spy.topics) == 24 * 4
-    assert sum(1 for t in spy.topics if t.startswith("allLiquidation.")) == 24
+    assert len(symbols) == 10
+    assert len(spy.topics) == 10 * 4
+    assert sum(1 for t in spy.topics if t.startswith("allLiquidation.")) == 10
 
 
 def test_rest_ticker_is_funding_oi_mark() -> None:

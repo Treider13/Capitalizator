@@ -2,6 +2,8 @@
 epsilon_ticks: 2
 bounce_away_ticks: 8
 working_tf: "15m"
+# Mid TF between the 15m vote and H4. Senior levels pair with the next TF down.
+mid_tf: "1h"
 htf: "4h"
 htf_d1: "1d"
 mid_band_ticks: 2
@@ -15,3 +17,7 @@ prs_delta_ticks: 5
 # Enough observations (one place for jury / ОКО / calibration / first fact).
 n_min: 20
 mature_n: 30
+# Wall (book/wall_watch): before the symbol's Passport is mature, one level worth this
+# many USDT; once mature, one level ≥ wall_depth_mult × the symbol's median zone-side depth.
+wall_min_notional: 3000000
+wall_depth_mult: 1

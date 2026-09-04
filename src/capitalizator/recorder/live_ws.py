@@ -29,12 +29,14 @@ from typing import Any
 
 from capitalizator.book.reconstruct import BookDirty
 from capitalizator.ops.knowledge import Knowledge
+from capitalizator.ops.wake import desk_wake_from_tape
 from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.live import liquidation_events, ticker_events
 from capitalizator.recorder.normalize import TradesNormalizer
 from capitalizator.recorder.public_ws import is_control_frame
 from capitalizator.recorder.raw_ws import RawPublicWs
 from capitalizator.recorder.rest_snapshot import BookSnapshot, RestSnapshot
+from capitalizator.recorder.rest_ticker import RestTicker
 from capitalizator.recorder.sink_parquet import BufferedParquetSink
 from capitalizator.recorder.ws_book import BybitBookWs
 from capitalizator.types import MarketEvent
@@ -79,20 +81,29 @@ class LiveRecorder:
     last_trade_ts: dict[str, datetime] = field(default_factory=dict)
     _marked_reconnects: int = 0
     _last_instruments: float | None = None
+    rest_ticker: RestTicker | None = None
+    rest_opener: Callable[[str], Any] | None = None
+    rest_fallback: bool = False
 
     def __post_init__(self) -> None:
         if not self.symbols:
             raise ValueError("symbols required")
         if self.sink is None:
             # Live feed (jsonl, per event) for the desk; parquet archive parts once a
-            # minute (compacted later). 1 s parts × 24 symbols × 4 streams = 5 800
+            # minute (compacted later). 1 s parts × 10 symbols × 4 streams — the old
             # files/min on the VPS (2026-09-03) — the desk's own cursor choked on them.
             self.sink = BufferedParquetSink(
-                self.data_root, flush_every_s=60.0, max_rows=200_000, live_jsonl=True
+                self.data_root,
+                flush_every_s=60.0,
+                max_rows=200_000,
+                live_jsonl=True,
+                on_write=desk_wake_from_tape(self.data_root).notify,
             )
         if self.fetch_snapshot is None:
             rest = RestSnapshot()
             self.fetch_snapshot = rest.fetch
+        if self.rest_ticker is None:
+            self.rest_ticker = RestTicker()
         for name in ("trades", "book", "ticker", "liquidation"):
             self.stats[name] = StreamStat()
 
@@ -100,15 +111,53 @@ class LiveRecorder:
     def start(self) -> None:
         self.started_at = datetime.now(tz=UTC)
         self.ws = self.ws_factory()
-        syms = list(self.symbols)
+        self._subscribe(list(self.symbols))
+        if hasattr(self.ws, "start"):
+            self.ws.start()
+
+    def _subscribe(self, symbols: Sequence[str]) -> None:
+        if self.ws is None or not symbols:
+            return
+        syms = list(symbols)
         for chunk in (syms[i : i + SUBSCRIBE_CHUNK] for i in range(0, len(syms), SUBSCRIBE_CHUNK)):
             self.ws.trade_stream(chunk, self._cb("trades"))
             self.ws.orderbook_stream(BOOK_DEPTH, chunk, self._cb("book"))
             self.ws.ticker_stream(chunk, self._cb("ticker"))
             if hasattr(self.ws, "liquidation_stream"):
                 self.ws.liquidation_stream(chunk, self._cb("liquidation"))
-        if hasattr(self.ws, "start"):
-            self.ws.start()
+
+    def _topics_for(self, symbols: Sequence[str]) -> list[str]:
+        out: list[str] = []
+        for symbol in symbols:
+            out.extend(
+                (
+                    f"publicTrade.{symbol}",
+                    f"orderbook.{BOOK_DEPTH}.{symbol}",
+                    f"tickers.{symbol}",
+                    f"allLiquidation.{symbol}",
+                )
+            )
+        return out
+
+    def set_symbols(self, symbols: Sequence[str]) -> dict[str, tuple[str, ...]]:
+        """Hot universe change: subscribe added names, drop removed ones. No restart."""
+        wanted = tuple(str(s) for s in symbols)
+        if not wanted:
+            raise ValueError("symbols required")
+        old = tuple(self.symbols)
+        if wanted == old:
+            return {"added": (), "dropped": ()}
+        added = tuple(s for s in wanted if s not in set(old))
+        dropped = tuple(s for s in old if s not in set(wanted))
+        self.symbols = wanted
+        if self.ws is not None:
+            if added:
+                self._subscribe(added)
+            if dropped and hasattr(self.ws, "drop_topics"):
+                self.ws.drop_topics(self._topics_for(dropped))
+            for symbol in dropped:
+                self.books.pop(symbol, None)
+        return {"added": added, "dropped": dropped}
 
     def _cb(self, stream: str) -> Callable[[Frame], None]:
         def handle(frame: Frame) -> None:
@@ -132,7 +181,33 @@ class LiveRecorder:
             n += 1
         assert self.sink is not None
         self.sink.maybe_flush(time.monotonic())
+        if self.rest_fallback:
+            self.poll_rest_tickers(now=datetime.now(tz=UTC))
         return n
+
+    def poll_rest_tickers(self, *, now: datetime) -> int:
+        """REST funding/OI/mark when the public ticker socket is quiet."""
+        if self.rest_ticker is None or self.sink is None:
+            return 0
+        ticker = self.stats.get("ticker")
+        if ticker is not None and ticker.last_at is not None:
+            if (now - ticker.last_at).total_seconds() < 60:
+                return 0
+        written = 0
+        for symbol in self.symbols:
+            try:
+                events = self.rest_ticker.fetch(
+                    symbol, recv_ts=now, opener=self.rest_opener
+                )
+            except (ValueError, OSError, json.JSONDecodeError):
+                continue
+            for event in events:
+                self.sink.write(event)
+                written += 1
+        if written and ticker is not None:
+            ticker.last_at = now
+            ticker.events += written
+        return written
 
     def handle(self, stream: str, frame: Frame, *, recv_ts: datetime) -> list[MarketEvent]:
         stat = self.stats[stream]
@@ -300,6 +375,7 @@ class LiveRecorder:
         idle_s: float = 0.05,
         sleep: Callable[[float], None] = time.sleep,
         testnet: bool = False,
+        universe_fn: Callable[[], Sequence[str]] | None = None,
     ) -> None:
         # the hole between the previous process's last trade and now is OURS to mark
         self.mark_time_gap(now=datetime.now(tz=UTC), reason="start")
@@ -307,6 +383,8 @@ class LiveRecorder:
         self.publish_instruments(testnet=testnet, force=True)
         try:
             while not should_stop():
+                if universe_fn is not None:
+                    self.set_symbols(universe_fn())
                 n = self.drain()
                 self.mark_reconnects()
                 self.publish_status()

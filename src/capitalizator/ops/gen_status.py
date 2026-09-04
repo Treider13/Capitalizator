@@ -38,6 +38,7 @@ ENTRY_POINTS = (
     "capitalizator.ops.day_episodes",
     "capitalizator.ops.skip_log",
     "capitalizator.recorder.scan_keys",
+    "capitalizator.ops.healthz",
 )
 
 
@@ -183,7 +184,7 @@ def render(*, userdir: Path | None) -> str:
         "сторож по эпизодам, сверка REST без усыновления, unknown→resolve |",
         "| intel | `capitalizator.intel --serve` | RSS/Reddit/X/Hyperliquid/Bybit public/F&G → knowledge; "
         "LLM-экстрактор по схеме; резолюция авторов на своей ленте |",
-        "| console | `capitalizator.ops.console --serve` | 127.0.0.1:8082: стол, настройки (ключи/источники), словарь кодов |",
+        "| console | `capitalizator.ops.console --serve` | 127.0.0.1:8082: стол (символ, ТФ/зоны, реплей, бумага, две ручки), настройки (ключи/источники), словарь кодов |",
         "| night | shell-цикл | ночной контур 00:30 UTC, компакция ленты каждый час |",
         "",
         "## Недостижимые из рантайма модули",

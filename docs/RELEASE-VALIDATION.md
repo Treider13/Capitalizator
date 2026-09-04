@@ -127,9 +127,9 @@ tests/product/test_acceptance.py::test_set_mode_with_ack_does_not_write_phase PA
 | копия кита | `whales/` не принимает вход |
 | ICT-движок | Комментарии «No ICT/FVG»; методов нет. Поле `fvg_present` в журнале — колонка, не движок |
 
-Константы: `MAX_SYMBOLS = 24`. `infra/universe.yaml` — 24 линейных USDT-перпа. 25-й — отказ (`test_16`).
+Константы: `MAX_SYMBOLS = 10`. `infra/universe.yaml` — топ-10 линейных USDT-перпов. 11-й — отказ (`test_16`).
 
-`infra/registry.yaml`: есть `htf_d1`, `mid_band_ticks`. Лишний ключ — `RegistryConfigError` (`test_extra_key_rejected`).
+`infra/registry.yaml`: есть `mid_tf` (1h), `htf_d1`, `mid_band_ticks`. Лишний ключ — `RegistryConfigError` (`test_extra_key_rejected`).
 
 ---
 

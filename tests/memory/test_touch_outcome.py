@@ -60,12 +60,52 @@ def test_poke_and_leave_without_close_beyond_is_bounce() -> None:
 
 
 def test_working_tf_close_beyond_is_break() -> None:
+    zone = Zone.create(
+        symbol="BTCUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("100.2"),
+        method="swing",
+        created_as_of=CREATED,
+    )
+    reg = Registry(tick_size=TICK)
+    reg.on_trade(_trade("100.1"), [zone])
+    close_ts = PRINT + timedelta(minutes=15)
+    bar = _bar("99.9", close_ts=close_ts)
+    later = close_ts + timedelta(seconds=1)
+    changed = reg.resolve(now=later, bars=[bar], last_px=Decimal("101.0"))
+    assert [t.outcome for t in changed] == ["break"]
+
+
+def test_junior_tf_close_beyond_senior_zone_is_not_break() -> None:
+    """A 1d level is not broken by a 15m close through the band."""
     reg = Registry(tick_size=TICK)
     reg.on_trade(_trade("100.1"), [ZONE])
     close_ts = PRINT + timedelta(minutes=15)
     bar = _bar("99.9", close_ts=close_ts)
     later = close_ts + timedelta(seconds=1)
-    changed = reg.resolve(now=later, bars=[bar], last_px=Decimal("101.0"))
+    changed = reg.resolve(now=later, bars=[bar], last_px=Decimal("100.1"))
+    assert changed == []
+    assert reg.touches[0].outcome == "pending"
+
+
+def test_own_tf_close_beyond_is_break() -> None:
+    reg = Registry(tick_size=TICK)
+    reg.on_trade(_trade("100.1"), [ZONE])
+    close_ts = PRINT + timedelta(hours=8)
+    daily = Bar(
+        symbol="BTCUSDT",
+        tf="1d",
+        open_ts=close_ts - timedelta(days=1),
+        close_ts=close_ts,
+        open=Decimal("100.1"),
+        high=Decimal("100.1"),
+        low=Decimal("99.9"),
+        close=Decimal("99.9"),
+    )
+    later = close_ts + timedelta(seconds=1)
+    changed = reg.resolve(now=later, bars=[daily], last_px=Decimal("101.0"))
     assert [t.outcome for t in changed] == ["break"]
 
 

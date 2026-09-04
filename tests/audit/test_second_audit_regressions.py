@@ -100,8 +100,11 @@ def test_account_day_roll_is_monotonic_and_survives_a_restart(tmp_path: Path) ->
     # a replayed print from yesterday must not lift the halt or re-baseline the day
     acct.roll(NOW - timedelta(days=1))
     assert acct.halts.halted and acct.halts.day_start == start
-    # restart: the day key is persisted, so yesterday's tape still does nothing
-    again = Account.load(kn, RiskConfig())
+    # restart: the day key is persisted, so yesterday's tape still does nothing.
+    # `now=NOW` — without it load() rolls to the wall clock, and after 21:00 UTC the
+    # Moscow date is already "tomorrow", which lifts the halt (the test then depended
+    # on the hour it was run at).
+    again = Account.load(kn, RiskConfig(), now=NOW)
     again.roll(NOW - timedelta(days=1))
     assert again.halts.halted and again.halts.day_start == start
     # tomorrow lifts it

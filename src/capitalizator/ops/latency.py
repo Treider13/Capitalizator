@@ -1,9 +1,13 @@
-"""0.1.4 — p50/p95 of recv_ts - exchange_ts. Does not invent a live hour."""
+"""0.1.4 — p50/p95 of recv_ts - exchange_ts. Does not invent a live hour.
+
+Decision path: p50/p95 of journal `decision_ms` (jury/close − touch.ts).
+"""
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from capitalizator.types import MarketEvent
 
@@ -27,3 +31,15 @@ def lag_report(events: Sequence[MarketEvent]) -> dict[str, float]:
     if not lags:
         raise ValueError("no events")
     return {"n": float(len(lags)), "p50_ms": percentile(lags, 50), "p95_ms": percentile(lags, 95)}
+
+
+def decision_report(rows: Sequence[Mapping[str, Any]]) -> dict[str, float]:
+    """p50/p95 of journalled decision_ms. Rows without the field are skipped."""
+    values = sorted(float(row["decision_ms"]) for row in rows if row.get("decision_ms") is not None)
+    if not values:
+        raise ValueError("no decisions")
+    return {
+        "n": float(len(values)),
+        "p50_ms": percentile(values, 50),
+        "p95_ms": percentile(values, 95),
+    }

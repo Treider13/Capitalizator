@@ -37,7 +37,19 @@ from capitalizator.screener.universe import default_week0_path, load_universe
 from capitalizator.types import require_utc
 
 TEXT_KINDS = {"rss", "reddit", "x_account"}
-RESOLVE_THRESHOLD_PCT = Decimal("0.01")  # 2.12.2: ±1% over the horizon = hit
+# 2.12.2: ±this fraction over the horizon = hit. Operator knob `intel.resolve_threshold_pct`
+# in Настройки; this is only the default when the setting is absent.
+RESOLVE_THRESHOLD_PCT_DEFAULT = Decimal("0.01")
+
+
+def resolve_threshold(settings: Settings | None) -> Decimal:
+    raw = settings.get("intel.resolve_threshold_pct") if settings is not None else None
+    if not raw:
+        return RESOLVE_THRESHOLD_PCT_DEFAULT
+    value = Decimal(str(raw))
+    if not (Decimal("0") < value < Decimal("1")):
+        raise ValueError("intel.resolve_threshold_pct must be in (0, 1)")
+    return value
 
 
 def _llm(settings: Settings, knowledge: Knowledge) -> LLMClient | None:
@@ -230,7 +242,12 @@ def extract_claims(
     return {"items": n_items, "calls": n_calls, "spent_usd": round(llm.spent(), 4)}
 
 
-def resolve_calls(knowledge: Knowledge, *, now: datetime) -> dict[str, Any]:
+def resolve_calls(
+    knowledge: Knowledge,
+    *,
+    now: datetime,
+    threshold_pct: Decimal = RESOLVE_THRESHOLD_PCT_DEFAULT,
+) -> dict[str, Any]:
     """Calls past their horizon are scored against OUR last prices (2.12.2)."""
     prices = {k: Decimal(str(v)) for k, v in knowledge.last_prices().items()}
     resolver = AuthorsResolve()
@@ -261,7 +278,7 @@ def resolve_calls(knowledge: Knowledge, *, now: datetime) -> dict[str, Any]:
         )
         rule = ResolveRule(
             direction="up" if row["side"] == "long" else "down",
-            threshold_pct=RESOLVE_THRESHOLD_PCT,
+            threshold_pct=threshold_pct,
         )
         closed = resolver.close(call, now=now, ref_px=Decimal(str(ref)), close_px=px_now, rule=rule)
         if closed.hit is not None:
@@ -313,7 +330,7 @@ def cycle(
     out["market"] = fetch_market_metrics(knowledge, now=when, get=get)
     client = llm if llm is not None else _llm(settings, knowledge)
     out["extract"] = extract_claims(knowledge, client, now=when)
-    out["resolve"] = resolve_calls(knowledge, now=when)
+    out["resolve"] = resolve_calls(knowledge, now=when, threshold_pct=resolve_threshold(settings))
     out["weights"] = author_weights(knowledge, now=when)
     knowledge.set_meta("intel_status", json.dumps(out, default=str, sort_keys=True))
     return out

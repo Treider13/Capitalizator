@@ -14,8 +14,10 @@ REPO = Path(__file__).resolve().parents[2] / "infra" / "registry.yaml"
 def test_repo_file_matches_phase_build_keys() -> None:
     cfg = load_registry(REPO)
     assert cfg.working_tf == "15m"
+    assert cfg.mid_tf == "1h"
     assert cfg.htf == "4h"
     assert cfg.htf_d1 == "1d"
+    assert cfg.structure_tfs == ("15m", "1h", "4h", "1d")
     assert cfg.mid_band_ticks == 2
     assert cfg.epsilon_ticks == 2
     assert cfg.bounce_away_ticks == 8

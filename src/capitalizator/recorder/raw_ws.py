@@ -91,6 +91,16 @@ class RawPublicWs:
         if self._connected.is_set() and new:
             self._send_subscribe(new)
 
+    def drop_topics(self, topics: Sequence[str]) -> None:
+        """Unsubscribe topics that are no longer in the desk universe (hot apply)."""
+        gone = [t for t in topics if t in self._topics]
+        if not gone:
+            return
+        drop = set(gone)
+        self._topics = [t for t in self._topics if t not in drop]
+        if self._connected.is_set():
+            self._send_unsubscribe(gone)
+
     # --- lifecycle -----------------------------------------------------------------------
     def start(self) -> None:
         if self._thread is not None:
@@ -200,6 +210,10 @@ class RawPublicWs:
     def _send_subscribe(self, topics: list[str]) -> None:
         for i in range(0, len(topics), SUBSCRIBE_CHUNK):
             self._send({"op": "subscribe", "args": topics[i : i + SUBSCRIBE_CHUNK]})
+
+    def _send_unsubscribe(self, topics: list[str]) -> None:
+        for i in range(0, len(topics), SUBSCRIBE_CHUNK):
+            self._send({"op": "unsubscribe", "args": topics[i : i + SUBSCRIBE_CHUNK]})
 
     def _send(self, payload: Mapping[str, Any]) -> None:
         app = self._app

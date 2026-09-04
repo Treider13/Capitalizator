@@ -88,17 +88,35 @@ class WallWatch:
         self,
         symbol: str,
         *,
-        min_size: Decimal,
+        min_size: Decimal | None,
         max_age: timedelta | None = None,
     ) -> None:
-        if min_size <= 0:
+        if min_size is not None and min_size <= 0:
             raise ValueError("min_size must be > 0")
         self.symbol = symbol
+        # None = no norm for this symbol yet: nothing is a wall, nothing is a pull.
         self.min_size = min_size
         self._walls: dict[tuple[WallSide, Decimal], _Tracked] = {}
         self.events: list[WallEvent] = []
         self.max_age = max_age if max_age is not None else self.MAX_AGE
         self.trimmed = 0
+
+    def set_min_size(self, min_size: Decimal | None) -> None:
+        """Move the threshold with the symbol's norm. Levels that stop qualifying are
+        forgotten silently — a threshold change is not a wall being pulled."""
+        if min_size is not None and min_size <= 0:
+            raise ValueError("min_size must be > 0")
+        if min_size == self.min_size:
+            return
+        self.min_size = min_size
+        if min_size is None:
+            self._walls.clear()
+            return
+        for key in [k for k, tracked in self._walls.items() if tracked.size < min_size]:
+            del self._walls[key]
+
+    def tracked_count(self) -> int:
+        return len(self._walls)
 
     def trim(self, now: datetime) -> int:
         """Drop events older than max_age. Bounded memory for a 24/7 desk."""
@@ -121,7 +139,7 @@ class WallWatch:
         ts: datetime,
     ) -> list[WallEvent]:
         when = require_utc(ts)
-        if not book.ready:
+        if not book.ready or self.min_size is None:
             return []
         if trade is not None:
             self._on_trade(trade)
@@ -142,9 +160,11 @@ class WallWatch:
     def _on_book(self, book: Book, when: datetime) -> list[WallEvent]:
         out: list[WallEvent] = []
         current: dict[tuple[WallSide, Decimal], Decimal] = {}
+        threshold = self.min_size
+        assert threshold is not None
         for side in ("bid", "ask"):
             for px, sz in book.levels(side).items():
-                if sz >= self.min_size:
+                if sz >= threshold:
                     current[(side, px)] = sz
         for key, sz in current.items():
             if key not in self._walls:

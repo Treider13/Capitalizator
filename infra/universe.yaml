@@ -9,20 +9,7 @@ symbols:
   - BNBUSDT
   - ADAUSDT
   - AVAXUSDT
-  - DOTUSDT
   - LINKUSDT
-  - LTCUSDT
-  - ATOMUSDT
-  - NEARUSDT
-  - APTUSDT
-  - ARBUSDT
-  - OPUSDT
   - SUIUSDT
-  - TIAUSDT
-  - INJUSDT
-  - FILUSDT
-  - UNIUSDT
-  - AAVEUSDT
-  - BCHUSDT
-  - TRXUSDT
-# Product desk: 24 linear USDT perps. week0.yaml stays BTC+ETH (archive gate).
+# Product desk: top-10 linear USDT perps (BTC+ETH+8 alts). Daily rebalance
+# with hysteresis (screener.refresh). week0.yaml stays BTC+ETH (archive gate).

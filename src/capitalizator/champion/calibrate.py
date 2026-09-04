@@ -5,9 +5,11 @@ times, not that it predicted anything. This module reads closed, filled shadow
 paper trades grouped by class and asks one question per class: does it make
 money net of costs?
 
-Class dimensions (sessions release): `idea | CAV | ZLG | window | symbol_group`.
-Two views are kept — the full key and the window aggregate (`idea|cav|zlg|window|*`) —
-so a window can be refuted on 30 trades before every symbol group reaches 30.
+Class dimensions: `idea | CAV | ZLG | window | symbol_group | tf`.
+A 15m REJECT is not a 4h REJECT. Two views stay — the full key and the window
+aggregate (`idea|cav|zlg|window|*|*`) — so a window can be refuted on 30 trades
+before every symbol group / TF reaches 30. The TF aggregate
+(`idea|cav|zlg|*|*|tf`) is the fallback when the window is thin.
 The window aggregate also drives `eligible()`: a window the operator has closed in
 `sessions.yaml` whose paper LOWER bound clears break-even on ≥ 40 trades is flagged
 for a human to open. Nothing here opens anything by itself.
@@ -85,35 +87,57 @@ def class_key(
     zlg: str | None,
     window: str | None = None,
     group: str | None = None,
+    tf: str | None = None,
 ) -> str:
-    """Full key. `window`/`group` None → `*` (the aggregate over that dimension)."""
-    return "|".join((idea or "-", cav or "-", zlg or "-", window or ANY, group or ANY))
+    """Full key. None on a dimension → `*` (the aggregate over that dimension)."""
+    return "|".join(
+        (idea or "-", cav or "-", zlg or "-", window or ANY, group or ANY, tf or ANY)
+    )
+
+
+def _parts(key: str) -> list[str]:
+    parts = key.split("|")
+    if len(parts) == 5:
+        return [*parts, ANY]
+    if len(parts) != 6:
+        raise ValueError(f"not a class key: {key!r}")
+    return parts
 
 
 def window_key(key: str) -> str:
-    """`idea|cav|zlg|window|group` → `idea|cav|zlg|window|*`."""
-    parts = key.split("|")
-    if len(parts) != 5:
-        raise ValueError(f"not a class key: {key!r}")
-    return "|".join((*parts[:4], ANY))
+    """`idea|cav|zlg|window|group|tf` → `idea|cav|zlg|window|*|*`."""
+    parts = _parts(key)
+    return "|".join((*parts[:4], ANY, ANY))
+
+
+def window_tf_key(key: str) -> str:
+    """`idea|cav|zlg|window|group|tf` → `idea|cav|zlg|window|*|tf`."""
+    parts = _parts(key)
+    return "|".join((*parts[:4], ANY, parts[5]))
+
+
+def tf_key(key: str) -> str:
+    """`idea|cav|zlg|window|group|tf` → `idea|cav|zlg|*|*|tf`."""
+    parts = _parts(key)
+    return "|".join((*parts[:3], ANY, ANY, parts[5]))
 
 
 def legacy_key(key: str) -> str:
-    """`idea|cav|zlg|window|group` → `idea|cav|zlg|*|*` (pre-sessions class)."""
-    parts = key.split("|")
-    if len(parts) != 5:
-        raise ValueError(f"not a class key: {key!r}")
-    return "|".join((*parts[:3], ANY, ANY))
+    """`idea|cav|zlg|window|group|tf` → `idea|cav|zlg|*|*|*`."""
+    parts = _parts(key)
+    return "|".join((*parts[:3], ANY, ANY, ANY))
 
 
 def _row_key(row: Mapping[str, Any]) -> str:
     labels = _labels(row)
+    tf = labels.get("zone_tf") or labels.get("cav_tf") or row.get("zone_tf")
     return class_key(
         idea=row.get("tag"),
         cav=labels.get("cav_label"),
         zlg=labels.get("zlg_label"),
         window=labels.get("window"),
         group=labels.get("symbol_group"),
+        tf=None if tf in (None, "") else str(tf),
     )
 
 
@@ -162,31 +186,39 @@ def _stat(key: str, rs: list[Decimal]) -> ClassStat:
 
 
 def class_stats(rows: Iterable[Mapping[str, Any]]) -> dict[str, ClassStat]:
-    """Filled, closed paper rows → per-class stats at three granularities.
+    """Filled, closed paper rows → per-class stats at several granularities.
 
-    Full key, window aggregate (`...|window|*`) and legacy aggregate (`...|*|*`).
-    Unfilled rows are not evidence. Rows without a window label (pre-sessions
-    journal) only feed the legacy aggregate.
+    Full key, window+tf, TF-only, window (any TF), legacy. Unfilled rows are
+    not evidence. Rows without a window label only feed the legacy aggregate.
     """
     buckets: dict[str, list[Decimal]] = {}
     for key, r, _row in _filled_closed(rows):
         buckets.setdefault(legacy_key(key), []).append(r)
-        parts = key.split("|")
+        parts = _parts(key)
         if parts[3] != ANY:
             buckets.setdefault(window_key(key), []).append(r)
             if parts[4] != ANY:
-                buckets.setdefault(key, []).append(r)
+                buckets.setdefault("|".join(parts), []).append(r)
+            if parts[5] != ANY:
+                buckets.setdefault(window_tf_key(key), []).append(r)
+        if parts[5] != ANY:
+            buckets.setdefault(tf_key(key), []).append(r)
     return {key: _stat(key, rs) for key, rs in buckets.items()}
 
 
 def lookup(stats: Mapping[str, ClassStat], key: str) -> ClassStat | None:
-    """Most specific stat that reached MIN_N: full → window → legacy. Else the fullest seen."""
-    chain = (key, window_key(key), legacy_key(key))
+    """Most specific stat that reached MIN_N: full → window+tf → tf → window → legacy."""
+    full = "|".join(_parts(key))
+    chain = (full, window_tf_key(full), tf_key(full), window_key(full), legacy_key(full))
+    seen: list[str] = []
     for k in chain:
+        if k not in seen:
+            seen.append(k)
+    for k in seen:
         stat = stats.get(k)
         if stat is not None and stat.n >= MIN_N:
             return stat
-    for k in chain:
+    for k in seen:
         stat = stats.get(k)
         if stat is not None:
             return stat
@@ -224,8 +256,8 @@ def eligible_windows(
     closed = set(closed_windows)
     out: dict[str, list[str]] = {}
     for key, stat in stats.items():
-        parts = key.split("|")
-        if parts[3] not in closed or parts[4] != ANY:
+        parts = _parts(key)
+        if parts[3] not in closed or parts[4] != ANY or parts[5] != ANY:
             continue
         if eligible(stat, breakeven=breakeven):
             out.setdefault(parts[3], []).append(key)
@@ -303,7 +335,7 @@ def median_hold_hours(
             continue
         if hours <= 0:
             continue
-        parts = key.split("|")
+        parts = _parts(key)
         if parts[3] == ANY:
             continue
         samples.setdefault(f"{parts[0]}|{parts[3]}", []).append(hours)

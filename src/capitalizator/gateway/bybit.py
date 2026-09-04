@@ -27,6 +27,8 @@ Rules baked in:
   * `cancel_entries` uses orderFilter=Order and never cancels TP/SL orders;
   * a transport failure *after* place_order was issued is `unknown`, not
     `failed`: the order may exist. `resolve_unknown` asks the venue by link id;
+    absent + still-valid is re-sent under the same link (signer, bounded);
+    a recorded `orderLinkId` on the payload is the identity of that retry;
   * no method reads a key from anywhere but the injected session.
 """
 
@@ -367,7 +369,11 @@ class BybitGateway:
         lev = payload.get("lev")
         if lev:
             self.set_leverage(symbol, Decimal(str(lev)))
-        link = order_link_id(payload)
+        # A recorded `orderLinkId` (unknown-intent resend) is the identity of
+        # this queue row. Recomputing from fields would mint a new id when the
+        # first send injected `intent_id` that the queue payload does not keep.
+        recorded = str(payload.get("orderLinkId") or "")
+        link = recorded or order_link_id(payload)
         req = {
             "category": self.category,
             "symbol": symbol,

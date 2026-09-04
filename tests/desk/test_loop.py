@@ -494,12 +494,14 @@ def test_eaten_touch_in_bar_and_close_beyond_is_btc_break(tmp_path: Path) -> Non
     assert desk.btc.broke_support is True
 
 
-def test_desk_btc_same_side_uses_bus_labels() -> None:
-    """BtcBus gets trend|box|news. long/short on the bus would be a lie."""
+def test_desk_btc_same_side_uses_bus_direction_not_a_rubber_stamp() -> None:
+    """Same side = the bus direction (HTF bias of closed BTC bars) agrees with the idea,
+    or BTC is in a box. BTCUSDT itself gets no free pass, and a regime label alone
+    never means "same side"."""
     text = Path(__file__).resolve().parents[2].joinpath(
         "src", "capitalizator", "desk", "loop.py"
     ).read_text(encoding="utf-8")
-    assert 'btc_same_side = self.btc.regime == "box"' in text
+    assert "btc_same_side = self.btc_same_side(idea_side)" in text
     assert "st.symbol == \"BTCUSDT\" or self.btc.regime" not in text
     assert '{"long", "box"}' not in text
     assert '{"short", "box"}' not in text

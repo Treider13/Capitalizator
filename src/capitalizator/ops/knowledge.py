@@ -15,7 +15,7 @@ import json
 import os
 import sqlite3
 import stat
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -187,6 +187,7 @@ def connect_held_inode(fd: int, *, readonly: bool = False) -> sqlite3.Connection
 
 class Knowledge:
     def __init__(self, path: Path, *, create: bool = True) -> None:
+        self._on_work: Callable[[], None] | None = None
         self.path = path
         nofollow = getattr(os, "O_NOFOLLOW", None)
         if nofollow is None:
@@ -253,6 +254,13 @@ class Knowledge:
                 self._cx.execute("SELECT 1 FROM sqlite_master LIMIT 1")
             except sqlite3.DatabaseError as exc:
                 raise ValueError(f"not a sqlite database: {path}") from exc
+
+    def set_on_work(self, fn: Callable[[], None] | None) -> None:
+        self._on_work = fn
+
+    def _notify_work(self) -> None:
+        if self._on_work is not None:
+            self._on_work()
 
     def close(self) -> None:
         if self._cx is not None:
@@ -636,11 +644,14 @@ class Knowledge:
     def journal_rows(self) -> list[dict[str, Any]]:
         if self._cx is None:
             return []
-        rows = self._cx.execute("SELECT payload FROM journal_touches").fetchall()
+        rows = self._cx.execute("SELECT touch_id, payload FROM journal_touches").fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
             raw = json.loads(str(row["payload"]))
             if isinstance(raw, dict):
+                # The row key is a fact of the row: readers (night map, revive, UI) must
+                # not depend on the writer having copied it into the payload.
+                raw.setdefault("touch_id", str(row["touch_id"]))
                 out.append(raw)
         return out
 
@@ -706,6 +717,7 @@ class Knowledge:
         except Exception:
             self._cx.rollback()
             raise
+        self._notify_work()
         return row_id
 
     def pending_intents(self) -> list[dict[str, Any]]:
@@ -821,6 +833,7 @@ class Knowledge:
         except Exception:
             self._cx.rollback()
             raise
+        self._notify_work()
         return row_id
 
     def claim_commands(self, kinds: Iterable[str] | None = None) -> list[dict[str, Any]]:
@@ -1109,6 +1122,7 @@ class Knowledge:
         except Exception:
             self._cx.rollback()
             raise
+        self._notify_work()
         return row_id
 
     def pending_oms(self) -> list[dict[str, Any]]:
@@ -1354,4 +1368,9 @@ class Knowledge:
 
 
 def open_knowledge(vault: Vault, *, create: bool = True) -> Knowledge:
-    return Knowledge(vault.db_path, create=create)
+    kn = Knowledge(vault.db_path, create=create)
+    if create and kn.available():
+        from capitalizator.ops.wake import signer_wake
+
+        kn.set_on_work(signer_wake(vault).notify)
+    return kn

@@ -1,4 +1,8 @@
-"""2.9.3 — alt vs BTC break. Paper law. Not wired into BounceStrategy.
+"""2.9.3 — alt vs BTC break.
+
+Wired twice, one law: `BounceStrategy.propose` refuses the intent
+(`exec/strategy_bounce.py`), and the desk evaluates the same rule for the jury's BTC
+voice (`DeskLoop._eval_cav_and_jury` → `btc_break_against` → VETO).
 
 Long alt after BTC support break → reject.
 Short alt after BTC resistance break → reject.

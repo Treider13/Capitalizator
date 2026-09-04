@@ -158,7 +158,9 @@ def run_live(
         raise ValueError("minutes must be > 0")
     app.recording = True
     accepted = 0
-    sink = ParquetSink(data_root)
+    from capitalizator.ops.wake import desk_wake_from_tape
+
+    sink = ParquetSink(data_root, on_write=desk_wake_from_tape(data_root).notify)
     names = list(symbols) if symbols else [symbol]
     wanted = list(streams) if streams else [stream]
 

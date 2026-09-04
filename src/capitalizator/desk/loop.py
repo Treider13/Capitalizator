@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import uuid4
 
 from capitalizator.book.reconstruct import Book, BookDirty
+from capitalizator.book.validate import validate
 from capitalizator.book.wall_watch import WallWatch, last_wall_kind, pulled_without_print
 from capitalizator.btc.break_def import Break
 from capitalizator.btc.regime import BtcRegime
@@ -45,6 +46,7 @@ from capitalizator.champion.shadow_day import (
     row_day_utc,
 )
 from capitalizator.desk.bars import TF_MINUTES, BarBuilder
+from capitalizator.desk.paper_gates import snapshot as paper_gates_snapshot
 from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.exec.ev_gate import evaluate as ev_evaluate
 from capitalizator.exec.failed_break import sweep_wick
@@ -82,8 +84,10 @@ from capitalizator.jury.desk import (
 from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
 from capitalizator.memory.revive import load_pending
+from capitalizator.news_macro.from_intel import calendar_from_intel, claims_from_intel
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
+from capitalizator.news_macro.sentiment import decide as sentiment_decide
 from capitalizator.news_macro.unlocks import Unlocks
 from capitalizator.oko.eye import OkoEye, OkoWindow
 from capitalizator.oko.footprint import FINGERPRINT_LEN as OKO_FINGERPRINT_LEN
@@ -91,7 +95,9 @@ from capitalizator.oko.forecast import Sample as OkoSample
 from capitalizator.oko.forecast import class_key as oko_class_key
 from capitalizator.oko.retina import RawWindow
 from capitalizator.oko.shadow import FINGERPRINT_LEN as OKO_SHADOW_FP_LEN
+from capitalizator.ops.decision_trace import DecisionTrace, intel_atom
 from capitalizator.ops.knowledge import Knowledge
+from capitalizator.ops.latency import decision_report
 from capitalizator.ops.phase import breakout_enabled
 from capitalizator.ops.product import DEFAULT_MODE, META_HELLO
 from capitalizator.ops.uptime import UptimeTracker
@@ -111,15 +117,18 @@ from capitalizator.risk.schema import Intent
 from capitalizator.risk.session import cpi_day, us_data_known_at
 from capitalizator.risk.sessions import SessionPolicy, WindowState
 from capitalizator.risk.sizing import size_position
+from capitalizator.screener.universe import load_desk_universe
 from capitalizator.tape.classify import TapeClassifier
-from capitalizator.tape.ofi import OFI
+from capitalizator.tape.liquidity import snapshot as liquidity_snapshot
 from capitalizator.types import MarketEvent, require_utc
 from capitalizator.whales.fragility import forbid_new_long, forbid_new_short
+from capitalizator.whales.no_single import sole_whale
 from capitalizator.zlg.gesture import ZLG, BookAdd, BookPull
 from capitalizator.zones.config import load_registry
 from capitalizator.zones.engine import MAP_VOTE_METHODS
 from capitalizator.zones.map import ZoneMap
 from capitalizator.zones.model import Bar, Zone
+from capitalizator.zones.pair import confirm_label, vote_tf
 
 State = Literal["IDLE", "ARM_ZLG", "LABEL_ZLG", "JURY"]
 _IDEAS = frozenset({"bounce", "spring", "breakout", "failed_break"})
@@ -156,6 +165,8 @@ class BtcBus:
     """Read-only BTC bus for alts. Writer is the BTC symbol loop."""
 
     regime: str | None = None
+    # HTF direction behind `regime == "trend"`: long | short. None in a box / unknown.
+    direction: str | None = None
     broke_support: bool = False
     broke_resistance: bool = False
     bars: list[Bar] = field(default_factory=list)
@@ -246,6 +257,7 @@ class DeskLoop:
         self.drift_active = False
         self._sentiment_at: datetime | None = None
         self._sentiment_mult = Decimal("1")
+        self._sentiment_reason = "sentiment_ok"
         self._oko_samples_cache: tuple[Any, list[OkoSample], set[str]] | None = None
         self._k_atr_calibrated: dict[str, Decimal] = {}
         self._hold_hours: dict[str, Decimal] = {}
@@ -316,10 +328,13 @@ class DeskLoop:
         self.walls: dict[str, WallWatch] = {}
         self.prs: dict[str, PRS] = {}
         self._width_history: list[WidthSample] = []
+        # 8s liquidity blob, stamped at ZLG. book_history slides after LABEL_ZLG.
+        self._liquidity_stamped: dict[str, dict[str, Any]] = {}
         self._ui_pending: dict[str, str] = {}
         self._ui_last_flush: datetime | None = None
         self.zone_cache: dict[str, tuple[tuple[Any, ...], tuple[Zone, ...]]] = {}
         self._persisted_zone_ids: dict[str, frozenset[str]] = {}
+        self._last_zone_retire: datetime | None = None
         self._last_settle: datetime | None = None
         if knowledge.available():
             self._reload_instruments()
@@ -350,7 +365,7 @@ class DeskLoop:
                 book=Book(tick_size=str(self.tick_for(symbol))),
                 bar_builder=BarBuilder(
                     symbol=symbol,
-                    tfs=(self.config.working_tf, self.config.htf, self.config.htf_d1),
+                    tfs=self.config.structure_tfs,
                 ),
             )
         return self.symbols[symbol]
@@ -380,6 +395,15 @@ class DeskLoop:
 
     def _ui_put(self, key: str, value: str) -> None:
         self._ui_pending[key] = value
+
+    def _publish_decision_latency(self) -> None:
+        if not self.knowledge.available():
+            return
+        try:
+            report = decision_report(self.knowledge.journal_rows())
+        except ValueError:
+            return
+        self.knowledge.set_meta("latency_decision", json.dumps(report, sort_keys=True))
 
     def _ui_due(self, now: datetime) -> bool:
         return (
@@ -488,19 +512,34 @@ class DeskLoop:
             )
             self.flush_ui(when)
 
-    # A "wall" is a notional, not a coin count: 50 BTC ≈ $3M at 60k. The same
-    # threshold in coins made every DOGE level a wall and no SOL level one.
-    WALL_MIN_NOTIONAL = Decimal("3000000")
+    def _wall_threshold(self, symbol: str) -> Decimal | None:
+        """One level is a wall when it is loud for *this* book.
+
+        Mature Passport → `wall_depth_mult × median zone-side depth` of the symbol
+        (the same measure ОКО normalises on). Before that → `wall_min_notional / px`.
+        No price and no norm → None: nothing is a wall, nothing is a pull. The old
+        constants (50 coins, then $3M for every symbol) made every DOGE level a wall
+        and no alt level one.
+        """
+        passport = self.oko.passport_for(symbol)
+        if passport.depth.mature:
+            median = passport.depth.median()
+            if median is not None and median > 0:
+                return median * self.config.wall_depth_mult
+        px = self.last_price.get(symbol)
+        if px and px > 0:
+            return self.config.wall_min_notional / px
+        return None
 
     def _wall_for(self, symbol: str) -> WallWatch:
-        px = self.last_price.get(symbol)
-        if symbol not in self.walls:
-            size = self.WALL_MIN_NOTIONAL / px if px else Decimal("50")
-            self.walls[symbol] = WallWatch(symbol, min_size=size)
-        elif px:
-            # follow the price: the wall stays a $3M object as the coin moves
-            self.walls[symbol].min_size = self.WALL_MIN_NOTIONAL / px
-        return self.walls[symbol]
+        threshold = self._wall_threshold(symbol)
+        watch = self.walls.get(symbol)
+        if watch is None:
+            watch = WallWatch(symbol, min_size=threshold)
+            self.walls[symbol] = watch
+        else:
+            watch.set_min_size(threshold)
+        return watch
 
     def _prs_for(self, symbol: str) -> PRS:
         if symbol not in self.prs:
@@ -674,7 +713,7 @@ class DeskLoop:
         if bar.symbol == "BTCUSDT":
             self.btc.bars.append(bar)
             self._publish_btc_bus(st, bar)
-        if bar.tf in {self.config.htf, self.config.htf_d1}:
+        if bar.tf in {self.config.mid_tf, self.config.htf, self.config.htf_d1}:
             self.publish_card(bar.symbol, bar.close_ts)
         elif bar.tf == self.config.working_tf and self.calendar:
             # D-21: TTL is 60s, so publishing only on 4h/1d closes left the card
@@ -684,29 +723,143 @@ class DeskLoop:
         trail_events: list[dict[str, Any]] = []
         if bar.tf == self.config.working_tf:
             trail_events = self._trail_on_bar(st, bar)
-        if st.last_touch is None:
-            return trail_events
-        if bar.tf != self.config.working_tf:
-            return []
-        # Plan: LABEL_ZLG (8s) then CAV on a closed bar, then JURY.
-        # A working bar can close inside the 8s window — wait for the tick.
-        if st.state != "LABEL_ZLG":
-            return trail_events
-        return self._eval_cav_and_jury(st, bar) + trail_events
+        jury_events: list[dict[str, Any]] = []
+        if st.last_touch is not None and st.state == "LABEL_ZLG":
+            zone = self.registry._zone_any(st.last_touch.zone_id)
+            if zone is not None and bar.tf == vote_tf(zone.tf, self.config.structure_tfs):
+                # Senior level votes on its junior TF; a 15m zone votes on 15m.
+                jury_events = self._eval_cav_and_jury(st, bar)
+        retired = self._retire_invalidated(st, bar)
+        if bar.tf == self.config.working_tf or jury_events:
+            return jury_events + trail_events + retired
+        return retired
 
     def publish_card(self, symbol: str, now: datetime) -> CardLive:
-        """Compute B labels and write claim b_card:SYMBOL. Never sends."""
+        """Compute B labels and write claim b_card:SYMBOL. Never sends.
+
+        Live intel (RSS announcements, classified titles) is merged into the
+        calendar so a HACK/CPI/FOMC print can veto or cut. A sole whale claim
+        is a hold — whales never enter.
+        """
         bars = self.state_for(symbol).bars
         vol = volume_snapshot(bars)
+        intel_cal = calendar_from_intel(self.knowledge, now=now)
         card = card_from_news(
             symbol=symbol,
             now=now,
-            calendar=self.calendar,
+            calendar=tuple(self.calendar) + intel_cal,
             volume=vol,
             bars=bars,
         )
+        card = self._apply_author_pump(card, symbol, now, vol)
+        card = self._apply_author_weights(card)
+        if self.knowledge.available():
+            since = (now - timedelta(hours=48)).isoformat()
+            claims = claims_from_intel(self.knowledge.intel_items(since=since, limit=400))
+            if sole_whale(claims) and card.bearing_verdict in {"propose", "cut_size"}:
+                pluses = tuple(dict.fromkeys((*card.pluses, "whale_seen")))
+                minuses = tuple(dict.fromkeys((*card.minuses, "whale_only")))
+                card = replace(
+                    card,
+                    bearing_verdict="hold",
+                    macro_multiplier=Decimal("1"),
+                    pluses=pluses,
+                    minuses=minuses,
+                )
         self.knowledge.put_card_live(symbol, card.to_payload())
         return card
+
+    def _apply_author_pump(
+        self, card: CardLive, symbol: str, now: datetime, vol: Any
+    ) -> CardLive:
+        """Allow-list pump. Hold only when a listed source actually hit."""
+        if not self.knowledge.available():
+            return card
+        try:
+            from capitalizator.authors.pump import FetchedItem
+            from capitalizator.authors.pump import pump as author_pump
+            from capitalizator.authors.sources import load_sources as load_author_book
+
+            book = load_author_book()
+        except (ValueError, FileNotFoundError, OSError):
+            return card
+        if not book.sources:
+            return card
+        allowed = {row.source_id: row for row in book.sources}
+        since = (now - timedelta(hours=48)).isoformat()
+        fetched: list[Any] = []
+        for item in self.knowledge.intel_items(since=since, limit=200):
+            sid = str(item.get("source_id") or "")
+            if sid not in allowed:
+                continue
+            kind = allowed[sid].kind
+            url = str(item.get("url") or allowed[sid].url)
+            try:
+                known = datetime.fromisoformat(str(item["known_at"]).replace("Z", "+00:00"))
+            except (KeyError, ValueError, TypeError):
+                continue
+            fetched.append(
+                FetchedItem(
+                    source_id=sid,
+                    kind=kind,
+                    url=url,
+                    title=str(item.get("text") or ""),
+                    body="",
+                    known_at=known,
+                )
+            )
+        if not fetched:
+            return card
+        try:
+            pumped = author_pump(symbol=symbol, now=now, book=book, fetched=fetched, volume=vol)
+        except ValueError:
+            return card
+        if pumped is not None and pumped.bearing_verdict == "hold":
+            return replace(
+                card,
+                bearing_verdict="hold",
+                macro_multiplier=Decimal("1"),
+                pluses=tuple(dict.fromkeys((*card.pluses, *pumped.pluses))),
+                minuses=tuple(dict.fromkeys((*card.minuses, *pumped.minuses))),
+            )
+        return card
+
+    def _apply_author_weights(self, card: CardLive) -> CardLive:
+        if not self.knowledge.available():
+            return card
+        raw = self.knowledge.meta("author_weights")
+        if not raw:
+            return card
+        try:
+            weights = json.loads(raw)
+        except json.JSONDecodeError:
+            return card
+        if not isinstance(weights, dict) or not weights:
+            return card
+        block = weights.get("authors")
+        if not isinstance(block, dict):
+            block = weights
+        n = 0
+        hits = 0
+        for row in block.values():
+            if not isinstance(row, dict):
+                continue
+            n += int(row.get("n") or 0)
+            hits += int(row.get("hits") or 0)
+        if n <= 0:
+            return card
+        return replace(card, jury_b_n=n, jury_b_for=hits)
+
+    def btc_same_side(self, idea_side: str) -> bool:
+        """Is this idea on BTC's side? A box is neutral ground for both sides; a trend
+        agrees only with ideas in its direction; unknown HTF agrees with nothing."""
+        if self.btc.regime == "box":
+            return True
+        if self.btc.direction == "long":
+            return idea_side == "buy"
+        if self.btc.direction == "short":
+            return idea_side == "sell"
+        return False
 
     def _publish_btc_bus(self, st: SymbolState, bar: Bar) -> None:
         """BTC symbol loop writes the alt bus. Unknown HTF stays None."""
@@ -720,6 +873,10 @@ class DeskLoop:
         )
         # Last non-None label is not today's fact. Unknown HTF / quiet day → None.
         self.btc.regime = label
+        # The direction behind "trend" (long / short) is what "same side as BTC" needs;
+        # a box or unknown HTF has none.
+        bias = self.zones_map.htf_bias("BTCUSDT", closed_at, st.bars)
+        self.btc.direction = bias if bias in {"long", "short"} else None
         if bar.tf != self.config.working_tf:
             return
         self.btc.broke_support = False
@@ -819,6 +976,7 @@ class DeskLoop:
                 self._refresh_calibration(when)
                 self._refresh_correlation(when)
                 out.extend(self._sync_exchange_state(when))
+                out.extend(self._retire_zones(when))
             if force_flush:
                 # Twins and venue proof survive a restart (audit B3); once per clock tick,
                 # not per print (audit E).
@@ -842,6 +1000,48 @@ class DeskLoop:
                 continue
             out.extend(self._label_zlg(st, when))
         return out
+
+    ZONE_RETIRE_EVERY_S = 60.0
+
+    def _retire_invalidated(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
+        """Own-TF close through the band takes the level off the map."""
+        if st.symbol != bar.symbol:
+            return []
+        closed_at = bar.close_ts + timedelta(microseconds=1)
+        gone = self.registry.invalidate_broken(now=closed_at, bars=(bar,))
+        if not gone:
+            return []
+        for zone in gone:
+            if self.knowledge.available():
+                self.knowledge.drop_zone(zone.zone_id)
+            self.zone_cache.pop(zone.symbol, None)
+            self._persisted_zone_ids.pop(zone.symbol, None)
+        return [
+            {"event": "zone_invalidated", "zone_id": z.zone_id, "symbol": z.symbol,
+             "tf": z.tf, "method": z.method}
+            for z in gone
+        ]
+
+    def _retire_zones(self, now: datetime) -> list[dict[str, Any]]:
+        """PHASE-BUILD `die_no_touch_h`: zones nobody trades and the engine no longer
+        draws leave the map (memory, persisted table, per-symbol cache). Once a minute."""
+        last = self._last_zone_retire
+        if last is not None and (now - last).total_seconds() < self.ZONE_RETIRE_EVERY_S:
+            return []
+        self._last_zone_retire = now
+        gone = self.registry.retire_zones(now=now)
+        if not gone:
+            return []
+        for zone in gone:
+            if self.knowledge.available():
+                self.knowledge.drop_zone(zone.zone_id)
+            self.zone_cache.pop(zone.symbol, None)
+            self._persisted_zone_ids.pop(zone.symbol, None)
+        return [
+            {"event": "zone_retired", "zone_id": z.zone_id, "symbol": z.symbol, "tf": z.tf,
+             "method": z.method}
+            for z in gone
+        ]
 
     def _settle_shadows(self, now: datetime) -> list[dict[str, Any]]:
         """24/7: close pending touches and score shadow R. No orders."""
@@ -1086,7 +1286,10 @@ class DeskLoop:
         # ОКО reads the frozen window on the same 8s clock (Retina + Shadow + Footprint).
         # A B verdict is a fact about the calendar, not about the book: the Passport
         # learns every window and the journal carries the facts either way.
-        self._oko_observe(st, touch, now)
+        # A crossed/locked book is not a quote — do not feed it to the Passport.
+        probe = st.book_pre or st.book
+        if validate(probe).ok:
+            self._oko_observe(st, touch, now)
         touch = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
         st.last_touch = touch
         book = st.book_pre or st.book
@@ -1174,7 +1377,10 @@ class DeskLoop:
                 stored = None
             if stored is not None and card_is_fresh(stored, symbol=symbol, now=now):
                 return stored
-        if not self.calendar:
+        intel_cal = (
+            calendar_from_intel(self.knowledge, now=now) if self.knowledge.available() else ()
+        )
+        if not self.calendar and not intel_cal:
             return None
         return self.publish_card(symbol, now)
 
@@ -1222,7 +1428,17 @@ class DeskLoop:
             htf = d1
         elif h4 not in {"unknown", "box"} and h4 != bounce_side:
             htf = h4
-        cav = cav_label(zone, bar, t=closed_at, htf_bias=htf, closed_bars=st.bars)
+        if bar.tf == zone.tf:
+            cav = cav_label(zone, bar, t=closed_at, htf_bias=htf, closed_bars=st.bars)
+        else:
+            cav = confirm_label(
+                zone,
+                bar,
+                t=closed_at,
+                htf_bias=htf,
+                closed_bars=st.bars,
+                ladder=self.config.structure_tfs,
+            )
         compress_before = prior_compress(
             zone, bar, t=closed_at, htf_bias=htf, closed_bars=st.bars
         )
@@ -1249,17 +1465,22 @@ class DeskLoop:
         n_cav = self.registry.count_label("cav", live.cav_label, st.symbol)
         n_zlg = self.registry.count_label("zlg", live.gesture, st.symbol)
         idea_side = side_for(idea, zone.side)
-        # 2.9.3: long vs BTC support break; short vs BTC resistance break.
+        # 2.9.3: long vs BTC support break; short vs BTC resistance break — the same
+        # law BtcVeto applies inside `propose`, evaluated here for the jury voice.
         break_against = False
         if st.symbol != "BTCUSDT":
             break_against = (
                 self.btc.broke_support
-                if idea_side == "buy"
-                else self.btc.broke_resistance
+                and not self.btc_veto.allow(
+                    alt_side=idea_side, btc_broke=True, btc_zone_side="support"  # type: ignore[arg-type]
+                )
+            ) or (
+                self.btc.broke_resistance
+                and not self.btc_veto.allow(
+                    alt_side=idea_side, btc_broke=True, btc_zone_side="resistance"  # type: ignore[arg-type]
+                )
             )
-        # BtcRegime writes trend|box|news. long/short never land on the bus.
-        # BTCUSDT is not "same side" without a box label — that was a rubber stamp.
-        btc_same_side = self.btc.regime == "box"
+        btc_same_side = self.btc_same_side(idea_side)
         cpi_window = cpi_day(closed_at, self.calendar)
         wall_since, wall_until = self._wall_bounds(touch)
         wall_events = self.walls[st.symbol].events if st.symbol in self.walls else ()
@@ -1428,7 +1649,7 @@ class DeskLoop:
             card_id=card_id,
             htf_h4=h4,
             htf_d1=d1,
-            cav_tf=zone.tf,
+            cav_tf=bar.tf,
             btc_break_against=break_against,
             btc_state=row.btc_regime,
             session_name=self.policy.clock_name(row.ts),
@@ -1557,6 +1778,16 @@ class DeskLoop:
             "had_compress": compress_before,
             "zone_side": zone.side,
             "idea_side": idea_side,
+            "btc_direction": self.btc.direction,
+            "btc_same_side": btc_same_side,
+            # Zone facts travel with the touch: reports and the UI must not depend on the
+            # zone still being on the map (zones retire after die_no_touch_h).
+            "zone_lo": str(zone.lo),
+            "zone_hi": str(zone.hi),
+            "zone_tf": zone.tf,
+            "confirm_tf": vote_tf(zone.tf, self.config.structure_tfs),
+            "zone_method": zone.method,
+            "zone_created_as_of": zone.created_as_of.isoformat(),
             "wick_extreme": str(wick_extreme),
             "fade_side": fade_side,
             "fade_tag": "fade_spring" if fade_side else None,
@@ -1565,6 +1796,9 @@ class DeskLoop:
             "has_tvh": has_tvh,
             "shadow_would_no_marks": shadow_would_no_marks,
             "shadow_would_marks": shadow_would_marks,
+            "decision_ms": (closed_at - touch.ts).total_seconds() * 1000.0,
+            "paper_gates": paper_gates_snapshot(n_zlg=n_zlg, gesture=row.gesture),
+            "liquidity": self._liquidity_stamped.get(row.touch_id) or self._liquidity_of(st, row),
         }
         payload_row = {**journal, **extra}
         payload_row["challenger_would"] = challenger_on(payload_row)
@@ -1598,7 +1832,34 @@ class DeskLoop:
         payload_row["session_gate"] = session_verdict.reason
         payload_row["session_size_mult"] = str(window.size_mult)
         payload_row["session_k_atr"] = str(window.k_atr)
+        self._sentiment_multiplier(closed_at)
+        frag = self._fragility(st)
+        if card is not None and "whale_only" in card.minuses:
+            whales = "whale_only"
+        elif frag.get("forbid_long") or frag.get("forbid_short"):
+            whales = "fragile"
+        else:
+            whales = "ok"
+        trace = DecisionTrace(
+            touch_id=row.touch_id,
+            symbol=st.symbol,
+            closed_at=closed_at.isoformat(),
+            contour_a=str(jury),
+            contour_b=b_gate or (card.bearing_verdict if card is not None else "none"),
+            contour_c=str(payload_row.get("challenger_tag") or "silent"),
+            intel=intel_atom(card.pluses, card.minuses) if card is not None else None,
+            sentiment=self._sentiment_reason,
+            whales=whales,
+            skip_reason=skip,
+            decision_ms=float(extra["decision_ms"]),
+        )
+        payload_row["decision_trace"] = trace.to_payload()
+        if self.knowledge.available():
+            self.knowledge.set_meta(
+                "decision_trace", json.dumps(trace.to_payload(), sort_keys=True)
+            )
         self.knowledge.put_journal_touch(row.touch_id, payload_row)
+        self._publish_decision_latency()
         day = row_day_utc(payload_row)
         if day:
             persist_day(self.knowledge, day)
@@ -1649,12 +1910,19 @@ class DeskLoop:
             and book.ready
             and session_verdict.allow
         ):
+            book_check = validate(book)
+            if not book_check.ok:
+                payload_row["send_skip"] = f"book:{book_check.reason}"
+                self.knowledge.put_journal_touch(row.touch_id, payload_row)
             spr = book.spread()
             bid, ask = book.best()
             mid_px = (bid + ask) / 2 if bid is not None and ask is not None else None
-            if spr is not None and mid_px is not None and mid_px > 0:
+            if book_check.ok and spr is not None and mid_px is not None and mid_px > 0:
                 fragility = self._fragility(st)
                 payload_row["fragility"] = fragility
+                typical_move, tm_source = self._typical_move(st, row.trade_px)
+                payload_row["typical_move"] = None if typical_move is None else str(typical_move)
+                payload_row["typical_move_source"] = tm_source
                 snap = BounceSnapshot(
                     now=closed_at,
                     symbol=st.symbol,
@@ -1670,6 +1938,11 @@ class DeskLoop:
                         symbol=st.symbol,
                     ),
                     spread_frac=spr / mid_px,
+                    # Measured, not the dataclass default: ATR14/price, else this bar's range.
+                    typical_move=typical_move,
+                    # The closed bar's liquidity label; a dead bar is not a market to enter.
+                    volume_ok=row.bar_quality != "illiquid",
+                    lev=self.risk_config.max_lev,
                     calendar=self.calendar,
                     unlock_today=self.unlocks.team_today(st.symbol, closed_at),
                     unlock_tomorrow=self.unlocks.team_tomorrow(st.symbol, closed_at),
@@ -1683,6 +1956,7 @@ class DeskLoop:
                     stop_mode=self.risk_config.stop_mode,
                     k_atr=self.k_atr_for(window, st.symbol),
                     max_stop_atr=self.risk_config.max_stop_atr,
+                    max_stop_pct=self.risk_config.max_stop_pct,
                     manual_stop_frac=self.risk_config.manual_stop_frac,
                     liq_levels=self.liquidation_levels(st, closed_at),
                     next_funding_at=self.next_funding.get(st.symbol),
@@ -1739,7 +2013,13 @@ class DeskLoop:
                     closed_at, key=window.budget_key, max_n=window.budget
                 )
                 intent = self.strategy.propose(snap)
-                if intent is not None:
+                if intent is None:
+                    # The strategy's own refusal is a journal fact, like every gate after it.
+                    payload_row["send_skip"] = (
+                        f"propose:{getattr(self.strategy, 'last_skip', None) or 'refused'}"
+                    )
+                    self.knowledge.put_journal_touch(row.touch_id, payload_row)
+                else:
                     trade_labels = self._trade_labels(
                         row, zone, window=window, atr=snap.atr, spread=spr,
                         liq_levels=snap.liq_levels, stop=intent.stop, now=closed_at,
@@ -2081,13 +2361,12 @@ class DeskLoop:
             )
 
     # --- sentiment (2.12.5): monthly extreme greed de-risks; nothing else ----------------
-    SENTIMENT_GREED = 80
-    SENTIMENT_MULT = Decimal("0.7")
     SENTIMENT_REFRESH_S = 600.0
 
     def _sentiment_multiplier(self, now: datetime) -> Decimal:
-        """×0.7 when the 30-day mean Fear & Greed (intel `fng` items) is ≥ 80. Hourly
-        readings never decide anything ("buy fear" is refused by design)."""
+        """×`RiskConfig.sentiment_mult` when the 30-day mean Fear & Greed (intel `fng`
+        items) is ≥ `RiskConfig.sentiment_greed`. Hourly readings never decide anything
+        ("buy fear" is refused by design)."""
         if (
             self._sentiment_at is not None
             and (now - self._sentiment_at).total_seconds() < self.SENTIMENT_REFRESH_S
@@ -2095,6 +2374,7 @@ class DeskLoop:
             return self._sentiment_mult
         self._sentiment_at = now
         self._sentiment_mult = Decimal("1")
+        self._sentiment_reason = "sentiment_ok"
         if not self.knowledge.available():
             return self._sentiment_mult
         since = (now - timedelta(days=30)).isoformat()
@@ -2105,8 +2385,12 @@ class DeskLoop:
             except (TypeError, ValueError):
                 continue
         # a month is ≥ 20 daily prints; fewer is not a monthly window
-        if len(values) >= 20 and sum(values) / len(values) >= self.SENTIMENT_GREED:
-            self._sentiment_mult = self.SENTIMENT_MULT
+        monthly = len(values) >= 20
+        extreme = monthly and sum(values) / len(values) >= self.risk_config.sentiment_greed
+        verdict = sentiment_decide(window="month" if monthly else "hour", extreme_greed=extreme)
+        self._sentiment_reason = verdict.reason
+        if verdict.reason == "monthly_greed":
+            self._sentiment_mult = self.risk_config.sentiment_mult
         return self._sentiment_mult
 
     def effective_target_risk(self) -> Decimal:
@@ -2230,6 +2514,8 @@ class DeskLoop:
             min_qty=inst.min_qty,
             min_notional=inst.min_notional,
             max_lev=cfg.max_lev,
+            side=side,
+            day_halt_room=self.account.halts.remaining_frac(self.account.sizing_equity())["day"],
         )
         qty = decision.qty if decision.action == "accept" else inst.min_qty
         pid = f"{row.touch_id}:{source}"
@@ -2303,6 +2589,8 @@ class DeskLoop:
             ),
             "liq_dist_atr": liq_dist_atr,
             "turnover_rank": None if rank is None else rank.get(symbol),
+            "zone_tf": zone.tf,
+            "cav_tf": row.cav_tf or zone.tf,
         }
 
     def symbol_group(self, symbol: str, rank: Mapping[str, int] | None) -> str:
@@ -2345,7 +2633,6 @@ class DeskLoop:
     # --- fragility (3.15.5): OI peak × crowded funding × thin book -----------------
     OI_HIST_STEP = timedelta(minutes=5)
     OI_HIST_KEEP = timedelta(days=30)
-    FRAGILITY_THIN_Z = Decimal("-1")
 
     def _sample_oi_history(self, symbol: str, when: datetime, level: Decimal) -> None:
         """One OI sample per 5 minutes per symbol, 30 days, persisted (meta oi_hist:*)."""
@@ -2379,11 +2666,32 @@ class DeskLoop:
 
     def _oi_peak(self, symbol: str) -> bool | None:
         hist = self._oi_hist.get(symbol) or []
-        if len(hist) < self.FUNDING_MIN_N:
+        if len(hist) >= self.FUNDING_MIN_N:
+            levels = sorted(lv for _ts, lv in hist)
+            p95 = levels[min(len(levels) - 1, int(0.95 * (len(levels) - 1)))]
+            return hist[-1][1] >= p95
+        return self._oi_peak_from_intel(symbol)
+
+    def _oi_peak_from_intel(self, symbol: str) -> bool | None:
+        """When the desk OI hist is short, intel bybit_public snapshots are the PIT series."""
+        if not self.knowledge.available():
             return None
-        levels = sorted(lv for _ts, lv in hist)
-        p95 = levels[min(len(levels) - 1, int(0.95 * (len(levels) - 1)))]
-        return hist[-1][1] >= p95
+        levels: list[Decimal] = []
+        for item in self.knowledge.intel_items(kind="bybit_public", limit=400):
+            if item.get("source_id") != f"bybit_public:{symbol}":
+                continue
+            raw = item.get("open_interest")
+            if raw is None:
+                continue
+            try:
+                levels.append(Decimal(str(raw)))
+            except (ValueError, ArithmeticError):
+                continue
+        if len(levels) < self.FUNDING_MIN_N:
+            return None
+        ordered = sorted(levels)
+        p95 = ordered[min(len(ordered) - 1, int(0.95 * (len(ordered) - 1)))]
+        return levels[0] >= p95
 
     def _funding_tail(self, symbol: str) -> tuple[bool | None, bool | None]:
         """(top-5% positive → longs pay, crowd long; bottom-5% → shorts pay, crowd short)."""
@@ -2409,7 +2717,7 @@ class DeskLoop:
         z = passport.depth.z(depth)
         if z is None:
             return None
-        return z < self.FRAGILITY_THIN_Z
+        return z < self.risk_config.fragility_thin_z
 
     def _fragility(self, st: SymbolState) -> dict[str, Any]:
         oi_peak = self._oi_peak(st.symbol)
@@ -2444,6 +2752,20 @@ class DeskLoop:
     def _atr_for(self, st: SymbolState) -> Decimal | None:
         work = [b for b in st.bars if b.tf == self.config.working_tf]
         return atr_of(work[-15:]) if len(work) >= 2 else None
+
+    def _typical_move(self, st: SymbolState, price: Decimal) -> tuple[Decimal | None, str]:
+        """(move, source): the symbol's typical move the spread screener compares costs
+        with, as a fraction of price — ATR14 of the working TF once 15 bars exist.
+        Before that there is no volatility fact: None (the screen is recorded as
+        unmeasured and the EV gate, which prices fees against the trade's actual R,
+        decides). Never the dataclass default 1%.
+        """
+        if price <= 0:
+            return None, "no_price"
+        atr = self._atr_for(st)
+        if atr is not None and atr > 0:
+            return atr / price, "atr14"
+        return None, "no_atr_yet"
 
     # --- correlation guard: rolling ρ of HTF close returns, refreshed daily -------------
     CORRELATION_REFRESH_S = 24 * 3600
@@ -2814,11 +3136,15 @@ class DeskLoop:
         if self.entries_paused:
             info["send_skip"] = "paused_by_operator"
             return None, info
+        if symbol not in load_desk_universe().symbols:
+            info["send_skip"] = "universe:not_listed"
+            return None, info
         ok, why = self.account.allow_entry(symbol)
         if not ok:
             info["send_skip"] = why
             return None, info
         lev = min(cfg.max_lev, inst.max_lev)
+        room = self.account.halts.remaining_frac(self.account.sizing_equity())
         decision = size_position(
             equity=self.account.sizing_equity(),
             entry=intent.entry,
@@ -2830,6 +3156,9 @@ class DeskLoop:
             min_qty=inst.min_qty,
             min_notional=inst.min_notional,
             max_lev=cfg.max_lev,
+            max_stop_pct=cfg.max_stop_pct,
+            side=intent.side,
+            day_halt_room=room["day"],
         )
         info["sizing"] = {
             "action": decision.action,
@@ -2840,6 +3169,10 @@ class DeskLoop:
             "risk_usdt": str(decision.risk_usdt),
             "risk_frac": str(decision.risk_frac),
             "binding": decision.binding,
+            "risk_warning": decision.risk_warning,
+            "warning": decision.warning,
+            "max_stop_pct": str(cfg.max_stop_pct),
+            "day_halt_room": str(room["day"]),
             "equity": str(self.account.equity),
             "sizing_equity": str(self.account.sizing_equity()),
             "participating_share": str(cfg.participating_share),
@@ -2895,6 +3228,7 @@ class DeskLoop:
             zlg=labels.get("zlg_label"),
             window=labels.get("window"),
             group=labels.get("symbol_group"),
+            tf=labels.get("zone_tf"),
         )
         stat = calibration_lookup(self._calibration, key)
         info["calibration"] = None if stat is None else stat.to_payload()
@@ -2990,16 +3324,23 @@ class DeskLoop:
         ]
         return prints, books
 
-    def _stamp_touch_interval(self, st: SymbolState, touch: Touch) -> None:
-        """OFI and PRS belong to the 8s touch window, not the last 8s before CAV."""
+    def _liquidity_of(self, st: SymbolState, touch: Touch) -> dict[str, Any]:
         prints, path = self._touch_window(st, touch, seconds=self.config.zlg_window_s)
-        ofi_val = None
         books = [copy for _, copy in path]
-        if len(books) >= 2:
-            try:
-                ofi_val = str(OFI().window(prints, books))
-            except ValueError:
-                ofi_val = None
+        live = next((t for t in self.registry.touches if t.touch_id == touch.touch_id), touch)
+        return liquidity_snapshot(
+            prints=prints,
+            books=books,
+            eaten=live.tape_eaten,
+            tick=self.tick_for(st.symbol),
+            probe=st.book_pre or st.book,
+        )
+
+    def _stamp_touch_interval(self, st: SymbolState, touch: Touch) -> None:
+        """OFI / CVD / phase belong to the 8s touch window, not the last 8s before CAV."""
+        prints, path = self._touch_window(st, touch, seconds=self.config.zlg_window_s)
+        liq = self._liquidity_of(st, touch)
+        self._liquidity_stamped[touch.touch_id] = liq
         prs_tau = None
         src = next((trade for trade in prints if trade.exchange_ts == touch.ts), None)
         if src is not None and st.book_pre is not None and st.book_pre.ready:
@@ -3012,7 +3353,7 @@ class DeskLoop:
         self.registry._patch(
             touch_id=touch.touch_id,
             overwrite=True,
-            ofi=ofi_val,
+            ofi=liq["ofi"],
             prs_tau=prs_tau,
         )
 

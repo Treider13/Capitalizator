@@ -1,7 +1,7 @@
 """0.3.3 — print in a pre-drawn zone → touch. Outcome later, never same millisecond.
 
-bounce: last price left ≥ bounce_away_ticks, working TF did not close beyond.
-break: working TF close beyond the zone.
+bounce: last price left ≥ bounce_away_ticks, own TF did not close beyond.
+break: the zone's own TF close beyond the band (junior close does not break a senior level).
 die: pending longer than touch_pending_timeout_h.
 Zone created_as_of ≥ print time is invisible (no lookahead).
 Does not open size.
@@ -22,6 +22,7 @@ from capitalizator.tape.classify import TapeClassifier
 from capitalizator.types import MarketEvent, require_utc
 from capitalizator.zones.config import RegistryConfig, load_registry
 from capitalizator.zones.model import Bar, Zone
+from capitalizator.zones.pair import invalidated
 
 TouchOutcome = Literal["pending", "bounce", "break", "die"]
 
@@ -144,6 +145,12 @@ class Registry:
         self.config = config or load_registry()
         self.touches: list[Touch] = []
         self._zones: dict[str, Zone] = {}
+        # zone_id → last time the zone engine handed us this zone (it is still on the
+        # map). With the last touch this decides `die_no_touch_h` retirement.
+        self._zone_seen: dict[str, datetime] = {}
+        # Retired zones stay resolvable for the touches that reference them (label
+        # counts, journal reads); they no longer take touches or vote in the map.
+        self.retired_zones: dict[str, Zone] = {}
         self.chain = HashChain()
         # Per-symbol tick (instruments-info). None keeps the legacy single tick.
         self._tick_for = tick_for
@@ -161,7 +168,7 @@ class Registry:
             if touch.outcome == "pending" or touch.ts >= cutoff:
                 keep.append(touch)
                 continue
-            zone = self._zones.get(touch.zone_id)
+            zone = self._zone_any(touch.zone_id)
             symbol = zone.symbol if zone is not None else ""
             if touch.cav_label:
                 key = ("cav", touch.cav_label, symbol)
@@ -189,7 +196,7 @@ class Registry:
         for touch in self.touches:
             if getattr(touch, attr) != label:
                 continue
-            zone = self._zones.get(touch.zone_id)
+            zone = self._zone_any(touch.zone_id)
             if zone is not None and zone.symbol == symbol:
                 live += 1
         return live + self.archived_count(kind, label, symbol)
@@ -200,7 +207,65 @@ class Registry:
         return self._tick_for(symbol)
 
     def zone(self, zone_id: str) -> Zone:
-        return self._zones[zone_id]
+        try:
+            return self._zones[zone_id]
+        except KeyError:
+            return self.retired_zones[zone_id]
+
+    def _zone_any(self, zone_id: str) -> Zone | None:
+        return self._zones.get(zone_id) or self.retired_zones.get(zone_id)
+
+    def retire_zones(self, *, now: datetime) -> list[Zone]:
+        """PHASE-BUILD `die_no_touch_h`: a zone nobody trades and the engine no longer
+        draws is retired. Activity = the later of creation, the last time the engine
+        handed the zone in, and the last touch. Pending touches on it die; resolved
+        touches keep their labels (the zone stays resolvable in `retired_zones`)."""
+        when = require_utc(now)
+        horizon = timedelta(hours=self.config.die_no_touch_h)
+        last_touch: dict[str, datetime] = {}
+        for touch in self.touches:
+            prev = last_touch.get(touch.zone_id)
+            if prev is None or touch.ts > prev:
+                last_touch[touch.zone_id] = touch.ts
+        gone: list[Zone] = []
+        for zone_id, zone in list(self._zones.items()):
+            activity = zone.created_as_of
+            seen = self._zone_seen.get(zone_id)
+            if seen is not None and seen > activity:
+                activity = seen
+            touched = last_touch.get(zone_id)
+            if touched is not None and touched > activity:
+                activity = touched
+            if when - activity <= horizon:
+                continue
+            del self._zones[zone_id]
+            self._zone_seen.pop(zone_id, None)
+            self.retired_zones[zone_id] = zone
+            gone.append(zone)
+        if gone:
+            dead = {z.zone_id for z in gone}
+            self.touches = [
+                replace(t, outcome="die")
+                if t.outcome == "pending" and t.zone_id in dead
+                else t
+                for t in self.touches
+            ]
+        return gone
+
+    def invalidate_broken(self, *, now: datetime, bars: Sequence[Bar]) -> list[Zone]:
+        """Own-TF close through the band retires the level. Pending touches stay
+        for `_decide` (they become `break` on that same close). Junior closes do
+        not retire a senior level."""
+        when = require_utc(now)
+        gone: list[Zone] = []
+        for zone_id, zone in list(self._zones.items()):
+            if not invalidated(zone, bars, t=when):
+                continue
+            del self._zones[zone_id]
+            self._zone_seen.pop(zone_id, None)
+            self.retired_zones[zone_id] = zone
+            gone.append(zone)
+        return gone
 
     def on_trade(self, trade: MarketEvent, zones: Sequence[Zone]) -> list[Touch]:
         if trade.stream != "trades":
@@ -215,6 +280,8 @@ class Registry:
         pending_zones = {t.zone_id for t in self.touches if t.outcome == "pending"}
         for zone in zones:
             self._zones[zone.zone_id] = zone
+            self._zone_seen[zone.zone_id] = ts
+            self.retired_zones.pop(zone.zone_id, None)
             if zone.symbol != trade.symbol:
                 continue
             if zone.created_as_of >= ts:
@@ -244,7 +311,7 @@ class Registry:
             if touch.outcome != "pending":
                 next_rows.append(touch)
                 continue
-            zone = self._zones.get(touch.zone_id)
+            zone = self._zone_any(touch.zone_id)
             if zone is None:
                 next_rows.append(touch)
                 continue
@@ -268,7 +335,7 @@ class Registry:
         changed: list[Touch] = []
         next_rows: list[Touch] = []
         for touch in self.touches:
-            zone = self._zones.get(touch.zone_id)
+            zone = self._zone_any(touch.zone_id)
             if zone is None or touch.outcome != "pending" or zone.symbol != symbol:
                 next_rows.append(touch)
                 continue
@@ -287,14 +354,14 @@ class Registry:
         bars: Sequence[Bar],
         last_px: Decimal,
     ) -> Touch:
-        work = [
+        own = [
             b
             for b in bars
-            if b.tf == self.config.working_tf
+            if b.tf == zone.tf
             and touch.ts < b.close_ts < now
             and b.symbol == zone.symbol
         ]
-        for bar in work:
+        for bar in own:
             if zone.side == "support" and bar.close < zone.lo:
                 return replace(touch, outcome="break")
             if zone.side == "resistance" and bar.close > zone.hi:
@@ -339,7 +406,10 @@ class Registry:
             if touch.tape_eaten is not None:
                 next_rows.append(touch)
                 continue
-            zone = self._zones[touch.zone_id]
+            zone = self._zone_any(touch.zone_id)
+            if zone is None:
+                next_rows.append(touch)
+                continue
             flag = clf.eaten(
                 book=book,
                 trades=trades,

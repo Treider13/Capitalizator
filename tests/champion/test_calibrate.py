@@ -72,14 +72,14 @@ def test_refuted_is_about_mean_net_r_not_winrate() -> None:
     for i in range(40):
         rows.append({"entry_px": "1", "r_net": "-1", "tag": "bounce",
                      "labels": {"cav_label": "REJECT", "zlg_label": "DEFEND"}})
-    stat = class_stats(rows)["bounce|REJECT|DEFEND|*|*"]
+    stat = class_stats(rows)["bounce|REJECT|DEFEND|*|*|*"]
     assert stat.winrate == Decimal("0.6") and stat.avg_r_net < 0
     assert stat.upper_r_net is not None and stat.upper_r_net < 0
     assert refuted(stat) is True
     # a genuinely positive class is not refuted
     good = class_stats([{"entry_px": "1", "r_net": "1.5" if i % 2 else "-1", "tag": "bounce",
                          "labels": {"cav_label": "REJECT", "zlg_label": "DEFEND"}} for i in range(60)])
-    assert refuted(good["bounce|REJECT|DEFEND|*|*"]) is False
+    assert refuted(good["bounce|REJECT|DEFEND|*|*|*"]) is False
     # too few observations: never refuted
     few = class_stats(rows[:10])
-    assert refuted(few["bounce|REJECT|DEFEND|*|*"]) is False
+    assert refuted(few["bounce|REJECT|DEFEND|*|*|*"]) is False
