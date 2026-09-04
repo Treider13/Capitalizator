@@ -1,8 +1,8 @@
 # Как подключиться к серверу и видеть всё (инструкция владельца)
 
-С нуля (покупка VPS, install, ключ, learn → demo): [`NOVICE-START.md`](NOVICE-START.md).
+С нуля на **Ubuntu-ноутбуке и VPS SpaceWeb**: [`NOVICE-START.md`](NOVICE-START.md).
 
-Сервер: `91.229.105.226` (Амстердам, Ubuntu 26.04). Пользователи ОС: `root` (пароль — сменить) и
+Ниже — уже живой сервер HOSTKEY (не панель SpaceWeb): `91.229.105.226` (Амстердам, Ubuntu 26.04). Пользователи ОС: `root` (пароль — сменить) и
 `trader` (для работы; ваши два публичных ключа уже добавлены в `/home/trader/.ssh/authorized_keys`).
 Логин `dronpardon` — это панель HOSTKEY, не ОС.
 
