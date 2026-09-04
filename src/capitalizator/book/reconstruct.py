@@ -1,7 +1,17 @@
 """L2 book from snapshot + diffs. Zero size deletes. No ghost levels.
 
-Gap/apply version is Bybit `u` (BookSnapshot.seq). `u=1` after a live book
-is a service restart — drop local state (BookDirty), do not patch.
+Law is Bybit `orderbook.{depth}` (what the recorder subscribes), not Full-OB:
+
+  https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
+
+  * `type=snapshot` or `u=1` → replace the local book (service restart).
+  * `type=delta` → patch: size 0 deletes, else insert/update.
+  * Same `u` may repeat (L1 idle re-push). Older `u` is already in the book.
+
+CCXT `handleOrderBook` (2026): snapshot → `reset`, else `handleDeltas`. No wipe
+on a skipped `u`. Nautilus Bybit adapter: snapshot CLEAR+ADD, delta UPDATE;
+stale sequence is a high-water mark, the book is not emptied. Hummingbot Bybit
+perp: `orderbook.200`, REST snapshot, WS deltas; they do not clear on Bybit `u`.
 """
 
 from __future__ import annotations
@@ -15,7 +25,7 @@ Side = str
 
 
 class BookDirty(ValueError):
-    """Diff arrived without a snapshot, or after an unhandled gap / restart."""
+    """Delta arrived before any snapshot. Not a reason to invent levels."""
 
 
 def _canon(value: Decimal) -> str:
@@ -44,12 +54,7 @@ class Book:
         return dict(raw)
 
     def apply_snapshot(self, snapshot: BookSnapshot) -> None:
-        self._bids = {}
-        self._asks = {}
-        self._put_side(self._bids, snapshot.bids)
-        self._put_side(self._asks, snapshot.asks)
-        self._seq = snapshot.seq
-        self._ready = True
+        self._replace(snapshot.bids, snapshot.asks, seq=snapshot.seq)
 
     def apply_diff(
         self,
@@ -58,27 +63,33 @@ class Book:
         *,
         seq: int,
     ) -> None:
-        if not self._ready:
+        if seq == 1:
+            # Official: u=1 is snapshot data after a service restart. Overwrite.
+            self._replace(bids, asks, seq=1)
+            return
+        if not self._ready or self._seq is None:
             raise BookDirty("diff before snapshot")
-        if self._seq is None:
-            raise BookDirty("book has no update id")
-        if seq == 1 and self._seq != 1:
-            raise BookDirty("bybit u=1 restart; resync required")
-        # orderbook.{depth} law (Bybit docs + CCXT / Nautilus / Hummingbot):
-        # snapshot or u=1 replaces the book; delta patches levels; size 0 deletes.
-        # None of those wipe a ready book because an older `u` arrived.
-        # https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
-        # ccxt ts/src/pro/bybit.ts handleOrderBook: snapshot → reset, else handleDeltas
-        # (no u-gap wipe). Same `u` is legal on L1 idle re-push.
-        # A leftover tape diff with u <= last snapshot is already inside that
-        # snapshot — skip it. Do not empty Chronos (live SOLUSDT).
         if seq <= self._seq:
             return
-        if seq > self._seq + 1:
-            raise BookDirty(f"book u gap {self._seq} -> {seq}; resync required")
+        # CCXT / Nautilus: apply the delta even if `u` skipped a number.
+        # Emptying the book here is what blanked live SOLUSDT on Chronos.
         self._put_side(self._bids, bids)
         self._put_side(self._asks, asks)
         self._seq = seq
+
+    def _replace(
+        self,
+        bids: tuple[tuple[str, str], ...],
+        asks: tuple[tuple[str, str], ...],
+        *,
+        seq: int,
+    ) -> None:
+        self._bids = {}
+        self._asks = {}
+        self._put_side(self._bids, bids)
+        self._put_side(self._asks, asks)
+        self._seq = seq
+        self._ready = True
 
     def _put_side(self, book: dict[Decimal, Decimal], rows: tuple[tuple[str, str], ...]) -> None:
         for px, sz in rows:

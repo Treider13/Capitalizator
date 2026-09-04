@@ -1,6 +1,6 @@
-"""0.2.4 — gap or dirty book → REST snapshot. Book becomes the snapshot.
+"""REST snapshot when the WS book has no snapshot yet (Hummingbot-style).
 
-The failed delta is discarded. Next diffs apply only after the new `u`.
+A skipped `u` on orderbook.200 is applied as a delta, not a fetch.
 Fetch is injected; we never invent depth.
 """
 

@@ -325,6 +325,40 @@ def test_catchup_tick_does_not_persist_empty_after_seq_hole(tmp_path: Path) -> N
     }
 
 
+def test_u_hole_keeps_last_value_book_on_ui(tmp_path: Path) -> None:
+    """CCXT: a skipped u is a delta. Chronos must not go empty."""
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0,
+            recv_ts=T0,
+            seq=10,
+            payload={"bids": [["101.6", "4"]], "asks": [["101.7", "3"]]},
+        )
+    )
+    desk.tick(T0 + timedelta(seconds=1))
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(seconds=2),
+            recv_ts=T0 + timedelta(seconds=2),
+            seq=20,
+            payload={"b": [["101.61", "2"]], "a": []},
+        )
+    )
+    desk.tick(T0 + timedelta(seconds=3))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert desk.state_for("BTCUSDT").book.ready
+    assert got["bids"][0] == ["101.61", "2"]
+    assert got["asks"][0] == ["101.7", "3"]
+
+
 def test_stale_book_u_after_newer_snapshot_does_not_wipe_ui(tmp_path: Path) -> None:
     """Live SOL: hour=22 snapshot then leftover hour=20/21 diffs (older `u`).
 

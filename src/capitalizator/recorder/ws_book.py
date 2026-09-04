@@ -16,9 +16,9 @@ from capitalizator.types import ExchangeName, MarketEvent, require_utc
 class BybitBookWs:
     """Snapshot + deltas → MarketEvents. Does not open a live socket.
 
-    If `fetch_snapshot` is set, a gap/`BookDirty` discards the failed delta
-    and replaces the book with that snapshot (0.2.4). Without a fetch,
-    the exception still surfaces — we do not invent depth.
+    If `fetch_snapshot` is set, a delta before any snapshot fetches REST
+    (Hummingbot). A skipped `u` is applied. Without a fetch, BookDirty
+    still surfaces — we do not invent depth.
     """
 
     def __init__(

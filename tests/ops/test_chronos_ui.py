@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from decimal import Decimal
 from http.client import HTTPConnection
 from http.server import HTTPServer
 from pathlib import Path
@@ -11,14 +12,12 @@ from threading import Thread
 
 import pytest
 
-from capitalizator.book.reconstruct import BookDirty
 from capitalizator.desk.tape import event_from_jsonl_line
 from capitalizator.exec.replay import ReplayEngine
 from capitalizator.ops.chronos_data import _load_symbol_stream, last_prices, replay_for
 from capitalizator.ops.console import ConsoleApp, _handler
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
-from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.sink_parquet import BufferedParquetSink, ParquetSink
 from capitalizator.types import MarketEvent
 
@@ -172,8 +171,9 @@ def test_run_events_gap_does_not_invent() -> None:
             payload={"bids": [["99.8", "5"]], "asks": []},
         ),
     ]
-    with pytest.raises((BookDirty, SeqFault)):
-        ReplayEngine().run_events(evs)
+    cps = ReplayEngine().run_events(evs)
+    assert cps[-1].seq == 3
+    assert cps[-1].best_bid == Decimal("100")
 
 
 def test_replay_api_empty_and_tape(tmp_path: Path) -> None:

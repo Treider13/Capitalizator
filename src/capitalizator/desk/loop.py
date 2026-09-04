@@ -458,7 +458,7 @@ class DeskLoop:
         Bybit (2026) pushes depth on its own stream (L50 ~20ms, L200 ~100ms),
         not as a side effect of public trades. Sharing `_ui_due` with last_price
         let BTC prints own the 0.5s clock so `book:{symbol}` never landed.
-        A book-seq hole (missing_stream / u=1) must not keep last levels on the page.
+        A marked book-seq hole (`missing_stream`) must not keep last levels.
         A time-gap marker is not that: do not persist empty just because this tick
         has not yet seen a snapshot (that wiped the live 20-level book on the VPS).
         """
@@ -483,9 +483,7 @@ class DeskLoop:
         if self._uptime_dirty:
             self._ui_pending["tape_uptime"] = self.uptime.to_json()
             self._uptime_dirty = False
-        # Catch-up ticks (force=False) must not persist empty over last-value:
-        # skipped old book_diff after an older snapshot raises BookDirty and
-        # would wipe the live 20-level book the VPS already had.
+        # Catch-up ticks (force=False) must not persist empty over last-value.
         self._queue_ready_books(now, persist_empty=force)
         n = len(self._ui_pending)
         self.knowledge.set_meta_many(self._ui_pending)
@@ -621,7 +619,6 @@ class DeskLoop:
             return
         if event.stream == "book_diff":
             if seq is None:
-                st.book = Book(tick_size=str(self.tick_for(st.symbol)))
                 return
             # Only the touched prices can change: read them before the diff instead of
             # copying the whole book (was 0.9 ms per diff in the profile).
@@ -635,8 +632,8 @@ class DeskLoop:
             try:
                 st.book.apply_diff(bids, asks, seq=int(seq))
             except BookDirty:
-                # True hole / u=1: reset-local. Stale u is ignored inside Book.
-                st.book = Book(tick_size=str(self.tick_for(st.symbol)))
+                # No snapshot yet. CCXT would patch an empty book; we do not invent
+                # levels. Keep last-value in sqlite until a snapshot / u=1 arrives.
                 return
             except SeqFault:
                 return
