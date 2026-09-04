@@ -424,6 +424,33 @@ docker compose run --rm signer python -m capitalizator.signer --userdir /data --
 
 Красный hello = ключ, белый список IP или `mode`. Не обходите кнопкой. Режим человека пока **`off`**.
 
+На **Demo** шаг `fee_rate` может ответить `10001` — у учебного счёта Bybit нет этого метода. В свежей сборке это VIP0-заглушка, hello может стать зелёным. На старой сборке hello останется красным, хотя кошелёк и пробный ордер уже ок. Это не «ключ сломан».
+
+### Как понять, что Bybit жив — без браузера
+
+Консоль на 4 ГБ VPS с большой лентой может упасть. Биржу и ленту проверяют с ноутбука в сессии `trader@`:
+
+```bash
+cd /srv/capitalizator/app/infra/deploy
+docker compose ps
+docker compose logs --tail 30 recorder signer
+find /srv/capitalizator/userdir/tape -name '*.parquet' -mmin -2 | wc -l
+du -sh /srv/capitalizator/userdir/tape
+docker compose exec signer python -m capitalizator.signer --userdir /data --hello --probe-order
+```
+
+| Что видите | Значит |
+|---|---|
+| `recorder` healthy, за 2 минуты десятки/сотни новых parquet | публичный поток Bybit пишется |
+| `wallet_equity` ok, `probe_order` ok | ключ Demo принят, ордер ставится и снимается |
+| `fee_rate` 10001 на Demo | известный пробел Demo API, не дыра ключа |
+| `10002` / skew | часы сервера уехали от Bybit |
+| контур `off`, режим `off` | норма до суток ленты; зоны/CAV/жюри ещё не крутятся |
+
+«Логика стола» (зоны × книга × CAV × жюри × OKO) начинается только после **контур on**. До этого Bybit = лента + ключ.
+
+Консоль: `docker compose start console` только после сборки, где статус не открывает всю ленту. Потом с ноутбука туннель `ssh -i ~/.ssh/id_ed25519 -L 8082:127.0.0.1:8082 trader@VPS` и браузер **http://127.0.0.1:8082** (не IP сервера). Если консоль снова съест память — `docker compose stop console`, лента продолжит писаться.
+
 ---
 
 ## Часть 10. Сутки ленты → контур → learn

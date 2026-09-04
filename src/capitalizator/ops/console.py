@@ -70,6 +70,10 @@ def _parquet_counts(tape: Path) -> tuple[int, int]:
     if not tape.is_dir():
         return 0, 0
     files = [path for path in iter_regular_files(tape) if path.suffix == ".parquet"]
+    # A live desk writes thousands of hour parts. Opening each with pyarrow on
+    # every /api/status (SSE refresh) ate ~2.7GiB and killed a 4GiB VPS.
+    if len(files) > 128:
+        return len(files), 0
     readable = 0
     rows = 0
     if files:
@@ -1146,7 +1150,7 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     return
-                idle(wake, 1.0)
+                idle(wake, 8.0)
 
         def do_GET(self) -> None:  # noqa: N802
             started = False
