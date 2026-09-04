@@ -348,6 +348,7 @@ class DeskLoop:
         self._liquidity_stamped: dict[str, dict[str, Any]] = {}
         self._ui_pending: dict[str, str] = {}
         self._ui_last_flush: datetime | None = None
+        self._ui_book_published: set[str] = set()
         self.zone_cache: dict[str, tuple[tuple[Any, ...], tuple[Zone, ...]]] = {}
         self._persisted_zone_ids: dict[str, frozenset[str]] = {}
         self._last_zone_retire: datetime | None = None
@@ -456,13 +457,15 @@ class DeskLoop:
         Bybit (2026) pushes depth on its own stream (L50 ~20ms, L200 ~100ms),
         not as a side effect of public trades. Sharing `_ui_due` with last_price
         let BTC prints own the 0.5s clock so `book:{symbol}` never landed.
-        A dirty book (gap / u=1 restart) must not keep the last levels on the page:
-        the venue contract is reset-local, not patch.
+        A book-seq hole (missing_stream / u=1) must not keep last levels on the page.
+        A time-gap marker is not that: do not persist empty just because this tick
+        has not yet seen a snapshot (that wiped the live 20-level book on the VPS).
         """
         for st in self.symbols.values():
             if st.book.ready:
+                self._ui_book_published.add(st.symbol)
                 self._ui_put(f"book:{st.symbol}", self._book_ui_payload(st, when))
-            else:
+            elif st.symbol in self._ui_book_published:
                 self._ui_put(f"book:{st.symbol}", self._book_ui_empty(st.symbol))
 
     def flush_ui(self, now: datetime, *, force: bool = False) -> int:
@@ -587,7 +590,7 @@ class DeskLoop:
         self.state_for(symbol).book = book
 
     def _apply_book_event(self, st: SymbolState, event: MarketEvent) -> None:
-        """Apply snapshot/diff from tape. Gap → dirty book, do not invent levels."""
+        """Apply snapshot/diff from tape. Do not invent levels. Time-gaps do not wipe."""
         bids = _levels(event.payload.get("bids") or event.payload.get("b") or [])
         asks = _levels(event.payload.get("asks") or event.payload.get("a") or [])
         seq = event.seq if event.seq is not None else event.payload.get("u")
@@ -733,6 +736,10 @@ class DeskLoop:
                     ),
                 )
                 return [{"event": "resync", "symbol": event.symbol, "book_dirty": False}]
+            # Time holes (ts_from/ts_to, recorder reconnect) are uptime law, not L2.
+            # uptime.py: a book seq hole is not a time hole — the inverse holds.
+            if event.stream == "gap" and not event.payload.get("missing_stream"):
+                return [{"event": "gap", "symbol": event.symbol, "book_dirty": False}]
             st.book = Book(tick_size=str(self.tick_for(st.symbol)))
             return [{"event": event.stream, "symbol": event.symbol, "book_dirty": True}]
         raise ValueError(f"unknown stream: {event.stream!r}")
