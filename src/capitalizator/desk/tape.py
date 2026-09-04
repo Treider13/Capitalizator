@@ -172,15 +172,17 @@ class TapeCursor:
                 live_dirs.add(path.parent / path.stem)  # hour=HH key
             elif path.suffix == ".parquet":
                 parquet_paths.append(path)
-        keep_snapshot = self._latest_snapshots(paths)
         events: list[MarketEvent] = []
         budget_bytes = self.max_bytes
         budget_rows = self.max_rows
         self.backlog = False
-        # Live jsonl first: a chrono walk of two days of trades otherwise never
-        # reached today's book tail, so Chronos stayed empty while backlog=1.
+        # jsonl is the live tail (this class docstring). Bybit orderbook is a
+        # different topic than publicTrade; do not starve that tail behind
+        # two days of trade parquet.
+        # https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
+        # https://bybit-exchange.github.io/docs/v5/websocket/public/trade
         for path in jsonl_paths:
-            if self._skip_old_book(path, now, keep_snapshot=keep_snapshot):
+            if self._skip_old_book(path, now):
                 continue
             if budget_bytes <= 0:
                 self.backlog = True
@@ -191,12 +193,9 @@ class TapeCursor:
         book_pq = [
             p
             for p in parquet_paths
-            if _book_stream(p) is not None
-            and not self._skip_old_book(p, now, keep_snapshot=keep_snapshot)
+            if _book_stream(p) is not None and not self._skip_old_book(p, now)
         ]
         other_pq = [p for p in parquet_paths if _book_stream(p) is None]
-        # Recent snapshot+diff is small and must land this pass; do not wait for
-        # the trade backlog (zones) to drain.
         for path in book_pq + other_pq:
             hour_key = path.parent / path.name.split(".")[0]
             if hour_key in live_dirs:
@@ -213,38 +212,14 @@ class TapeCursor:
         events.sort(key=lambda e: (e.exchange_ts, e.symbol, e.stream))
         return events
 
-    def _latest_snapshots(self, paths: Sequence[Path]) -> set[Path]:
-        """Newest snapshot partition per symbol: the origin for later diffs."""
-        best: dict[str, tuple[datetime, Path]] = {}
-        for path in paths:
-            if "snapshot" not in path.parts:
-                continue
-            stamp = _partition_time(path)
-            symbol = _path_symbol(path)
-            if stamp is None or symbol is None:
-                continue
-            prev = best.get(symbol)
-            if prev is None or stamp >= prev[0]:
-                best[symbol] = (stamp, path)
-        return {item[1] for item in best.values()}
+    def _skip_old_book(self, path: Path, now: datetime | None) -> bool:
+        """Production: book rows older than `book_hours` are not replayed.
 
-    def _skip_old_book(
-        self,
-        path: Path,
-        now: datetime | None,
-        *,
-        keep_snapshot: set[Path],
-    ) -> bool:
-        """Production: book_diff / old snapshots older than `book_hours` are skipped.
-
-        Deltas are only meaningful from the snapshot that follows them. Keep the
-        newest snapshot per symbol even if it is older: that is the origin, not a
-        time hole. Marked so a later pass does not read skipped files from the start.
+        Bybit: a book is snapshot then consecutive `u`; a hole is reset-local,
+        not a stitch. Same law already in this module: a book is only valid
+        from its next snapshot. Snapshot and diff share the window.
         """
-        stream = _book_stream(path)
-        if not self._production or now is None or stream is None:
-            return False
-        if path in keep_snapshot:
+        if not self._production or now is None or _book_stream(path) is None:
             return False
         if path in self._skipped_book:
             return True
@@ -367,14 +342,6 @@ def _book_stream(path: Path) -> str | None:
     for part in path.parts:
         if part in TapeCursor._BOOK_PARTS:
             return part
-    return None
-
-
-def _path_symbol(path: Path) -> str | None:
-    parts = path.parts
-    for i, part in enumerate(parts):
-        if part in TapeCursor._BOOK_PARTS and i > 0:
-            return parts[i - 1]
     return None
 
 
