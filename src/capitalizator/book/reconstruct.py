@@ -64,12 +64,14 @@ class Book:
             raise BookDirty("book has no update id")
         if seq == 1 and self._seq != 1:
             raise BookDirty("bybit u=1 restart; resync required")
-        # Bybit (2026): a new snapshot already contains every older `u`.
-        # Level-1 even re-pushes a snapshot with the same `u` after 3s idle.
+        # orderbook.{depth} law (Bybit docs + CCXT / Nautilus / Hummingbot):
+        # snapshot or u=1 replaces the book; delta patches levels; size 0 deletes.
+        # None of those wipe a ready book because an older `u` arrived.
         # https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
-        # An old parquet diff after a later snapshot is that case — ignore,
-        # do not raise. The desk used to wipe RAM and persist an empty Chronos
-        # book (live SOLUSDT: snapshot hour=22, then leftover hour=20/21 diffs).
+        # ccxt ts/src/pro/bybit.ts handleOrderBook: snapshot → reset, else handleDeltas
+        # (no u-gap wipe). Same `u` is legal on L1 idle re-push.
+        # A leftover tape diff with u <= last snapshot is already inside that
+        # snapshot — skip it. Do not empty Chronos (live SOLUSDT).
         if seq <= self._seq:
             return
         if seq > self._seq + 1:
