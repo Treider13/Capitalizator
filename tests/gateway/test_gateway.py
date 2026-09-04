@@ -322,6 +322,22 @@ def test_hello_probe_uses_instrument_filters() -> None:
     assert bad["ok"] is False and bad["wallet_equity"]["ok"] is False and "boom" in bad["wallet_equity"]["error"]
 
 
+def test_hello_demo_fee_rate_10001_falls_back() -> None:
+    """Bybit Demo Trading has no /v5/account/fee-rate; hello must still pass."""
+    s = FakeSession()
+    s.fail_next = "get_fee_rates"
+    s.fail_with = venue_error(10001, "Request parameter error")
+    out = _gw(s, mode="demo").hello(probe_order=True)
+    assert out["ok"] is True
+    assert out["fee_rate"]["ok"] is True
+    assert out["fee_rate"]["value"] == ["0.0002", "0.00055"]
+    s2 = FakeSession()
+    s2.fail_next = "get_fee_rates"
+    s2.fail_with = venue_error(10001, "Request parameter error")
+    live = _gw(s2, mode="testnet").hello()
+    assert live["ok"] is False and live["fee_rate"]["ok"] is False
+
+
 def test_ret_code_dict_and_raised_error_are_both_gateway_errors() -> None:
     class Dict(FakeSession):
         def get_wallet_balance(self, **kw):  # ignore_codes-style session returns the dict
