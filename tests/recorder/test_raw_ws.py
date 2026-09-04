@@ -336,6 +336,67 @@ def test_live_book_is_read_while_trade_parquet_is_still_backlogged(tmp_path: Pat
     assert "book_diff" in streams
 
 
+def test_production_restart_reads_snapshot_before_old_book_diffs(tmp_path: Path) -> None:
+    """VPS 2026-09-04: desk restart drowned in hour=20 book_diff; SOL stayed empty.
+
+    Official orderbook.200: the book is valid from its next snapshot. Pre-snapshot
+    deltas are BookDirty. They must not spend the first-pass byte budget.
+    """
+    from datetime import timedelta
+
+    from capitalizator.desk.tape import TapeCursor
+    from capitalizator.recorder.sink_parquet import BufferedParquetSink
+    from capitalizator.types import MarketEvent
+
+    t0 = datetime(2026, 9, 4, 22, 0, tzinfo=UTC)
+    sink = BufferedParquetSink(tmp_path, flush_every_s=60, max_rows=10_000, live_jsonl=True)
+    for i in range(250):
+        ts = t0 + timedelta(seconds=i)
+        sink.write(
+            MarketEvent(
+                stream="book_diff",
+                exchange="bybit",
+                symbol="SOLUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                seq=i + 2,
+                payload={"b": [["100.0", "1"]], "a": []},
+            )
+        )
+    snap_ts = t0 + timedelta(seconds=250)
+    sink.write(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="SOLUSDT",
+            exchange_ts=snap_ts,
+            recv_ts=snap_ts,
+            seq=252,
+            payload={"bids": [["99.5", "8"]], "asks": [["100.5", "7"]]},
+        )
+    )
+    after = snap_ts + timedelta(seconds=1)
+    sink.write(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="SOLUSDT",
+            exchange_ts=after,
+            recv_ts=after,
+            seq=253,
+            payload={"b": [["99.6", "3"]], "a": []},
+        )
+    )
+    sink.flush()
+    cur = TapeCursor(replay_all_first=False, max_bytes=4096, book_hours=2)
+    batch = cur.fresh_rows(tmp_path, now=t0 + timedelta(minutes=10))
+    snaps = [e for e in batch if e.stream == "snapshot"]
+    diffs = [e for e in batch if e.stream == "book_diff"]
+    assert len(snaps) == 1 and snaps[0].seq == 252
+    assert [e.seq for e in diffs] == [253]
+    assert all(e.seq == 253 for e in diffs)
+
+
 def test_tape_walk_survives_a_writer_temp_file_vanishing(tmp_path: Path) -> None:
     """The recorder writes `hour=HH.<n>.parquet.<hex>.tmp` and renames it; the desk's
     walk saw the name and then stat() failed → the desk process died (VPS 2026-09-03)."""
