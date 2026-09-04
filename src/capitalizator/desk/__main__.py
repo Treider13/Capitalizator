@@ -75,6 +75,9 @@ def serve_loop(
         user_mode=read_user_mode(vault),
         calendar=load_desk_calendar(),
     )
+    # One cutoff for this process: restored opens ignore tape older than serve
+    # start. `--once` / play() leave the cutoff unset (living replay).
+    desk.paper.open_replay_cutoff = now if now is not None else datetime.now(tz=UTC)
     # production: the cursor's offsets are the dedup; a per-event set is unbounded
     seen: set[tuple[str, str, str, int | None]] | None = set() if replay_all_first else None
     zones = tuple(extra_zones)

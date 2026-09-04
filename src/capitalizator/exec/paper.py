@@ -87,6 +87,10 @@ class PaperPosition:
     # We are filled when it exceeds the depth that was ahead of us (see PaperEngine).
     queue_ahead: Decimal | None = None
     queue_traded: Decimal = Decimal("0")
+    # In-memory only: set by `PaperEngine.restore` for an already-open twin.
+    # A serve cutoff then ignores replayed tape against this row (audit A2 after
+    # a restart: history must not stop a twin whose stop has already trailed).
+    restored: bool = False
 
     def __post_init__(self) -> None:
         if self.initial_stop is None:
@@ -117,7 +121,7 @@ class PaperPosition:
                 return v.total_seconds()
             return v
 
-        skip = {"stop_moves", "stop_components", "labels"}
+        skip = {"stop_moves", "stop_components", "labels", "restored"}
         out = {k: s(v) for k, v in self.__dict__.items() if k not in skip}
         out["stop_moves"] = list(self.stop_moves)
         out["stop_components"] = dict(self.stop_components)
@@ -213,6 +217,8 @@ class PaperEngine:
         # Last mark per symbol. Hard SL follows mark (venue slTriggerBy=MarkPrice).
         # Unknown mark → last print, same as before any ticker arrived.
         self._marks: dict[str, Decimal] = {}
+        # Set only by `--serve`. None = living process / `--once` / tests: no freeze.
+        self.open_replay_cutoff: datetime | None = None
 
     # --- submit ---------------------------------------------------------------
     def submit(
@@ -289,9 +295,20 @@ class PaperEngine:
             pos = PaperPosition.from_payload(raw)
             if pos.paper_id in self.positions or pos.paper_id in done:
                 continue
+            pos.restored = pos.state == "open"
             self.positions[pos.paper_id] = pos
             n += 1
         return n
+
+    def replay_frozen(self, pos: PaperPosition, when: datetime) -> bool:
+        """True for a restored open twin on tape older than the serve cutoff."""
+        cutoff = self.open_replay_cutoff
+        return (
+            cutoff is not None
+            and pos.restored
+            and pos.state == "open"
+            and when < cutoff
+        )
 
     def open_symbols(self) -> list[str]:
         return sorted({p.symbol for p in self.positions.values()})
@@ -319,6 +336,11 @@ class PaperEngine:
             # not to this trade: it can neither fill nor stop it (audit A2 — restored
             # twins were stopped out by history and the venue position flattened).
             if when < pos.created_at or (pos.filled_at is not None and when < pos.filled_at):
+                continue
+            # Restored open + serve catch-up: the twin already carries the live
+            # trail / half / funding. Replaying post-fill history through that
+            # stop would flatten the venue (audit A2).
+            if self.replay_frozen(pos, when):
                 continue
             pos.prints_seen += 1
             if pos.state == "pending":
@@ -388,6 +410,8 @@ class PaperEngine:
             if self._trailing_owns_stop(pos):
                 continue
             if when < pos.created_at or (pos.filled_at is not None and when < pos.filled_at):
+                continue
+            if self.replay_frozen(pos, when):
                 continue
             if self._stop_hit(pos, px):
                 self._exit(pos, when, self._stop_fill_px(pos), "stop", role="taker")

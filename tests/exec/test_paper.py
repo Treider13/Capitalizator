@@ -258,3 +258,59 @@ def test_twins_survive_a_restart_via_snapshot_and_restore() -> None:
     fresh.on_print(_print(T0 + timedelta(minutes=1), "98.9"))
     assert back.state == "closed" and back.exit_reason == "stop"
     assert fresh.restore(snap) == 0  # idempotent: nothing duplicated
+
+
+def test_restored_open_ignores_tape_before_serve_cutoff() -> None:
+    """`--serve` catch-up: history after fill must not stop an already-trailed twin."""
+    eng = _engine()
+    pos = _buy(eng)
+    eng.on_print(_print(T0 + timedelta(seconds=1), "99.9"))
+    assert pos.state == "open"
+    eng.set_stop("t1:shadow", Decimal("99.5"), reason="trail")
+    snap = eng.snapshot()
+    assert "restored" not in snap[0]
+
+    cutoff = T0 + timedelta(hours=2)
+    fresh = _engine()
+    fresh.open_replay_cutoff = cutoff
+    assert fresh.restore(snap) == 1
+    back = fresh.positions["t1:shadow"]
+    assert back.restored is True and back.state == "open"
+    # print after fill, through the *current* stop, but still before serve start
+    fresh.on_print(_print(T0 + timedelta(minutes=5), "99.4"))
+    assert back.state == "open" and back.stop == Decimal("99.5")
+    # live tape at/after the cutoff still stops
+    fresh.on_print(_print(cutoff, "99.4"))
+    assert back.state == "closed" and back.exit_reason == "stop"
+
+
+def test_restored_open_mark_warms_but_does_not_stop_before_cutoff() -> None:
+    eng = _engine()
+    _buy(eng)
+    eng.on_print(_print(T0 + timedelta(seconds=1), "99.9"))
+    eng.set_stop("t1:shadow", Decimal("99.5"), reason="trail")
+    snap = eng.snapshot()
+    cutoff = T0 + timedelta(hours=2)
+    fresh = _engine()
+    fresh.open_replay_cutoff = cutoff
+    fresh.restore(snap)
+    back = fresh.positions["t1:shadow"]
+    fresh.on_mark(_mark(T0 + timedelta(minutes=5), "99.4"))
+    assert back.state == "open"
+    assert fresh._marks["BTCUSDT"] == Decimal("99.4")
+    fresh.on_mark(_mark(cutoff, "99.4"))
+    assert back.state == "closed" and back.exit_reason == "stop"
+
+
+def test_restored_pending_still_fills_under_serve_cutoff() -> None:
+    """B3 fill-in-the-gap: a pending twin is not frozen."""
+    eng = _engine()
+    _buy(eng)
+    snap = eng.snapshot()
+    fresh = _engine()
+    fresh.open_replay_cutoff = T0 + timedelta(hours=2)
+    fresh.restore(snap)
+    pending = fresh.positions["t1:shadow"]
+    assert pending.restored is False and pending.state == "pending"
+    fresh.on_print(_print(T0 + timedelta(seconds=1), "99.9"))
+    assert pending.state == "open"

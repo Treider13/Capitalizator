@@ -83,7 +83,7 @@ from capitalizator.jury.desk import (
 )
 from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 from capitalizator.memory.registry import Registry, Touch
-from capitalizator.memory.revive import load_pending
+from capitalizator.memory.revive import PENDING, load_pending
 from capitalizator.news_macro.from_intel import calendar_from_intel, claims_from_intel
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.news_macro.rules import MacroRules
@@ -943,6 +943,7 @@ class DeskLoop:
                 st.book, trade, ts=trade.exchange_ts
             )
         opened = self.registry.on_trade(trade, zones)
+        opened = self._drop_resolved_touches(opened)
         if not opened:
             return []
         # Registry may open several zones on one print. The desk is one
@@ -2968,20 +2969,47 @@ class DeskLoop:
         p90 = volumes[min(len(volumes) - 1, int(0.9 * (len(volumes) - 1)))]
         return tuple(sorted(px for px, vol in buckets.items() if vol >= p90))
 
+    def _drop_resolved_touches(self, opened: list[Touch]) -> list[Touch]:
+        """Same touch_id already decided in the journal is not a new arm.
+
+        Replay after a restart recreates the deterministic touch_id. Leaving it
+        pending would overwrite the journal and block a live touch of the zone.
+        """
+        if not opened or not self.knowledge.available():
+            return opened
+        keep: list[Touch] = []
+        drop: set[str] = set()
+        for touch in opened:
+            row = self.knowledge.get_journal_touch(touch.touch_id)
+            if row is not None and row.get("outcome") not in PENDING:
+                drop.add(touch.touch_id)
+                continue
+            keep.append(touch)
+        if drop:
+            self.registry.touches = [t for t in self.registry.touches if t.touch_id not in drop]
+        return keep
+
     def _trail_state(self, pos: PaperPosition) -> TrailState:
         stt = self._trails.get(pos.paper_id)
         if stt is None:
             assert pos.entry_px is not None
             # After a restart the twin carries its trailed stop and its initial stop:
             # 1R must come from the initial one, the phase from the half flag.
+            # Construct on the birth stop (always the right side of entry), then
+            # apply the current stop — TrailState.__post_init__ rejects a long
+            # stop already in profit.
+            birth = pos.initial_stop if pos.initial_stop is not None else pos.stop
             stt = TrailState(
                 side=pos.side,
                 entry=pos.entry_px,
-                stop=pos.stop,
+                stop=birth,
                 tick=pos.tick,
                 initial_stop=pos.initial_stop,
+                half_taken=pos.half_taken,
+                phase=1 if pos.half_taken else 0,
                 exchange_trailing_armed=pos.trailing_distance is not None,
             )
+            stt.stop = pos.stop
             self._trails[pos.paper_id] = stt
         return stt
 
@@ -3015,6 +3043,8 @@ class DeskLoop:
         liq = self.liquidation_levels(st, bar.close_ts)
         for pos in list(self.paper.open_for(st.symbol)):
             if pos.state != "open":
+                continue
+            if self.paper.replay_frozen(pos, bar.close_ts):
                 continue
             if (
                 self.risk_config.stop_mode in {"hybrid", "manual_bounded"}
