@@ -78,6 +78,8 @@ JOURNAL_KEYS = (
     "oko_footprint_side",
     "oko_oi_z",
     "oko_liq_rel",
+    "book_plus",
+    "would_aplus",
 )
 
 KNOWLEDGE_TABLES = (

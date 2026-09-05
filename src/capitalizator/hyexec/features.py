@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
+from capitalizator.card.smc import bos_status
 from capitalizator.types import require_utc
 from capitalizator.zones.model import Bar
 
@@ -23,7 +24,12 @@ NAMES = (
     "high_5m",
     "low_5m",
     "range_5m",
+    "sma5_5m",
+    "close_vs_sma5",
+    "bos_5m",
+    "choch_5m",
 )
+SMA5 = 5
 
 
 @dataclass(frozen=True)
@@ -50,6 +56,40 @@ def _ret(bars: Sequence[Bar]) -> Decimal | None:
     return (last.close - prev.close) / prev.close
 
 
+def _sma(bars: Sequence[Bar], n: int = SMA5) -> Decimal | None:
+    if len(bars) < n:
+        return None
+    closes = [b.close for b in bars[-n:]]
+    if any(c <= 0 for c in closes):
+        return None
+    return sum(closes, Decimal("0")) / Decimal(n)
+
+
+def _bos_code(bars: Sequence[Bar]) -> Decimal | None:
+    side = bos_status(bars)
+    if side == "bull":
+        return Decimal("1")
+    if side == "bear":
+        return Decimal("-1")
+    return None
+
+
+def _choch(bars: Sequence[Bar]) -> Decimal | None:
+    """1 when the last two confirmed BOS disagree (CHoCH). Else 0. None if <2 BOS."""
+    prev: Decimal | None = None
+    last: Decimal | None = None
+    for i in range(len(bars)):
+        code = _bos_code(bars[: i + 1])
+        if code is None:
+            continue
+        if prev is not None and code != prev:
+            last = Decimal("1")
+        elif prev is not None:
+            last = Decimal("0")
+        prev = code
+    return last
+
+
 def build_features(
     *,
     bars_1m: Sequence[Bar],
@@ -68,6 +108,8 @@ def build_features(
     high_5m = None if last5 is None else last5.high
     low_5m = None if last5 is None else last5.low
     range_5m = None if last5 is None else last5.high - last5.low
+    sma5 = _sma(m5)
+    close_vs = None if sma5 is None or close_5m is None or sma5 == 0 else (close_5m - sma5) / sma5
     used = tuple(b.close_ts for b in (*m1, *m5, *h1))
     vector: dict[str, Decimal | None] = {
         "ret_1m": _ret(m1),
@@ -77,6 +119,10 @@ def build_features(
         "high_5m": high_5m,
         "low_5m": low_5m,
         "range_5m": range_5m,
+        "sma5_5m": sma5,
+        "close_vs_sma5": close_vs,
+        "bos_5m": _bos_code(m5),
+        "choch_5m": _choch(m5),
     }
     return FeatureRow(
         as_of=when,

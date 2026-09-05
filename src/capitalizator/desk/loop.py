@@ -1860,6 +1860,7 @@ class DeskLoop:
                 "skip_reason": row.skip_reason,
                 "outcome": row.outcome,
                 "rho_class_id": row.rho_class_id,
+                "book_plus": _book_plus(st.book, idea_side),
                 "oko_voice": row.oko_voice,
                 "oko_label": row.oko_label,
                 "oko_regime": row.oko_regime,
@@ -2098,16 +2099,8 @@ class DeskLoop:
                     max_stop_pct=self.risk_config.max_stop_pct,
                     manual_stop_frac=self.risk_config.manual_stop_frac,
                     liq_levels=self.liquidation_levels(st, closed_at),
-                    vah=(
-                        None
-                        if card is None or not card.volume.vah
-                        else Decimal(str(card.volume.vah))
-                    ),
-                    val=(
-                        None
-                        if card is None or not card.volume.val
-                        else Decimal(str(card.volume.val))
-                    ),
+                    vah=self._value_area(card)[0],
+                    val=self._value_area(card)[1],
                     next_funding_at=self.next_funding.get(st.symbol),
                     universe_rank=self.universe_rank(),
                     screened=self.screened_symbols(closed_at),
@@ -2162,6 +2155,7 @@ class DeskLoop:
                     closed_at, key=window.budget_key, max_n=window.budget
                 )
                 intent = self.strategy.propose(snap)
+                payload_row["would_aplus"] = bool(getattr(self.strategy, "last_aplus", False))
                 if intent is None:
                     # The strategy's own refusal is a journal fact, like every gate after it.
                     payload_row["send_skip"] = (
@@ -2777,6 +2771,12 @@ class DeskLoop:
                     ),
                 )
 
+    @staticmethod
+    def _value_area(card: CardLive | None) -> tuple[Decimal | None, Decimal | None]:
+        if card is None:
+            return None, None
+        return _opt_px(card.volume.vah), _opt_px(card.volume.val)
+
     def _book_plus_for(self, pos: PaperPosition) -> bool:
         st = self.symbols.get(pos.symbol)
         if st is None or not st.book.ready:
@@ -2919,6 +2919,8 @@ class DeskLoop:
                 entry=row.trade_px,
                 manual_frac=self.risk_config.manual_stop_frac,
                 mode=self.risk_config.stop_mode,
+                vah=self._value_area(st.zlg_card)[0],
+                val=self._value_area(st.zlg_card)[1],
             )
             stop = smart.stop
             if atr is not None and atr > 0:
@@ -3978,6 +3980,25 @@ def _record_adds_from_diff(
                 st.adds.append(BookAdd(ts=ts, side=hit, px=px, qty=delta))
             elif delta < 0:
                 st.pulls.append(BookPull(ts=ts, side=hit, px=px, qty=-delta))
+
+
+def _opt_px(raw: object) -> Decimal | None:
+    if raw in {None, "", "null", "none"}:
+        return None
+    try:
+        value = Decimal(str(raw))
+    except (ArithmeticError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _book_plus(book: Book, idea_side: str) -> bool | None:
+    if not book.ready:
+        return None
+    imb = book.imbalance(5)
+    if imb is None:
+        return None
+    return imb > 0 if idea_side == "buy" else imb < 0
 
 
 def _f(value: float | None) -> str | None:
