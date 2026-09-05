@@ -448,7 +448,7 @@ PR Newswire 302727385 + ChainCatcher 2026-05-22: три слоя — биржа 
 | **Детект пампа как B-veto** | EWMA 2503.08692; HDP+ F1 92.7; signatures 88% офлайн | Только альты, только veto/cut_size, не голос жюри и не паспорт ОКО |
 | **Тень отклонённых B-сигналов** | ARTEMIS: 97.6% сигналов в shadow, 2× итераций оптимизатора; WR 31.2→41.3 на 301 сделке | У вас C = тень **претендента стратегии**. Нет тени «жюри сказало нет / B veto». Счётчик без авто-promote |
 | **Префильтр до вызова LLM B** | bybit-ws: 3 дешёвых фильтра до Judge; HydraQuant Evidence <50 ms | B дорогой. Если нет HACK/CPI и книга пустая — не звать LLM. Не трогает A |
-| **SL не встал → flatten** | Quant Flow `emergency_close_with_retry`; голая позиция помечается executed | Проверить цепочку Bybit trading-stop; это слой gateway, не жюри |
+| **SL не встал → flatten** | Quant Flow `emergency_close_with_retry`; голая позиция помечается executed | Закрыто `70f598f` (desk OMS, не signer). Не жюри |
 | **Look-ahead в intel** | TradingAgents v0.3.1 #1115: future filings в истории | Point-in-time штамп «когда узнали» для B (у вас в ARCHITECTURE-AZ уже как закон знаний) — добить тестами |
 | **Одинаковый промпт + LLM-риск = рулетка** | Alpha Arena: 4/6 моделей в глубоком минусе на тех же данных | Уже закрыто архитектурой. Слепая зона — если B начнут просить «немного сайза» |
 | **Нет публичного live-доказательства** | Alpha Arena / Fin-Analyst арена | Стол частный; слепая зона доверия, не альфы |
@@ -461,7 +461,7 @@ PR Newswire 302727385 + ChainCatcher 2026-05-22: три слоя — биржа 
 1. **Префильтр B (3–5 дней).** Перед LLM-карточкой: пустой календарь HACK/CPI/FOMC → не звать новостной LLM; `min(Oko.n)<30` уже режет; корреляция/лимит идей — уже в риске. Образец порядка: bybit-ws фильтры 1–3 до Judge. Цель — стоимость B, не новое правило входа A.
 2. **Журнал серии промахов B (3–5 дней).** Как Fin-Analyst группа 2: если veto/hold N дней расходится с закрытым paper R — флаг в карточке, без автоослабления A.
 3. **Тень отвергнутых касаний (1–2 недели).** Как ARTEMIS, но **только учёт**: `would_have_R` для «жюри молчит» и «B veto». Писать в exam, не в promote. Wilson LCB на ведро (символ × окно × причина отказа) — у ARTEMIS v1.1 и в FMZ-разборе shadow buckets.
-4. **Аудит trading-stop (3–5 дней).** Сверить с Quant Flow: нет Mark SL на бирже после fill → flatten + алерт. У вас Mark SL уже закон; дыра — «запрос ушёл, биржа не подтвердила».
+4. **Аудит trading-stop.** ~~Дыра «запрос ушёл, биржа не подтвердила».~~ Закрыто в `70f598f`: стол делает OMS `amend_stop` (`sl_retry`), на следующем reconcile — `flatten` (`sl_unconfirmed`). Signer по-прежнему не выходит сам.
 5. **Pump EWMA на 8 альтах как B-veto (1 неделя).** Пороги из arXiv:2503.08692 (цена vs EWMA + объём + vol). Не Hawkes в ядре. Не signatures с будущим окном (LLD).
 6. **PIT-тесты intel (3 дня).** По образцу TradingAgents #1115: заголовок с `published_at > decision_ts` не входит в карточку.
 7. **Не брать:** Actor-Judge-Meta-Judge; 20x в промпте; F&G как голос жюри; DCA bybit-ws; авто-self_learn порогов A; Fine-tune Llama на α_t.
