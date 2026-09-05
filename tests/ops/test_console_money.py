@@ -33,11 +33,13 @@ def test_banners_say_what_is_missing_not_zero(tmp_path: Path) -> None:
     # a desk tick writes heartbeat + account snapshot → those banners change
     desk = DeskLoop(knowledge=kn, user_mode="off")
     desk.tick(NOW)
-    view = account_view(kn, now=NOW + timedelta(seconds=2))
+    # Heartbeat is process liveness (wall clock), not the tape instant NOW.
+    hb = datetime.now(tz=UTC)
+    view = account_view(kn, now=hb + timedelta(seconds=2))
     text = " ".join(view["banners"])
     assert "ДЕСК молчит" not in text and "нет сердцебиения" not in text
     assert "ЭКВИТИ бумажное" in text
-    view = account_view(kn, now=NOW + timedelta(seconds=30))
+    view = account_view(kn, now=hb + timedelta(seconds=30))
     assert any(b.startswith("ДЕСК молчит") for b in view["banners"])
     kn.set_meta("exchange_state", json.dumps({
         "at": NOW.isoformat(), "equity": "99000", "positions": [], "mismatches": [{"symbol": "ETHUSDT"}],
