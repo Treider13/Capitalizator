@@ -38,9 +38,47 @@ def test_empty_snapshot_is_honest(tmp_path: Path) -> None:
     assert "vps" not in snap
     assert "Касаний нет" in snap["report"]
     assert "пусто" in snap["honest"]
+    hx = snap["learning"]["hyexec"]
+    assert hx["model"] is False
+    assert hx["fit"] is False
+    assert hx["n_labeled"] == 0
+    assert hx["model_go"] is None
     for word in ("лонг", "шорт", "купи", "продай", "завтра"):
         blob = json.dumps(snap, ensure_ascii=False).lower()
         assert word not in blob
+
+
+def test_snapshot_reads_hyexec_serve_meta(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    kn.set_meta(
+        "hyexec_serve",
+        json.dumps(
+            {
+                "model": True,
+                "fit": True,
+                "n": 20,
+                "n_labeled": 16,
+                "model_go": False,
+                "score": -0.4,
+            }
+        ),
+    )
+    kn.close()
+    snap = desk_snapshot(vault)
+    hx = snap["learning"]["hyexec"]
+    assert hx == {
+        "model": True,
+        "fit": True,
+        "n": 20,
+        "n_labeled": 16,
+        "model_go": False,
+    }
+    page = render_html(vault)
+    assert "hyexec" in page.lower()
+    assert "меток 16" in page
+    for word in ("лонг", "шорт", "купи", "продай", "завтра"):
+        assert word not in page.lower()
 
 
 def test_html_has_no_advice(tmp_path: Path) -> None:
@@ -79,6 +117,8 @@ def test_http_get_and_post_readonly(tmp_path: Path) -> None:
         assert resp.status == 200
         payload = json.loads(resp.read().decode())
         assert payload["n_episode"] == 0
+        assert payload["learning"]["hyexec"]["n_labeled"] == 0
+        assert payload["learning"]["hyexec"]["model"] is False
         conn.close()
         conn = HTTPConnection(host, port, timeout=2)
         conn.request("GET", "/")
@@ -87,6 +127,8 @@ def test_http_get_and_post_readonly(tmp_path: Path) -> None:
         body = resp.read().decode()
         assert "Стол" in body
         assert "Касаний нет" in body
+        assert "hyexec" in body.lower()
+        assert "меток 0" in body
         conn.close()
         conn = HTTPConnection(host, port, timeout=2)
         conn.request("POST", "/order", body="{}", headers={"Content-Type": "application/json"})

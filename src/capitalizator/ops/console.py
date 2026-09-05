@@ -353,14 +353,24 @@ def _page(snap: dict[str, Any], *, token: str = "") -> str:
     drift = learn.get("drift") or {}
     exam = learn.get("exam") or {}
     oko_n = learn.get("oko") or {}
+    hx = learn.get("hyexec") or {}
+    if hx.get("model_go") is None:
+        hx_go = "ждёт"
+    elif hx.get("model_go"):
+        hx_go = "да"
+    else:
+        hx_go = "нет"
     learn_block = (
-        "<h2>Учёба (контур C и ОКО)</h2>"
+        "<h2>Учёба (контур C, ОКО, hyexec)</h2>"
         f"<p>дрейф: {'есть' if drift.get('drift') else 'нет'} (n={_e(drift.get('n', 0))}, "
         f"целевой риск {_e(drift.get('target_risk', '—'))}) · классов в калибровке: "
         f"{_e(learn.get('calibration_classes', 0))} · экзамен претендента: "
         f"{'пройден' if exam.get('passed') else 'не пройден'}"
         f" (n чемпиона {_e((exam.get('champion') or {}).get('n', 0))}, "
         f"n претендента {_e((exam.get('challenger') or {}).get('n', 0))})</p>"
+        f"<p>hyexec: модель {'есть' if hx.get('model') else 'нет'} · "
+        f"меток {_e(hx.get('n_labeled', 0))} · векторов {_e(hx.get('n', 0))} · "
+        f"fit {'да' if hx.get('fit') else 'нет'} · тайминг {hx_go}</p>"
         f"<p>паспорта ОКО: {_e(oko_n.get('passports', 0))} (зрелых {_e(oko_n.get('mature', 0))}) · "
         f"память ловушек: {_e(oko_n.get('memory', 0))} · Зеркало: "
         f"{'пройдено' if oko_n.get('mirror_passed') else 'не пройдено / нет'} · "
@@ -463,11 +473,23 @@ def _learning_snapshot(vault: Vault) -> dict[str, Any]:
                 continue
         mirror = _j("oko:mirror") or {}
         sentiment = _j("sentiment") or {}
+        hx = _j("hyexec_serve")
+        if not isinstance(hx, dict):
+            hx = {}
         return {
             "drift": _j("drift") or {},
             "calibration_classes": len(calib) if isinstance(calib, dict) else 0,
             "exam": _j("exam_last") or _j("exam_night") or {},
             "champion_candidate": _j("champion_candidate"),
+            "hyexec": {
+                "model": bool(hx.get("model")),
+                "fit": bool(hx.get("fit")),
+                "n": int(hx["n"]) if hx.get("n") not in {None, ""} else 0,
+                "n_labeled": (
+                    int(hx["n_labeled"]) if hx.get("n_labeled") not in {None, ""} else 0
+                ),
+                "model_go": None if hx.get("model_go") is None else bool(hx.get("model_go")),
+            },
             "oko": {
                 "passports": len(passports),
                 "mature": mature,
@@ -600,6 +622,7 @@ def render_ops(app: ConsoleApp, *, message: str | None = None) -> str:
             "signer_requeued", "instruments_error_signer", "instruments_error_recorder",
             "intel_status", "llm_last_error", "reddit_auth_error", "paper_restored",
             "paper_open_error", "oko_load_errors", "latency_decision", "decision_trace",
+            "hyexec_serve", "hyexec_event",
         )
         meta: dict[str, str | None] = dict.fromkeys(keys)
         if knowledge.available():
