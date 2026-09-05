@@ -25,6 +25,12 @@ def test_hyexec_and_train_are_separate_services() -> None:
     assert "capitalizator.desk" not in hyexec
 
 
+def test_image_installs_hyexec_extra() -> None:
+    text = (Path(__file__).resolve().parents[2] / "infra" / "deploy" / "Dockerfile").read_text()
+    assert ".[live,hyexec]" in text
+    assert "libgomp1" in text
+
+
 def test_serve_does_not_import_xgboost() -> None:
     import ast
 

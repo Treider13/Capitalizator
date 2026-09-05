@@ -18,22 +18,22 @@ A_ROOTS = (
 )
 
 
-def _imports(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    names: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names.extend(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names.append(node.module.split(".")[0])
-    return names
-
-
 def test_contour_a_does_not_import_xgboost() -> None:
     src = Path(__file__).resolve().parents[2] / "src" / "capitalizator"
     hits: list[str] = []
+    model_hits: list[str] = []
     for root in A_ROOTS:
         for path in (src / root).rglob("*.py"):
-            if "xgboost" in _imports(path):
-                hits.append(str(path.relative_to(src)))
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    if any(alias.name.split(".")[0] == "xgboost" for alias in node.names):
+                        hits.append(str(path.relative_to(src)))
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    if node.module.split(".")[0] == "xgboost":
+                        hits.append(str(path.relative_to(src)))
+                    if "hyexec.model" in node.module:
+                        model_hits.append(str(path.relative_to(src)))
     assert hits == []
+    assert model_hits == []
+    assert (src / "hyexec" / "model.py").is_file()

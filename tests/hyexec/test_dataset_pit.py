@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from capitalizator.hyexec.dataset import EXAM_MIN_ROWS, FEATURE_KEYS, can_fit, complete_n, matrix
+from capitalizator.hyexec.dataset import (
+    EXAM_MIN_ROWS,
+    FEATURE_KEYS,
+    can_fit,
+    complete_n,
+    labeled_pairs,
+    last_complete,
+    matrix,
+    plan_from_rows,
+)
 from capitalizator.hyexec.features import NAMES
 from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 
@@ -33,6 +42,28 @@ def test_complete_n_counts_only_full_vectors() -> None:
     hole["hx_sma5_5m"] = None
     assert complete_n([full] * 14 + [hole]) == 14
     assert can_fit(complete_n([full] * 15)) is True
+
+
+def test_labeled_pairs_need_shadow_r_net() -> None:
+    full = {key: "1" for key in FEATURE_KEYS}
+    full["paper"] = {"shadow": {"filled": True, "r_net": "1.25"}}
+    hole = {key: "1" for key in FEATURE_KEYS}
+    hole["paper"] = {"shadow": {"filled": True, "r_net": "2"}}
+    hole["hx_sma5_5m"] = None
+    xs, ys = labeled_pairs([full, hole, {key: "1" for key in FEATURE_KEYS}])
+    assert xs == [[1.0] * len(FEATURE_KEYS)]
+    assert ys == [1.25]
+    plan = plan_from_rows([full] * 15)
+    assert plan["n_labeled"] == 15
+    assert plan["fit"] is True
+
+
+def test_last_complete_prefers_newest_as_of() -> None:
+    older = {key: "1" for key in FEATURE_KEYS}
+    older["hyexec_as_of"] = "2026-09-01T10:00:00+00:00"
+    newer = {key: "2" for key in FEATURE_KEYS}
+    newer["hyexec_as_of"] = "2026-09-01T10:05:00+00:00"
+    assert last_complete([older, newer]) == [2.0] * len(FEATURE_KEYS)
 
 
 def test_matrix_keeps_none_no_fill() -> None:

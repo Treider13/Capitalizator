@@ -1081,6 +1081,7 @@ class DeskLoop:
         self.paper.on_clock(when)
         out: list[dict[str, Any]] = []
         if self.knowledge.available():
+            self._refresh_hyexec_model_go()
             # Gateway watchdog: process liveness, not tape time. Catch-up ticks
             # used exchange_ts here and the signer blocked `desk` for a live box.
             self._ui_put("desk_heartbeat", datetime.now(tz=UTC).isoformat())
@@ -2728,7 +2729,24 @@ class DeskLoop:
             self._sentiment_mult = self.risk_config.sentiment_mult
         return self._sentiment_mult
 
+    def _refresh_hyexec_model_go(self) -> None:
+        """Serve writes the score. Desk never loads xgboost."""
+        if not self.knowledge.available():
+            return
+        raw = self.knowledge.meta("hyexec_serve")
+        if raw in {None, ""}:
+            return
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(body, dict):
+            return
+        go = body.get("model_go")
+        self.hyexec_model_go = None if go is None else bool(go)
+
     def allow_hyexec_send(self, *, book_ticket: bool) -> bool:
+        self._refresh_hyexec_model_go()
         return may_send(book_ticket=book_ticket, model_go=self.hyexec_model_go)
 
     def effective_target_risk(self, *, step: str = "std", window: str = "") -> Decimal:

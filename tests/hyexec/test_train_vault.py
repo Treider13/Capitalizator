@@ -17,11 +17,12 @@ def _full_row() -> dict[str, str]:
     return {key: "1" for key in FEATURE_KEYS}
 
 
-def test_plan_needs_fifteen_complete_rows() -> None:
+def test_plan_needs_fifteen_labeled_rows() -> None:
     assert plan_from_rows([_full_row() for _ in range(14)])["fit"] is False
     ready = plan_from_rows([_full_row() for _ in range(15)])
     assert ready["n"] == 15
-    assert ready["fit"] is True
+    assert ready["n_labeled"] == 0
+    assert ready["fit"] is False
     holes = [{key: None for key in FEATURE_KEYS} for _ in range(15)]
     assert plan_from_rows(holes)["fit"] is False
     assert complete_n(holes) == 0
@@ -63,6 +64,7 @@ def test_cli_opens_vault_and_does_not_call_xgboost_train(
         knowledge.close()
     assert main(["--userdir", str(vault.root)]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["fit"] is True
+    assert out["fit"] is False
     assert out["n"] == 15
+    assert out["n_labeled"] == 0
     assert called == []

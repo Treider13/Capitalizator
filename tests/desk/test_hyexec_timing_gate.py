@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from capitalizator.desk.loop import DeskLoop
@@ -26,3 +27,17 @@ def test_model_go_without_book_is_still_not_a_ticket(tmp_path: Path) -> None:
     desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
     desk.hyexec_model_go = True
     assert desk.allow_hyexec_send(book_ticket=False) is False
+
+
+def test_desk_reads_serve_hold_from_meta(tmp_path: Path) -> None:
+    knowledge = open_knowledge(init_vault(tmp_path / "d"))
+    knowledge.set_meta("hyexec_serve", json.dumps({"model_go": False}))
+    desk = DeskLoop(knowledge=knowledge, user_mode="off")
+    assert desk.allow_hyexec_send(book_ticket=True) is False
+
+
+def test_desk_reads_serve_none_as_book_alone(tmp_path: Path) -> None:
+    knowledge = open_knowledge(init_vault(tmp_path / "d"))
+    knowledge.set_meta("hyexec_serve", json.dumps({"model_go": None}))
+    desk = DeskLoop(knowledge=knowledge, user_mode="off")
+    assert desk.allow_hyexec_send(book_ticket=True) is True

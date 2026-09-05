@@ -11,7 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from capitalizator.hyexec.dataset import plan_from_rows
+from capitalizator.hyexec.dataset import last_complete, plan_from_rows
+from capitalizator.hyexec.model import load_booster, model_go, predict_one
 
 IDLE_S = 5.0
 SLICE_S = 0.05
@@ -29,13 +30,27 @@ def stop_on_signals() -> Callable[[], bool]:
     return lambda: stopped
 
 
-def tick(knowledge: Any, *, now: datetime) -> dict[str, Any]:
-    """Stamp the journal plan. model_go stays None until a real score exists."""
+def tick(knowledge: Any, *, now: datetime, vault: Any | None = None) -> dict[str, Any]:
+    """Score the latest complete PIT row when a booster exists. Else model_go is None."""
     rows = knowledge.journal_rows() if knowledge.available() else []
+    plan = plan_from_rows(rows)
+    score = None
+    go = None
+    loaded = False
+    if vault is not None:
+        booster = load_booster(vault)
+        vec = last_complete(rows)
+        if booster is not None:
+            loaded = True
+        if booster is not None and vec is not None:
+            score = predict_one(booster, vec)
+            go = model_go(score)
     body = {
         "as_of": now.isoformat(),
-        "model_go": None,
-        **plan_from_rows(rows),
+        "model": loaded,
+        "model_go": go,
+        "score": score,
+        **plan,
     }
     if knowledge.available():
         knowledge.set_meta("hyexec_serve", json.dumps(body, sort_keys=True))
@@ -59,7 +74,7 @@ def serve_loop(
     try:
         while not should_stop():
             when = now if now is not None else datetime.now(tz=UTC)
-            tick(knowledge, now=when)
+            tick(knowledge, now=when, vault=vault)
             ticks += 1
             if idle_s <= 0:
                 break
@@ -86,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         vault = load_vault(Path(args.userdir))
         knowledge = open_knowledge(vault, create=True)
         try:
-            body = tick(knowledge, now=datetime.now(tz=UTC))
+            body = tick(knowledge, now=datetime.now(tz=UTC), vault=vault)
             print(json.dumps(body, sort_keys=True))
         finally:
             knowledge.close()
