@@ -8,16 +8,19 @@ from decimal import Decimal
 from pathlib import Path
 
 from capitalizator.desk.loop import DeskLoop
+from capitalizator.hyexec.dataset import FEATURE_KEYS
 from capitalizator.hyexec.replay_desk import (
     clock_for,
+    days_between,
     follow_open_papers,
     open_paper_n,
     replay_day,
+    replay_days,
     seed_sandbox,
     zones_from_knowledge,
 )
+from capitalizator.hyexec.tape_day import iter_day_hours, load_day_events
 from capitalizator.zones.model import Zone
-from capitalizator.hyexec.tape_day import load_day_events
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
 from capitalizator.recorder.sink_parquet import ParquetSink, _row, live_row, partition_path
@@ -169,6 +172,68 @@ def test_replay_day_without_now_uses_tape_clock(tmp_path: Path) -> None:
         knowledge.close()
     assert plan["clock"] == NOW.isoformat()
     assert plan["sent"] is False
+
+
+def test_days_between_is_inclusive() -> None:
+    assert days_between("2026-09-01", "2026-09-01") == ["2026-09-01"]
+    assert days_between("2026-09-01", "2026-09-03") == [
+        "2026-09-01",
+        "2026-09-02",
+        "2026-09-03",
+    ]
+
+
+def test_iter_day_hours_is_one_list_per_hour(tmp_path: Path) -> None:
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    ParquetSink(tape).write(_event(NOW, "100"))
+    ParquetSink(tape).write(_event(NOW.replace(hour=18), "101"))
+    hours = iter_day_hours(tape, DAY)
+    assert len(hours) == 2
+    assert [e.payload["px"] for hour in hours for e in hour] == ["100", "101"]
+    assert load_day_events(tape, DAY)[0].payload["px"] == "100"
+
+
+def test_replay_days_plays_range_on_one_desk(tmp_path: Path) -> None:
+    sand = init_vault(tmp_path / "sand")
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    ParquetSink(tape).write(_event(NOW, "100"))
+    ParquetSink(tape).write(_event(NEXT, "101"))
+    knowledge = open_knowledge(sand)
+    try:
+        plan = replay_days(
+            tape=tape, knowledge=knowledge, days=[DAY, "2026-09-02"]
+        )
+    finally:
+        knowledge.close()
+    assert plan["n_events"] == 2
+    assert plan["days"] == [DAY, "2026-09-02"]
+    assert plan["sent"] is False
+    assert plan["user_mode"] == "learn"
+
+
+def test_replay_fills_hx_holes_from_tape(tmp_path: Path) -> None:
+    sand = init_vault(tmp_path / "sand")
+    knowledge = open_knowledge(sand)
+    hole = {key: None for key in FEATURE_KEYS}
+    hole["touch_id"] = "t1"
+    hole["symbol"] = "BTCUSDT"
+    hole["touch_ts"] = NOW.isoformat()
+    hole["paper"] = {"shadow": {"filled": True, "r_net": "1.5"}}
+    try:
+        knowledge.put_journal_touch("t1", hole)
+        tape = tmp_path / "tape"
+        tape.mkdir()
+        for i in range(3):
+            ParquetSink(tape).write(_event(NOW - timedelta(minutes=2 - i), str(100 + i)))
+        plan = replay_day(tape=tape, knowledge=knowledge, day=DAY)
+        row = knowledge.journal_rows()[0]
+    finally:
+        knowledge.close()
+    assert plan["filled"] >= 1
+    assert row["paper"]["shadow"]["r_net"] == "1.5"
+    assert any(row.get(k) not in {None, "", "null", "none"} for k in FEATURE_KEYS)
 
 
 def test_seed_sandbox_copies_instruments_and_zones_not_journal(tmp_path: Path) -> None:
