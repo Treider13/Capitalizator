@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -91,3 +91,45 @@ def test_new_moscow_day_rebases_window_halt(tmp_path: Path) -> None:
     assert desk.window_halt.start == desk.account.halts.day_start
     assert desk.window_halt.day_pnl() == Decimal("0")
     assert desk.window_halt.allow_aplus("overlap") is True
+
+
+def test_hour_dd_three_percent_halves_desk_risk(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    start = desk.account.equity
+    desk.tick(NOW)
+    desk.account.set_equity(start * Decimal("0.97"), source=desk.account.equity_source, now=NOW)
+    assert desk.effective_target_risk() == Decimal("0.005")
+
+
+def test_hour_dd_two_percent_does_not_cut(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    start = desk.account.equity
+    desk.tick(NOW)
+    desk.account.set_equity(start * Decimal("0.98"), source=desk.account.equity_source, now=NOW)
+    assert desk.effective_target_risk() == desk.risk_config.target_risk_pct
+
+
+def test_new_hour_rebases_hour_dd(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    start = desk.account.equity
+    desk.tick(NOW)
+    desk.account.set_equity(start * Decimal("0.97"), source=desk.account.equity_source, now=NOW)
+    assert desk.effective_target_risk() == Decimal("0.005")
+    nxt = NOW.replace(hour=15)
+    desk.tick(nxt)
+    assert desk.effective_target_risk() == desk.risk_config.target_risk_pct
+
+
+def test_reloaded_hour_loss_still_halves(tmp_path: Path) -> None:
+    """Hour start must survive persist+reload. Current equity as start hides −3%."""
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    desk = DeskLoop(knowledge=kn, user_mode="off")
+    start = desk.account.equity
+    desk.tick(NOW)
+    desk.account.set_equity(start * Decimal("0.97"), source=desk.account.equity_source, now=NOW)
+    kn.close()
+    again = DeskLoop(knowledge=open_knowledge(vault), user_mode="off")
+    again.tick(NOW + timedelta(minutes=10))
+    assert again.account.equity == start * Decimal("0.97")
+    assert again.effective_target_risk() == Decimal("0.005")

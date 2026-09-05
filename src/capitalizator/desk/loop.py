@@ -57,7 +57,7 @@ from capitalizator.exec.ideas import opposite as opposite_side
 from capitalizator.exec.ideas import shadow_tag as idea_shadow_tag
 from capitalizator.exec.ideas import side_for
 from capitalizator.exec.manage import TradeManager
-from capitalizator.exec.paper import HALF, PaperEngine, PaperPosition
+from capitalizator.exec.paper import PaperEngine, PaperPosition
 from capitalizator.exec.shadow import ShadowWriter
 from capitalizator.exec.smart_stop import initial_stop, soft_exit
 from capitalizator.exec.spot import SpotAdapter
@@ -73,6 +73,8 @@ from capitalizator.exec.strategy_bounce import (
 )
 from capitalizator.exec.trail import TrailEngine, TrailState
 from capitalizator.exec.tvh import NO_TVH, tvh_ok
+from capitalizator.hyexec.adwin import after_hour_dd
+from capitalizator.hyexec.expand import expand_ok, take_at_1r
 from capitalizator.hyexec.sizing import desk_step, effective_risk
 from capitalizator.hyexec.timing import may_send
 from capitalizator.hyexec.window_halt import WindowHalt
@@ -220,6 +222,9 @@ class DeskLoop:
         if self.halts.peak > self.window_halt.peak:
             self.window_halt.peak = self.halts.peak
         self.window_halt.note_window("init", self.account.equity)
+        self._hour_start_at: datetime | None = None
+        self._hour_start_equity = self.account.equity
+        self._load_hour_start()
         self.hyexec_model_go: bool | None = None
         self.funding: dict[str, Decimal] = {}
         self._funding_hist: dict[str, list[Decimal]] = {}
@@ -968,6 +973,13 @@ class DeskLoop:
         if st.bar_builder is not None:
             st.bar_builder.on_trade(trade)
         self._trim_trades(st, trade.exchange_ts)
+        # +1R take fraction is decided here, not at submit. A stamped expand
+        # on the ticket is the wrong clock (expand_ok needs a live day/book).
+        for pos in self.paper.open_for(trade.symbol):
+            if pos.state == "open":
+                pos.labels["expand"] = self._expand_now(
+                    pos, trade.exchange_ts, at_1r_take=True
+                )
         self.paper.on_print(trade)
         # Resting +1R half on the venue as soon as the twin is filled, not after
         # the tape has already printed through +1R (that was a taker / a miss).
@@ -986,9 +998,13 @@ class DeskLoop:
                 half_px = (
                     pos.entry_px + pos.r_px if pos.side == "buy" else pos.entry_px - pos.r_px
                 )
+                expand = self._expand_now(pos, trade.exchange_ts, at_1r_take=True)
+                pos.labels["expand"] = expand
                 self._oms(
                     pos, "half_tp", trade.exchange_ts,
-                    qty=str(base * HALF), price=str(half_px), reason="+1R half",
+                    qty=str(base * take_at_1r(expand=expand)),
+                    price=str(half_px),
+                    reason="+1R half",
                 )
         try:
             px = Decimal(str(trade.payload["px"]))
@@ -1026,6 +1042,7 @@ class DeskLoop:
         when = require_utc(now)
         self.account.roll(when)
         self._sync_window_halt(when)
+        self._sync_hour_start(when)
         self.paper.on_clock(when)
         out: list[dict[str, Any]] = []
         if self.knowledge.available():
@@ -2325,6 +2342,7 @@ class DeskLoop:
                 prev_src = self.account.equity_source
                 self.account.set_equity(eq, source=f"exchange:{self.user_mode}", now=now)
                 self._sync_window_halt(now, rebase=not prev_src.startswith("exchange"))
+                self._sync_hour_start(now)
                 out.append({"event": "equity", "equity": str(eq), "source": self.user_mode})
         # 3) venue flat while our filled twin is open → the venue closed it.
         #    Only after the venue has *shown* the position (or a fill) for this idea:
@@ -2615,12 +2633,91 @@ class DeskLoop:
 
     def effective_target_risk(self, *, step: str = "std", window: str = "") -> Decimal:
         base = target_after_drift(drift=self.drift_active, base=self.risk_config.target_risk_pct)
-        return effective_risk(
+        risk = effective_risk(
             step=step,
             phase_target=self.risk_config.target_risk_pct,
             base_risk=base,
             day_pnl=self.window_halt.day_pnl(),
             window=window or "none",
+        )
+        return after_hour_dd(hour_dd=self._hour_dd(), risk=risk)
+
+    def _hour_dd(self) -> Decimal:
+        start = self._hour_start_equity
+        if start <= 0:
+            return Decimal("0")
+        return (self.account.equity - start) / start
+
+    def _load_hour_start(self) -> None:
+        if not self.knowledge.available():
+            return
+        raw = self.knowledge.meta("hyexec_hour_start")
+        if not raw:
+            return
+        try:
+            data = json.loads(raw)
+            at = datetime.fromisoformat(str(data["at"]))
+            equity = Decimal(str(data["equity"]))
+        except (KeyError, TypeError, ValueError, ArithmeticError, json.JSONDecodeError):
+            return
+        if equity <= 0:
+            return
+        self._hour_start_at = at
+        self._hour_start_equity = equity
+
+    def _sync_hour_start(self, now: datetime) -> None:
+        hour = require_utc(now).replace(minute=0, second=0, microsecond=0)
+        if self._hour_start_at is None or hour > self._hour_start_at:
+            self._hour_start_at = hour
+            self._hour_start_equity = self.account.equity
+            if self.knowledge.available():
+                self.knowledge.set_meta(
+                    "hyexec_hour_start",
+                    json.dumps(
+                        {"at": hour.isoformat(), "equity": str(self._hour_start_equity)},
+                        sort_keys=True,
+                    ),
+                )
+
+    def _book_plus_for(self, pos: PaperPosition) -> bool:
+        st = self.symbols.get(pos.symbol)
+        if st is None or not st.book.ready:
+            return False
+        imb = st.book.imbalance(5)
+        if imb is None:
+            return False
+        return imb > 0 if pos.side == "buy" else imb < 0
+
+    def _structure_ok_for(self, pos: PaperPosition) -> bool:
+        if pos.side == "buy" and self.btc.broke_support:
+            return False
+        if pos.side == "sell" and self.btc.broke_resistance:
+            return False
+        if pos.structural is None:
+            return False
+        px = self.last_price.get(pos.symbol)
+        if px is None:
+            px = pos.entry_px or pos.limit_px
+        return px > pos.structural if pos.side == "buy" else px < pos.structural
+
+    def _expand_now(
+        self, pos: PaperPosition, when: datetime, *, at_1r_take: bool = False
+    ) -> bool:
+        """FLOOR vs EXPAND at the +1R take. Submit-time stamps are not this clock."""
+        if pos.side == "buy" and self.btc.broke_support:
+            return False
+        if pos.side == "sell" and self.btc.broke_resistance:
+            return False
+        px = self.last_price.get(pos.symbol)
+        in_profit = at_1r_take
+        if not in_profit and pos.entry_px is not None and px is not None:
+            in_profit = px > pos.entry_px if pos.side == "buy" else px < pos.entry_px
+        return expand_ok(
+            in_profit=in_profit,
+            book_plus=self._book_plus_for(pos),
+            structure_ok=self._structure_ok_for(pos),
+            window=self.policy.window(when).name,
+            day_pnl=self.window_halt.day_pnl(),
         )
 
     def _sync_window_halt(self, now: datetime, *, rebase: bool = False) -> None:
