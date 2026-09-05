@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from capitalizator.hyexec.backfill import backfill_vault, main
+from capitalizator.hyexec.backfill import backfill_vault, days_for_holes, main
 from capitalizator.hyexec.dataset import FEATURE_KEYS
 from capitalizator.hyexec.tape_day import load_trade_events
 from capitalizator.ops.knowledge import open_knowledge
@@ -78,3 +78,44 @@ def test_load_trade_events_reads_live_jsonl(tmp_path: Path) -> None:
     assert len(got) == 1
     assert got[0].payload["px"] == "100"
     assert load_trade_events(tape, symbols={"ETHUSDT"}) == []
+
+
+def test_days_for_holes_matches_live_recent_days() -> None:
+    from capitalizator.desk.tape import TapeCursor
+
+    hole = {key: None for key in FEATURE_KEYS}
+    hole["touch_id"] = "t1"
+    hole["touch_ts"] = AS_OF.isoformat()
+    days = days_for_holes([hole])
+    assert AS_OF.date().isoformat() in days
+    assert len(days) == TapeCursor.RECENT_DAYS + 1
+
+
+def test_load_trade_events_days_skips_other_dates(tmp_path: Path) -> None:
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    sink = ParquetSink(tape)
+    sink.write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=AS_OF,
+            recv_ts=AS_OF,
+            payload={"px": "100", "qty": "1", "side": "buy"},
+        )
+    )
+    old = AS_OF.replace(month=8, day=1)
+    sink.write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=old,
+            recv_ts=old,
+            payload={"px": "1", "qty": "1", "side": "buy"},
+        )
+    )
+    got = load_trade_events(tape, symbols={"BTCUSDT"}, days={"2026-09-01"})
+    assert len(got) == 1
+    assert got[0].payload["px"] == "100"

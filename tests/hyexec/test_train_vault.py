@@ -105,3 +105,31 @@ def test_tick_fills_hx_holes_before_plan(tmp_path: Path) -> None:
     assert plan["fit"] is False
     assert row["paper"]["shadow"]["r_net"] == "1.5"
     assert any(row.get(k) not in {None, "", "null", "none"} for k in FEATURE_KEYS)
+
+
+def test_tick_does_not_rewalk_the_same_holes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("river")
+    vault = init_vault(tmp_path / "desk")
+    knowledge = open_knowledge(vault)
+    hole = {key: None for key in FEATURE_KEYS}
+    hole["touch_id"] = "t1"
+    hole["symbol"] = "BTCUSDT"
+    hole["touch_ts"] = datetime(2026, 9, 1, 10, 5, tzinfo=UTC).isoformat()
+    calls: list[int] = []
+
+    def fake_load(*_a, **_k):
+        calls.append(1)
+        return []
+
+    monkeypatch.setattr(
+        "capitalizator.hyexec.tape_day.load_trade_events", fake_load
+    )
+    try:
+        knowledge.put_journal_touch("t1", hole)
+        tick(vault, knowledge)
+        tick(vault, knowledge)
+    finally:
+        knowledge.close()
+    assert calls == [1]

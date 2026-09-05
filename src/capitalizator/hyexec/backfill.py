@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Callable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,26 @@ def as_of_of(row: Mapping[str, Any]) -> datetime | None:
     if ts.tzinfo is None:
         return None
     return ts.astimezone(UTC)
+
+
+def days_for_holes(rows: Sequence[Mapping[str, Any]]) -> set[str]:
+    """Touch day plus TapeCursor.RECENT_DAYS behind it. The live desk only
+    catches up that far; a month of trades is not a fuller hx_* vector.
+    """
+    from capitalizator.desk.tape import TapeCursor
+
+    lookback = TapeCursor.RECENT_DAYS
+    days: set[str] = set()
+    for row in rows:
+        if not needs_fill(row):
+            continue
+        when = as_of_of(row)
+        if when is None:
+            continue
+        day = when.date()
+        for i in range(lookback + 1):
+            days.add((day - timedelta(days=i)).isoformat())
+    return days
 
 
 def needs_fill(row: Mapping[str, Any]) -> bool:
@@ -123,10 +143,12 @@ def backfill_vault(vault: Any, *, tape: Path | None = None) -> dict[str, Any]:
         events: list[MarketEvent] = []
         root = tape if tape is not None else vault.tape
         rows = knowledge.journal_rows() if knowledge.available() else []
-        symbols = {str(r.get("symbol") or "") for r in rows if needs_fill(r)}
+        holes = [r for r in rows if needs_fill(r)]
+        symbols = {str(r.get("symbol") or "") for r in holes}
         symbols.discard("")
+        days = days_for_holes(holes)
         if symbols and root.is_dir():
-            events = load_trade_events(root, symbols=symbols)
+            events = load_trade_events(root, symbols=symbols, days=days or None)
         return backfill_knowledge(knowledge, events=events)
     finally:
         knowledge.close()

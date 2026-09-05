@@ -23,6 +23,7 @@ from capitalizator.hyexec.model import fit, load_booster, save_booster
 ADWIN_NAME = "hyexec_adwin.joblib"
 IDLE_S = 5.0
 SLICE_S = 0.05
+_tried_holes: dict[str, tuple[str, ...]] = {}
 
 
 def stop_on_signals() -> Callable[[], bool]:
@@ -76,21 +77,26 @@ def _save_detector(vault: Any, det: object | None, ids: list[str]) -> None:
 
 
 def tick(vault: Any, knowledge: Any) -> dict[str, Any]:
-    from capitalizator.hyexec.backfill import backfill_knowledge, needs_fill
+    from capitalizator.hyexec.backfill import backfill_knowledge, days_for_holes, needs_fill
     from capitalizator.hyexec.river_adwin import push
     from capitalizator.hyexec.tape_day import load_trade_events
 
     rows = knowledge.journal_rows() if knowledge.available() else []
     filled = 0
     holes = [row for row in rows if needs_fill(row)]
-    if holes:
+    hole_key = tuple(sorted(str(row.get("touch_id") or "") for row in holes if row.get("touch_id")))
+    vault_id = str(getattr(vault, "root", "") or id(vault))
+    if holes and hole_key != _tried_holes.get(vault_id):
         symbols = {str(row.get("symbol") or "") for row in holes}
         symbols.discard("")
         events = []
         tape = getattr(vault, "tape", None)
         if symbols and tape is not None and Path(tape).is_dir():
-            events = load_trade_events(Path(tape), symbols=symbols)
+            events = load_trade_events(
+                Path(tape), symbols=symbols, days=days_for_holes(holes) or None
+            )
         filled = int(backfill_knowledge(knowledge, events=events).get("filled") or 0)
+        _tried_holes[vault_id] = hole_key
         rows = knowledge.journal_rows() if knowledge.available() else rows
     plan = plan_from_rows(rows)
     plan["filled"] = filled

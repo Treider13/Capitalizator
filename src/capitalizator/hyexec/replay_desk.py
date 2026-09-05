@@ -129,7 +129,7 @@ def zones_from_knowledge(knowledge: Any) -> tuple[Zone, ...]:
 
 
 def _backfill_after(knowledge: Any, tape: Path) -> int:
-    from capitalizator.hyexec.backfill import backfill_knowledge, needs_fill
+    from capitalizator.hyexec.backfill import backfill_knowledge, days_for_holes, needs_fill
     from capitalizator.hyexec.tape_day import load_trade_events
 
     rows = knowledge.journal_rows() if knowledge.available() else []
@@ -138,7 +138,12 @@ def _backfill_after(knowledge: Any, tape: Path) -> int:
         return 0
     symbols = {str(row.get("symbol") or "") for row in holes}
     symbols.discard("")
-    events = load_trade_events(tape, symbols=symbols) if symbols and tape.is_dir() else []
+    days = days_for_holes(holes)
+    events = (
+        load_trade_events(tape, symbols=symbols, days=days or None)
+        if symbols and tape.is_dir()
+        else []
+    )
     return int(backfill_knowledge(knowledge, events=events).get("filled") or 0)
 
 

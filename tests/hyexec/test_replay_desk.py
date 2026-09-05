@@ -188,7 +188,7 @@ def test_iter_day_hours_is_one_list_per_hour(tmp_path: Path) -> None:
     tape.mkdir()
     ParquetSink(tape).write(_event(NOW, "100"))
     ParquetSink(tape).write(_event(NOW.replace(hour=18), "101"))
-    hours = iter_day_hours(tape, DAY)
+    hours = list(iter_day_hours(tape, DAY))
     assert len(hours) == 2
     assert [e.payload["px"] for hour in hours for e in hour] == ["100", "101"]
     assert load_day_events(tape, DAY)[0].payload["px"] == "100"

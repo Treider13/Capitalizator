@@ -7,7 +7,7 @@ for the same hour the jsonl wins (same law as TapeCursor).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -89,25 +89,44 @@ def _hour_part(path: Path) -> str:
     return ""
 
 
+def _keep_dates(wanted: set[str] | None) -> Callable[[Path], bool] | None:
+    """Prune `date=` subtrees that are not wanted. None → walk everything."""
+    if not wanted:
+        return None
+
+    def keep(path: Path) -> bool:
+        for part in path.parts:
+            if part.startswith("date=") and part not in wanted:
+                return False
+        return True
+
+    return keep
+
+
 def _collect_paths(
     tape: Path,
     *,
     day: str | None = None,
+    days: set[str] | None = None,
     streams: Sequence[str] | None = None,
     symbols: set[str] | None = None,
 ) -> tuple[list[Path], list[Path]]:
     if tape.is_symlink() or not tape.is_dir():
         return [], []
-    wanted_day = _day_part(day) if day is not None else None
+    wanted: set[str] | None = None
+    if day is not None:
+        wanted = {_day_part(day)}
+    elif days:
+        wanted = {_day_part(item) for item in days}
     wanted_streams = set(streams) if streams is not None else None
     try:
-        paths = list(iter_regular_files(tape))
+        paths = list(iter_regular_files(tape, keep_dir=_keep_dates(wanted)))
     except VaultError:
         return [], []
     jsonl: list[Path] = []
     parquet: list[Path] = []
     for path in paths:
-        if wanted_day is not None and wanted_day not in path.parts:
+        if wanted is not None and not wanted.intersection(path.parts):
             continue
         if not _wanted_stream(path, wanted_streams):
             continue
@@ -145,8 +164,8 @@ def iter_day_hours(
     *,
     streams: Sequence[str] | None = None,
     symbols: set[str] | None = None,
-) -> list[list[MarketEvent]]:
-    """One list per hour of that day. Peak RAM is one hour, not the whole book day.
+) -> Iterator[list[MarketEvent]]:
+    """Yield one hour at a time. A list of all hours would still hold the book day.
 
     Two days of BTC+ETH jsonl were 3 GB and OOM'd the live loop (2026-09-03).
     Replay still sees every stream of the hour — it does not drop the book.
@@ -162,15 +181,13 @@ def iter_day_hours(
         hour = _hour_part(path)
         pair = by_hour.setdefault(hour, ([], []))
         pair[1].append(path)
-    out: list[list[MarketEvent]] = []
     for hour in sorted(by_hour):
         hour_jsonl, hour_pq = by_hour[hour]
         events = _events_for_hour(
             hour_jsonl, hour_pq, symbols=symbols, streams=wanted_streams
         )
         if events:
-            out.append(events)
-    return out
+            yield events
 
 
 def _load(
@@ -204,8 +221,22 @@ def load_day_events(
     return events
 
 
-def load_trade_events(tape: Path, *, symbols: set[str]) -> list[MarketEvent]:
-    """Trade prints only — backfill does not need the book. All dates for those symbols."""
+def load_trade_events(
+    tape: Path,
+    *,
+    symbols: set[str],
+    days: set[str] | None = None,
+) -> list[MarketEvent]:
+    """Trade prints only — backfill does not need the book.
+
+    `days` prunes other `date=` trees (live desk RECENT_DAYS=2). Omitting it
+    still walks every trade date for those symbols.
+    """
     if not symbols:
         return []
+    if days:
+        events: list[MarketEvent] = []
+        for day in sorted(days):
+            events.extend(_load(tape, day=day, streams=(TRADE_STREAM,), symbols=symbols))
+        return events
     return _load(tape, streams=(TRADE_STREAM,), symbols=symbols)
