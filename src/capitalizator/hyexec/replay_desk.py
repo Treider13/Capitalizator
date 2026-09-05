@@ -59,24 +59,40 @@ def play_book_prelude(
     *,
     extra_zones: tuple[Zone, ...] = (),
 ) -> int:
-    """Last BOOK_HOURS of book before the range. Diffs without this stay BookDirty."""
+    """Last snapshot in RECENT_DAYS, then deltas after it, hour by hour.
+
+    Live hours are almost only book_diff (snapshot is subscribe/reconnect).
+    Taking the last BOOK_HOURS of whatever is on D-1 leaves BookDirty when
+    those hours have no origin. Diffs before the snapshot are not a book.
+    """
     from capitalizator.desk.tape import TapeCursor
 
+    days: list[str] = []
     cur = first_day
     for _ in range(TapeCursor.RECENT_DAYS):
         cur = prev_day(cur)
-        played = 0
-        for hour in iter_day_hours(
-            tape,
-            cur,
-            streams=BOOK_STREAMS,
-            last=TapeCursor.BOOK_HOURS,
-        ):
-            desk.play(hour, extra_zones=extra_zones, now=clock_for(hour, cur))
-            played += len(hour)
-        if played:
-            return played
-    return 0
+        days.append(cur)
+    days.reverse()
+    n = 0
+    last_snap: datetime | None = None
+    for day in days:
+        for hour in iter_day_hours(tape, day, streams=("snapshot", "resync")):
+            desk.play(hour, extra_zones=extra_zones, now=clock_for(hour, day))
+            n += len(hour)
+            last_snap = clock_for(hour, day)
+    if last_snap is None:
+        return 0
+    snap_day = last_snap.date().isoformat()
+    for day in days:
+        if day < snap_day:
+            continue
+        for hour in iter_day_hours(tape, day, streams=("book_diff", "bbo")):
+            later = [event for event in hour if event.exchange_ts >= last_snap]
+            if not later:
+                continue
+            desk.play(later, extra_zones=extra_zones, now=clock_for(later, day))
+            n += len(later)
+    return n
 
 
 def days_between(start: str, end: str) -> list[str]:

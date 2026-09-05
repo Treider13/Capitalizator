@@ -259,6 +259,45 @@ def test_prelude_applies_prior_day_snapshot(tmp_path: Path) -> None:
     assert plan["n_events"] == 1
 
 
+def test_prelude_uses_snapshot_outside_last_two_hours(tmp_path: Path) -> None:
+    """Live tape: snapshot on reconnect, then hours of diffs. Last-2h-only is BookDirty."""
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    older = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
+    ParquetSink(tape).write(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=older,
+            recv_ts=older,
+            seq=1,
+            payload={"bids": [["100.0", "5"]], "asks": [["100.2", "5"]]},
+        )
+    )
+    diff_ts = datetime(2026, 8, 31, 23, 0, tzinfo=UTC)
+    ParquetSink(tape).write(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=diff_ts,
+            recv_ts=diff_ts,
+            seq=2,
+            payload={"b": [["100.0", "8"]], "a": []},
+        )
+    )
+    sand = init_vault(tmp_path / "sand")
+    knowledge = open_knowledge(sand)
+    try:
+        desk = DeskLoop(knowledge=knowledge, user_mode="learn")
+        n = play_book_prelude(desk, tape, DAY)
+        assert n == 2
+        assert desk.state_for("BTCUSDT").book.ready is True
+    finally:
+        knowledge.close()
+
+
 def test_replay_fills_hx_holes_from_tape(tmp_path: Path) -> None:
     sand = init_vault(tmp_path / "sand")
     knowledge = open_knowledge(sand)
