@@ -14,6 +14,7 @@ from capitalizator.hyexec.replay_desk import (
     days_between,
     follow_open_papers,
     open_paper_n,
+    play_book_prelude,
     replay_day,
     replay_days,
     seed_sandbox,
@@ -192,6 +193,9 @@ def test_iter_day_hours_is_one_list_per_hour(tmp_path: Path) -> None:
     assert len(hours) == 2
     assert [e.payload["px"] for hour in hours for e in hour] == ["100", "101"]
     assert load_day_events(tape, DAY)[0].payload["px"] == "100"
+    last = list(iter_day_hours(tape, DAY, last=1))
+    assert len(last) == 1
+    assert last[0][0].payload["px"] == "101"
 
 
 def test_replay_days_plays_range_on_one_desk(tmp_path: Path) -> None:
@@ -211,6 +215,48 @@ def test_replay_days_plays_range_on_one_desk(tmp_path: Path) -> None:
     assert plan["days"] == [DAY, "2026-09-02"]
     assert plan["sent"] is False
     assert plan["user_mode"] == "learn"
+    assert plan["n_prelude"] == 0
+
+
+def test_prelude_applies_prior_day_snapshot(tmp_path: Path) -> None:
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    prev = datetime(2026, 8, 31, 23, 0, tzinfo=UTC)
+    ParquetSink(tape).write(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=prev,
+            recv_ts=prev,
+            seq=1,
+            payload={"bids": [["100.0", "5"]], "asks": [["100.2", "5"]]},
+        )
+    )
+    ParquetSink(tape).write(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            seq=2,
+            payload={"b": [["100.0", "8"]], "a": []},
+        )
+    )
+    sand = init_vault(tmp_path / "sand")
+    knowledge = open_knowledge(sand)
+    try:
+        desk = DeskLoop(knowledge=knowledge, user_mode="learn")
+        assert desk.state_for("BTCUSDT").book.ready is False
+        n = play_book_prelude(desk, tape, DAY)
+        assert n == 1
+        assert desk.state_for("BTCUSDT").book.ready is True
+        plan = replay_days(tape=tape, knowledge=knowledge, days=[DAY])
+    finally:
+        knowledge.close()
+    assert plan["n_prelude"] == 1
+    assert plan["n_events"] == 1
 
 
 def test_replay_fills_hx_holes_from_tape(tmp_path: Path) -> None:

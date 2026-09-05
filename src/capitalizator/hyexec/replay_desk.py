@@ -28,6 +28,10 @@ from capitalizator.zones.model import Zone
 # Paper max_hold is 6h (registry touch_pending_timeout_h). A few calendar days
 # covers a weekend gap. We do not flatten what the tape has not closed.
 FOLLOW_DAYS = 5
+# Official orderbook.200: snapshot, then delta. A day that is only diffs is
+# BookDirty until the last origin from the prior day is played. Same streams
+# and hours as TapeCursor's production first pass — not a new window.
+BOOK_STREAMS = ("snapshot", "resync", "book_diff", "bbo")
 
 
 def clock_for(events: list[MarketEvent], day: str) -> datetime:
@@ -41,6 +45,38 @@ def clock_for(events: list[MarketEvent], day: str) -> datetime:
 def next_day(day: str) -> str:
     y, m, d = (int(part) for part in day.split("-"))
     return (datetime(y, m, d, tzinfo=UTC) + timedelta(days=1)).date().isoformat()
+
+
+def prev_day(day: str) -> str:
+    y, m, d = (int(part) for part in day.split("-"))
+    return (datetime(y, m, d, tzinfo=UTC) - timedelta(days=1)).date().isoformat()
+
+
+def play_book_prelude(
+    desk: DeskLoop,
+    tape: Path,
+    first_day: str,
+    *,
+    extra_zones: tuple[Zone, ...] = (),
+) -> int:
+    """Last BOOK_HOURS of book before the range. Diffs without this stay BookDirty."""
+    from capitalizator.desk.tape import TapeCursor
+
+    cur = first_day
+    for _ in range(TapeCursor.RECENT_DAYS):
+        cur = prev_day(cur)
+        played = 0
+        for hour in iter_day_hours(
+            tape,
+            cur,
+            streams=BOOK_STREAMS,
+            last=TapeCursor.BOOK_HOURS,
+        ):
+            desk.play(hour, extra_zones=extra_zones, now=clock_for(hour, cur))
+            played += len(hour)
+        if played:
+            return played
+    return 0
 
 
 def days_between(start: str, end: str) -> list[str]:
@@ -163,6 +199,7 @@ def replay_days(
     extras = tuple(extra_zones) + stored
     for zone in extras:
         desk.registry._zones[zone.zone_id] = zone
+    prelude = play_book_prelude(desk, tape, days[0], extra_zones=extras)
     n_events = 0
     last: datetime | None = None
     for day in days:
@@ -185,6 +222,7 @@ def replay_days(
     plan["day"] = first
     plan["days"] = list(days)
     plan["n_events"] = n_events
+    plan["n_prelude"] = prelude
     plan["n_followed"] = followed
     plan["n_open_paper"] = open_paper_n(desk)
     plan["n_zones"] = len(stored)

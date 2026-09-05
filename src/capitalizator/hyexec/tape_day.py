@@ -164,6 +164,7 @@ def iter_day_hours(
     *,
     streams: Sequence[str] | None = None,
     symbols: set[str] | None = None,
+    last: int | None = None,
 ) -> Iterator[list[MarketEvent]]:
     """Yield one hour at a time. A list of all hours would still hold the book day.
 
@@ -181,7 +182,10 @@ def iter_day_hours(
         hour = _hour_part(path)
         pair = by_hour.setdefault(hour, ([], []))
         pair[1].append(path)
-    for hour in sorted(by_hour):
+    keys = sorted(by_hour)
+    if last is not None:
+        keys = keys[-last:] if last > 0 else []
+    for hour in keys:
         hour_jsonl, hour_pq = by_hour[hour]
         events = _events_for_hour(
             hour_jsonl, hour_pq, symbols=symbols, streams=wanted_streams
