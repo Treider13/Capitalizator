@@ -110,11 +110,16 @@ def test_venue_half_tp_uses_expand_take_when_live_ok(tmp_path: Path) -> None:
     assert Decimal(half["payload"]["qty"]) == EXPAND_TAKE
 
 
-def test_overlap_half_tp_stamps_harvest(tmp_path: Path) -> None:
+def test_overlap_half_tp_stamps_harvest_only_after_take(tmp_path: Path) -> None:
+    """Text says the window took a piece. Resting the +1R order is not that."""
     desk = _desk(tmp_path, "demo")
     desk.on_book("BTCUSDT", _bid_heavy_book(WHEN))
-    _submit_demo(desk)
+    pos = _submit_demo(desk)
     desk.on_trade(_trade(WHEN + timedelta(seconds=1), "99.9"), [])
+    assert pos.state == "open" and not pos.half_taken
+    assert desk.knowledge.meta("hyexec_event") is None
+    desk.on_trade(_trade(WHEN + timedelta(minutes=1), "102", side="buy"), [])
+    assert pos.half_taken
     raw = desk.knowledge.meta("hyexec_event")
     assert raw is not None
     assert json.loads(raw)["kind"] == "harvest"

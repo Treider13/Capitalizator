@@ -1,0 +1,20 @@
+"""Bifet/Gavalda ADWIN via online-ml/river. Contour A must not import this file.
+
+river is the extra in pyproject (`hyexec`). We do not reimplement the detector.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+
+def drift_on(values: Sequence[float]) -> bool:
+    """True when river.drift.ADWIN flags a mean shift in `values`."""
+    from river.drift import ADWIN
+
+    det = ADWIN()
+    for value in values:
+        det.update(float(value))
+        if det.drift_detected:
+            return True
+    return False

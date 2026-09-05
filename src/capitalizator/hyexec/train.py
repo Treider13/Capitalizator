@@ -11,6 +11,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.parse_args(argv)
     try:
         import xgboost  # noqa: F401
+        from capitalizator.hyexec.river_adwin import drift_on  # noqa: F401
     except ImportError:
         raise SystemExit("hyexec extra missing: pip install -e '.[hyexec]'")
     return 0

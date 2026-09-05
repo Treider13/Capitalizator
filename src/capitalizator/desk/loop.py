@@ -1007,7 +1007,12 @@ class DeskLoop:
                 pos.labels["expand"] = self._expand_now(
                     pos, trade.exchange_ts, at_1r_take=True
                 )
-        self.paper.on_print(trade)
+        changed = self.paper.on_print(trade)
+        for pos in changed:
+            if pos.half_taken and not pos.labels.get("harvest_noted"):
+                pos.labels["harvest_noted"] = True
+                if self.policy.window(trade.exchange_ts).name == "overlap":
+                    self._note_hyexec("harvest", symbol=pos.symbol, now=trade.exchange_ts)
         # Resting +1R half on the venue as soon as the twin is filled, not after
         # the tape has already printed through +1R (that was a taker / a miss).
         for pos in self.paper.open_for(trade.symbol):
@@ -1027,8 +1032,6 @@ class DeskLoop:
                 )
                 expand = self._expand_now(pos, trade.exchange_ts, at_1r_take=True)
                 pos.labels["expand"] = expand
-                if self.policy.window(trade.exchange_ts).name == "overlap":
-                    self._note_hyexec("harvest", symbol=pos.symbol, now=trade.exchange_ts)
                 self._oms(
                     pos, "half_tp", trade.exchange_ts,
                     qty=str(base * take_at_1r(expand=expand)),
@@ -2095,6 +2098,16 @@ class DeskLoop:
                     max_stop_pct=self.risk_config.max_stop_pct,
                     manual_stop_frac=self.risk_config.manual_stop_frac,
                     liq_levels=self.liquidation_levels(st, closed_at),
+                    vah=(
+                        None
+                        if card is None or not card.volume.vah
+                        else Decimal(str(card.volume.vah))
+                    ),
+                    val=(
+                        None
+                        if card is None or not card.volume.val
+                        else Decimal(str(card.volume.val))
+                    ),
                     next_funding_at=self.next_funding.get(st.symbol),
                     universe_rank=self.universe_rank(),
                     screened=self.screened_symbols(closed_at),

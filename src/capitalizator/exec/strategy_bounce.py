@@ -130,6 +130,9 @@ class BounceSnapshot:
     # Operator ceiling on stop distance as a fraction of entry (Э1). None = unset.
     max_stop_pct: Decimal | None = None
     liq_levels: tuple[Decimal, ...] = ()
+    # Session value area from the card. Smart stop may widen to these, never tighten.
+    vah: Decimal | None = None
+    val: Decimal | None = None
     manual_stop_frac: Decimal | None = None
     # Symbol policy inputs for SessionPolicy (None = unknown, majors still pass).
     next_funding_at: datetime | None = None
@@ -544,6 +547,8 @@ class BounceStrategy:
                 manual_frac=snap.manual_stop_frac,
                 mode=snap.stop_mode,
                 max_stop_pct=snap.max_stop_pct,
+                vah=snap.vah,
+                val=snap.val,
             )
             stop = smart.stop
         except ValueError:
