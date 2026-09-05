@@ -11,7 +11,6 @@ import pytest
 
 from capitalizator.book.reconstruct import Book, BookDirty
 from capitalizator.recorder.book_diff import BookDiffNormalizer
-from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "ws" / "btc_book_snapshot_20_diffs.jsonl"
@@ -183,10 +182,11 @@ def test_best_spread_depth_imbalance() -> None:
 
 def test_diff_before_snapshot_is_dirty() -> None:
     with pytest.raises(BookDirty, match="before snapshot"):
-        Book().apply_diff((), (), seq=1)
+        Book().apply_diff((), (), seq=5)
 
 
-def test_u_gap_is_dirty() -> None:
+def test_u_gap_is_applied_like_ccxt() -> None:
+    """orderbook.200: a skipped u is still a delta, not a reason to empty the book."""
     book = Book()
     book.apply_snapshot(
         BookSnapshot(
@@ -197,11 +197,14 @@ def test_u_gap_is_dirty() -> None:
             asks=(("2", "1"),),
         )
     )
-    with pytest.raises(BookDirty, match="gap"):
-        book.apply_diff((), (), seq=12)
+    book.apply_diff((("3", "4"),), (), seq=12)
+    assert book.ready and book.seq == 12
+    assert book.level("bid", "3") == Decimal("4")
+    assert book.best() == (Decimal("3"), Decimal("2"))
 
 
-def test_u_rewind_is_seq_fault() -> None:
+def test_stale_u_is_ignored() -> None:
+    """Bybit: same or older `u` is already in the book. Do not reset-local."""
     book = Book()
     book.apply_snapshot(
         BookSnapshot(
@@ -212,11 +215,13 @@ def test_u_rewind_is_seq_fault() -> None:
             asks=(("2", "1"),),
         )
     )
-    with pytest.raises(SeqFault):
-        book.apply_diff((), (), seq=10)
+    book.apply_diff((("3", "9"),), (), seq=10)
+    book.apply_diff((("4", "8"),), (), seq=9)
+    assert book.ready and book.seq == 10
+    assert book.best() == (Decimal("1"), Decimal("2"))
 
 
-def test_u_equals_one_after_live_book_is_restart() -> None:
+def test_u_equals_one_overwrites_like_official_snapshot() -> None:
     book = Book()
     book.apply_snapshot(
         BookSnapshot(
@@ -227,5 +232,7 @@ def test_u_equals_one_after_live_book_is_restart() -> None:
             asks=(("2", "1"),),
         )
     )
-    with pytest.raises(BookDirty, match="u=1"):
-        book.apply_diff((), (), seq=1)
+    book.apply_diff((("9", "3"),), (("10", "4"),), seq=1)
+    assert book.ready and book.seq == 1
+    assert book.best() == (Decimal("9"), Decimal("10"))
+    assert book.level("bid", "1") == 0

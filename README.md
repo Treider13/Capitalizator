@@ -8,6 +8,7 @@
 
 **С чего читать:** [`docs/PHASE-BUILD.md`](docs/PHASE-BUILD.md) — очередь шагов плюс детализация (артефакты, глоссарий, SQL гейтов, тесты, мониторинг, окна UTC).  
 Архитектура модулей: [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).  
+Аудит уникальности vs мировые аналоги (сент. 2026, без PnL): [`docs/UNIQUENESS-AUDIT-2026-09.md`](docs/UNIQUENESS-AUDIT-2026-09.md).  
 Фазы, гейты и деньги: [`docs/PHASES-ALL.md`](docs/PHASES-ALL.md).  
 Стол команды: [`docs/TEAM-DESK.md`](docs/TEAM-DESK.md).  
 Нейтральный месяц при скальпе 5% по очереди: [`docs/VERDICT-SCALP-5PCT.md`](docs/VERDICT-SCALP-5PCT.md).  

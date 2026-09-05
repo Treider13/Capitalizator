@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 from capitalizator.authors.ingest import AuthorsIngest
 from capitalizator.book.reconstruct import BookDirty
 from capitalizator.desk.bars import TF_MINUTES, closed_bars_from_trades
-from capitalizator.desk.tape import _parse, event_from_jsonl_line, load_tape
+from capitalizator.desk.tape import _parse, event_from_jsonl_line
 from capitalizator.exec.replay import ReplayEngine
 from capitalizator.llm.daily_summary import DailySummary
 from capitalizator.news_macro.ingest import NewsIngest, default_macro_path
@@ -27,6 +27,56 @@ from capitalizator.types import MarketEvent
 from capitalizator.zones.config import load_registry
 from capitalizator.zones.engine import MAP_VOTE_METHODS, ZoneEngine
 from capitalizator.zones.model import Bar
+
+
+def _symbol_stream_roots(tape: Path, *, symbol: str, stream: str) -> list[Path]:
+    """Live layout is tape/bybit/SYMBOL/STREAM. Tests also drop parquet under tape/SYMBOL."""
+    roots: list[Path] = []
+    for candidate in (
+        tape / "bybit" / symbol / stream,
+        tape / symbol / stream,
+        tape / symbol,
+    ):
+        if candidate.is_symlink() or not candidate.is_dir():
+            continue
+        roots.append(candidate)
+    return roots
+
+
+def _load_symbol_stream(
+    tape: Path, *, symbol: str, stream: str, max_files: int = 96
+) -> list[MarketEvent]:
+    """Read one symbol/stream, newest hour parts first. Never the whole vault."""
+    if tape.is_symlink() or not tape.is_dir() or not symbol or not stream:
+        return []
+    roots = _symbol_stream_roots(tape, symbol=symbol, stream=stream)
+    if not roots:
+        return []
+    paths: list[Path] = []
+    try:
+        for root in roots:
+            paths.extend(
+                path
+                for path in iter_regular_files(root)
+                if path.suffix == ".parquet"
+                and symbol in path.parts
+                and (stream in path.parts or root.name == symbol)
+            )
+    except VaultError:
+        return []
+    paths.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)
+    events: list[MarketEvent] = []
+    for path in paths[:max_files]:
+        try:
+            table = pq.ParquetFile(path).read()
+        except (OSError, ValueError):
+            continue
+        for row in rows_fast(table):
+            event = _parse(row)
+            if event is not None:
+                events.append(event)
+    events.sort(key=lambda e: (e.exchange_ts, e.symbol, e.stream))
+    return events
 
 
 def _safe(payload: dict[str, Any]) -> dict[str, Any]:
@@ -65,17 +115,9 @@ def last_prices(vault: Vault) -> dict[str, str]:
         stored = knowledge.last_prices() if knowledge.available() else {}
     finally:
         knowledge.close()
-    if stored:
-        return stored
-    out: dict[str, str] = {}
-    for event in load_tape(vault.tape):
-        if event.stream != "trades":
-            continue
-        px = event.payload.get("px")
-        if px is None:
-            continue
-        out[event.symbol] = str(px)
-    return out
+    # Never fall back to load_tape(): a live vault is gigabytes. Desk writes
+    # last_price:* into sqlite; if those keys are missing the UI shows "—".
+    return stored
 
 
 def last_jury(vault: Vault) -> dict[str, dict[str, Any]]:
@@ -173,7 +215,7 @@ def bars_for(
     if limit < 1:
         limit = 1
     when = now or datetime.now(tz=UTC)
-    events = [e for e in load_tape(vault.tape) if e.symbol == symbol and e.stream == "trades"]
+    events = _load_symbol_stream(vault.tape, symbol=symbol, stream="trades")
     bars = closed_bars_from_trades(events, symbol=symbol, tf=tf, now=when, already=set())
     return [_bar_row(bar) for bar in bars[-limit:]]
 
@@ -212,7 +254,7 @@ def zones_for(vault: Vault, *, symbol: str, now: datetime | None = None) -> list
     if stored and not had_stale:
         return stored
     when = now or datetime.now(tz=UTC)
-    events = [e for e in load_tape(vault.tape) if e.symbol == symbol and e.stream == "trades"]
+    events = _load_symbol_stream(vault.tape, symbol=symbol, stream="trades")
     raw_bars: list[Bar] = []
     for tf in cfg.structure_tfs:
         raw_bars.extend(
@@ -349,7 +391,7 @@ def trades_for(vault: Vault, *, symbol: str, limit: int = 50) -> list[dict[str, 
     if limit < 1:
         limit = 1
     out: list[dict[str, Any]] = []
-    for event in load_tape(vault.tape):
+    for event in _load_symbol_stream(vault.tape, symbol=symbol, stream="trades"):
         if event.stream != "trades" or event.symbol != symbol:
             continue
         out.append(

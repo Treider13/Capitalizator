@@ -49,7 +49,7 @@ class ReplayEngine:
         """Apply snapshot/book_diff events to a Book, in the given order.
 
         `run` parses raw WS jsonl into these events, then calls this. Empty → [].
-        A gap still raises.
+        Same apply law as live Book: snapshot replaces, delta patches.
         """
         book = Book()
         checkpoints: list[BookCheckpoint] = []

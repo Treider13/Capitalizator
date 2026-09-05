@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from decimal import Decimal
 from http.client import HTTPConnection
 from http.server import HTTPServer
 from pathlib import Path
@@ -11,14 +12,12 @@ from threading import Thread
 
 import pytest
 
-from capitalizator.book.reconstruct import BookDirty
 from capitalizator.desk.tape import event_from_jsonl_line
 from capitalizator.exec.replay import ReplayEngine
-from capitalizator.ops.chronos_data import replay_for
+from capitalizator.ops.chronos_data import _load_symbol_stream, last_prices, replay_for
 from capitalizator.ops.console import ConsoleApp, _handler
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
-from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.sink_parquet import BufferedParquetSink, ParquetSink
 from capitalizator.types import MarketEvent
 
@@ -41,6 +40,60 @@ def test_chronos_has_desk_controls() -> None:
     assert 'id="knobs"' in text
     assert "symbol = (st.symbols && st.symbols[0]) || symbol" not in text
     assert "&tf=\" + encodeURIComponent(tf)" in text
+    assert "function refreshSoon()" in text
+    assert "now - lastRefresh < 10000" in text
+    assert "setInterval(refresh, 30000)" in text
+
+
+def test_load_symbol_stream_ignores_other_symbols(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    sink = ParquetSink(vault.tape)
+    sink.write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            payload={"px": "100", "qty": "1", "side": "buy"},
+        )
+    )
+    sink.write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="ETHUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            payload={"px": "200", "qty": "1", "side": "buy"},
+        )
+    )
+    events = _load_symbol_stream(vault.tape, symbol="BTCUSDT", stream="trades")
+    assert [event.symbol for event in events] == ["BTCUSDT"]
+    assert events[0].payload["px"] == "100"
+
+
+def test_last_prices_does_not_scan_tape(tmp_path: Path) -> None:
+    """Empty sqlite must not open gigabytes of parquet just to paint a price."""
+    vault = init_vault(tmp_path / "desk")
+    knowledge = open_knowledge(vault)
+    knowledge.close()
+    ParquetSink(vault.tape).write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=NOW,
+            recv_ts=NOW,
+            payload={"px": "100.4", "qty": "1", "side": "buy"},
+        )
+    )
+    assert last_prices(vault) == {}
+    knowledge = open_knowledge(vault)
+    knowledge.put_last_price("BTCUSDT", "100.4")
+    knowledge.close()
+    assert last_prices(vault) == {"BTCUSDT": "100.4"}
 
 
 def test_replay_events_two_runs_match() -> None:
@@ -118,8 +171,9 @@ def test_run_events_gap_does_not_invent() -> None:
             payload={"bids": [["99.8", "5"]], "asks": []},
         ),
     ]
-    with pytest.raises((BookDirty, SeqFault)):
-        ReplayEngine().run_events(evs)
+    cps = ReplayEngine().run_events(evs)
+    assert cps[-1].seq == 3
+    assert cps[-1].best_bid == Decimal("100")
 
 
 def test_replay_api_empty_and_tape(tmp_path: Path) -> None:

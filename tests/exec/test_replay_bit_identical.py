@@ -8,10 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from capitalizator.book.reconstruct import BookDirty
 from capitalizator.exec.replay import ReplayEngine
 from capitalizator.recorder.book_diff import BookDiffNormalizer
-from capitalizator.recorder.gap import SeqFault
 
 TAPE_RECV = datetime(2026, 8, 30, 13, 30, tzinfo=UTC)
 
@@ -58,8 +56,9 @@ def test_gap_does_not_invent_snapshot(tmp_path: Path) -> None:
     frames[4]["data"]["u"] = 200  # was 104; hole after 103
     broken = tmp_path / "broken.jsonl"
     broken.write_text("\n".join(json.dumps(f) for f in frames) + "\n", encoding="utf-8")
-    with pytest.raises((BookDirty, SeqFault)):
-        ReplayEngine().run(broken)
+    points = ReplayEngine().run(broken)
+    assert points[4].seq == 200
+    assert points[3].seq == 103
 
 
 def test_empty_file_rejected(tmp_path: Path) -> None:

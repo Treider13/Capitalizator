@@ -1,6 +1,6 @@
 # Чеклист установки на VPS
 
-Канон: [`PRODUCT.md`](PRODUCT.md). Бот не пишет `infra/phase.yaml`. Ордеров 24/7 нет.
+Канон: [`PRODUCT.md`](PRODUCT.md). Для новичка с нуля — [`NOVICE-START.md`](NOVICE-START.md). Бот не пишет `infra/phase.yaml`. Ордеров 24/7 нет.
 
 ## До первой минуты записи
 

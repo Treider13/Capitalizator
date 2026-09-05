@@ -656,13 +656,20 @@
     });
     refresh();
     let fallback = setInterval(refresh, 30000);
+    let lastRefresh = 0;
+    function refreshSoon() {
+      const now = Date.now();
+      if (now - lastRefresh < 10000) return;
+      lastRefresh = now;
+      refresh();
+    }
     try {
       const es = new EventSource("/api/stream");
-      es.onmessage = () => { refresh(); };
+      es.onmessage = () => { refreshSoon(); };
       es.onerror = () => { /* 30s interval stays the fallback */ };
     } catch (e) {
       clearInterval(fallback);
-      fallback = setInterval(refresh, 5000);
+      fallback = setInterval(refresh, 15000);
     }
   </script>
 </body>

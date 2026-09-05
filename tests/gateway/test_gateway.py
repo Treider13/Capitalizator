@@ -322,6 +322,22 @@ def test_hello_probe_uses_instrument_filters() -> None:
     assert bad["ok"] is False and bad["wallet_equity"]["ok"] is False and "boom" in bad["wallet_equity"]["error"]
 
 
+def test_hello_demo_fee_rate_10001_falls_back() -> None:
+    """Bybit Demo Trading has no /v5/account/fee-rate; hello must still pass."""
+    s = FakeSession()
+    s.fail_next = "get_fee_rates"
+    s.fail_with = venue_error(10001, "Request parameter error")
+    out = _gw(s, mode="demo").hello(probe_order=True)
+    assert out["ok"] is True
+    assert out["fee_rate"]["ok"] is True
+    assert out["fee_rate"]["value"] == ["0.0002", "0.00055"]
+    s2 = FakeSession()
+    s2.fail_next = "get_fee_rates"
+    s2.fail_with = venue_error(10001, "Request parameter error")
+    live = _gw(s2, mode="testnet").hello()
+    assert live["ok"] is False and live["fee_rate"]["ok"] is False
+
+
 def test_ret_code_dict_and_raised_error_are_both_gateway_errors() -> None:
     class Dict(FakeSession):
         def get_wallet_balance(self, **kw):  # ignore_codes-style session returns the dict
@@ -513,6 +529,36 @@ def _run_loop(kn, vault, gw, tr, *, now, iterations: int) -> None:
 
     serve_gateway_loop(knowledge=kn, vault=vault, gateway=gw, tracker=tr, feed=None,
                        should_stop=stop, idle_s=0, now=now)
+
+
+def test_rest_watchdog_holds_between_reconcile_ticks(tmp_path: Path) -> None:
+    """dead_man_s=30 < reconcile_s=60: a good positions() must not flap `rest`."""
+    vault = init_vault(tmp_path / "v")
+    kn = open_knowledge(vault)
+    mark_hello(vault, ok=True)
+    set_user_mode(vault, "demo", ack=True)
+    s = FakeSession()
+    gw = _gw(s, mode="demo")
+    tr = PositionTracker()
+    state = {"n": 0, "t": NOW}
+
+    def clock() -> datetime:
+        kn.set_meta("desk_heartbeat", state["t"].isoformat())
+        return state["t"]
+
+    def stop() -> bool:
+        state["n"] += 1
+        if state["n"] > 1:
+            state["t"] = NOW + timedelta(seconds=15 * (state["n"] - 1))
+        return state["n"] > 4
+
+    serve_gateway_loop(
+        knowledge=kn, vault=vault, gateway=gw, tracker=tr, feed=None,
+        should_stop=stop, idle_s=0, clock=clock, dead_man_s=30, reconcile_s=60,
+    )
+    assert "rest" not in json.loads(kn.meta("entries_blocked") or "[]")
+    assert "positions_error" not in json.loads(kn.meta("exchange_state") or "{}")
+    kn.close()
 
 
 def test_gateway_loop_block_is_sticky_until_operator_release(tmp_path: Path) -> None:

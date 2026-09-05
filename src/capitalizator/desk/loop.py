@@ -348,6 +348,8 @@ class DeskLoop:
         self._liquidity_stamped: dict[str, dict[str, Any]] = {}
         self._ui_pending: dict[str, str] = {}
         self._ui_last_flush: datetime | None = None
+        self._ui_last_wall_flush: datetime | None = None
+        self._ui_book_published: set[str] = set()
         self.zone_cache: dict[str, tuple[tuple[Any, ...], tuple[Zone, ...]]] = {}
         self._persisted_zone_ids: dict[str, frozenset[str]] = {}
         self._last_zone_retire: datetime | None = None
@@ -427,23 +429,67 @@ class DeskLoop:
             or (now - self._ui_last_flush).total_seconds() >= self.UI_FLUSH_S
         )
 
+    def _book_ui_payload(self, st: SymbolState, when: datetime) -> str:
+        bids = sorted(
+            ((str(px), str(sz)) for px, sz in st.book.levels("bid").items()),
+            key=lambda row: Decimal(row[0]),
+            reverse=True,
+        )[:20]
+        asks = sorted(
+            ((str(px), str(sz)) for px, sz in st.book.levels("ask").items()),
+            key=lambda row: Decimal(row[0]),
+        )[:20]
+        return json.dumps(
+            {"symbol": st.symbol, "bids": bids, "asks": asks, "ts": when.isoformat()},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+    def _book_ui_empty(self, symbol: str) -> str:
+        return json.dumps(
+            {"symbol": symbol, "bids": [], "asks": [], "ts": None},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+    def _queue_ready_books(self, when: datetime, *, persist_empty: bool) -> None:
+        """Last-value book on the same UI tick as last_price.
+
+        Bybit (2026) pushes depth on its own stream (L50 ~20ms, L200 ~100ms),
+        not as a side effect of public trades. Sharing `_ui_due` with last_price
+        let BTC prints own the 0.5s clock so `book:{symbol}` never landed.
+        A marked book-seq hole (`missing_stream`) must not keep last levels.
+        A time-gap marker is not that: do not persist empty just because this tick
+        has not yet seen a snapshot (that wiped the live 20-level book on the VPS).
+        """
+        for st in self.symbols.values():
+            if st.book.ready:
+                self._ui_book_published.add(st.symbol)
+                self._ui_put(f"book:{st.symbol}", self._book_ui_payload(st, when))
+            elif persist_empty and st.symbol in self._ui_book_published:
+                self._ui_put(f"book:{st.symbol}", self._book_ui_empty(st.symbol))
+
     def flush_ui(self, now: datetime, *, force: bool = False) -> int:
         """Write last_price / book snapshots in one transaction, at most every 0.5s."""
         if (not self._ui_pending and not self._uptime_dirty) or not self.knowledge.available():
             return 0
-        if (
-            not force
-            and self._ui_last_flush is not None
-            and (now - self._ui_last_flush).total_seconds() < self.UI_FLUSH_S
-        ):
+        wall = datetime.now(tz=UTC)
+        wall_due = (
+            self._ui_last_wall_flush is None
+            or (wall - self._ui_last_wall_flush).total_seconds() >= self.UI_FLUSH_S
+        )
+        if not force and not self._ui_due(now) and not wall_due:
             return 0
         if self._uptime_dirty:
             self._ui_pending["tape_uptime"] = self.uptime.to_json()
             self._uptime_dirty = False
+        # Catch-up ticks (force=False) must not persist empty over last-value.
+        self._queue_ready_books(now, persist_empty=force)
         n = len(self._ui_pending)
         self.knowledge.set_meta_many(self._ui_pending)
         self._ui_pending = {}
         self._ui_last_flush = now
+        self._ui_last_wall_flush = wall
         return n
 
     def hello_ok(self) -> bool:
@@ -511,22 +557,8 @@ class DeskLoop:
         if st.last_touch is not None and st.state == "ARM_ZLG":
             keep_from = st.last_touch.ts
         st.book_history = [row for row in st.book_history if row[0] >= keep_from]
-        if self.knowledge.available() and self._ui_due(when):
-            # Build the UI book JSON only when a flush is due (was: sort + dumps per diff).
-            bids = sorted(
-                ((str(px), str(sz)) for px, sz in st.book.levels("bid").items()),
-                reverse=True,
-            )[:20]
-            asks = sorted((str(px), str(sz)) for px, sz in st.book.levels("ask").items())[:20]
-            self._ui_put(
-                f"book:{st.symbol}",
-                json.dumps(
-                    {"symbol": st.symbol, "bids": bids, "asks": asks, "ts": when.isoformat()},
-                    sort_keys=True,
-                    ensure_ascii=False,
-                ),
-            )
-            self.flush_ui(when)
+        # UI book is last-value on the shared flush tick (flush_ui). Do not gate
+        # it on _ui_due: trades reset that clock and starved book:{symbol}.
 
     def _wall_threshold(self, symbol: str) -> Decimal | None:
         """One level is a wall when it is loud for *this* book.
@@ -566,7 +598,7 @@ class DeskLoop:
         self.state_for(symbol).book = book
 
     def _apply_book_event(self, st: SymbolState, event: MarketEvent) -> None:
-        """Apply snapshot/diff from tape. Gap → dirty book, do not invent levels."""
+        """Apply snapshot/diff from tape. Do not invent levels. Time-gaps do not wipe."""
         bids = _levels(event.payload.get("bids") or event.payload.get("b") or [])
         asks = _levels(event.payload.get("asks") or event.payload.get("a") or [])
         seq = event.seq if event.seq is not None else event.payload.get("u")
@@ -587,7 +619,6 @@ class DeskLoop:
             return
         if event.stream == "book_diff":
             if seq is None:
-                st.book = Book(tick_size=str(self.tick_for(st.symbol)))
                 return
             # Only the touched prices can change: read them before the diff instead of
             # copying the whole book (was 0.9 ms per diff in the profile).
@@ -600,8 +631,11 @@ class DeskLoop:
                         before[(side_name, px)] = levels.get(px, Decimal("0"))
             try:
                 st.book.apply_diff(bids, asks, seq=int(seq))
-            except (BookDirty, SeqFault):
-                st.book = Book(tick_size=str(self.tick_for(st.symbol)))
+            except BookDirty:
+                # Official orderbook.200: snapshot first. No snapshot yet — do not
+                # invent levels. Last sqlite value stays until snapshot / u=1.
+                return
+            except SeqFault:
                 return
             _record_adds_from_diff(st, event.exchange_ts, before, bids, asks)
             if st.state == "IDLE" and (len(st.adds) > 256 or len(st.pulls) > 256):
@@ -712,6 +746,10 @@ class DeskLoop:
                     ),
                 )
                 return [{"event": "resync", "symbol": event.symbol, "book_dirty": False}]
+            # Time holes (ts_from/ts_to, recorder reconnect) are uptime law, not L2.
+            # uptime.py: a book seq hole is not a time hole — the inverse holds.
+            if event.stream == "gap" and not event.payload.get("missing_stream"):
+                return [{"event": "gap", "symbol": event.symbol, "book_dirty": False}]
             st.book = Book(tick_size=str(self.tick_for(st.symbol)))
             return [{"event": event.stream, "symbol": event.symbol, "book_dirty": True}]
         raise ValueError(f"unknown stream: {event.stream!r}")
@@ -981,8 +1019,9 @@ class DeskLoop:
         self.paper.on_clock(when)
         out: list[dict[str, Any]] = []
         if self.knowledge.available():
-            # Gateway watchdog reads this: a silent desk cancels entry orders (§7 / Н-4).
-            self._ui_put("desk_heartbeat", when.isoformat())
+            # Gateway watchdog: process liveness, not tape time. Catch-up ticks
+            # used exchange_ts here and the signer blocked `desk` for a live box.
+            self._ui_put("desk_heartbeat", datetime.now(tz=UTC).isoformat())
             if force_flush:
                 # Always written on a clock tick: a symbol that gained facts leaves the banner.
                 self._ui_put("refused_symbols", json.dumps(self.refused_symbols, sort_keys=True))
@@ -1285,7 +1324,7 @@ class DeskLoop:
         return out
 
     def _label_zlg(self, st: SymbolState, now: datetime) -> list[dict[str, Any]]:
-        touch = st.last_touch
+        touch = self._bind_last_touch(st)
         if touch is None:
             return []
         zone = self.registry.zone(touch.zone_id)
@@ -1308,8 +1347,9 @@ class DeskLoop:
         probe = st.book_pre or st.book
         if validate(probe).ok:
             self._oko_observe(st, touch, now)
-        touch = next(t for t in self.registry.touches if t.touch_id == touch.touch_id)
-        st.last_touch = touch
+        touch = self._bind_last_touch(st)
+        if touch is None:
+            return []
         book = st.book_pre or st.book
         bid, ask = book.best() if book.ready else (None, None)
         mid = ((bid + ask) / 2) if bid is not None and ask is not None else touch.trade_px
@@ -1369,6 +1409,9 @@ class DeskLoop:
 
     def _oko_observe(self, st: SymbolState, touch: Touch, now: datetime) -> None:
         """Retina + Shadow on the frozen 8s window. Same clock as ZLG / OFI / PRS."""
+        if self._bind_last_touch(st) is None:
+            return
+        touch = st.last_touch
         st.oko_window = None
         raw = self._oko_raw_window(st, touch)
         if raw is None:
@@ -1421,8 +1464,27 @@ class DeskLoop:
             return "b_marks"
         return None
 
-    def _eval_cav_and_jury(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
+    def _bind_last_touch(self, st: SymbolState) -> Touch | None:
+        """Registry row for the armed touch, or clear a stale pointer.
+
+        `_drop_resolved_touches` and journal replay can remove a touch_id while
+        `SymbolState.last_touch` still points at it. fill_cav then KeyError'd and
+        killed the process (crash loop on every bar close).
+        """
         touch = st.last_touch
+        if touch is None:
+            return None
+        live = next((t for t in self.registry.touches if t.touch_id == touch.touch_id), None)
+        if live is None:
+            st.last_touch = None
+            st.state = "IDLE"
+            st.zlg_card = None
+            return None
+        st.last_touch = live
+        return live
+
+    def _eval_cav_and_jury(self, st: SymbolState, bar: Bar) -> list[dict[str, Any]]:
+        touch = self._bind_last_touch(st)
         if touch is None:
             return []
         zone = self.registry.zone(touch.zone_id)
@@ -3129,6 +3191,11 @@ class DeskLoop:
             keep.append(touch)
         if drop:
             self.registry.touches = [t for t in self.registry.touches if t.touch_id not in drop]
+            for st in self.symbols.values():
+                if st.last_touch is not None and st.last_touch.touch_id in drop:
+                    st.last_touch = None
+                    st.state = "IDLE"
+                    st.zlg_card = None
         return keep
 
     def _trail_state(self, pos: PaperPosition) -> TrailState:

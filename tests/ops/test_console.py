@@ -211,6 +211,17 @@ def _hours24_tape(tape: Path) -> None:
     )
 
 
+def test_parquet_counts_skip_opening_a_large_vault(tmp_path: Path) -> None:
+    """A live tape has thousands of hour parts. Status must not open them all."""
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    for i in range(129):
+        (tape / f"{i:03d}.parquet").write_bytes(b"not parquet")
+    files_n, rows_n = console_pkg._parquet_counts(tape)
+    assert files_n == 129
+    assert rows_n == 0
+
+
 def test_desk_snapshot_skips_corrupt_parquet(tmp_path: Path) -> None:
     """A half-written .parquet must not 500 the desk or hide a green day."""
     vault = init_vault(tmp_path / "desk")

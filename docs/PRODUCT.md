@@ -35,4 +35,4 @@
 
 SQLite: desk пишет `intent_queue`, signer читает и исполняет. Ключ только у signer.
 
-Установка на VPS: [`docs/VPS.md`](VPS.md).
+Установка на VPS: [`docs/VPS.md`](VPS.md). С нуля простыми словами: [`docs/NOVICE-START.md`](NOVICE-START.md).

@@ -1,7 +1,19 @@
 """L2 book from snapshot + diffs. Zero size deletes. No ghost levels.
 
-Gap/apply version is Bybit `u` (BookSnapshot.seq). `u=1` after a live book
-is a service restart — drop local state (BookDirty), do not patch.
+Law is Bybit `orderbook.{depth}` (recorder topic `orderbook.200`), not Full-OB:
+
+  https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
+
+  * After subscribe: a `snapshot`, then `delta`. A later `snapshot` resets.
+  * Delta: size 0 deletes the price; else insert/update.
+  * `u=1` is snapshot data after a service restart — overwrite the local book
+    with that message. This page does not say fetch REST (that is Full-OB).
+  * Same `u` may repeat on L1 idle. The page does not say wipe on a skipped `u`.
+
+CCXT `pro/bybit.ts` `handleOrderBook`: `type===snapshot` → `reset`, else
+`handleDeltas`. No `u` wipe. Nautilus `websocket/parse.rs`: snapshot → CLEAR+ADD,
+else UPDATE. Hummingbot Bybit perp: WS `orderbook.200`; REST `/v5/market/orderbook`
+for its snapshot message; local nonce, not Bybit `u`.
 """
 
 from __future__ import annotations
@@ -9,14 +21,13 @@ from __future__ import annotations
 from decimal import Decimal
 from hashlib import sha256
 
-from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rest_snapshot import BookSnapshot
 
 Side = str
 
 
 class BookDirty(ValueError):
-    """Diff arrived without a snapshot, or after an unhandled gap / restart."""
+    """Delta arrived before any snapshot. Not a reason to invent levels."""
 
 
 def _canon(value: Decimal) -> str:
@@ -45,12 +56,7 @@ class Book:
         return dict(raw)
 
     def apply_snapshot(self, snapshot: BookSnapshot) -> None:
-        self._bids = {}
-        self._asks = {}
-        self._put_side(self._bids, snapshot.bids)
-        self._put_side(self._asks, snapshot.asks)
-        self._seq = snapshot.seq
-        self._ready = True
+        self._replace(snapshot.bids, snapshot.asks, seq=snapshot.seq)
 
     def apply_diff(
         self,
@@ -59,19 +65,33 @@ class Book:
         *,
         seq: int,
     ) -> None:
-        if not self._ready:
+        if seq == 1:
+            # Official: u=1 is snapshot data after a service restart. Overwrite.
+            self._replace(bids, asks, seq=1)
+            return
+        if not self._ready or self._seq is None:
             raise BookDirty("diff before snapshot")
-        if self._seq is None:
-            raise BookDirty("book has no update id")
-        if seq == 1 and self._seq != 1:
-            raise BookDirty("bybit u=1 restart; resync required")
         if seq <= self._seq:
-            raise SeqFault(f"book u not monotonic: {self._seq} -> {seq}")
-        if seq > self._seq + 1:
-            raise BookDirty(f"book u gap {self._seq} -> {seq}; resync required")
+            return
+        # Official orderbook.200 and CCXT apply the delta. They do not empty
+        # the book because `u` skipped a number (that wipe blanked SOLUSDT).
         self._put_side(self._bids, bids)
         self._put_side(self._asks, asks)
         self._seq = seq
+
+    def _replace(
+        self,
+        bids: tuple[tuple[str, str], ...],
+        asks: tuple[tuple[str, str], ...],
+        *,
+        seq: int,
+    ) -> None:
+        self._bids = {}
+        self._asks = {}
+        self._put_side(self._bids, bids)
+        self._put_side(self._asks, asks)
+        self._seq = seq
+        self._ready = True
 
     def _put_side(self, book: dict[Decimal, Decimal], rows: tuple[tuple[str, str], ...]) -> None:
         for px, sz in rows:

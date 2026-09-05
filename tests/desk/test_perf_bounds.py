@@ -110,10 +110,350 @@ def test_resync_with_levels_rebuilds_the_book_instead_of_wiping(tmp_path: Path) 
     book = desk.state_for("BTCUSDT").book
     assert book.ready and book.best() == (Decimal("99990"), Decimal("100010")) and book.seq == 500
     bare = desk.on_event(
-        MarketEvent(stream="gap", exchange="bybit", symbol="BTCUSDT", exchange_ts=T0, recv_ts=T0,
-                    payload={})
+        MarketEvent(
+            stream="gap",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0,
+            recv_ts=T0,
+            payload={"missing_stream": "orderbook.200", "seq_from": 501, "seq_to": 510},
+        )
     )
     assert bare[0]["book_dirty"] is True and not desk.state_for("BTCUSDT").book.ready
+
+
+def test_trades_do_not_starve_ui_book(tmp_path: Path) -> None:
+    """Serve ticks first, then BTC prints own the 0.5s flush. Book must still land.
+
+    Live Chronos showed ZLG RETREAT (RAM book) and `book:BTCUSDT` missing — the
+    trade path flushed last_price and never queued depth. Bybit keeps orderbook
+    on its own WS (L50 ~20ms); the UI tick is last-value of both streams.
+    """
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.tick(T0)
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(milliseconds=100),
+            recv_ts=T0 + timedelta(milliseconds=100),
+            seq=1,
+            payload={"bids": [["99999", "5"]], "asks": [["100001", "5"]]},
+        )
+    )
+    assert desk.state_for("BTCUSDT").book.ready
+    for i in range(40):
+        ts = T0 + timedelta(milliseconds=200 + 20 * i)
+        desk.on_trade(
+            MarketEvent(
+                stream="trades",
+                exchange="bybit",
+                symbol="BTCUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                payload={"px": str(Decimal("100000") + i), "qty": "0.01", "side": "buy"},
+            ),
+            [],
+        )
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["99999", "5"]
+    assert got["asks"][0] == ["100001", "5"]
+    later = T0 + timedelta(seconds=2)
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=later,
+            recv_ts=later,
+            seq=2,
+            payload={"b": [["100050", "9"]], "a": [["100060", "8"]]},
+        )
+    )
+    desk.tick(later + timedelta(seconds=1))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["100050", "9"]
+    assert got["asks"][0] == ["100001", "5"]
+    assert ["100060", "8"] in got["asks"]
+
+
+def test_gap_clears_ui_book_instead_of_leaving_stale_levels(tmp_path: Path) -> None:
+    """Bybit book-seq hole / u=1: reset-local. Stale L2 on Chronos is a lie."""
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0,
+            recv_ts=T0,
+            seq=1,
+            payload={"bids": [["99999", "5"]], "asks": [["100001", "5"]]},
+        )
+    )
+    desk.tick(T0 + timedelta(seconds=1))
+    assert desk.knowledge.book_levels("BTCUSDT")["bids"][0] == ["99999", "5"]
+    desk.on_event(
+        MarketEvent(
+            stream="gap",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(seconds=2),
+            recv_ts=T0 + timedelta(seconds=2),
+            payload={"missing_stream": "orderbook.200", "seq_from": 2, "seq_to": 9},
+        )
+    )
+    assert not desk.state_for("BTCUSDT").book.ready
+    desk.tick(T0 + timedelta(seconds=3))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got == {"symbol": "BTCUSDT", "bids": [], "asks": [], "ts": None}
+
+
+def test_time_gap_does_not_wipe_ready_book_or_ui(tmp_path: Path) -> None:
+    """Recorder restart markers (ts_from/ts_to) are F0 uptime, not an L2 reset.
+
+    Live VPS: catch-up applied a 20-level book, then a time-gap wiped RAM, later
+    book_diff raised BookDirty (no snapshot), and the UI flush persisted empty.
+    """
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0,
+            recv_ts=T0,
+            seq=1,
+            payload={"bids": [["79753.8", "12"]], "asks": [["79753.9", "8"]]},
+        )
+    )
+    desk.tick(T0 + timedelta(seconds=1))
+    assert desk.knowledge.book_levels("BTCUSDT")["bids"][0] == ["79753.8", "12"]
+    hole = T0 + timedelta(minutes=5)
+    out = desk.on_event(
+        MarketEvent(
+            stream="gap",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=hole,
+            recv_ts=hole,
+            payload={
+                "ts_from": T0.isoformat(),
+                "ts_to": hole.isoformat(),
+                "reason": "restart",
+            },
+        )
+    )
+    assert out == [{"event": "gap", "symbol": "BTCUSDT", "book_dirty": False}]
+    book = desk.state_for("BTCUSDT").book
+    assert book.ready and book.best() == (Decimal("79753.8"), Decimal("79753.9"))
+    desk.tick(hole + timedelta(seconds=1))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["79753.8", "12"]
+    assert got["asks"][0] == ["79753.9", "8"]
+    nxt = hole + timedelta(milliseconds=100)
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=nxt,
+            recv_ts=nxt,
+            seq=2,
+            payload={"b": [["79754.0", "4"]], "a": [["79754.1", "3"]]},
+        )
+    )
+    assert desk.state_for("BTCUSDT").book.ready
+    desk.tick(nxt + timedelta(seconds=1))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["79754.0", "4"]
+    assert ["79754.1", "3"] in got["asks"]
+
+
+def test_catchup_tick_heartbeat_is_wall_clock_not_tape_time(tmp_path: Path) -> None:
+    """Signer dead-man reads desk_heartbeat as process liveness, not tape ts."""
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.tick(T0, force_flush=False)
+    raw = desk.knowledge.meta("desk_heartbeat")
+    assert raw is not None
+    hb = datetime.fromisoformat(raw)
+    assert hb != T0
+    assert abs((datetime.now(tz=UTC) - hb).total_seconds()) < 5
+
+
+def test_catchup_tick_does_not_persist_empty_after_seq_hole(tmp_path: Path) -> None:
+    """A long replay must not wipe last-value just because a skipped delta dirtied RAM."""
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0,
+            recv_ts=T0,
+            seq=1,
+            payload={"bids": [["79753.8", "12"]], "asks": [["79753.9", "8"]]},
+        )
+    )
+    desk.tick(T0 + timedelta(seconds=1))
+    desk.on_event(
+        MarketEvent(
+            stream="gap",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(seconds=2),
+            recv_ts=T0 + timedelta(seconds=2),
+            payload={"missing_stream": "orderbook.200", "seq_from": 2, "seq_to": 9},
+        )
+    )
+    assert not desk.state_for("BTCUSDT").book.ready
+    desk.tick(T0 + timedelta(seconds=3), force_flush=False)
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["79753.8", "12"]
+    desk.tick(T0 + timedelta(seconds=4))
+    assert desk.knowledge.book_levels("BTCUSDT") == {
+        "symbol": "BTCUSDT",
+        "bids": [],
+        "asks": [],
+        "ts": None,
+    }
+
+
+def test_u_hole_keeps_last_value_book_on_ui(tmp_path: Path) -> None:
+    """CCXT: a skipped u is a delta. Chronos must not go empty."""
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0,
+            recv_ts=T0,
+            seq=10,
+            payload={"bids": [["101.6", "4"]], "asks": [["101.7", "3"]]},
+        )
+    )
+    desk.tick(T0 + timedelta(seconds=1))
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(seconds=2),
+            recv_ts=T0 + timedelta(seconds=2),
+            seq=20,
+            payload={"b": [["101.61", "2"]], "a": []},
+        )
+    )
+    desk.tick(T0 + timedelta(seconds=3))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert desk.state_for("BTCUSDT").book.ready
+    assert got["bids"][0] == ["101.61", "2"]
+    assert got["asks"][0] == ["101.7", "3"]
+
+
+def test_stale_book_u_after_newer_snapshot_does_not_wipe_ui(tmp_path: Path) -> None:
+    """Live SOL: hour=22 snapshot then leftover hour=20/21 diffs (older `u`).
+
+    Bybit: those diffs are already in the snapshot. Wiping RAM + persist_empty
+    left Chronos with bids=[] while trades and a fresh snapshot were on tape.
+    """
+    desk = DeskLoop(knowledge=open_knowledge(init_vault(tmp_path / "d")), user_mode="off")
+    desk.on_event(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(hours=2),
+            recv_ts=T0 + timedelta(hours=2),
+            seq=9000,
+            payload={"bids": [["101.6", "4"]], "asks": [["101.7", "3"]]},
+        )
+    )
+    desk.tick(T0 + timedelta(hours=2, seconds=1))
+    assert desk.knowledge.book_levels("BTCUSDT")["bids"][0] == ["101.6", "4"]
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(hours=1),
+            recv_ts=T0 + timedelta(hours=1),
+            seq=4000,
+            payload={"b": [["99.0", "9"]], "a": []},
+        )
+    )
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(hours=2, seconds=2),
+            recv_ts=T0 + timedelta(hours=2, seconds=2),
+            seq=9000,
+            payload={"b": [["101.5", "1"]], "a": []},
+        )
+    )
+    assert desk.state_for("BTCUSDT").book.ready
+    desk.tick(T0 + timedelta(hours=2, seconds=3))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["101.6", "4"]
+    assert got["asks"][0] == ["101.7", "3"]
+    desk.on_event(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(hours=2, seconds=4),
+            recv_ts=T0 + timedelta(hours=2, seconds=4),
+            seq=9001,
+            payload={"b": [["101.61", "2"]], "a": []},
+        )
+    )
+    desk.tick(T0 + timedelta(hours=2, seconds=5))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["101.61", "2"]
+
+
+def test_never_ready_book_does_not_overwrite_last_ui_levels(tmp_path: Path) -> None:
+    """A process that has not yet seen a snapshot must not persist empty over last-value."""
+    kn = open_knowledge(init_vault(tmp_path / "d"))
+    kn.put_book_levels(
+        "BTCUSDT",
+        {
+            "symbol": "BTCUSDT",
+            "bids": [["79753.8", "12"]],
+            "asks": [["79753.9", "8"]],
+            "ts": T0.isoformat(),
+        },
+    )
+    desk = DeskLoop(knowledge=kn, user_mode="off")
+    desk.on_trade(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=T0 + timedelta(seconds=1),
+            recv_ts=T0 + timedelta(seconds=1),
+            payload={"px": "79753.85", "qty": "0.01", "side": "buy"},
+        ),
+        [],
+    )
+    assert not desk.state_for("BTCUSDT").book.ready
+    desk.tick(T0 + timedelta(seconds=2))
+    got = desk.knowledge.book_levels("BTCUSDT")
+    assert got is not None
+    assert got["bids"][0] == ["79753.8", "12"]
+    assert got["asks"][0] == ["79753.9", "8"]
 
 
 def test_meta_writes_are_batched_not_per_print(tmp_path: Path) -> None:

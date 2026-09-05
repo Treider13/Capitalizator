@@ -715,6 +715,26 @@ def test_missing_zone_does_not_crash_n_cav(tmp_path: Path) -> None:
     assert events[0]["event"] == "jury"
 
 
+def test_stale_last_touch_does_not_crash_bar_close(tmp_path: Path) -> None:
+    """A last_touch whose id left the registry must not KeyError the desk."""
+    vault = init_vault(tmp_path / "desk")
+    desk = DeskLoop(knowledge=open_knowledge(vault), user_mode="off", tick_size=TICK)
+    desk.registry._zones[ZONE.zone_id] = ZONE
+    ghost = Touch.create(
+        zone_id=ZONE.zone_id,
+        ts=WINDOW,
+        trade_px=Decimal("100.5"),
+        trade_qty=Decimal("1"),
+    )
+    st = desk.state_for("BTCUSDT")
+    st.last_touch = ghost
+    st.state = "LABEL_ZLG"
+    events = desk.on_bar_close(_bar(WINDOW + timedelta(minutes=15)))
+    assert st.last_touch is None
+    assert st.state == "IDLE"
+    assert all(row.get("event") != "jury" for row in events)
+
+
 def test_close_symbols_puts_btc_first() -> None:
     assert _close_symbols({"ETHUSDT": None, "BTCUSDT": None}) == [
         "BTCUSDT",

@@ -1,5 +1,7 @@
 # Развёртывание на VPS (один раз, потом только `deploy.sh`)
 
+Пошагово для новичка (Ubuntu дома + SpaceWeb): [`NOVICE-START.md`](NOVICE-START.md).
+
 Всё живёт в `/srv/capitalizator`:
 
 ```

@@ -89,7 +89,8 @@ def test_live_recorder_streams_fixture_frames_into_parts(tmp_path: Path) -> None
     kn.close()
 
 
-def test_gap_in_book_is_counted_and_resynced_via_rest(tmp_path: Path) -> None:
+def test_book_u_hole_is_applied_without_rest_resync(tmp_path: Path) -> None:
+    """orderbook.200 / CCXT: a skipped u is a delta. REST is only if there is no snapshot."""
     ws = FakeWs()
     snaps: list[str] = []
 
@@ -105,16 +106,17 @@ def test_gap_in_book_is_counted_and_resynced_via_rest(tmp_path: Path) -> None:
     frames = _book_frames()
     ws.emit("book", frames[0])  # snapshot u=100
     ws.emit("book", frames[1])  # u=101
-    gap = dict(frames[2])
-    gap["data"] = {**frames[2]["data"], "u": 150}  # jump → gap
-    ws.emit("book", gap)
+    hole = dict(frames[2])
+    hole["data"] = {**frames[2]["data"], "u": 150}
+    ws.emit("book", hole)
     rec.drain()
-    assert rec.stats["book"].gaps == 1
-    assert snaps == ["BTCUSDT"]  # REST snapshot pulled once for the resync
+    assert rec.stats["book"].gaps == 0
+    assert snaps == []
     rec.sink.flush()
     events = TapeCursor().fresh_rows(tmp_path / "tape")
-    resync = next(e for e in events if e.stream == "resync")
-    assert resync.seq == 500 and resync.payload["bids"] == [["60000.0", "1"]]
+    assert not any(e.stream == "resync" for e in events)
+    diffs = [e for e in events if e.stream == "book_diff"]
+    assert diffs[-1].seq == 150
 
 
 def test_subscriptions_are_chunked_by_ten_symbols(tmp_path: Path) -> None:

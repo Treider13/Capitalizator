@@ -51,6 +51,9 @@ CODE_DUPLICATE_LINK_ID = 110072
 CODE_ORDER_NOT_FOUND = 110001
 # Post-only that would have crossed the book is cancelled by the venue, not filled.
 CODE_POST_ONLY_WOULD_TAKE = 30208
+# Bybit Demo Trading does not implement /v5/account/fee-rate (retCode 10001).
+# VIP0 USDT-perp defaults; live/testnet still require the real endpoint.
+DEMO_FEE_FALLBACK = (Decimal("0.0002"), Decimal("0.00055"))
 
 ErrorKind = Literal["venue", "network", "local"]
 
@@ -251,7 +254,15 @@ class BybitGateway:
         return Decimal(str(total))
 
     def fee_rate(self, symbol: str) -> tuple[Decimal, Decimal]:
-        res = self._call("get_fee_rates", what="fee_rate", category=self.category, symbol=symbol)
+        try:
+            res = self._call(
+                "get_fee_rates", what="fee_rate", category=self.category, symbol=symbol
+            )
+        except GatewayError as exc:
+            if self.mode == "demo" and exc.code == 10001:
+                self.fee_rates[symbol] = DEMO_FEE_FALLBACK
+                return DEMO_FEE_FALLBACK
+            raise
         rows = res.get("list") or []
         if not rows:
             raise GatewayError("fee_rate", msg="empty list", kind="network")

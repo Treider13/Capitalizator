@@ -1,13 +1,14 @@
-"""0.2.4 — synthetic gap → stream=resync, book equals the REST snapshot."""
+"""REST resync is Hummingbot-style: fetch a snapshot when we have no book yet.
+
+A skipped `u` on orderbook.200 is not that — CCXT applies the delta.
+"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
 
-import pytest
-
-from capitalizator.book.reconstruct import Book, BookDirty
+from capitalizator.book.reconstruct import Book
 from capitalizator.book.resync import BookResync
 from capitalizator.recorder.rest_snapshot import BookSnapshot, RestSnapshot
 from capitalizator.recorder.ws_book import BybitBookWs
@@ -26,25 +27,20 @@ def _snap(u: int, bid: str = "100", bid_sz: str = "1", ask: str = "101", ask_sz:
     )
 
 
-def test_gap_emits_resync_and_book_matches_snapshot() -> None:
+def test_u_hole_is_applied_not_resync() -> None:
     rest_snap = _snap(50, bid="65485.47", bid_sz="47.081829", ask="65557.7", ask_sz="16.606555")
     book = Book()
     book.apply_snapshot(_snap(10))
     rs = BookResync(book, lambda: rest_snap, symbol="BTCUSDT")
-    stale = _snap(20)  # u 10 → 20 is a hole
-    events = rs.feed("delta", stale, recv_ts=RECV)
-    assert len(events) == 1
-    assert events[0].stream == "resync"
-    assert events[0].seq == 50
-    assert rs.events[-1].stream == "resync"
-    expected = Book()
-    expected.apply_snapshot(rest_snap)
-    assert book.fingerprint() == expected.fingerprint()
-    assert book.seq == 50
-    assert book.level("bid", "65485.47") == Decimal("47.081829")
+    nxt = _snap(20, bid="110", bid_sz="2")
+    events = rs.feed("delta", nxt, recv_ts=RECV)
+    assert events == []
+    assert book.seq == 20
+    assert book.level("bid", "110") == Decimal("2")
+    assert book.level("bid", "100") == Decimal("1")
 
 
-def test_resync_exchange_ts_is_snapshot_not_poison() -> None:
+def test_diff_before_snapshot_fetches_rest() -> None:
     rest_ts = datetime(2026, 8, 30, 13, 40, tzinfo=UTC)
     rest_snap = BookSnapshot(
         symbol="BTCUSDT",
@@ -54,7 +50,6 @@ def test_resync_exchange_ts_is_snapshot_not_poison() -> None:
         asks=(("201", "1"),),
     )
     book = Book()
-    book.apply_snapshot(_snap(10))
     rs = BookResync(book, lambda: rest_snap, symbol="BTCUSDT")
     poison = BookSnapshot(
         symbol="BTCUSDT",
@@ -64,19 +59,22 @@ def test_resync_exchange_ts_is_snapshot_not_poison() -> None:
         asks=(("1000", "1"),),
     )
     events = rs.feed("delta", poison, recv_ts=RECV)
+    assert events[0].stream == "resync"
     assert events[0].exchange_ts == rest_ts
-    assert events[0].exchange_ts != poison.exchange_ts
-
-
-def test_failed_delta_is_not_applied_on_top_of_snapshot() -> None:
-    rest_snap = _snap(80, bid="200", bid_sz="9")
-    book = Book()
-    book.apply_snapshot(_snap(1))
-    rs = BookResync(book, lambda: rest_snap, symbol="BTCUSDT")
-    poison = _snap(9, bid="999", bid_sz="99")
-    rs.feed("delta", poison, recv_ts=RECV)
+    assert book.seq == 50
     assert book.level("bid", "999") == 0
     assert book.level("bid", "200") != 0
+
+
+def test_stale_u_is_not_applied_and_does_not_resync() -> None:
+    rest_snap = _snap(80, bid="200", bid_sz="9")
+    book = Book()
+    book.apply_snapshot(_snap(10))
+    rs = BookResync(book, lambda: rest_snap, symbol="BTCUSDT")
+    stale = _snap(9, bid="999", bid_sz="99")
+    assert rs.feed("delta", stale, recv_ts=RECV) == []
+    assert book.level("bid", "999") == 0
+    assert book.seq == 10
 
 
 def test_contiguous_diff_does_not_resync() -> None:
@@ -133,30 +131,22 @@ def _frame(kind: str, u: int, bid: str = "100", bid_sz: str = "1") -> dict:
     }
 
 
-def test_ws_ingest_without_fetch_still_raises_on_gap() -> None:
+def test_ws_ingest_applies_u_hole_without_inventing_a_wipe() -> None:
     ws = BybitBookWs()
     ws.ingest_frames([_frame("snapshot", 10)], recv_ts=RECV)
-    with pytest.raises(BookDirty, match="gap"):
-        ws.ingest_frames([_frame("delta", 20, bid="999", bid_sz="99")], recv_ts=RECV)
-    assert ws.book.seq == 10
-    assert ws.book.level("bid", "999") == 0
+    ws.ingest_frames([_frame("delta", 20, bid="999", bid_sz="99")], recv_ts=RECV)
+    assert ws.book.seq == 20
+    assert ws.book.level("bid", "999") == Decimal("99")
+    assert ws.book.level("bid", "100") == Decimal("1")
 
 
-def test_ws_ingest_with_fetch_resyncs_and_drops_poison() -> None:
+def test_ws_ingest_with_fetch_does_not_resync_a_u_hole() -> None:
     rest = _snap(50, bid="65485.47", bid_sz="47.081829")
     ws = BybitBookWs(fetch_snapshot=lambda: rest)
     events = ws.ingest_frames(
         [_frame("snapshot", 10), _frame("delta", 20, bid="999", bid_sz="99")],
         recv_ts=RECV,
     )
-    streams = [e.stream for e in events]
-    assert "resync" in streams
-    assert "book_diff" not in streams
-    resync = next(e for e in events if e.stream == "resync")
-    bbos = [e for e in events if e.stream == "bbo"]
-    assert resync.seq == 50
-    assert bbos[-1].seq == 50
-    assert bbos[-1].exchange_ts == resync.exchange_ts
-    assert ws.book.seq == 50
-    assert ws.book.level("bid", "999") == 0
-    assert ws.book.level("bid", "65485.47") != 0
+    assert "resync" not in [e.stream for e in events]
+    assert ws.book.seq == 20
+    assert ws.book.level("bid", "999") == Decimal("99")

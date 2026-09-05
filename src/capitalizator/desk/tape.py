@@ -102,6 +102,9 @@ class TapeCursor:
     read in one list they were 3.2 GB of RSS and the OOM killer restarted the desk
     every 30 s (VPS, 2026-09-03). Old `book_diff` rows are skipped on a production
     first pass (`book_hours`): a book is only valid from its next snapshot anyway.
+    Official orderbook.200: snapshot, then delta. Origin jsonl is read first so a
+    restart does not spend the byte budget on `book_diff` and never apply the
+    snapshot (live SOLUSDT stayed empty). No time-seek stitch.
     """
 
     RECENT_DAYS = 2
@@ -110,6 +113,9 @@ class TapeCursor:
     MAX_BYTES = 8 * 1024 * 1024  # jsonl bytes per pass
     MAX_ROWS = 60_000  # parquet rows per pass
     BOOK_HOURS = 2  # production first pass: book deltas only this recent
+    _BOOK_PARTS = frozenset({"book_diff", "snapshot", "bbo", "resync"})
+    _BOOK_ORIGIN = frozenset({"snapshot", "resync"})
+    _BOOK_DELTA = frozenset({"book_diff", "bbo"})
 
     def __init__(
         self,
@@ -162,46 +168,79 @@ class TapeCursor:
             return []
         self._first_pass_done = True
         paths.sort(key=_chrono_key)
-        events: list[MarketEvent] = []
         live_dirs: set[Path] = set()
+        jsonl_paths: list[Path] = []
+        parquet_paths: list[Path] = []
         for path in paths:
             if path.suffix == ".jsonl":
+                jsonl_paths.append(path)
                 live_dirs.add(path.parent / path.stem)  # hour=HH key
+            elif path.suffix == ".parquet":
+                parquet_paths.append(path)
+        events: list[MarketEvent] = []
         budget_bytes = self.max_bytes
         budget_rows = self.max_rows
         self.backlog = False
-        for path in paths:
+        # Official: snapshot, then delta. Origin jsonl is small; it does not
+        # share the delta/trade budget.
+        # https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
+        origin_jsonl = [p for p in jsonl_paths if _book_role(p) == "origin"]
+        delta_jsonl = [p for p in jsonl_paths if _book_role(p) == "delta"]
+        other_jsonl = [p for p in jsonl_paths if _book_role(p) is None]
+        for path in origin_jsonl:
             if self._skip_old_book(path, now):
                 continue
-            if path.suffix == ".jsonl":
-                if budget_bytes <= 0:
-                    self.backlog = True
-                    break
-                got, used = self._tail_jsonl(path, budget_bytes)
-                events.extend(got)
-                budget_bytes -= used
+            got, used = self._tail_jsonl(path, max(self.max_bytes, 1 << 20))
+            events.extend(got)
+        for path in delta_jsonl:
+            if self._skip_old_book(path, now):
                 continue
-            if path.suffix != ".parquet":
-                continue
-            # `hour=HH.000123.parquet` → stem `hour=HH.000123`; live key is `hour=HH`
+            if budget_bytes <= 0:
+                self.backlog = True
+                break
+            got, used = self._tail_jsonl(path, budget_bytes)
+            events.extend(got)
+            budget_bytes -= used
+        for path in other_jsonl:
+            if budget_bytes <= 0:
+                self.backlog = True
+                break
+            got, used = self._tail_jsonl(path, budget_bytes)
+            events.extend(got)
+            budget_bytes -= used
+        book_pq = [
+            p
+            for p in parquet_paths
+            if _book_stream(p) is not None and not self._skip_old_book(p, now)
+        ]
+        origin_pq = [p for p in book_pq if _book_role(p) == "origin"]
+        delta_pq = [p for p in book_pq if _book_role(p) != "origin"]
+        other_pq = [p for p in parquet_paths if _book_stream(p) is None]
+        book_pq = origin_pq + delta_pq
+        for path in book_pq + other_pq:
             hour_key = path.parent / path.name.split(".")[0]
             if hour_key in live_dirs:
                 continue  # the live feed already delivered these rows
-            if budget_rows <= 0:
+            is_book = _book_stream(path) is not None
+            if not is_book and budget_rows <= 0:
                 self.backlog = True
                 break
-            got, used = self._read_parquet(path, budget_rows)
+            row_cap = max(budget_rows, 50_000) if is_book else budget_rows
+            got, used = self._read_parquet(path, row_cap)
             events.extend(got)
-            budget_rows -= used
+            if not is_book:
+                budget_rows -= used
         events.sort(key=lambda e: (e.exchange_ts, e.symbol, e.stream))
         return events
 
     def _skip_old_book(self, path: Path, now: datetime | None) -> bool:
-        """Production first pass: `book_diff` older than `book_hours` is not replayed.
-        Deltas are only meaningful from the snapshot that follows them; the ZLG/ОКО
-        use them live, the zones use trades. Marked so a later pass does not read them
-        from the start either."""
-        if not self._production or now is None or "book_diff" not in path.parts:
+        """Production: book rows older than `book_hours` are not replayed.
+
+        Bybit: a book is snapshot then consecutive `u`; a hole is reset-local,
+        not a stitch. Same law already in this module: a book is only valid
+        from its next snapshot. Snapshot and diff share the window.
+        """
+        if not self._production or now is None or _book_stream(path) is None:
             return False
         if path in self._skipped_book:
             return True
@@ -318,6 +357,22 @@ def _partition_time(path: Path) -> datetime | None:
         return stamp + timedelta(hours=1)  # the partition's last moment
     except ValueError:
         return None
+
+
+def _book_stream(path: Path) -> str | None:
+    for part in path.parts:
+        if part in TapeCursor._BOOK_PARTS:
+            return part
+    return None
+
+
+def _book_role(path: Path) -> str | None:
+    stream = _book_stream(path)
+    if stream in TapeCursor._BOOK_ORIGIN:
+        return "origin"
+    if stream in TapeCursor._BOOK_DELTA:
+        return "delta"
+    return None
 
 
 def _chrono_key(path: Path) -> tuple[str, str, str]:
