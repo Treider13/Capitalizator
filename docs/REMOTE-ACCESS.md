@@ -2,23 +2,27 @@
 
 С нуля на **Ubuntu-ноутбуке и VPS SpaceWeb**: [`NOVICE-START.md`](NOVICE-START.md).
 
-Ниже — уже живой сервер HOSTKEY (не панель SpaceWeb): `91.229.105.226` (Амстердам, Ubuntu 26.04). Пользователи ОС: `root` (пароль — сменить) и
+Ниже — уже живой сервер: `189.74.120.186`. Пользователи ОС: `root` (пароль — сменить) и
 `trader` (для работы; публичные ключи в `/home/trader/.ssh/authorized_keys`, в том числе ноутбук LOQ — `infra/deploy/operator_keys/treider-loq.pub`).
-Логин `dronpardon` — это панель HOSTKEY, не ОС.
+На LOQ секретный ключ — `~/.ssh/id_ed25519`, не `id_rsa`. Логин `dronpardon` — это панель хостинга, не ОС.
 
 ## 1. Подключение
 
-**Windows (PowerShell) / macOS / Linux:**
+**Ноутбук LOQ (Ubuntu):**
 ```bash
-ssh -i ~/.ssh/id_rsa trader@91.229.105.226
+ssh -i ~/.ssh/id_ed25519 trader@189.74.120.186
 ```
-Если ключ не подходит — по паролю `root` (`ssh root@91.229.105.226`), затем `su - trader`.
+Если файла `id_ed25519` нет — `ls ~/.ssh` и не указывайте `-i ~/.ssh/id_rsa`. Если `trader` не пускает — пароль `root`:
+```bash
+ssh root@189.74.120.186
+```
+затем `su - trader`.
 
 **Туннель к консоли** (консоль слушает только `127.0.0.1:8082` на сервере — наружу не открыта):
 ```bash
-ssh -i ~/.ssh/id_rsa -L 8082:127.0.0.1:8082 trader@91.229.105.226
+ssh -i ~/.ssh/id_ed25519 -L 8082:127.0.0.1:8082 trader@189.74.120.186
 ```
-Держите это окно открытым и откройте в браузере **http://127.0.0.1:8082**.
+Держите это окно открытым и откройте в браузере **http://127.0.0.1:8082** (не IP сервера).
 
 ## 2. Что где в консоли
 
@@ -53,7 +57,7 @@ cat > /srv/capitalizator/userdir/secrets/bybit.json <<'EOF'
 EOF
 chmod 600 /srv/capitalizator/userdir/secrets/bybit.json
 ```
-Ключ: сабаккаунт, права Read+Trade, **без Withdraw**, IP-whitelist = `91.229.105.226`.
+Ключ: сабаккаунт, права Read+Trade, **без Withdraw**, IP-whitelist = `189.74.120.186`.
 
 Затем hello (проверка ключа, комиссий, инструментов, пробный ордер):
 ```bash
