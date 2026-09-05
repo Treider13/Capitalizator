@@ -60,3 +60,34 @@ def test_desk_no_arg_effective_target_matches_std(tmp_path: Path) -> None:
     """Old callers (drift UI) keep working."""
     desk = _desk(tmp_path)
     assert desk.effective_target_risk() == desk.risk_config.target_risk_pct
+
+
+def test_reloaded_day_loss_still_kills_aplus(tmp_path: Path) -> None:
+    """WindowHalt must inherit Halts.day_start. Current equity as start hides −2%."""
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    desk = DeskLoop(knowledge=kn, user_mode="off")
+    start = desk.account.equity
+    desk.account.set_equity(start * Decimal("0.98"), source=desk.account.equity_source, now=NOW)
+    desk.account.persist()
+    kn.close()
+    again = DeskLoop(knowledge=open_knowledge(vault), user_mode="off")
+    assert again.account.halts.day_start == start
+    assert again.account.equity == start * Decimal("0.98")
+    assert again.window_halt.start == again.account.halts.day_start
+    assert again.window_halt.day_pnl() == Decimal("-0.02")
+    assert again.window_halt.allow_aplus("overlap") is False
+
+
+def test_new_moscow_day_rebases_window_halt(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    start = desk.account.equity
+    desk.tick(NOW)
+    desk.window_halt.note_window("asia", start * Decimal("0.98"))
+    assert desk.window_halt.allow_aplus("overlap") is False
+    nxt = datetime(2026, 9, 3, 8, 0, tzinfo=UTC)  # next Moscow calendar day
+    desk.tick(nxt)
+    assert desk.account.halts.day_start == desk.account.equity
+    assert desk.window_halt.start == desk.account.halts.day_start
+    assert desk.window_halt.day_pnl() == Decimal("0")
+    assert desk.window_halt.allow_aplus("overlap") is True

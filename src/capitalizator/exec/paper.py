@@ -27,6 +27,8 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from capitalizator.exec.fees import FeeTable
+from capitalizator.hyexec.expand import take_at_1r
+from capitalizator.hyexec.score_exit import remainder_action
 from capitalizator.types import MarketEvent, require_utc
 
 Side = Literal["buy", "sell"]
@@ -473,6 +475,25 @@ class PaperEngine:
         self._exit(pos, require_utc(now), px, "soft", role="taker")
         return True
 
+    def note_score(
+        self,
+        paper_id: str,
+        *,
+        now: datetime,
+        px: Decimal,
+        score_now: Decimal,
+        score_entry: Decimal,
+        drop: Decimal,
+    ) -> bool:
+        """Flatten the remainder when the score drops. Never adds size."""
+        pos = self.positions.get(paper_id)
+        if pos is None or pos.state != "open" or not pos.half_taken:
+            return False
+        if remainder_action(score_now=score_now, score_entry=score_entry, drop=drop) != "flatten":
+            return False
+        self._exit(pos, require_utc(now), px, "score", role="taker")
+        return True
+
     def flatten(
         self, symbol: str, px: Decimal, now: datetime, *, reason: str = "flatten"
     ) -> list[PaperPosition]:
@@ -603,7 +624,7 @@ class PaperEngine:
 
     def _take_half(self, pos: PaperPosition, when: datetime) -> None:
         px = self._half_px(pos)
-        part = pos.qty_open * HALF
+        part = pos.qty_open * take_at_1r(expand=bool(pos.labels.get("expand")))
         pos.realized += pos._favorable(px) * part
         pos.fees += part * px * self.fees.rate("maker")
         pos.qty_open -= part

@@ -74,6 +74,7 @@ from capitalizator.exec.strategy_bounce import (
 from capitalizator.exec.trail import TrailEngine, TrailState
 from capitalizator.exec.tvh import NO_TVH, tvh_ok
 from capitalizator.hyexec.sizing import desk_step, effective_risk
+from capitalizator.hyexec.timing import may_send
 from capitalizator.hyexec.window_halt import WindowHalt
 from capitalizator.instruments import Instrument, InstrumentRegistry, InstrumentUnknown
 from capitalizator.jury.desk import (
@@ -214,7 +215,12 @@ class DeskLoop:
         self.account = Account.load(knowledge, self.risk_config)
         self.risk = self.account.risk
         self.halts = self.account.halts
-        self.window_halt = WindowHalt(start_equity=self.account.equity)
+        assert self.halts is not None
+        self.window_halt = WindowHalt(start_equity=self.halts.day_start)
+        if self.halts.peak > self.window_halt.peak:
+            self.window_halt.peak = self.halts.peak
+        self.window_halt.note_window("init", self.account.equity)
+        self.hyexec_model_go: bool | None = None
         self.funding: dict[str, Decimal] = {}
         self._funding_hist: dict[str, list[Decimal]] = {}
         self._oi_hist: dict[str, list[tuple[datetime, Decimal]]] = {}
@@ -1019,6 +1025,7 @@ class DeskLoop:
     def tick(self, now: datetime, *, force_flush: bool = True) -> list[dict[str, Any]]:
         when = require_utc(now)
         self.account.roll(when)
+        self._sync_window_halt(when)
         self.paper.on_clock(when)
         out: list[dict[str, Any]] = []
         if self.knowledge.available():
@@ -1986,7 +1993,7 @@ class DeskLoop:
             self.knowledge.put_journal_touch(row.touch_id, payload_row)
         sent = False
         if (
-            shadow_would
+            self.allow_hyexec_send(book_ticket=shadow_would)
             and skip is None
             and self.user_mode in {"demo", "live"}
             and self.hello_ok()
@@ -2603,6 +2610,9 @@ class DeskLoop:
             self._sentiment_mult = self.risk_config.sentiment_mult
         return self._sentiment_mult
 
+    def allow_hyexec_send(self, *, book_ticket: bool) -> bool:
+        return may_send(book_ticket=book_ticket, model_go=self.hyexec_model_go)
+
     def effective_target_risk(self, *, step: str = "std", window: str = "") -> Decimal:
         base = target_after_drift(drift=self.drift_active, base=self.risk_config.target_risk_pct)
         return effective_risk(
@@ -2614,11 +2624,13 @@ class DeskLoop:
         )
 
     def _sync_window_halt(self, now: datetime, *, rebase: bool = False) -> None:
-        equity = self.account.equity
-        if rebase:
-            self.window_halt = WindowHalt(start_equity=equity)
-            return
-        self.window_halt.note_window(self.policy.window(now).name, equity)
+        assert self.account.halts is not None
+        day_start = self.account.halts.day_start
+        if rebase or self.window_halt.start != day_start:
+            self.window_halt = WindowHalt(start_equity=day_start)
+            if self.account.halts.peak > self.window_halt.peak:
+                self.window_halt.peak = self.account.halts.peak
+        self.window_halt.note_window(self.policy.window(now).name, self.account.equity)
 
     def _reload_instruments(self) -> None:
         """Signer refreshed instruments-info from the venue → registry rows (D-04)."""
