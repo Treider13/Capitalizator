@@ -8,37 +8,41 @@
 </head>
 <body class="desk-app">
   <header class="topbar">
-    <div class="brand">ХРОНОС</div>
-    <span class="sub">Tape Desk</span>
-    <span class="pill">деривативы · фьючерс</span>
-    <span class="pill">спот не торгуем</span>
-    <label class="pill">символ
-      <select id="symbol"></select>
-    </label>
-    <div id="tf-bar">
-      <button type="button" class="tf" data-tf="15m">15m</button>
-      <button type="button" class="tf" data-tf="1h">1h</button>
-      <button type="button" class="tf" data-tf="4h">4h</button>
-      <button type="button" class="tf" data-tf="1d">1d</button>
+    <div class="topbar-row">
+      <div class="brand">ХРОНОС</div>
+      <span class="sub">Tape Desk</span>
+      <span class="pill">деривативы · фьючерс</span>
+      <span class="pill">спот не торгуем</span>
+      <label class="pill">символ
+        <select id="symbol"></select>
+      </label>
+      <div id="tf-bar">
+        <button type="button" class="tf" data-tf="15m">15m</button>
+        <button type="button" class="tf" data-tf="1h">1h</button>
+        <button type="button" class="tf" data-tf="4h">4h</button>
+        <button type="button" class="tf" data-tf="1d">1d</button>
+      </div>
+      <form id="mode-form">
+        <input type="hidden" name="ack" value="1"/>
+        <button type="submit" class="mode" name="mode" value="off">off</button>
+        <button type="submit" class="mode" name="mode" value="learn">learn</button>
+        <button type="submit" class="mode" name="mode" value="demo">demo</button>
+        <button type="submit" class="mode" name="mode" value="live">live</button>
+      </form>
+      <span id="mode" class="pill">режим —</span>
+      <span id="price" class="pill">цена —</span>
+      <span id="window" class="pill">окно —</span>
+      <span id="hello" class="pill">hello —</span>
+      <span id="cred" class="pill">ключ —</span>
+      <span id="latency" class="pill">решение —</span>
+      <span id="knobs" class="pill">маржа — · стоп —</span>
     </div>
-    <form id="mode-form">
-      <input type="hidden" name="ack" value="1"/>
-      <button type="submit" class="mode" name="mode" value="off">off</button>
-      <button type="submit" class="mode" name="mode" value="learn">learn</button>
-      <button type="submit" class="mode" name="mode" value="demo">demo</button>
-      <button type="submit" class="mode" name="mode" value="live">live</button>
-    </form>
-    <span id="mode" class="pill">режим —</span>
-    <span id="price" class="pill">цена —</span>
-    <span id="window" class="pill">окно —</span>
-    <span id="hello" class="pill">hello —</span>
-    <span id="cred" class="pill">ключ —</span>
-    <span id="latency" class="pill">решение —</span>
-    <span id="knobs" class="pill">маржа — · стоп —</span>
-    {{NAV}}
-    <div class="gates" id="gates"></div>
-    <span class="status-lock">торги с консоли нельзя</span>
-    <span class="status-lock">сделок нет, пока нет ленты. Ключи сюда не попадают.</span>
+    <div class="topbar-row">
+      {{NAV}}
+      <div class="gates" id="gates"></div>
+      <span class="status-lock">торги с консоли нельзя</span>
+      <span class="status-lock">сделок нет, пока нет ленты. Ключи сюда не попадают.</span>
+    </div>
   </header>
 
   <section id="contour-box" class="strip">
@@ -48,7 +52,9 @@
   </section>
 
   <section id="ready-box" class="strip">
-    <h2>Как включить стол — три шага на этой странице</h2>
+    <details>
+      <summary id="ready-summary">Включение стола — ключ, hello, режим (живой мастер; также вкладка Настройки)</summary>
+      <h2>Как включить стол — три шага на этой странице</h2>
     <ol id="ready-steps" style="padding-left:20px;margin:6px 0;">
       <li>
         <b>Шаг 1. Ключ</b> — файл <code>secrets/bybit.json</code>, права 0600.
@@ -82,7 +88,8 @@
         </div>
       </li>
     </ol>
-    <p id="mode-note" class="empty">сначала ключ, потом hello на бирже, потом demo или live</p>
+      <p id="mode-note" class="empty">сначала ключ, потом hello на бирже, потом demo или live</p>
+    </details>
   </section>
 
   <section id="exp-box" class="strip">
@@ -408,6 +415,14 @@
         if (!credOk) note.textContent = "сейчас: шаг 1 — сохраните ключ";
         else if (!h.hello_ok) note.textContent = "сейчас: шаг 2 — проверьте ключ на бирже";
         else note.textContent = "сейчас: шаг 3 — demo или live";
+      }
+      const sum = document.getElementById("ready-summary");
+      if (sum) {
+        sum.textContent = !credOk
+          ? "шаг 1 · ключа нет — раскрыть формы или вкладка Настройки"
+          : (!h.hello_ok
+            ? "шаг 2 · hello нет — раскрыть или вкладка Настройки"
+            : "шаг 3 · режим — кнопки off/learn/demo/live в шапке");
       }
       const exp = (h.experience) || {};
       const expEl = document.getElementById("experience");

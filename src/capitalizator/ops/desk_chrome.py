@@ -20,17 +20,23 @@ DESK_CSS = """
 html,body{margin:0;background:var(--bg);color:var(--text);
   font:12px/1.4 ui-sans-serif,system-ui,sans-serif}
 body.desk-app{min-height:100vh;display:flex;flex-direction:column}
+body.desk-app .desk-grid{flex:1 1 auto}
 a{color:var(--teal);text-decoration:none}
 a:hover{text-decoration:underline}
 code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px}
 .topbar{
-  display:flex;flex-wrap:wrap;gap:8px;align-items:center;
-  padding:6px 10px;border-bottom:1px solid var(--line);background:#090d12;
+  display:flex;flex-direction:column;gap:0;padding:0;
+  border-bottom:1px solid var(--line);background:#090d12;
   position:sticky;top:0;z-index:20
 }
+.topbar-row{
+  display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+  padding:5px 10px;border-bottom:1px solid var(--line)
+}
+.topbar-row:last-child{border-bottom:0}
 .brand{font-weight:700;letter-spacing:.14em;font-size:14px}
 .sub{color:var(--muted);letter-spacing:.08em;font-size:11px;text-transform:uppercase}
-.tabs{display:flex;gap:0;margin-left:auto}
+.tabs{display:flex;gap:0;margin-left:8px}
 .tabs a{
   color:var(--muted);padding:6px 12px;border-bottom:2px solid transparent;text-decoration:none
 }
@@ -77,14 +83,16 @@ th,td{padding:3px 6px;border-bottom:1px solid var(--line);text-align:left;vertic
 th{color:var(--muted);font-weight:600}
 .num,td.bid,td.ask,.mono{font-family:ui-monospace,Menlo,Consolas,monospace}
 .bid{color:var(--bid)}.ask{color:var(--ask)}
-.strip{margin:0;padding:6px 10px;border-bottom:1px solid var(--line);background:var(--panel)}
+.strip{margin:0;padding:4px 10px;border-bottom:1px solid var(--line);background:var(--panel)}
+.strip details{margin:0}
+.strip summary{cursor:pointer;color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
 .desk-grid{
-  display:grid;grid-template-columns:240px minmax(0,1.6fr) 320px;
-  grid-template-rows:minmax(280px,1fr);gap:6px;padding:6px;flex:1;min-height:0
+  display:grid;grid-template-columns:260px minmax(0,1.7fr) 340px;
+  grid-template-rows:minmax(360px,1fr);gap:6px;padding:6px;flex:1;min-height:0
 }
 @media (max-width:1100px){.desk-grid{grid-template-columns:1fr}}
 .chart-panel{display:flex;flex-direction:column;min-width:0}
-.chart-panel canvas{width:100%;height:260px;background:#080c10;flex:1}
+.chart-panel canvas{width:100%;height:100%;min-height:320px;background:#080c10;flex:1}
 .right-col,.col{display:flex;flex-direction:column;gap:6px;min-width:0}
 .bottom-grid{
   display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:0 6px 6px
@@ -99,6 +107,7 @@ th{color:var(--muted);font-weight:600}
   grid-column:1/-1;text-align:center;padding:4px 0;color:#fff;font-size:16px;font-weight:700
 }
 .imbalance{display:flex;height:8px;margin-top:6px;background:#1a1515}
+.imbalance[hidden]{display:none!important}
 .imbalance i{display:block;height:100%;background:var(--bid)}
 .imbalance b{display:block;height:100%;background:var(--ask);flex:1}
 .why{display:flex;flex-direction:column;gap:4px}
@@ -186,9 +195,9 @@ def chrome_start(*, title: str, active: str, extra_css: str = "") -> str:
         "<meta name='viewport' content='width=device-width, initial-scale=1'/>"
         f"<title>{html.escape(title)}</title>"
         f"<style>{DESK_CSS}{extra_css}</style></head><body class='desk-app'>"
-        "<header class='topbar'><div class='brand'>ХРОНОС</div>"
+        "<header class='topbar'><div class='topbar-row'><div class='brand'>ХРОНОС</div>"
         "<span class='sub'>Tape Desk</span>"
-        f"{nav_html(active)}</header>"
+        f"{nav_html(active)}</div></header>"
     )
 
 
