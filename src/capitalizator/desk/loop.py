@@ -118,7 +118,7 @@ from capitalizator.risk.account import Account
 from capitalizator.risk.config import load_risk_config
 from capitalizator.risk.correlation import CorrelationGuard, returns_from_closes
 from capitalizator.risk.drift_cut import target_after_drift
-from capitalizator.risk.schema import Intent
+from capitalizator.risk.schema import Intent, reject_forbidden_keys
 from capitalizator.risk.session import cpi_day, us_data_known_at
 from capitalizator.risk.sessions import SessionPolicy, WindowState
 from capitalizator.risk.sizing import size_position
@@ -2199,6 +2199,7 @@ class DeskLoop:
         "resume_entries",
         "promote",
         "drift_release",
+        "add_in_profit",
     )
     # Bounded in-memory tails for a 24/7 process (audit §5): the journal in SQLite is
     # the record; these are working windows.
@@ -2242,9 +2243,55 @@ class DeskLoop:
             window = None if symbol in {None, "", "ALL"} else str(symbol)
             cleared = self.release_drift(window)
             return {"windows": cleared}, [{"event": "drift_release", "windows": cleared}]
+        if kind == "add_in_profit":
+            return self._add_in_profit_command(payload, symbol, now)
         # promote — run the exam now; flip the label only on a pass
         result = self._promote(payload, now)
         return result, [{"event": "promote", **{k: result[k] for k in ("passed",)}}]
+
+    def _add_in_profit_command(
+        self, payload: Mapping[str, Any], symbol: Any, now: datetime
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Validate a second leg above (long) / below (short) entry. No venue add exists."""
+        reject_forbidden_keys(dict(payload))
+        if symbol in {None, "", "ALL"}:
+            raise ValueError("add_in_profit needs a symbol")
+        idea = self.account.open.get(str(symbol))
+        if idea is None:
+            raise ValueError("no open idea")
+        if "add_price" not in payload:
+            raise ValueError("add_price required")
+        add_price = Decimal(str(payload["add_price"]))
+        extra = Decimal(str(payload.get("extra_risk") or "0.005"))
+        equity = self.account.sizing_equity()
+        if equity <= 0:
+            raise ValueError("equity must be > 0")
+        open_risk = idea.qty * abs(idea.entry - idea.stop) / equity
+        got = self.manager.add_in_profit(
+            side=idea.side,  # type: ignore[arg-type]
+            entry=idea.entry,
+            add_price=add_price,
+            extra_risk=extra,
+            open_risk=open_risk,
+        )
+        row = {
+            "action": got.action,
+            "symbol": idea.symbol,
+            "side": got.side,
+            "entry": str(got.entry),
+            "add_price": str(got.add_price),
+            "extra_risk": str(got.extra_risk),
+            "open_risk": str(got.open_risk),
+            "total_risk": str(got.total_risk),
+            "at": now.isoformat(),
+            "venue": False,
+        }
+        twins = [p for p in self.paper.open_for(idea.symbol) if p.state == "open"]
+        touch_id = twins[0].touch_id if twins else f"add_in_profit:{idea.symbol}"
+        existing = self.knowledge.get_journal_touch(touch_id) or {"touch_id": touch_id}
+        existing["add_in_profit"] = row
+        self.knowledge.put_journal_touch(touch_id, existing)
+        return row, [{"event": "add_in_profit", **row}]
 
     def _consume_commands(self, now: datetime) -> list[dict[str, Any]]:
         """Operator commands are claimed atomically from the one `desk_commands` table

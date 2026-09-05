@@ -10,6 +10,7 @@ import argparse
 import html
 import json
 import secrets
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -776,20 +777,29 @@ class ConsoleApp:
             knowledge.close()
 
     def command(
-        self, kind: str, *, symbol: str | None, ack: bool, reason: str = ""
+        self,
+        kind: str,
+        *,
+        symbol: str | None,
+        ack: bool,
+        reason: str = "",
+        extra: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """flatten | release_halts | pause_entries | resume_entries | drift_release
-        → picked up by the desk tick. drift_release takes a window name in `symbol` (or ALL)."""
+        | add_in_profit → picked up by the desk tick. drift_release takes a window
+        name in `symbol` (or ALL). add_in_profit journals; it does not send."""
         if not ack:
             raise ValueError("ack required")
         if kind not in Knowledge.COMMAND_KINDS:
             raise ValueError(f"unknown command: {kind}")
-        if kind in {"flatten", "ack_position"} and not symbol:
+        if kind in {"flatten", "ack_position", "add_in_profit"} and not symbol:
             raise ValueError(f"{kind} needs a symbol" + (" (or ALL)" if kind == "flatten" else ""))
         knowledge = open_knowledge(self.vault, create=True)
         try:
             now = datetime.now(tz=UTC).isoformat()
             cmd = {"kind": kind, "symbol": symbol, "reason": reason or "operator", "at": now}
+            if extra:
+                cmd.update(extra)
             cmd_id = knowledge.enqueue_command(kind, cmd, created_ts=now)
             pending = sum(1 for c in knowledge.commands(limit=500) if c["status"] == "pending")
             return {"queued": {**cmd, "id": cmd_id}, "pending": pending}
@@ -1062,11 +1072,17 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                             )
                             note = "вселенная применена; вступит после рестарта стола и рекордера"
                         else:
+                            extra = {
+                                key: payload[key]
+                                for key in ("add_price", "extra_risk")
+                                if payload.get(key) not in (None, "")
+                            }
                             out = app.command(
                                 str(payload.get("kind") or ""),
                                 symbol=payload.get("symbol"),
                                 ack=ack,
                                 reason=str(payload.get("reason") or ""),
+                                extra=extra or None,
                             )
                             note = f"команда поставлена в очередь (#{out['queued']['id']})"
                     except ValueError as exc:
