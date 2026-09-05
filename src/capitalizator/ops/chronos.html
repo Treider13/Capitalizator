@@ -665,7 +665,12 @@
           symbol = sel.value;
           sel.dataset.list = key;
         }
-        sel.onchange = () => { symbol = sel.value; refresh(); };
+        sel.onchange = () => {
+          symbol = sel.value;
+          replayN = 0;
+          stopReplay();
+          refresh();
+        };
       }
       document.getElementById("mode").textContent = "режим " + (st.user_mode || "off");
       markMode(st.user_mode || "off");
@@ -751,11 +756,11 @@
           };
         }
       }
-      const barRows = (bars && bars.bars) || [];
-      const zoneRows = (zones && zones.zones) || [];
-      lastBars = barRows;
-      lastZones = zoneRows;
-      lastTouch = touch && touch.touch;
+      if (bars && Array.isArray(bars.bars)) lastBars = bars.bars;
+      if (zones && Array.isArray(zones.zones)) lastZones = zones.zones;
+      if (touch && Object.prototype.hasOwnProperty.call(touch, "touch")) lastTouch = touch.touch;
+      const barRows = lastBars;
+      const zoneRows = lastZones;
       const tfEl = document.getElementById("chart-tf");
       if (tfEl) tfEl.textContent = tf;
       markTf();
@@ -805,12 +810,14 @@
             ).join("")
           : '<tr><td colspan="4" class="empty">бумаги нет</td></tr>';
       }
-      paintBook(book);
-      const tr = (trades && trades.trades) || [];
-      document.getElementById("trades").innerHTML = tr.length
-        ? tr.slice().reverse().map(x => `<tr><td>${esc(x.ts)}</td><td class="num">${esc(x.px)}</td><td class="num">${esc(x.qty)}</td><td>${esc(x.side)}</td></tr>`).join("")
-        : '<tr><td colspan="4" class="empty">лента пуста</td></tr>';
-      const latest = (touch && touch.touch) || null;
+      if (book != null) paintBook(book);
+      if (trades && Array.isArray(trades.trades)) {
+        const tr = trades.trades;
+        document.getElementById("trades").innerHTML = tr.length
+          ? tr.slice().reverse().map(x => `<tr><td>${esc(x.ts)}</td><td class="num">${esc(x.px)}</td><td class="num">${esc(x.qty)}</td><td>${esc(x.side)}</td></tr>`).join("")
+          : '<tr><td colspan="4" class="empty">лента пуста</td></tr>';
+      }
+      const latest = lastTouch || null;
       whyBox(latest);
       if (dash && dash.risk) {
         const risk = document.querySelectorAll("#why article")[7];
