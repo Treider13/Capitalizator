@@ -12,5 +12,7 @@ def test_submit_paper_passes_value_area_into_smart_stop() -> None:
     start = text.index("def _submit_paper(")
     end = text.index("decision = size_position(", start)
     block = text[start:end]
-    assert "vah=self._value_area(st.zlg_card)[0]" in block
-    assert "val=self._value_area(st.zlg_card)[1]" in block
+    assert "vah=vah" in block
+    assert "val=val" in block
+    # Same card as the live propose — not the stale ZLG snapshot.
+    assert "vah, val = self._value_area(card)" in text

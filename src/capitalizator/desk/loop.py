@@ -76,6 +76,7 @@ from capitalizator.exec.tvh import NO_TVH, tvh_ok
 from capitalizator.hyexec.adwin import after_hour_dd
 from capitalizator.hyexec.alerts import stamp as stamp_hyexec
 from capitalizator.hyexec.expand import expand_ok, take_at_1r
+from capitalizator.hyexec.features import NAMES as HYEXEC_FEATURE_NAMES
 from capitalizator.hyexec.features import FeatureRow, build_features
 from capitalizator.hyexec.pace import pyramid_ok
 from capitalizator.hyexec.sizing import desk_step, effective_risk
@@ -1881,6 +1882,7 @@ class DeskLoop:
                 "oko_liq_rel": row.oko_liq_rel,
             }
         )
+        journal.update(_feature_journal(st.last_features))
         missing = [key for key in JOURNAL_KEYS if key not in journal]
         if missing:
             raise RuntimeError(f"journal missing {missing}")
@@ -2014,10 +2016,12 @@ class DeskLoop:
             del self.shadow_writes[: len(self.shadow_writes) - self.SHADOW_WRITES_MAX]
         # W3: shadow and fade ideas trade on paper 24/7, whatever the user mode.
         paper_ids: dict[str, str] = {}
+        vah, val = self._value_area(card)
         if shadow_would:
             pid = self._submit_paper(
                 row, zone, known_zones, idea=idea, side=idea_side, wick_extreme=wick_extreme,
                 now=closed_at, source="shadow", tag=idea_shadow_tag(idea),
+                vah=vah, val=val,
             )
             if pid:
                 paper_ids["shadow"] = pid
@@ -2025,6 +2029,7 @@ class DeskLoop:
             pid = self._submit_paper(
                 row, zone, known_zones, idea="fade_spring", side=fade_side,
                 wick_extreme=wick_extreme, now=closed_at, source="fade", tag="fade_spring",
+                vah=vah, val=val,
             )
             if pid:
                 paper_ids["fade"] = pid
@@ -2035,6 +2040,7 @@ class DeskLoop:
             pid = self._submit_paper(
                 row, zone, known_zones, idea=idea, side=idea_side, wick_extreme=wick_extreme,
                 now=closed_at, source="challenger", tag=idea_shadow_tag(idea),
+                vah=vah, val=val,
             )
             if pid:
                 paper_ids["challenger"] = pid
@@ -2887,6 +2893,8 @@ class DeskLoop:
         now: datetime,
         source: str,
         tag: str,
+        vah: Decimal | None = None,
+        val: Decimal | None = None,
     ) -> str | None:
         """Same geometry as the live strategy, sized from the account, no EV gate:
         the shadow measures what the edge is worth *after* costs, it does not filter."""
@@ -2919,8 +2927,8 @@ class DeskLoop:
                 entry=row.trade_px,
                 manual_frac=self.risk_config.manual_stop_frac,
                 mode=self.risk_config.stop_mode,
-                vah=self._value_area(st.zlg_card)[0],
-                val=self._value_area(st.zlg_card)[1],
+                vah=vah,
+                val=val,
             )
             stop = smart.stop
             if atr is not None and atr > 0:
@@ -3980,6 +3988,19 @@ def _record_adds_from_diff(
                 st.adds.append(BookAdd(ts=ts, side=hit, px=px, qty=delta))
             elif delta < 0:
                 st.pulls.append(BookPull(ts=ts, side=hit, px=px, qty=-delta))
+
+
+def _feature_journal(row: FeatureRow | None) -> dict[str, Any]:
+    """PIT 5m vector on the touch. Missing close → None. Never invents a score."""
+    out: dict[str, Any] = {"hyexec_as_of": None}
+    for name in HYEXEC_FEATURE_NAMES:
+        out[f"hx_{name}"] = None
+    if row is None:
+        return out
+    out["hyexec_as_of"] = row.as_of.isoformat()
+    for name, value in row.vector.items():
+        out[f"hx_{name}"] = None if value is None else str(value)
+    return out
 
 
 def _opt_px(raw: object) -> Decimal | None:
