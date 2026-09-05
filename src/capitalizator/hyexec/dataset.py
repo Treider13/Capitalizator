@@ -28,9 +28,10 @@ def labeled_events(
     """Complete hx_* with a filled shadow r_net, keyed by touch_id.
 
     A close can land in the middle of the journal. Counting from the tail
-    would skip that label.
+    would skip that label. Order is touch_ts / hyexec_as_of so ADWIN sees
+    calendar time, not sqlite insert order after an import.
     """
-    out: list[tuple[str, list[float], float]] = []
+    staged: list[tuple[str, str, list[float], float]] = []
     for row, vec in zip(rows, matrix(rows), strict=True):
         if any(v is None for v in vec):
             continue
@@ -40,8 +41,10 @@ def labeled_events(
         tid = str(row.get("touch_id") or "")
         if not tid:
             continue
-        out.append((tid, [float(v) for v in vec], float(r)))
-    return out
+        ts = str(row.get("touch_ts") or row.get("hyexec_as_of") or "")
+        staged.append((ts, tid, [float(v) for v in vec], float(r)))
+    staged.sort(key=lambda item: item[0])
+    return [(tid, vec, r) for _ts, tid, vec, r in staged]
 
 
 def labeled_pairs(

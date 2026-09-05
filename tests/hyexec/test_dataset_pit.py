@@ -69,6 +69,21 @@ def test_labeled_pairs_need_shadow_r_net() -> None:
     assert [e[2] for e in ev] == [1.25, 0.5, 1.25]
 
 
+def test_labeled_events_follow_touch_time() -> None:
+    """ADWIN is a sequence. Import can insert an older day after a newer live row."""
+    later = {key: "1" for key in FEATURE_KEYS}
+    later["touch_id"] = "new"
+    later["touch_ts"] = "2026-09-03T00:00:00+00:00"
+    later["paper"] = {"shadow": {"filled": True, "r_net": "2"}}
+    earlier = {key: "1" for key in FEATURE_KEYS}
+    earlier["touch_id"] = "old"
+    earlier["touch_ts"] = "2026-09-01T00:00:00+00:00"
+    earlier["paper"] = {"shadow": {"filled": True, "r_net": "1"}}
+    ev = labeled_events([later, earlier])
+    assert [e[0] for e in ev] == ["old", "new"]
+    assert [e[2] for e in ev] == [1.0, 2.0]
+
+
 def test_last_complete_by_symbol_does_not_bleed() -> None:
     btc = {key: "1" for key in FEATURE_KEYS}
     btc["symbol"] = "BTCUSDT"
