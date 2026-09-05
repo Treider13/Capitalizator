@@ -43,6 +43,9 @@ def test_chronos_has_desk_controls() -> None:
     assert "function refreshSoon()" in text
     assert "now - lastRefresh < 10000" in text
     assert "setInterval(refresh, 30000)" in text
+    assert 'src="/vendor/lightweight-charts.standalone.production.js"' in text
+    assert 'src="/vendor/gsap.min.js"' in text
+    assert 'src="/vendor/pixi.min.js"' in text
 
 
 def test_load_symbol_stream_ignores_other_symbols(tmp_path: Path) -> None:

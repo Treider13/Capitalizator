@@ -104,13 +104,19 @@
         <button type="button" id="replay-book">книга с ленты</button>
         <span id="replay-book-out" class="empty">реплея нет</span>
       </div>
-      <div id="book" class="ladder"><div class="empty">стакан пуст</div></div>
+      <div class="book-host" id="book-host">
+        <div id="book-gpu" class="book-gpu"></div>
+        <div id="book" class="ladder"><div class="empty">стакан пуст</div></div>
+      </div>
       <div id="book-imbalance" class="imbalance" hidden><i id="book-bid-bar"></i><b></b></div>
       <div id="book-imbalance-txt" class="empty"></div>
     </section>
     <section class="panel chart-panel">
       <h2>График <span id="chart-tf">15m</span></h2>
-      <canvas id="chart" width="720" height="220"></canvas>
+      <div class="chart-host" id="chart-host">
+        <div id="tv-chart"></div>
+        <canvas id="chart" width="720" height="220"></canvas>
+      </div>
       <div id="chart-empty" class="empty">лента пуста — свечей нет</div>
       <div class="replay">
         <button type="button" id="replay-play">▶</button>
@@ -170,16 +176,28 @@
     </section>
   </div>
   {{SERVICE}}
+  <script src="/vendor/gsap.min.js"></script>
+  <script src="/vendor/EasePack.min.js"></script>
+  <script src="/vendor/lightweight-charts.standalone.production.js"></script>
+  <script src="/vendor/pixi.min.js"></script>
   <script>
     const BOOT = {{BOOT}};
     let symbol = (BOOT.symbols && BOOT.symbols[0]) || "BTCUSDT";
     let tf = "15m";
     let replayN = 0;
     let replayTimer = null;
+    let replayTween = null;
     let replaySpeed = 1;
     let lastBars = [];
     let lastZones = [];
     let lastTouch = null;
+    let tvChart = null;
+    let candleSeries = null;
+    let zoneLines = [];
+    let touchLine = null;
+    let bookApp = null;
+    let lastWhyKey = "";
+    let lastBookKey = "";
 
     function esc(s) {
       return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
@@ -202,17 +220,77 @@
         btn.classList.toggle("on", Number(btn.getAttribute("data-speed")) === replaySpeed);
       });
     }
-    function paintChart(bars, zones, touch) {
+    function shownBars(bars) {
+      return replayN > 0 ? (bars || []).slice(0, replayN) : (bars || []);
+    }
+    function barTime(b) {
+      const raw = Date.parse(b.open_ts || b.close_ts || "");
+      if (!Number.isFinite(raw)) return null;
+      return Math.floor(raw / 1000);
+    }
+    function toCandles(bars) {
+      const out = [];
+      let last = 0;
+      (bars || []).forEach(b => {
+        let t = barTime(b);
+        if (t == null) return;
+        if (t <= last) t = last + 1;
+        last = t;
+        const o = Number(b.open), h = Number(b.high), l = Number(b.low), c = Number(b.close);
+        if (![o, h, l, c].every(Number.isFinite)) return;
+        out.push({time: t, open: o, high: h, low: l, close: c});
+      });
+      return out;
+    }
+    function replayEase() {
+      if (replaySpeed < 1 && window.gsap) {
+        try { return gsap.parseEase("slow(0.65, 0.8, false)"); } catch (e) {}
+      }
+      return "none";
+    }
+    function ensureTv() {
+      if (!window.LightweightCharts) return null;
+      const host = document.getElementById("tv-chart");
+      if (!host) return null;
+      if (tvChart) return tvChart;
+      tvChart = LightweightCharts.createChart(host, {
+        layout: {
+          background: {color: "#080c10"},
+          textColor: "#8b9098",
+          fontSize: 11,
+          fontFamily: "ui-sans-serif, system-ui, sans-serif"
+        },
+        grid: {
+          vertLines: {color: "#1a222c"},
+          horzLines: {color: "#1a222c"}
+        },
+        rightPriceScale: {borderColor: "#243040", scaleMargins: {top: 0.08, bottom: 0.08}},
+        timeScale: {borderColor: "#243040", timeVisible: true, secondsVisible: false},
+        crosshair: {mode: LightweightCharts.CrosshairMode.Magnet},
+        localization: {locale: "ru-RU"}
+      });
+      candleSeries = tvChart.addCandlestickSeries({
+        upColor: "#00c853",
+        downColor: "#ff3b4e",
+        borderVisible: false,
+        wickUpColor: "#00c853",
+        wickDownColor: "#ff3b4e"
+      });
+      const fit = () => {
+        const r = host.getBoundingClientRect();
+        if (r.width > 8 && r.height > 8) tvChart.resize(Math.floor(r.width), Math.floor(r.height));
+      };
+      fit();
+      if (window.ResizeObserver) new ResizeObserver(fit).observe(host);
+      window.addEventListener("resize", fit);
+      return tvChart;
+    }
+    function paintChartCanvas(bars, zones, touch) {
       const canvas = document.getElementById("chart");
-      const empty = document.getElementById("chart-empty");
       const ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const shown = replayN > 0 ? (bars || []).slice(0, replayN) : (bars || []);
-      if (!shown.length) {
-        empty.style.display = "block";
-        return;
-      }
-      empty.style.display = "none";
+      const shown = shownBars(bars);
+      if (!shown.length) return;
       const highs = shown.map(b => Number(b.high));
       const lows = shown.map(b => Number(b.low));
       let min = Math.min.apply(null, lows);
@@ -257,6 +335,65 @@
         ctx.setLineDash([]);
       }
     }
+    function paintChartTv(bars, zones, touch) {
+      if (!ensureTv() || !candleSeries) return false;
+      const shown = shownBars(bars);
+      const data = toCandles(shown);
+      candleSeries.setData(data);
+      zoneLines.forEach(line => { try { candleSeries.removePriceLine(line); } catch (e) {} });
+      zoneLines = [];
+      (zones || []).forEach(z => {
+        const lo = Number(z.lo), hi = Number(z.hi);
+        const same = !z.tf || z.tf === tf;
+        const color = same ? "#e6a817" : "#5eead4";
+        if (Number.isFinite(hi)) {
+          zoneLines.push(candleSeries.createPriceLine({
+            price: hi, color, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: z.label || z.tf || ""
+          }));
+        }
+        if (Number.isFinite(lo)) {
+          zoneLines.push(candleSeries.createPriceLine({
+            price: lo, color, lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: ""
+          }));
+        }
+      });
+      if (touchLine) {
+        try { candleSeries.removePriceLine(touchLine); } catch (e) {}
+        touchLine = null;
+      }
+      if (touch && touch.trade_px && Number.isFinite(Number(touch.trade_px))) {
+        touchLine = candleSeries.createPriceLine({
+          price: Number(touch.trade_px), color: "#e6a817", lineWidth: 2, lineStyle: 3,
+          axisLabelVisible: true, title: "касание"
+        });
+      }
+      if (data.length) {
+        const from = Math.max(-0.5, data.length - 80);
+        tvChart.timeScale().setVisibleLogicalRange({from, to: data.length + 3});
+      }
+      return true;
+    }
+    function paintChart(bars, zones, touch) {
+      const empty = document.getElementById("chart-empty");
+      const host = document.getElementById("chart-host");
+      const shown = shownBars(bars);
+      if (!shown.length) {
+        empty.style.display = "block";
+        if (host) host.className = "chart-host";
+        if (candleSeries) candleSeries.setData([]);
+        const canvas = document.getElementById("chart");
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
+      empty.style.display = "none";
+      if (paintChartTv(bars, zones, touch)) {
+        if (host) host.className = "chart-host engine-tv";
+        return;
+      }
+      if (host) host.className = "chart-host engine-canvas";
+      paintChartCanvas(bars, zones, touch);
+    }
     function whyBox(touch) {
       const t = touch || {};
       const claims = (t.claims && t.claims[0] && t.claims[0].claims) || [];
@@ -284,8 +421,17 @@
       document.getElementById("unset-atoms").textContent = unset
         .map(([k, v]) => k + " " + (v == null || v === "" ? "нет данных" : String(v)))
         .join(" · ");
+      const whyKey = document.getElementById("why").innerText;
+      if (window.gsap && keyChanged(whyKey)) {
+        gsap.from("#why article", {opacity: 0, y: 5, stagger: 0.045, duration: 0.38, ease: "power2.out", overwrite: true});
+      }
     }
-    function paintBook(book) {
+    function keyChanged(key) {
+      if (key === lastWhyKey) return false;
+      lastWhyKey = key;
+      return true;
+    }
+    function paintBookHtml(book) {
       const el = document.getElementById("book");
       const bids = (book && book.bids) || [];
       const asks = (book && book.asks) || [];
@@ -295,7 +441,7 @@
         el.innerHTML = '<div class="empty">стакан пуст</div>';
         imb.hidden = true;
         imbTxt.textContent = "";
-        return;
+        return {bids, asks, empty: true};
       }
       const n = 12;
       const askShow = asks.slice(0, n);
@@ -325,6 +471,86 @@
       imbTxt.textContent = "bid " + Math.round(bidSum / tot * 100) + "% · ask "
         + Math.round(askBid / tot * 100) + "%";
       imbTxt.className = "";
+      return {bids, asks, askShow, bidShow, maxQ, empty: false};
+    }
+    function ensureBookGpu() {
+      if (!window.PIXI) return null;
+      const host = document.getElementById("book-gpu");
+      if (!host) return null;
+      if (bookApp) return bookApp;
+      try {
+        bookApp = new PIXI.Application({
+          background: 0x0c1014,
+          antialias: true,
+          resolution: Math.min(window.devicePixelRatio || 1, 2),
+          autoDensity: true,
+          width: Math.max(host.clientWidth || 240, 160),
+          height: Math.max(host.clientHeight || 360, 320)
+        });
+        host.appendChild(bookApp.view);
+        return bookApp;
+      } catch (e) {
+        bookApp = null;
+        return null;
+      }
+    }
+    function paintBookGpu(snap) {
+      const wrap = document.getElementById("book-host");
+      if (!snap || snap.empty || !ensureBookGpu()) {
+        if (wrap) wrap.classList.remove("gpu");
+        return false;
+      }
+      const host = document.getElementById("book-gpu");
+      const w = Math.max(host.clientWidth || 240, 160);
+      const rowH = 18;
+      const askShow = snap.askShow || [];
+      const bidShow = snap.bidShow || [];
+      const h = Math.max((askShow.length + bidShow.length + 2) * rowH, 320);
+      bookApp.renderer.resize(w, h);
+      bookApp.stage.removeChildren();
+      const maxQ = snap.maxQ || 1;
+      const g = new PIXI.Graphics();
+      const styleAsk = {fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: 11, fill: 0xff3b4e};
+      const styleBid = {fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: 11, fill: 0x00c853};
+      const styleMid = {fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: 16, fill: 0xffffff, fontWeight: "700"};
+      let y = 4;
+      askShow.slice().reverse().forEach(a => {
+        const bw = ((Number(a[1]) || 0) / maxQ) * (w * 0.92);
+        g.beginFill(0xff3b4e, 0.28);
+        g.drawRect(w - bw, y + 1, bw, rowH - 2);
+        g.endFill();
+        const t = new PIXI.Text(String(a[0]) + "  " + String(a[1]), styleAsk);
+        t.x = w - 8; t.anchor.set(1, 0); t.y = y + 2;
+        bookApp.stage.addChild(t);
+        y += rowH;
+      });
+      const mid = (snap.bids[0] && snap.bids[0][0]) || (snap.asks[0] && snap.asks[0][0]) || "—";
+      const midText = new PIXI.Text(String(mid), styleMid);
+      midText.x = w / 2; midText.anchor.set(0.5, 0); midText.y = y;
+      bookApp.stage.addChild(midText);
+      y += rowH + 4;
+      bidShow.forEach(b => {
+        const bw = ((Number(b[1]) || 0) / maxQ) * (w * 0.92);
+        g.beginFill(0x00c853, 0.28);
+        g.drawRect(0, y + 1, bw, rowH - 2);
+        g.endFill();
+        const t = new PIXI.Text(String(b[1]) + "  " + String(b[0]), styleBid);
+        t.x = 8; t.y = y + 2;
+        bookApp.stage.addChild(t);
+        y += rowH;
+      });
+      bookApp.stage.addChildAt(g, 0);
+      wrap.classList.add("gpu");
+      const bookKey = JSON.stringify(askShow) + "|" + JSON.stringify(bidShow);
+      if (window.gsap && bookKey !== lastBookKey) {
+        lastBookKey = bookKey;
+        gsap.from(bookApp.stage, {alpha: 0.35, duration: 0.28, ease: "power1.out", overwrite: true});
+      }
+      return true;
+    }
+    function paintBook(book) {
+      const snap = paintBookHtml(book);
+      paintBookGpu(snap);
     }
     function updateReplayLabel() {
       const slider = document.getElementById("replay-bars");
@@ -333,10 +559,14 @@
         : "все свечи";
     }
     function stopReplay() {
-      if (replayTimer) {
-        clearInterval(replayTimer);
-        replayTimer = null;
+      if (replayTween && window.gsap) {
+        replayTween.kill();
+        replayTween = null;
       }
+      if (replayTimer && typeof replayTimer === "number") {
+        clearInterval(replayTimer);
+      }
+      replayTimer = null;
       document.getElementById("replay-play").textContent = "▶";
     }
     function startReplay() {
@@ -344,8 +574,34 @@
       const max = Number(document.getElementById("replay-bars").max) || 0;
       if (!max) return;
       if (!replayN) replayN = 1;
-      const ms = Math.max(80, Math.round(400 / replaySpeed));
       document.getElementById("replay-play").textContent = "❚❚";
+      if (window.gsap) {
+        const from = replayN;
+        const to = max;
+        if (from >= to) {
+          stopReplay();
+          return;
+        }
+        const duration = Math.max(0.28, (to - from) * (0.42 / replaySpeed));
+        const state = {i: from};
+        replayTween = gsap.to(state, {
+          i: to,
+          duration,
+          ease: replayEase(),
+          onUpdate() {
+            const i = Math.max(from, Math.round(state.i));
+            if (i === replayN) return;
+            replayN = i;
+            document.getElementById("replay-bars").value = String(replayN);
+            updateReplayLabel();
+            paintChart(lastBars, lastZones, lastTouch);
+          },
+          onComplete() { stopReplay(); }
+        });
+        replayTimer = replayTween;
+        return;
+      }
+      const ms = Math.max(80, Math.round(400 / replaySpeed));
       replayTimer = setInterval(() => {
         const cap = Number(document.getElementById("replay-bars").max) || 0;
         if (replayN >= cap) {

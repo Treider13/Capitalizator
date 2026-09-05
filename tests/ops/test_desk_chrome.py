@@ -7,7 +7,7 @@ from http.server import HTTPServer
 from pathlib import Path
 from threading import Thread
 
-from capitalizator.ops.console import ConsoleApp, _handler, render_html
+from capitalizator.ops.console import VENDOR_TYPES, ConsoleApp, _handler, render_html, vendor_file
 from capitalizator.ops.daily_map_report import contains_advice
 from capitalizator.ops.desk_chrome import render_glossary_html
 from capitalizator.ops.knowledge import open_knowledge
@@ -25,6 +25,18 @@ def test_glossary_html_has_real_terms_and_no_advice() -> None:
     assert "<td class='mono'>DEFEND</td>" not in filtered
 
 
+def test_vendor_engines_are_allowlisted() -> None:
+    for name in VENDOR_TYPES:
+        got = vendor_file(name)
+        assert got is not None
+        data, ctype = got
+        assert data.startswith(b"/*!")
+        assert "javascript" in ctype
+    assert vendor_file("../chronos.html") is None
+    assert vendor_file("nope.js") is None
+    assert vendor_file("") is None
+
+
 def test_desk_html_has_tape_desk_chrome_and_live_controls(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     open_knowledge(vault).close()
@@ -33,6 +45,9 @@ def test_desk_html_has_tape_desk_chrome_and_live_controls(tmp_path: Path) -> Non
     assert 'href="/glossary"' in page
     assert 'id="replay-play"' in page
     assert 'id="book-imbalance"' in page
+    assert 'src="/vendor/lightweight-charts.standalone.production.js"' in page
+    assert 'src="/vendor/gsap.min.js"' in page
+    assert 'src="/vendor/pixi.min.js"' in page
     assert 'class="status-lock"' in page
     assert "заявка закрыта" not in page
     assert contains_advice(page) is False
@@ -77,6 +92,30 @@ def test_glossary_route_is_html_api_stays_json(tmp_path: Path) -> None:
         touch = conn.getresponse().read().decode()
         conn.close()
         assert "ордеров нет" in touch
+        conn = HTTPConnection(host, port, timeout=3)
+        conn.request("GET", "/vendor/gsap.min.js")
+        gsap = conn.getresponse()
+        gsap_body = gsap.read()
+        conn.close()
+        assert gsap.status == 200
+        assert "javascript" in (gsap.getheader("Content-Type") or "")
+        assert gsap_body.startswith(b"/*!") and b"GSAP" in gsap_body[:80]
+        conn = HTTPConnection(host, port, timeout=3)
+        conn.request("GET", "/vendor/lightweight-charts.standalone.production.js")
+        assert conn.getresponse().status == 200
+        conn.close()
+        conn = HTTPConnection(host, port, timeout=3)
+        conn.request("GET", "/vendor/pixi.min.js")
+        assert conn.getresponse().status == 200
+        conn.close()
+        conn = HTTPConnection(host, port, timeout=3)
+        conn.request("GET", "/vendor/../chronos.html")
+        assert conn.getresponse().status == 404
+        conn.close()
+        conn = HTTPConnection(host, port, timeout=3)
+        conn.request("GET", "/vendor/nope.js")
+        assert conn.getresponse().status == 404
+        conn.close()
     finally:
         server.shutdown()
         server.server_close()

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from capitalizator.ops import chronos_data, i18n_ru
 from capitalizator.ops.contour import ContourNotReady
@@ -56,6 +56,30 @@ from capitalizator.risk.session import load_time_config
 from capitalizator.screener.universe import load_desk_universe
 
 ADVICE_WORDS = ("лонг", "шорт", "купи", "продай", "завтра")
+
+VENDOR_DIR = Path(__file__).with_name("vendor")
+VENDOR_TYPES = {
+    "lightweight-charts.standalone.production.js": "application/javascript; charset=utf-8",
+    "gsap.min.js": "application/javascript; charset=utf-8",
+    "EasePack.min.js": "application/javascript; charset=utf-8",
+    "pixi.min.js": "application/javascript; charset=utf-8",
+}
+
+
+def vendor_file(name: str) -> tuple[bytes, str] | None:
+    """Local UMD engines. Allowlisted names only — no path walk."""
+    if not name or name not in VENDOR_TYPES:
+        return None
+    path = VENDOR_DIR / name
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if not data:
+        return None
+    return data, VENDOR_TYPES[name]
 
 
 class ThreadedHTTPServer(ThreadingHTTPServer):
@@ -1238,6 +1262,14 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                         group=(qs.get("group") or [""])[0],
                     ).encode()
                     code, ctype = 200, "text/html; charset=utf-8"
+                elif path.startswith("/vendor/"):
+                    name = unquote(path[len("/vendor/") :]).split("/", 1)[0]
+                    got = vendor_file(name)
+                    if got is None:
+                        body, code, ctype = b"not-found", 404, "text/plain; charset=utf-8"
+                    else:
+                        body, ctype = got
+                        code = 200
                 elif path == "/api/touch":
                     snap = desk_snapshot(app.vault)
                     body = json.dumps(snap.get("touch"), ensure_ascii=False).encode()
@@ -1247,6 +1279,9 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                 self.send_response(code)
                 started = True
                 self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                if path.startswith("/vendor/") and code == 200:
+                    self.send_header("Cache-Control", "public, max-age=86400")
                 self.end_headers()
                 self.wfile.write(body)
             except Exception:

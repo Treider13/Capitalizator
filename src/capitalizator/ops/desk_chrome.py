@@ -92,7 +92,16 @@ th{color:var(--muted);font-weight:600}
 }
 @media (max-width:1100px){.desk-grid{grid-template-columns:1fr}}
 .chart-panel{display:flex;flex-direction:column;min-width:0}
-.chart-panel canvas{width:100%;height:100%;min-height:320px;background:#080c10;flex:1}
+.chart-host{position:relative;flex:1;min-height:320px;background:#080c10}
+#tv-chart{position:absolute;inset:0;width:100%;height:100%}
+.chart-panel canvas#chart{width:100%;height:100%;min-height:320px;background:#080c10;flex:1}
+.chart-host.engine-tv canvas#chart{display:none}
+.chart-host.engine-canvas #tv-chart{display:none}
+.book-host{position:relative;flex:1;min-height:0}
+.book-panel{display:flex;flex-direction:column;min-height:0}
+.book-gpu{display:none;width:100%;min-height:320px}
+.book-host.gpu .book-gpu{display:block}
+.book-host.gpu #book{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
 .right-col,.col{display:flex;flex-direction:column;gap:6px;min-width:0}
 .bottom-grid{
   display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:0 6px 6px

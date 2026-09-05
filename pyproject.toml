@@ -37,7 +37,7 @@ talib = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-"capitalizator.ops" = ["chronos.html"]
+"capitalizator.ops" = ["chronos.html", "vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
