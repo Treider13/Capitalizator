@@ -50,6 +50,44 @@ def test_second_once_does_not_refit_without_drift(
     assert called == []
 
 
+def test_late_middle_close_is_a_new_adwin_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("xgboost")
+    pytest.importorskip("river")
+    from capitalizator.hyexec import river_adwin
+    from capitalizator.hyexec.train import main
+
+    vault = init_vault(tmp_path / "desk")
+    knowledge = open_knowledge(vault)
+    try:
+        for i in range(7):
+            knowledge.put_journal_touch(f"t{i}", _labeled(i, "1.5"))
+        hole = _labeled(7, "1.5")
+        del hole["paper"]
+        knowledge.put_journal_touch("t7", hole)
+        for i in range(8, 16):
+            knowledge.put_journal_touch(f"t{i}", _labeled(i, "1.5"))
+    finally:
+        knowledge.close()
+    assert main(["--userdir", str(vault.root), "--once"]) == 0
+    knowledge = open_knowledge(vault)
+    try:
+        knowledge.put_journal_touch("t7", _labeled(7, "-2.0"))
+    finally:
+        knowledge.close()
+    seen: list[list[float]] = []
+    real = river_adwin.push
+
+    def _wrap(values, *, detector=None):
+        seen.append(list(values))
+        return real(values, detector=detector)
+
+    monkeypatch.setattr(river_adwin, "push", _wrap)
+    assert main(["--userdir", str(vault.root), "--once"]) == 0
+    assert seen == [[-2.0]]
+
+
 def test_mean_shift_after_fit_retrains(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

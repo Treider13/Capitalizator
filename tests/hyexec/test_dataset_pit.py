@@ -8,6 +8,7 @@ from capitalizator.hyexec.dataset import (
     can_fit,
     complete_n,
     labeled_pairs,
+    labeled_events,
     last_complete,
     last_complete_by_symbol,
     matrix,
@@ -57,6 +58,14 @@ def test_labeled_pairs_need_shadow_r_net() -> None:
     plan = plan_from_rows([full] * 15)
     assert plan["n_labeled"] == 15
     assert plan["fit"] is True
+    late = {key: "1" for key in FEATURE_KEYS}
+    late["touch_id"] = "mid"
+    late["paper"] = {"shadow": {"filled": True, "r_net": "0.5"}}
+    first = {**full, "touch_id": "a"}
+    last = {**full, "touch_id": "c"}
+    ev = labeled_events([first, late, last])
+    assert [e[0] for e in ev] == ["a", "mid", "c"]
+    assert [e[2] for e in ev] == [1.25, 0.5, 1.25]
 
 
 def test_last_complete_by_symbol_does_not_bleed() -> None:

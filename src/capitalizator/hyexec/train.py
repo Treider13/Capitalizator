@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from capitalizator.hyexec.adwin import should_retrain, timer_retrain
-from capitalizator.hyexec.dataset import labeled_pairs, plan_from_rows
-from capitalizator.hyexec.model import fit, load_booster, model_path, save_booster
+from capitalizator.hyexec.dataset import labeled_events, plan_from_rows
+from capitalizator.hyexec.model import fit, load_booster, save_booster
 
 ADWIN_NAME = "hyexec_adwin.joblib"
 IDLE_S = 5.0
@@ -50,25 +50,28 @@ def plan_from_userdir(userdir: Path) -> dict[str, Any]:
         knowledge.close()
 
 
-def _load_detector(vault: Any) -> tuple[object | None, int]:
+def _load_detector(vault: Any) -> tuple[object | None, list[str]]:
     import joblib
 
     path = vault.knowledge / ADWIN_NAME
     if not path.is_file():
-        return None, 0
+        return None, []
     raw = joblib.load(path)
     if not isinstance(raw, dict):
-        return None, 0
-    return raw.get("det"), int(raw.get("n") or 0)
+        return None, []
+    seen = raw.get("ids")
+    if not isinstance(seen, list):
+        seen = []
+    return raw.get("det"), [str(x) for x in seen]
 
 
-def _save_detector(vault: Any, det: object | None, n: int) -> None:
+def _save_detector(vault: Any, det: object | None, ids: list[str]) -> None:
     import joblib
 
     from capitalizator.ops.vault import write_regular_bytes
 
     buf = io.BytesIO()
-    joblib.dump({"det": det, "n": n}, buf)
+    joblib.dump({"det": det, "ids": list(ids)}, buf)
     write_regular_bytes(vault.knowledge / ADWIN_NAME, buf.getvalue())
 
 
@@ -77,14 +80,17 @@ def tick(vault: Any, knowledge: Any) -> dict[str, Any]:
 
     rows = knowledge.journal_rows() if knowledge.available() else []
     plan = plan_from_rows(rows)
-    xs, ys = labeled_pairs(rows)
+    events = labeled_events(rows)
+    xs = [e[1] for e in events]
+    ys = [e[2] for e in events]
     have = load_booster(vault) is not None
     det, seen = _load_detector(vault)
-    new = ys[seen:]
+    seen_set = set(seen)
+    new = [y for tid, _x, y in events if tid not in seen_set]
     drifted = False
     if new:
         drifted, det = push(new, detector=det)
-        seen = len(ys)
+        seen = [tid for tid, _x, _y in events]
         _save_detector(vault, det, seen)
     plan["drift"] = drifted
     plan["timer"] = timer_retrain(hours=24)
@@ -96,7 +102,7 @@ def tick(vault: Any, knowledge: Any) -> dict[str, Any]:
         return plan
     booster = fit(xs, ys)
     saved = save_booster(vault, booster)
-    _save_detector(vault, None, len(ys))
+    _save_detector(vault, None, [tid for tid, _x, _y in events])
     plan["saved"] = saved.name
     return plan
 

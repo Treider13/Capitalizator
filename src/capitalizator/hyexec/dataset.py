@@ -22,21 +22,34 @@ def complete_n(rows: Sequence[Mapping[str, Any]]) -> int:
     return sum(1 for vec in matrix(rows) if all(v is not None for v in vec))
 
 
-def labeled_pairs(
+def labeled_events(
     rows: Sequence[Mapping[str, Any]],
-) -> tuple[list[list[float]], list[float]]:
-    """Complete hx_* with a filled shadow r_net. The label is the paper outcome."""
-    xs: list[list[float]] = []
-    ys: list[float] = []
+) -> list[tuple[str, list[float], float]]:
+    """Complete hx_* with a filled shadow r_net, keyed by touch_id.
+
+    A close can land in the middle of the journal. Counting from the tail
+    would skip that label.
+    """
+    out: list[tuple[str, list[float], float]] = []
     for row, vec in zip(rows, matrix(rows), strict=True):
         if any(v is None for v in vec):
             continue
         r = paper_r(row, "shadow")
         if r is None:
             continue
-        xs.append([float(v) for v in vec])
-        ys.append(float(r))
-    return xs, ys
+        tid = str(row.get("touch_id") or "")
+        if not tid:
+            continue
+        out.append((tid, [float(v) for v in vec], float(r)))
+    return out
+
+
+def labeled_pairs(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[list[float]], list[float]]:
+    """Complete hx_* with a filled shadow r_net. The label is the paper outcome."""
+    events = labeled_events(rows)
+    return [e[1] for e in events], [e[2] for e in events]
 
 
 def last_complete_by_symbol(
