@@ -1004,7 +1004,9 @@ class DeskLoop:
         # +1R take fraction is decided here, not at submit. A stamped expand
         # on the ticket is the wrong clock (expand_ok needs a live day/book).
         for pos in self.paper.open_for(trade.symbol):
-            if pos.state == "open":
+            # The take clock is this print. After +1R the fraction is done —
+            # flipping expand later would let score flatten an EXPAND remainder.
+            if pos.state == "open" and not pos.half_taken:
                 pos.labels["expand"] = self._expand_now(
                     pos, trade.exchange_ts, at_1r_take=True
                 )
@@ -3564,6 +3566,9 @@ class DeskLoop:
                     "r_gross": payload["r_gross"],
                     "mae_r": payload["mae_r"],
                     "mfe_r": payload["mfe_r"],
+                    "tail_cut_r": payload["tail_cut_r"],
+                    "half_taken": pos.half_taken,
+                    "expand": bool(pos.labels.get("expand")),
                     "pnl_net": str(pos.pnl_net()),
                     "fees": str(pos.fees),
                     "funding": str(pos.funding),

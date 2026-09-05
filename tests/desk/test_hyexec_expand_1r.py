@@ -125,6 +125,26 @@ def test_overlap_half_tp_stamps_harvest_only_after_take(tmp_path: Path) -> None:
     assert json.loads(raw)["kind"] == "harvest"
 
 
+def test_expand_label_freezes_after_the_1r_take(tmp_path: Path) -> None:
+    """Day later going flat is not a new take clock. Score reads this label."""
+    desk = _desk(tmp_path)
+    _plus_day(desk, WHEN)
+    desk.on_book("BTCUSDT", _bid_heavy_book(WHEN))
+    pos = _submit_demo(desk)
+    desk.on_trade(_trade(WHEN + timedelta(seconds=1), "99.9"), [])
+    desk.on_trade(_trade(WHEN + timedelta(minutes=1), "102", side="buy"), [])
+    assert pos.half_taken
+    assert pos.labels["expand"] is True
+    assert pos.qty_open == Decimal("1") * (1 - EXPAND_TAKE)
+    desk.account.set_equity(
+        desk.window_halt.start_equity, source=desk.account.equity_source, now=WHEN
+    )
+    desk._sync_window_halt(WHEN)
+    desk.on_trade(_trade(WHEN + timedelta(minutes=2), "103", side="buy"), [])
+    assert pos.labels["expand"] is True
+    assert pos.state == "open"
+
+
 def test_venue_half_tp_stays_floor_when_day_is_flat(tmp_path: Path) -> None:
     desk = _desk(tmp_path, "demo")
     desk.on_book("BTCUSDT", _bid_heavy_book(WHEN))

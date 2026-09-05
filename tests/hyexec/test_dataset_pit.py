@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from capitalizator.hyexec.dataset import EXAM_MIN_ROWS, FEATURE_KEYS, can_fit, matrix
+from capitalizator.hyexec.dataset import EXAM_MIN_ROWS, FEATURE_KEYS, can_fit, complete_n, matrix
 from capitalizator.hyexec.features import NAMES
 from capitalizator.memory.journal import JOURNAL_KEYS, empty_journal
 
@@ -19,6 +19,20 @@ def test_journal_schema_has_hx_columns() -> None:
         assert key in JOURNAL_KEYS
         assert blank[key] is None
     assert "hyexec_as_of" in JOURNAL_KEYS
+
+
+def test_fifteen_holes_are_not_a_fit() -> None:
+    holes = [{key: None for key in FEATURE_KEYS} for _ in range(15)]
+    assert complete_n(holes) == 0
+    assert can_fit(complete_n(holes)) is False
+
+
+def test_complete_n_counts_only_full_vectors() -> None:
+    full = {key: "1" for key in FEATURE_KEYS}
+    hole = {key: "1" for key in FEATURE_KEYS}
+    hole["hx_sma5_5m"] = None
+    assert complete_n([full] * 14 + [hole]) == 14
+    assert can_fit(complete_n([full] * 15)) is True
 
 
 def test_matrix_keeps_none_no_fill() -> None:

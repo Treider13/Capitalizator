@@ -132,6 +132,7 @@ class PaperPosition:
         out["r_gross"] = s(self.r_gross())
         out["mae_r"] = s(self.mae_r())
         out["mfe_r"] = s(self.mfe_r())
+        out["tail_cut_r"] = s(self.tail_cut_r())
         out["hold_s"] = (
             (self.closed_at - self.filled_at).total_seconds()
             if self.closed_at and self.filled_at
@@ -196,6 +197,14 @@ class PaperPosition:
         if self.mfe_px is None or self.entry_px is None or self.r_px == 0:
             return None
         return self._favorable(self.mfe_px) / self.r_px
+
+    def tail_cut_r(self) -> Decimal | None:
+        """MFE given back at the exit. None until both MFE and r_net exist."""
+        mfe = self.mfe_r()
+        net = self.r_net()
+        if mfe is None or net is None:
+            return None
+        return mfe - net
 
 
 class PaperEngine:

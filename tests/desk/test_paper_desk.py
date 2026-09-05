@@ -99,6 +99,12 @@ def test_shadow_and_fade_trade_on_paper_in_off_mode(tmp_path: Path) -> None:
     row = desk.knowledge.get_journal_touch(ev["touch_id"])
     assert Decimal(row["paper"]["shadow"]["r_net"]) > 1
     assert Decimal(row["paper"]["fade"]["r_net"]) < 0
+    shadow_j = row["paper"]["shadow"]
+    assert shadow_j["half_taken"] is True
+    assert "expand" in shadow_j
+    assert Decimal(shadow_j["tail_cut_r"]) == (
+        Decimal(shadow_j["mfe_r"]) - Decimal(shadow_j["r_net"])
+    )
     trades = desk.knowledge.paper_trades()
     assert {t["source"] for t in trades} == {"shadow", "fade"}
     day = json.loads(desk.knowledge.meta("paper_day:2026-08-31"))

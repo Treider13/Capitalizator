@@ -16,6 +16,11 @@ def can_fit(n: int) -> bool:
     return n >= EXAM_MIN_ROWS
 
 
+def complete_n(rows: Sequence[Mapping[str, Any]]) -> int:
+    """Rows whose hx_* vector has no hole. A None is a hole, not a zero."""
+    return sum(1 for vec in matrix(rows) if all(v is not None for v in vec))
+
+
 def matrix(rows: Sequence[Mapping[str, Any]]) -> list[list[float | None]]:
     """One row per touch. A missing hx_* stays None — no fill."""
     out: list[list[float | None]] = []
