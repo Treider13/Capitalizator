@@ -73,7 +73,8 @@ def test_desk_tick_flattens_floor_remainder_on_score_drop(tmp_path: Path) -> Non
 
 def test_desk_tick_holds_expand_remainder_on_score_drop(tmp_path: Path) -> None:
     desk = _desk(tmp_path)
-    pos = _fill_half(desk, labels={"score_entry": "0.70", "expand": True})
+    pos = _fill_half(desk, labels={"score_entry": "0.70"})
+    pos.labels["expand"] = True
     desk.knowledge.set_meta(
         "hyexec_serve",
         json.dumps({"by_symbol": {"BTCUSDT": {"score": 0.40, "model_go": False}}}),
