@@ -21,6 +21,7 @@ from capitalizator.ops.contour import ContourNotReady
 from capitalizator.ops.contour import enable as enable_contour
 from capitalizator.ops.contour import status as contour_status
 from capitalizator.ops.daily_map_report import contains_advice, daily_map_report
+from capitalizator.ops.desk_chrome import DESK_CSS, nav_html, render_glossary_html
 from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.latency import decision_report
 from capitalizator.ops.phase import load_phase, trading_mode
@@ -416,7 +417,12 @@ def _page(snap: dict[str, Any], *, token: str = "") -> str:
         },
         ensure_ascii=False,
     )
-    page = template.replace("{{SERVICE}}", service).replace("{{BOOT}}", boot)
+    page = (
+        template.replace("{{SERVICE}}", service)
+        .replace("{{BOOT}}", boot)
+        .replace("{{DESK_CSS}}", DESK_CSS)
+        .replace("{{NAV}}", nav_html("stol"))
+    )
     return page
 
 
@@ -979,6 +985,17 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                     except Exception:
                         self._send(502, b"hello failed", "text/plain; charset=utf-8")
                         return
+                    if payload.get("redirect") in {"1", "true", True}:
+                        note = (
+                            "биржа ответила"
+                            if out.get("hello_ok")
+                            else "биржа не подтвердила ключ"
+                        )
+                        self._send(
+                            303, b"", "text/plain; charset=utf-8",
+                            extra={"Location": "/settings?msg=" + quote(note)},
+                        )
+                        return
                     body = json.dumps(out, ensure_ascii=False, default=str).encode()
                     self._send(200, body, "application/json; charset=utf-8")
                     return
@@ -1213,6 +1230,13 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                         ).encode()
                     finally:
                         knowledge.close()
+                    code, ctype = 200, "text/html; charset=utf-8"
+                elif path == "/glossary":
+                    qs = parse_qs(parsed.query)
+                    body = render_glossary_html(
+                        q=(qs.get("q") or [""])[0],
+                        group=(qs.get("group") or [""])[0],
+                    ).encode()
                     code, ctype = 200, "text/html; charset=utf-8"
                 elif path == "/api/touch":
                     snap = desk_snapshot(app.vault)

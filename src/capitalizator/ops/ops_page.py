@@ -21,22 +21,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from capitalizator.ops import i18n_ru
+from capitalizator.ops.desk_chrome import chrome_end, chrome_start
 from capitalizator.risk.config import STOP_MODES, TRAIL_MODES
-
-CSS = """
-body{font-family:system-ui,sans-serif;background:#0f1216;color:#d7dde5;margin:0;padding:16px}
-h1{font-size:20px;margin:0 0 8px}h2{font-size:16px;margin:18px 0 6px;color:#9fb3c8}
-table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px solid #263041;padding:4px 6px;text-align:left;vertical-align:top}
-th{color:#7f8fa4;font-weight:600}form.inline{display:inline-block;margin:0 6px 6px 0}
-input,select{background:#1e2329;color:#d7dde5;border:1px solid #2e3a4d;border-radius:4px;padding:4px 8px}
-button{background:#2a3a55;color:#e6edf6;border:1px solid #3d5278;border-radius:4px;padding:4px 10px;cursor:pointer}
-button.warn{background:#5a2a2a;border-color:#8a3d3d}.pill{display:inline-block;padding:2px 8px;border-radius:10px;background:#1e2329;margin:0 4px 4px 0;font-size:12px}
-.knobs{display:flex;gap:24px;flex-wrap:wrap;margin:8px 0 16px}
-.knobs label{display:flex;flex-direction:column;gap:6px;font-size:14px;color:#c5d0dc}
-.knobs input{font-size:22px;padding:8px 12px;width:8em;border-color:#4a6a9a}
-.ok{color:#6fd18a}.bad{color:#f28b82}.muted{color:#7f8fa4}.hint{font-size:12px;color:#7f8fa4}
-label.confirm{font-size:12px;color:#9fb3c8;margin-right:6px}a{color:#8ab4f8}
-"""
 
 RISK_HINTS: dict[str, str] = {
     "deposit_share_per_trade": "Доля депозита, которая реально входит в сделку как маржа (10/20/30%). Это размер, не потолок «если влезет».",
@@ -170,17 +156,17 @@ def render_ops_html(
     champion = _json(meta.get("champion_candidate"), {}) or {}
 
     out: list[str] = [
-        "<!doctype html><html lang='ru'><head><meta charset='utf-8'>"
-        "<title>Управление — Capitalizator</title>"
-        f"<style>{CSS}</style></head><body>",
+        chrome_start(title="Управление — ХРОНОС", active="ops"),
+        "<div class='page-body'>",
         "<h1>Управление</h1>",
-        "<p class='hint'><a href='/'>← Стол</a> · <a href='/settings'>Настройки: ключи и источники</a>"
-        " · <a href='/api/glossary'>Словарь кодов</a> · <a href='/api/sessions'>сессии (JSON)</a>"
-        " · <a href='/api/commands'>журнал команд (JSON)</a></p>",
+        "<p class='hint'><a href='/api/sessions'>сессии (JSON)</a>"
+        " · <a href='/api/commands'>журнал команд (JSON)</a>"
+        " · <a href='/glossary'>Словарь</a></p>",
     ]
     if message:
         out.append(f"<p class='pill ok'>{_e(message)}</p>")
 
+    out.append("<div class='ops-grid'><div class='stack'><section class='panel'>")
     # --- entries / venue truth -----------------------------------------------------------
     out.append("<h2>Входы и правда биржи</h2>")
     if blocked:
@@ -225,6 +211,7 @@ def render_ops_html(
         + "<span class='hint'>Сначала «Принять позицию» для каждой чужой позиции — иначе блок вернётся на следующей сверке.</span></p>"
     )
 
+    out.append("</section></div><div class='stack'><section class='panel'>")
     # --- commands ------------------------------------------------------------------------
     out.append("<h2>Команды столу</h2>")
     halt = acct.get("halt_reason") or ""
@@ -283,6 +270,7 @@ def render_ops_html(
         )
     out.append("</table><button type='submit'>Сохранить риск-меню</button></form>")
 
+    out.append("</section></div><div class='stack'><section class='panel'>")
     # --- sessions ------------------------------------------------------------------------
     out.append("<h2>Сессии (infra/sessions.yaml)</h2>")
     now = sessions.get("now") or {}
@@ -348,6 +336,7 @@ def render_ops_html(
     if applied:
         out.append(f"<p class='hint'>Последнее применение: {_e(json.dumps(applied, ensure_ascii=False)[:300])}</p>")
 
+    out.append("</section><section class='panel'>")
     # --- learning facts -------------------------------------------------------------------
     out.append("<h2>Ночь, экзамен, чемпион</h2>")
     out.append(
@@ -359,7 +348,9 @@ def render_ops_html(
         + "</p>"
     )
 
+    out.append("</section></div></div>")
     # --- process health --------------------------------------------------------------------
+    out.append("<section class='panel'>")
     out.append("<h2>Здоровье процессов</h2>")
 
     def _age(key: str) -> str:
@@ -400,6 +391,7 @@ def render_ops_html(
         "<table>" + "".join(f"<tr><th>{_e(k)}</th><td>{v}</td></tr>" for k, v in health_rows) + "</table>"
     )
 
+    out.append("</section><section class='panel'>")
     # --- command log ----------------------------------------------------------------------
     out.append("<h2>Журнал команд</h2>")
     log_rows: list[str] = []
@@ -417,5 +409,6 @@ def render_ops_html(
         + ("".join(log_rows) or "<tr><td colspan='6' class='muted'>команд не было</td></tr>")
         + "</table>"
     )
-    out.append("</body></html>")
+    out.append("</section></div>")
+    out.append(chrome_end())
     return "".join(out)
