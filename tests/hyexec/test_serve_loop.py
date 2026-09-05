@@ -36,6 +36,7 @@ def test_tick_stamps_model_go_none(tmp_path: Path) -> None:
 
 def test_serve_loop_one_tick_then_stops(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
     ticks = serve_loop(
         userdir=vault.root,
         should_stop=lambda: False,
@@ -53,3 +54,5 @@ def test_serve_once_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
     out = json.loads(capsys.readouterr().out)
     assert out["model_go"] is None
     assert out["n"] == 0
+    stored = json.loads(open_knowledge(vault).meta("hyexec_serve") or "{}")
+    assert stored["model_go"] is None

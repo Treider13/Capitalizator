@@ -54,7 +54,7 @@ def serve_loop(
     from capitalizator.ops.vault import load_vault
 
     vault = load_vault(userdir)
-    knowledge = open_knowledge(vault, create=False)
+    knowledge = open_knowledge(vault, create=True)
     ticks = 0
     try:
         while not should_stop():
@@ -84,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         from capitalizator.ops.vault import load_vault
 
         vault = load_vault(Path(args.userdir))
-        knowledge = open_knowledge(vault, create=False)
+        knowledge = open_knowledge(vault, create=True)
         try:
             body = tick(knowledge, now=datetime.now(tz=UTC))
             print(json.dumps(body, sort_keys=True))
