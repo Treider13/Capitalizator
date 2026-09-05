@@ -198,6 +198,7 @@
     let bookApp = null;
     let lastWhyKey = "";
     let lastBookKey = "";
+    let refreshSeq = 0;
 
     function esc(s) {
       return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
@@ -253,7 +254,8 @@
       const host = document.getElementById("tv-chart");
       if (!host) return null;
       if (tvChart) return tvChart;
-      tvChart = LightweightCharts.createChart(host, {
+      try {
+        tvChart = LightweightCharts.createChart(host, {
         layout: {
           background: {color: "#080c10"},
           textColor: "#8b9098",
@@ -284,6 +286,11 @@
       if (window.ResizeObserver) new ResizeObserver(fit).observe(host);
       window.addEventListener("resize", fit);
       return tvChart;
+      } catch (e) {
+        tvChart = null;
+        candleSeries = null;
+        return null;
+      }
     }
     function paintChartCanvas(bars, zones, touch) {
       const canvas = document.getElementById("chart");
@@ -391,9 +398,14 @@
         return;
       }
       empty.style.display = "none";
-      if (paintChartTv(bars, zones, touch)) {
-        if (host) host.className = "chart-host engine-tv";
-        return;
+      try {
+        if (paintChartTv(bars, zones, touch)) {
+          if (host) host.className = "chart-host engine-tv";
+          return;
+        }
+      } catch (e) {
+        tvChart = null;
+        candleSeries = null;
       }
       if (host) host.className = "chart-host engine-canvas";
       paintChartCanvas(bars, zones, touch);
@@ -425,10 +437,6 @@
       document.getElementById("unset-atoms").textContent = unset
         .map(([k, v]) => k + " " + (v == null || v === "" ? "нет данных" : String(v)))
         .join(" · ");
-      const whyKey = document.getElementById("why").innerText;
-      if (window.gsap && keyChanged(whyKey)) {
-        gsap.from("#why article", {opacity: 0, y: 5, stagger: 0.045, duration: 0.38, ease: "power2.out", overwrite: true});
-      }
     }
     function keyChanged(key) {
       if (key === lastWhyKey) return false;
@@ -500,18 +508,22 @@
     }
     function paintBookGpu(snap) {
       const wrap = document.getElementById("book-host");
-      if (!snap || snap.empty || !ensureBookGpu()) {
+      if (!wrap || !snap || snap.empty || !ensureBookGpu()) {
         if (wrap) wrap.classList.remove("gpu");
         return false;
       }
+      wrap.classList.add("gpu");
       const host = document.getElementById("book-gpu");
-      const w = Math.max(host.clientWidth || 240, 160);
+      const w = Math.max((host && host.clientWidth) || wrap.clientWidth || 240, 160);
       const rowH = 18;
       const askShow = snap.askShow || [];
       const bidShow = snap.bidShow || [];
       const h = Math.max((askShow.length + bidShow.length + 2) * rowH, 320);
       bookApp.renderer.resize(w, h);
-      bookApp.stage.removeChildren();
+      bookApp.stage.alpha = 1;
+      bookApp.stage.removeChildren().forEach(c => {
+        try { c.destroy({children: true}); } catch (e) {}
+      });
       const maxQ = snap.maxQ || 1;
       const g = new PIXI.Graphics();
       const styleAsk = {fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: 11, fill: 0xff3b4e};
@@ -544,7 +556,6 @@
         y += rowH;
       });
       bookApp.stage.addChildAt(g, 0);
-      wrap.classList.add("gpu");
       const bookKey = JSON.stringify(askShow) + "|" + JSON.stringify(bidShow);
       if (window.gsap && bookKey !== lastBookKey) {
         lastBookKey = bookKey;
@@ -554,7 +565,12 @@
     }
     function paintBook(book) {
       const snap = paintBookHtml(book);
-      paintBookGpu(snap);
+      try {
+        paintBookGpu(snap);
+      } catch (e) {
+        const wrap = document.getElementById("book-host");
+        if (wrap) wrap.classList.remove("gpu");
+      }
     }
     function updateReplayLabel() {
       const slider = document.getElementById("replay-bars");
@@ -563,7 +579,7 @@
         : "все свечи";
     }
     function stopReplay() {
-      if (replayTween && window.gsap) {
+      if (replayTween && replayTween.kill) {
         replayTween.kill();
         replayTween = null;
       }
@@ -619,6 +635,7 @@
       }, ms);
     }
     async function refresh() {
+      const seq = ++refreshSeq;
       const [status, bars, zones, book, trades, touch, dash, news, authors, llm, gates, hello, sessions, account, paper] = await Promise.all([
         jget("/api/status"),
         jget("/api/bars?symbol=" + encodeURIComponent(symbol) + "&tf=" + encodeURIComponent(tf) + "&limit=200"),
@@ -636,6 +653,7 @@
         jget("/api/account"),
         jget("/api/paper?limit=20")
       ]);
+      if (seq !== refreshSeq) return;
       const st = status || BOOT;
       const sel = document.getElementById("symbol");
       const symbols = (st.symbols && st.symbols.length) ? st.symbols : [symbol];
@@ -743,12 +761,26 @@
       markTf();
       const slider = document.getElementById("replay-bars");
       if (slider) {
-        slider.max = String(barRows.length);
-        if (replayN > barRows.length) replayN = 0;
+        const prevMax = Number(slider.max) || 0;
+        const newMax = barRows.length;
+        const playing = !!replayTimer;
+        slider.max = String(newMax);
+        if (replayN > newMax) {
+          replayN = 0;
+          if (playing) stopReplay();
+        } else if (playing && newMax !== prevMax && replayN < newMax) {
+          startReplay();
+        }
         slider.value = String(replayN);
         updateReplayLabel();
       }
-      paintChart(barRows, zoneRows, lastTouch);
+      try {
+        paintChart(barRows, zoneRows, lastTouch);
+      } catch (e) {
+        const host = document.getElementById("chart-host");
+        if (host) host.className = "chart-host engine-canvas";
+        paintChartCanvas(barRows, zoneRows, lastTouch);
+      }
       const knobs = document.getElementById("knobs");
       if (knobs && dash && dash.risk) {
         const share = dash.risk.deposit_share_per_trade;
@@ -787,6 +819,11 @@
         if (refusals && dash.today) {
           refusals.innerHTML = `<b>отказы дня</b><div>касаний ${dash.today.n_touches} · теней ${dash.today.n_shadow} · пропусков ${dash.today.n_skip} · без ТВХ ${dash.today.n_no_tvh || 0}</div>`;
         }
+      }
+      const whyEl = document.getElementById("why");
+      const whyKey = whyEl ? whyEl.innerText : "";
+      if (window.gsap && keyChanged(whyKey)) {
+        gsap.from("#why article", {opacity: 0, y: 5, stagger: 0.045, duration: 0.38, ease: "power2.out", overwrite: true});
       }
       document.getElementById("skip").textContent = latest
         ? (latest.shadow_would ? "зашли бы в тень" : (latest.skip_reason || "пропуск без причины"))
@@ -910,6 +947,7 @@
     });
     const slider = document.getElementById("replay-bars");
     slider.addEventListener("input", () => {
+      if (replayTimer) stopReplay();
       replayN = Number(slider.value) || 0;
       updateReplayLabel();
       paintChart(lastBars, lastZones, lastTouch);
