@@ -115,6 +115,7 @@ services:
         while true; do
           now=$$(date -u +%H%M); today=$$(date -u +%F)
           if [ "$$now" \> "0029" ] && [ "$$(cat $$marker 2>/dev/null)" != "$$today" ]; then
+            python -m capitalizator.hyexec.backfill --userdir /data || true
             if python -m capitalizator.ops.night --userdir /data --day "$$(date -u -d yesterday +%F)"; then
               echo "$$today" > "$$marker"
             fi

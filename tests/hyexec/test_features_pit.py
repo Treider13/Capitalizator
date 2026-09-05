@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from capitalizator.hyexec.features import FeatureError, build_features
+from capitalizator.hyexec.features import FeatureError, build_features, feature_journal
 from capitalizator.zones.model import Bar
 
 AS_OF = datetime(2026, 9, 1, 10, 5, tzinfo=UTC)
@@ -134,6 +134,9 @@ def test_known_names_only() -> None:
     )
     extra = set(row.vector) - set(row.NAMES)
     assert extra == set()
+    stamped = feature_journal(row)
+    assert stamped["hx_ret_1m"] is not None
+    assert feature_journal(None)["hx_close_5m"] is None
     assert "ret_1m" in row.vector
     assert "ret_5m" in row.vector
     assert "ret_1h" in row.vector

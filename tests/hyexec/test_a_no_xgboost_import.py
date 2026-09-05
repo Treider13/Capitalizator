@@ -34,6 +34,16 @@ def test_contour_a_does_not_import_xgboost() -> None:
                         hits.append(str(path.relative_to(src)))
                     if "hyexec.model" in node.module:
                         model_hits.append(str(path.relative_to(src)))
+                    if any(
+                        name in node.module
+                        for name in (
+                            "hyexec.backfill",
+                            "hyexec.replay_desk",
+                            "hyexec.import_labels",
+                            "hyexec.tape_day",
+                        )
+                    ):
+                        model_hits.append(str(path.relative_to(src)))
     assert hits == []
     assert model_hits == []
     assert (src / "hyexec" / "model.py").is_file()

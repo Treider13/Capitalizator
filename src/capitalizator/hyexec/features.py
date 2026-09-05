@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from capitalizator.card.smc import bos_status
 from capitalizator.types import require_utc
@@ -132,3 +133,16 @@ def build_features(
         high_5m=high_5m,
         low_5m=low_5m,
     )
+
+
+def feature_journal(row: FeatureRow | None) -> dict[str, Any]:
+    """hx_* payload. Missing close → None. Never invents a score."""
+    out: dict[str, Any] = {"hyexec_as_of": None}
+    for name in NAMES:
+        out[f"hx_{name}"] = None
+    if row is None:
+        return out
+    out["hyexec_as_of"] = row.as_of.isoformat()
+    for name, value in row.vector.items():
+        out[f"hx_{name}"] = None if value is None else str(value)
+    return out

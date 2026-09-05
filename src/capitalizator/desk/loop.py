@@ -76,10 +76,9 @@ from capitalizator.exec.tvh import NO_TVH, tvh_ok
 from capitalizator.hyexec.adwin import after_hour_dd
 from capitalizator.hyexec.alerts import stamp as stamp_hyexec
 from capitalizator.hyexec.expand import expand_ok, take_at_1r
-from capitalizator.hyexec.score_exit import SCORE_DROP
-from capitalizator.hyexec.features import NAMES as HYEXEC_FEATURE_NAMES
-from capitalizator.hyexec.features import FeatureRow, build_features
+from capitalizator.hyexec.features import FeatureRow, build_features, feature_journal
 from capitalizator.hyexec.pace import pyramid_ok
+from capitalizator.hyexec.score_exit import SCORE_DROP
 from capitalizator.hyexec.sizing import desk_step, effective_risk
 from capitalizator.hyexec.timing import may_send
 from capitalizator.hyexec.window_halt import WindowHalt
@@ -1887,7 +1886,7 @@ class DeskLoop:
                 "oko_liq_rel": row.oko_liq_rel,
             }
         )
-        journal.update(_feature_journal(st.last_features))
+        journal.update(feature_journal(st.last_features))
         missing = [key for key in JOURNAL_KEYS if key not in journal]
         if missing:
             raise RuntimeError(f"journal missing {missing}")
@@ -4096,16 +4095,8 @@ def _record_adds_from_diff(
 
 
 def _feature_journal(row: FeatureRow | None) -> dict[str, Any]:
-    """PIT 5m vector on the touch. Missing close → None. Never invents a score."""
-    out: dict[str, Any] = {"hyexec_as_of": None}
-    for name in HYEXEC_FEATURE_NAMES:
-        out[f"hx_{name}"] = None
-    if row is None:
-        return out
-    out["hyexec_as_of"] = row.as_of.isoformat()
-    for name, value in row.vector.items():
-        out[f"hx_{name}"] = None if value is None else str(value)
-    return out
+    """PIT 5m vector on the touch. Same stamp as hyexec.features.feature_journal."""
+    return feature_journal(row)
 
 
 def _opt_px(raw: object) -> Decimal | None:

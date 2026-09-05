@@ -3,7 +3,7 @@
 Частная фьючерсная торговая система. Исследования и план — в `docs/`.  
 Код: рекордер (pybit public WS → parquet part-файлы), книга/ресинк, реестр инструментов, стол 24/7 (зоны → касание → ZLG/CAV → жюри → **бумажное исполнение** тени/демо с комиссиями), **сессионная политика** (`infra/sessions.yaml` — [`docs/SESSIONS.md`](docs/SESSIONS.md)), риск-движок, умный стоп и трейл, шлюз Bybit v5 (pybit; Demo Trading / testnet / live) с OMS-очередью, консоль с эквити/позициями/сессиями/настройками. Статус из прогона — `ops/STATUS-GENERATED.md` (`python -m capitalizator.ops.gen_status`); ручной журнал — `ops/STATUS.md`. Развёртывание — [`docs/VPS-DEPLOY.md`](docs/VPS-DEPLOY.md). Аудит: [`docs/AUDIT-2026-09-02.md`](docs/AUDIT-2026-09-02.md).
 
-Запуск проверок: `pip install -e ".[dev,live]" && ruff check src tests && mypy && pytest`.
+Запуск проверок: `pip install -e ".[dev,live,hyexec]" && ruff check src tests && mypy && pytest`.
 База на ноут и переезд: [`docs/VAULT-LAPTOP.md`](docs/VAULT-LAPTOP.md).
 
 **С чего читать:** [`docs/PHASE-BUILD.md`](docs/PHASE-BUILD.md) — очередь шагов плюс детализация (артефакты, глоссарий, SQL гейтов, тесты, мониторинг, окна UTC).  

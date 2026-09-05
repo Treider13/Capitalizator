@@ -17,6 +17,7 @@ def test_hyexec_and_train_are_separate_services() -> None:
     text = COMPOSE.read_text(encoding="utf-8")
     assert "capitalizator.hyexec.serve" in text
     assert "capitalizator.hyexec.train" in text
+    assert "capitalizator.hyexec.backfill" in text
     hyexec = text.split("  hyexec:")[1].split("  hyexec-train:")[0]
     assert "network_mode: none" in hyexec
     train = text.split("  hyexec-train:")[1]
