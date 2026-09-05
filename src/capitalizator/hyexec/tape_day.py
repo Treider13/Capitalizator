@@ -7,6 +7,7 @@ for the same hour the jsonl wins (same law as TapeCursor).
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
@@ -24,6 +25,34 @@ def _day_part(day: str) -> str:
     if len(day) != 10 or day[4] != "-" or day[7] != "-":
         raise ValueError("day must be YYYY-MM-DD")
     return f"date={day}"
+
+
+def list_tape_days(tape: Path) -> list[str]:
+    """`date=` partitions on disk. Does not load events. Empty calendar is not a day."""
+    days: set[str] = set()
+    if tape.is_symlink():
+        raise VaultError(f"symlink: {tape}")
+    if not tape.is_dir():
+        return []
+    for dirpath, dirnames, _filenames in os.walk(tape, followlinks=False):
+        base = Path(dirpath)
+        keep: list[str] = []
+        for name in dirnames:
+            path = base / name
+            if path.is_symlink():
+                raise VaultError(f"symlink: {path}")
+            if name.startswith("date="):
+                raw = name[5:]
+                try:
+                    _day_part(raw)
+                except ValueError:
+                    keep.append(name)
+                    continue
+                days.add(raw)
+                continue
+            keep.append(name)
+        dirnames[:] = keep
+    return sorted(days)
 
 
 def _hour_key(path: Path) -> Path:

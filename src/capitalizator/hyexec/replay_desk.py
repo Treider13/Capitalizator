@@ -21,12 +21,13 @@ from typing import Any
 
 from capitalizator.desk.loop import DeskLoop
 from capitalizator.hyexec.dataset import plan_from_rows
-from capitalizator.hyexec.tape_day import iter_day_hours
+from capitalizator.hyexec.tape_day import iter_day_hours, list_tape_days
 from capitalizator.types import MarketEvent
 from capitalizator.zones.model import Zone
 
-# Paper max_hold is 6h (registry touch_pending_timeout_h). A few calendar days
-# covers a weekend gap. We do not flatten what the tape has not closed.
+# Paper max_hold is 6h (registry touch_pending_timeout_h). FOLLOW_DAYS is later
+# tape days that exist on disk. Empty calendar is not a day (weekend has no
+# partitions). We do not flatten what the tape has not closed.
 FOLLOW_DAYS = 5
 # Official orderbook.200: snapshot, then delta. A day that is only diffs is
 # BookDirty until the last origin from the prior day is played. Same streams
@@ -145,14 +146,15 @@ def follow_open_papers(
     """Play later tape days while papers are still open. Empty days do not invent exits."""
     followed = 0
     last: datetime | None = None
-    cur = day
-    while open_paper_n(desk) > 0 and followed < bound:
-        cur = next_day(cur)
-        followed += 1
+    later = [item for item in list_tape_days(tape) if item > day]
+    for cur in later:
+        if open_paper_n(desk) == 0 or followed >= bound:
+            break
         n, clock = play_tape_day(desk, tape, cur, extra_zones=extra_zones)
         if n == 0:
             continue
         last = clock
+        followed += 1
     return followed, last
 
 

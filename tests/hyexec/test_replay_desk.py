@@ -20,7 +20,7 @@ from capitalizator.hyexec.replay_desk import (
     seed_sandbox,
     zones_from_knowledge,
 )
-from capitalizator.hyexec.tape_day import iter_day_hours, load_day_events
+from capitalizator.hyexec.tape_day import iter_day_hours, list_tape_days, load_day_events
 from capitalizator.zones.model import Zone
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
@@ -158,6 +158,50 @@ def test_follow_closes_open_paper_on_next_day_tape(tmp_path: Path) -> None:
     assert row is not None
     assert row["paper"]["shadow"]["exit_reason"] == "stop"
     assert row["paper"]["shadow"]["r_net"] is not None
+    knowledge.close()
+
+
+def test_follow_skips_empty_calendar_to_later_tape(tmp_path: Path) -> None:
+    """FOLLOW_DAYS is later tape days. Five empty dates must not hide the stop."""
+    sand = init_vault(tmp_path / "sand")
+    knowledge = open_knowledge(sand)
+    knowledge.put_journal_touch(
+        "t1",
+        {"touch_id": "t1", "symbol": "BTCUSDT", "touch_ts": NOW.isoformat()},
+    )
+    desk = DeskLoop(knowledge=knowledge, user_mode="learn", tick_size=Decimal("0.1"))
+    desk.paper.submit(
+        paper_id="p1",
+        touch_id="t1",
+        symbol="BTCUSDT",
+        side="buy",
+        limit_px=Decimal("100"),
+        qty=Decimal("1"),
+        stop=Decimal("90"),
+        tp=None,
+        tick=Decimal("0.1"),
+        now=NOW,
+        valid_for=timedelta(hours=1),
+        source="shadow",
+        tag="bounce",
+    )
+    pos = desk.paper.positions["p1"]
+    pos.state = "open"
+    pos.filled_at = NOW
+    pos.entry_px = Decimal("100")
+    pos.qty_open = Decimal("1")
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    later = datetime(2026, 9, 7, 13, 0, tzinfo=UTC)
+    ParquetSink(tape).write(_event(later, "89"))
+    assert list_tape_days(tape) == ["2026-09-07"]
+    followed, last = follow_open_papers(desk, tape, DAY)
+    assert followed == 1
+    assert last == later
+    assert open_paper_n(desk) == 0
+    row = knowledge.get_journal_touch("t1")
+    assert row is not None
+    assert row["paper"]["shadow"]["exit_reason"] == "stop"
     knowledge.close()
 
 
