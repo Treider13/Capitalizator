@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from capitalizator.hyexec.dataset import FEATURE_KEYS, can_fit, complete_n, plan_from_rows
-from capitalizator.hyexec.train import plan_from_userdir
+from capitalizator.hyexec.train import plan_from_userdir, tick
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
+from capitalizator.recorder.sink_parquet import ParquetSink
+from capitalizator.types import MarketEvent
 
 
 def _full_row() -> dict[str, str]:
@@ -68,3 +71,37 @@ def test_cli_opens_vault_and_does_not_call_xgboost_train(
     assert out["n"] == 15
     assert out["n_labeled"] == 0
     assert called == []
+
+
+def test_tick_fills_hx_holes_before_plan(tmp_path: Path) -> None:
+    pytest.importorskip("river")
+    as_of = datetime(2026, 9, 1, 10, 5, tzinfo=UTC)
+    vault = init_vault(tmp_path / "desk")
+    knowledge = open_knowledge(vault)
+    hole = {key: None for key in FEATURE_KEYS}
+    hole["touch_id"] = "t1"
+    hole["symbol"] = "BTCUSDT"
+    hole["touch_ts"] = as_of.isoformat()
+    hole["paper"] = {"shadow": {"filled": True, "r_net": "1.5"}}
+    try:
+        knowledge.put_journal_touch("t1", hole)
+        for i in range(3):
+            ts = as_of - timedelta(minutes=2 - i)
+            ParquetSink(vault.tape).write(
+                MarketEvent(
+                    stream="trades",
+                    exchange="bybit",
+                    symbol="BTCUSDT",
+                    exchange_ts=ts,
+                    recv_ts=ts,
+                    payload={"px": str(100 + i), "qty": "1", "side": "buy"},
+                )
+            )
+        plan = tick(vault, knowledge)
+        row = knowledge.journal_rows()[0]
+    finally:
+        knowledge.close()
+    assert plan["filled"] >= 1
+    assert plan["fit"] is False
+    assert row["paper"]["shadow"]["r_net"] == "1.5"
+    assert any(row.get(k) not in {None, "", "null", "none"} for k in FEATURE_KEYS)

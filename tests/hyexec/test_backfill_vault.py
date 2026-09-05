@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from capitalizator.hyexec.backfill import backfill_vault, main
 from capitalizator.hyexec.dataset import FEATURE_KEYS
+from capitalizator.hyexec.tape_day import load_trade_events
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
-from capitalizator.recorder.sink_parquet import ParquetSink
+from capitalizator.recorder.sink_parquet import ParquetSink, _row, live_row, partition_path
 from capitalizator.types import MarketEvent
 
 AS_OF = datetime(2026, 9, 1, 10, 5, tzinfo=UTC)
@@ -56,3 +58,23 @@ def test_backfill_vault_from_trade_tape(tmp_path: Path) -> None:
     second = backfill_vault(vault)
     assert second["filled"] == 0
     assert main(["--userdir", str(vault.root)]) == 0
+
+
+def test_load_trade_events_reads_live_jsonl(tmp_path: Path) -> None:
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    event = MarketEvent(
+        stream="trades",
+        exchange="bybit",
+        symbol="BTCUSDT",
+        exchange_ts=AS_OF,
+        recv_ts=AS_OF,
+        payload={"px": "100", "qty": "1", "side": "buy"},
+    )
+    path = partition_path(tape, event).with_suffix(".jsonl")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(live_row(_row(event)), separators=(",", ":")) + "\n")
+    got = load_trade_events(tape, symbols={"BTCUSDT"})
+    assert len(got) == 1
+    assert got[0].payload["px"] == "100"
+    assert load_trade_events(tape, symbols={"ETHUSDT"}) == []
