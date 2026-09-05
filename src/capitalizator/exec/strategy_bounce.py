@@ -49,6 +49,7 @@ SETUP_TAG = "bounce"
 MIN_R = Decimal("1.5")
 DEFAULT_R = Decimal("2")
 BREAK_MIN_R = Decimal("3")
+SCALP_SIZE = Decimal("0.70")
 # Ideas that trade *through* the zone (side flips, 3R from a real zone, no default
 # multiple). `failed_break` here is the LEGACY fade-of-a-spring short. The desk
 # never emits it any more: the same bar is `spring`, traded WITH the zone (D-01).
@@ -260,7 +261,11 @@ def take_profit(
     if next_zone is not None:
         tp = next_zone.lo if side == "buy" else next_zone.hi
         reward = (tp - entry) if side == "buy" else (entry - tp)
-        if reward < need * r:
+        if reward <= 0:
+            return None
+        # Bounce/spring: a magnet closer than MIN_R is a scalp, not a skip.
+        # Break ideas still require the full multiple (no invented target).
+        if idea in _BREAK_IDEAS and reward < need * r:
             return None
         return tp
     if idea in _BREAK_IDEAS:
@@ -430,6 +435,7 @@ class BounceStrategy:
         fact = resolve_first_fact(snap.zlg_label, snap.gesture_n)
         if self.require_jury and fact.tag == "shadow_gesture":
             return self._refuse("first_fact:shadow_gesture")
+        # probe_gesture is a ticket: size is cut later, the idea is not skipped.
         if (
             self.require_jury
             and self.desk_mode in {"demo", "live"}
@@ -542,9 +548,14 @@ class BounceStrategy:
         tp = take_profit(side, snap.price, stop, snap.next_target, idea=idea)
         if tp is None:
             return self._refuse("tp:none")
+        risk_span = abs(snap.price - stop)
+        reward = abs(tp - snap.price)
+        scalp = idea not in _BREAK_IDEAS and reward < MIN_R * risk_span
         if not self.budget.allow_entry():
             return self._refuse("budget:spent")
-        if idea == "bounce":
+        if scalp:
+            tag = "scalp"
+        elif idea == "bounce":
             tag = SETUP_TAG
         elif idea == _LEGACY_FADE:
             tag = "failed_break_bounce"
@@ -563,6 +574,10 @@ class BounceStrategy:
         nmin = nmin_mult(n=snap.n_zlg, gesture=snap.zlg_label, phase="f1")
         if nmin < size:
             size = nmin
+        if fact.size_mult < size:
+            size = fact.size_mult
+        if scalp and SCALP_SIZE < size:
+            size = SCALP_SIZE
         # Combined B+calendar multiplier lives on size_mult only.
         # Signer does qty * size_mult; stuffing the cut into qty would double-cut.
         intent = Intent(

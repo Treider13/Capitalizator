@@ -156,13 +156,15 @@ def test_resistance_zone_is_a_short() -> None:
     assert got.tp < got.entry < got.stop
 
 
-def test_next_zone_closer_than_one_point_five_r_is_none() -> None:
+def test_next_zone_closer_than_one_point_five_r_is_scalp() -> None:
     zone = _zone()
     nxt = _zone(side="resistance", lo="102", hi="103")
-    assert (
-        _strategy().propose(_snap(zone=zone, zones=(zone, nxt), next_target=nxt))
-        is None
-    )
+    strat = _strategy()
+    got = strat.propose(_snap(zone=zone, zones=(zone, nxt), next_target=nxt))
+    assert got is not None
+    assert got.tag == "scalp"
+    assert got.tp == Decimal("102")
+    assert got.size_mult <= Decimal("0.70")
 
 
 def test_allow_break_false_blocks_green_breakout() -> None:
