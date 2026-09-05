@@ -558,8 +558,12 @@ def test_24_failed_break_gets_new_card_id(tmp_path: Path) -> None:
     assert picture_for("breakout") == "B"
 
 
-def test_25_n_zlg_19_no_send() -> None:
-    assert _strat().propose(_snap(n_zlg=19, gesture_n=19, zlg_label="DEFEND")) is None
+def test_25_n_zlg_19_sends_probe() -> None:
+    strat = _strat()
+    got = strat.propose(_snap(n_zlg=19, gesture_n=19, zlg_label="DEFEND"))
+    assert isinstance(got, Intent)
+    assert got.size_mult == Decimal("0.40")
+    assert strat.last_skip is None
 
 
 def test_26_us_cpi_noon_journals_but_does_not_send(tmp_path: Path) -> None:

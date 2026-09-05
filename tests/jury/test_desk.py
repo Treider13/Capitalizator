@@ -78,7 +78,7 @@ def test_through_defend_is_split() -> None:
     assert decide(voices) == "SPLIT"
 
 
-def test_n_below_20_does_not_give_signed_cav_zlg() -> None:
+def test_n_below_20_mutes_chart_not_printed_book() -> None:
     voices = voices_for_bounce(
         cav="REJECT",
         n_cav=19,
@@ -88,8 +88,8 @@ def test_n_below_20_does_not_give_signed_cav_zlg() -> None:
         btc_regime="box",
     )
     assert voices.cav == 0
-    assert voices.zlg == 0
-    assert decide(voices) == "SILENCE"
+    assert voices.zlg == 1
+    assert decide(voices) == "ACCORD"
 
 
 def test_silence_gesture_is_veto() -> None:
@@ -131,10 +131,10 @@ def test_btc_same_side_is_permission_not_evidence() -> None:
 
 
 def test_chart_alone_plus_non_events_is_silence_not_accord() -> None:
-    """The bare-chart entry: REJECT with n≥20, ZLG still learning (n<20), wall not eaten,
-    BTC in a box, card proposes. Before: ACCORD. Now: SILENCE — no first fact from the book."""
+    """The bare-chart entry: REJECT with n≥20, no printed gesture, wall not eaten,
+    BTC in a box, card proposes. Chart alone is SILENCE — no first fact from the book."""
     voices = voices_for_bounce(
-        cav="REJECT", n_cav=20, zlg="DEFEND", n_zlg=5, tape_eaten=False,
+        cav="REJECT", n_cav=20, zlg=None, n_zlg=5, tape_eaten=False,
         btc_regime="box", card_bearing_verdict="propose",
     )
     assert voices.tape == 0 and voices.btc == 0 and voices.card == 0

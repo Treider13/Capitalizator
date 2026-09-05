@@ -1,0 +1,6 @@
+# Frozen execution-policy numbers. Extra keys are an error (hyexec.config).
+identifier: "hx-30-floor"
+gate_mode: "size_timing"
+probe_risk: "0.004"
+std_risk: "0.01"
+aplus_risk: "0.02"

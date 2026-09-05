@@ -71,6 +71,42 @@ def test_round_levels_scale_with_price() -> None:
     assert Decimal("100") in round_levels_near(Decimal("99.9"), span=Decimal("0.5"))
 
 
+def test_hybrid_widens_past_val_never_toward_entry() -> None:
+    """VAH/VAL may push the stop farther from entry. They must not pull it in."""
+    base = initial_stop(
+        side="buy",
+        structural=Decimal("99.2"),
+        tick=Decimal("0.1"),
+        atr=Decimal("2"),
+        spread=Decimal("0.1"),
+        mode="hybrid",
+    )
+    wider = initial_stop(
+        side="buy",
+        structural=Decimal("99.2"),
+        tick=Decimal("0.1"),
+        atr=Decimal("2"),
+        spread=Decimal("0.1"),
+        mode="hybrid",
+        val=Decimal("97.0"),
+        vah=Decimal("102"),
+    )
+    assert wider.stop < base.stop
+    assert wider.stop <= Decimal("96.9")
+    assert wider.components.get("value_area") == "97"
+    tighter = initial_stop(
+        side="buy",
+        structural=Decimal("99.2"),
+        tick=Decimal("0.1"),
+        atr=Decimal("2"),
+        spread=Decimal("0.1"),
+        mode="hybrid",
+        val=Decimal("98.8"),
+        vah=Decimal("101"),
+    )
+    assert tighter.stop == base.stop
+
+
 def test_soft_exit_is_close_based() -> None:
     assert soft_exit(side="buy", structural=Decimal("99"), bar=_bar(0, "100", "101", "98", "98.5"))
     assert not soft_exit(side="buy", structural=Decimal("99"), bar=_bar(0, "100", "101", "98", "99.5"))

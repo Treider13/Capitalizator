@@ -45,7 +45,7 @@ from capitalizator.champion.shadow_day import (
     persist_day,
     row_day_utc,
 )
-from capitalizator.desk.bars import TF_MINUTES, BarBuilder
+from capitalizator.desk.bars import FEATURE_TFS, TF_MINUTES, BarBuilder, builder_tfs
 from capitalizator.desk.paper_gates import snapshot as paper_gates_snapshot
 from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.exec.ev_gate import evaluate as ev_evaluate
@@ -57,7 +57,7 @@ from capitalizator.exec.ideas import opposite as opposite_side
 from capitalizator.exec.ideas import shadow_tag as idea_shadow_tag
 from capitalizator.exec.ideas import side_for
 from capitalizator.exec.manage import TradeManager
-from capitalizator.exec.paper import HALF, PaperEngine, PaperPosition
+from capitalizator.exec.paper import PaperEngine, PaperPosition
 from capitalizator.exec.shadow import ShadowWriter
 from capitalizator.exec.smart_stop import initial_stop, soft_exit
 from capitalizator.exec.spot import SpotAdapter
@@ -73,6 +73,15 @@ from capitalizator.exec.strategy_bounce import (
 )
 from capitalizator.exec.trail import TrailEngine, TrailState
 from capitalizator.exec.tvh import NO_TVH, tvh_ok
+from capitalizator.hyexec.adwin import after_hour_dd
+from capitalizator.hyexec.alerts import stamp as stamp_hyexec
+from capitalizator.hyexec.expand import expand_ok, take_at_1r
+from capitalizator.hyexec.features import FeatureRow, build_features, feature_journal
+from capitalizator.hyexec.pace import pyramid_ok
+from capitalizator.hyexec.score_exit import SCORE_DROP
+from capitalizator.hyexec.sizing import desk_step, effective_risk
+from capitalizator.hyexec.timing import may_send
+from capitalizator.hyexec.window_halt import WindowHalt
 from capitalizator.instruments import Instrument, InstrumentRegistry, InstrumentUnknown
 from capitalizator.jury.desk import (
     decide,
@@ -113,7 +122,7 @@ from capitalizator.risk.account import Account
 from capitalizator.risk.config import load_risk_config
 from capitalizator.risk.correlation import CorrelationGuard, returns_from_closes
 from capitalizator.risk.drift_cut import target_after_drift
-from capitalizator.risk.schema import Intent
+from capitalizator.risk.schema import Intent, reject_forbidden_keys
 from capitalizator.risk.session import cpi_day, us_data_known_at
 from capitalizator.risk.sessions import SessionPolicy, WindowState
 from capitalizator.risk.sizing import size_position
@@ -153,6 +162,8 @@ class SymbolState:
     bar_builder: BarBuilder | None = None
     bars_seeded: int = 0
     trades_dropped: int = 0
+    feature_bars: list[Bar] = field(default_factory=list)
+    last_features: FeatureRow | None = None
     zlg_card: CardLive | None = None
     oko_window: OkoWindow | None = None
     oi: list[tuple[datetime, Decimal]] = field(default_factory=list)
@@ -212,6 +223,15 @@ class DeskLoop:
         self.account = Account.load(knowledge, self.risk_config)
         self.risk = self.account.risk
         self.halts = self.account.halts
+        assert self.halts is not None
+        self.window_halt = WindowHalt(start_equity=self.halts.day_start)
+        if self.halts.peak > self.window_halt.peak:
+            self.window_halt.peak = self.halts.peak
+        self.window_halt.note_window("init", self.account.equity)
+        self._hour_start_at: datetime | None = None
+        self._hour_start_equity = self.account.equity
+        self._load_hour_start()
+        self.hyexec_model_go: bool | None = None
         self.funding: dict[str, Decimal] = {}
         self._funding_hist: dict[str, list[Decimal]] = {}
         self._oi_hist: dict[str, list[tuple[datetime, Decimal]]] = {}
@@ -383,7 +403,7 @@ class DeskLoop:
                 book=Book(tick_size=str(self.tick_for(symbol))),
                 bar_builder=BarBuilder(
                     symbol=symbol,
-                    tfs=self.config.structure_tfs,
+                    tfs=builder_tfs(self.config.structure_tfs),
                 ),
             )
         return self.symbols[symbol]
@@ -755,6 +775,8 @@ class DeskLoop:
         raise ValueError(f"unknown stream: {event.stream!r}")
 
     def on_bar_close(self, bar: Bar) -> list[dict[str, Any]]:
+        if bar.tf in FEATURE_TFS:
+            return self._on_feature_bar(bar)
         st = self.state_for(bar.symbol)
         st.bars.append(bar)
         if st.bar_builder is not None:
@@ -787,6 +809,26 @@ class DeskLoop:
         if bar.tf == self.config.working_tf or jury_events:
             return jury_events + trail_events + retired
         return retired
+
+    def _on_feature_bar(self, bar: Bar) -> list[dict[str, Any]]:
+        """1m/5m close: PIT features only. Not a zone, not a jury tick, no score."""
+        st = self.state_for(bar.symbol)
+        st.feature_bars.append(bar)
+        del st.feature_bars[:-240]
+        if st.bar_builder is not None:
+            st.bar_builder.seed_closed((bar,))
+        if bar.tf == "5m":
+            st.last_features = build_features(
+                bars_1m=[b for b in st.feature_bars if b.tf == "1m"],
+                bars_5m=[b for b in st.feature_bars if b.tf == "5m"],
+                bars_1h=[b for b in st.bars if b.tf == "1h"],
+                as_of=bar.close_ts,
+            )
+        return [{"event": "hyexec_features", "symbol": bar.symbol, "tf": bar.tf}]
+
+    def _note_hyexec(self, kind: str, *, symbol: str, now: datetime) -> None:
+        if self.knowledge.available():
+            stamp_hyexec(self.knowledge, kind=kind, symbol=symbol, at=now)
 
     def publish_card(self, symbol: str, now: datetime) -> CardLive:
         """Compute B labels and write claim b_card:SYMBOL. Never sends.
@@ -959,7 +1001,21 @@ class DeskLoop:
         if st.bar_builder is not None:
             st.bar_builder.on_trade(trade)
         self._trim_trades(st, trade.exchange_ts)
-        self.paper.on_print(trade)
+        # +1R take fraction is decided here, not at submit. A stamped expand
+        # on the ticket is the wrong clock (expand_ok needs a live day/book).
+        for pos in self.paper.open_for(trade.symbol):
+            # The take clock is this print. After +1R the fraction is done —
+            # flipping expand later would let score flatten an EXPAND remainder.
+            if pos.state == "open" and not pos.half_taken:
+                pos.labels["expand"] = self._expand_now(
+                    pos, trade.exchange_ts, at_1r_take=True
+                )
+        changed = self.paper.on_print(trade)
+        for pos in changed:
+            if pos.half_taken and not pos.labels.get("harvest_noted"):
+                pos.labels["harvest_noted"] = True
+                if self.policy.window(trade.exchange_ts).name == "overlap":
+                    self._note_hyexec("harvest", symbol=pos.symbol, now=trade.exchange_ts)
         # Resting +1R half on the venue as soon as the twin is filled, not after
         # the tape has already printed through +1R (that was a taker / a miss).
         for pos in self.paper.open_for(trade.symbol):
@@ -977,9 +1033,13 @@ class DeskLoop:
                 half_px = (
                     pos.entry_px + pos.r_px if pos.side == "buy" else pos.entry_px - pos.r_px
                 )
+                expand = self._expand_now(pos, trade.exchange_ts, at_1r_take=True)
+                pos.labels["expand"] = expand
                 self._oms(
                     pos, "half_tp", trade.exchange_ts,
-                    qty=str(base * HALF), price=str(half_px), reason="+1R half",
+                    qty=str(base * take_at_1r(expand=expand)),
+                    price=str(half_px),
+                    reason="+1R half",
                 )
         try:
             px = Decimal(str(trade.payload["px"]))
@@ -1016,9 +1076,12 @@ class DeskLoop:
     def tick(self, now: datetime, *, force_flush: bool = True) -> list[dict[str, Any]]:
         when = require_utc(now)
         self.account.roll(when)
+        self._sync_window_halt(when)
+        self._sync_hour_start(when)
         self.paper.on_clock(when)
         out: list[dict[str, Any]] = []
         if self.knowledge.available():
+            self._refresh_hyexec_model_go()
             # Gateway watchdog: process liveness, not tape time. Catch-up ticks
             # used exchange_ts here and the signer blocked `desk` for a live box.
             self._ui_put("desk_heartbeat", datetime.now(tz=UTC).isoformat())
@@ -1031,6 +1094,7 @@ class DeskLoop:
                 self._reload_instruments()
                 self._refresh_calibration(when)
                 self._refresh_correlation(when)
+                self._apply_hyexec_score_exit(when)
                 out.extend(self._sync_exchange_state(when))
                 out.extend(self._retire_zones(when))
             if force_flush:
@@ -1801,6 +1865,7 @@ class DeskLoop:
                 "skip_reason": row.skip_reason,
                 "outcome": row.outcome,
                 "rho_class_id": row.rho_class_id,
+                "book_plus": _book_plus(st.book, idea_side),
                 "oko_voice": row.oko_voice,
                 "oko_label": row.oko_label,
                 "oko_regime": row.oko_regime,
@@ -1821,6 +1886,7 @@ class DeskLoop:
                 "oko_liq_rel": row.oko_liq_rel,
             }
         )
+        journal.update(feature_journal(st.last_features))
         missing = [key for key in JOURNAL_KEYS if key not in journal]
         if missing:
             raise RuntimeError(f"journal missing {missing}")
@@ -1954,10 +2020,12 @@ class DeskLoop:
             del self.shadow_writes[: len(self.shadow_writes) - self.SHADOW_WRITES_MAX]
         # W3: shadow and fade ideas trade on paper 24/7, whatever the user mode.
         paper_ids: dict[str, str] = {}
+        vah, val = self._value_area(card)
         if shadow_would:
             pid = self._submit_paper(
                 row, zone, known_zones, idea=idea, side=idea_side, wick_extreme=wick_extreme,
                 now=closed_at, source="shadow", tag=idea_shadow_tag(idea),
+                vah=vah, val=val,
             )
             if pid:
                 paper_ids["shadow"] = pid
@@ -1965,6 +2033,7 @@ class DeskLoop:
             pid = self._submit_paper(
                 row, zone, known_zones, idea="fade_spring", side=fade_side,
                 wick_extreme=wick_extreme, now=closed_at, source="fade", tag="fade_spring",
+                vah=vah, val=val,
             )
             if pid:
                 paper_ids["fade"] = pid
@@ -1975,6 +2044,7 @@ class DeskLoop:
             pid = self._submit_paper(
                 row, zone, known_zones, idea=idea, side=idea_side, wick_extreme=wick_extreme,
                 now=closed_at, source="challenger", tag=idea_shadow_tag(idea),
+                vah=vah, val=val,
             )
             if pid:
                 paper_ids["challenger"] = pid
@@ -1983,7 +2053,7 @@ class DeskLoop:
             self.knowledge.put_journal_touch(row.touch_id, payload_row)
         sent = False
         if (
-            shadow_would
+            self.allow_hyexec_send(book_ticket=shadow_would, symbol=st.symbol)
             and skip is None
             and self.user_mode in {"demo", "live"}
             and self.hello_ok()
@@ -2039,6 +2109,8 @@ class DeskLoop:
                     max_stop_pct=self.risk_config.max_stop_pct,
                     manual_stop_frac=self.risk_config.manual_stop_frac,
                     liq_levels=self.liquidation_levels(st, closed_at),
+                    vah=self._value_area(card)[0],
+                    val=self._value_area(card)[1],
                     next_funding_at=self.next_funding.get(st.symbol),
                     universe_rank=self.universe_rank(),
                     screened=self.screened_symbols(closed_at),
@@ -2093,6 +2165,7 @@ class DeskLoop:
                     closed_at, key=window.budget_key, max_n=window.budget
                 )
                 intent = self.strategy.propose(snap)
+                payload_row["would_aplus"] = bool(getattr(self.strategy, "last_aplus", False))
                 if intent is None:
                     # The strategy's own refusal is a journal fact, like every gate after it.
                     payload_row["send_skip"] = (
@@ -2110,6 +2183,8 @@ class DeskLoop:
                     payload_row.update(gate_info)
                     self.knowledge.put_journal_touch(row.touch_id, payload_row)
                     if sized is not None:
+                        if gate_info.get("desk_step") == "aplus":
+                            self._note_hyexec("aplus", symbol=st.symbol, now=closed_at)
                         intent_id = self.knowledge.enqueue_intent(
                             sized.model_dump(mode="json"),
                             created_ts=row.ts.isoformat(),
@@ -2172,6 +2247,7 @@ class DeskLoop:
         "resume_entries",
         "promote",
         "drift_release",
+        "add_in_profit",
     )
     # Bounded in-memory tails for a 24/7 process (audit §5): the journal in SQLite is
     # the record; these are working windows.
@@ -2215,9 +2291,62 @@ class DeskLoop:
             window = None if symbol in {None, "", "ALL"} else str(symbol)
             cleared = self.release_drift(window)
             return {"windows": cleared}, [{"event": "drift_release", "windows": cleared}]
+        if kind == "add_in_profit":
+            return self._add_in_profit_command(payload, symbol, now)
         # promote — run the exam now; flip the label only on a pass
         result = self._promote(payload, now)
         return result, [{"event": "promote", **{k: result[k] for k in ("passed",)}}]
+
+    def _add_in_profit_command(
+        self, payload: Mapping[str, Any], symbol: Any, now: datetime
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Validate a second leg above (long) / below (short) entry. No venue add exists."""
+        reject_forbidden_keys(dict(payload))
+        if symbol in {None, "", "ALL"}:
+            raise ValueError("add_in_profit needs a symbol")
+        idea = self.account.open.get(str(symbol))
+        if idea is None:
+            raise ValueError("no open idea")
+        if "add_price" not in payload:
+            raise ValueError("add_price required")
+        add_price = Decimal(str(payload["add_price"]))
+        extra = Decimal(str(payload.get("extra_risk") or "0.005"))
+        equity = self.account.sizing_equity()
+        if equity <= 0:
+            raise ValueError("equity must be > 0")
+        open_risk = idea.qty * abs(idea.entry - idea.stop) / equity
+        got = self.manager.add_in_profit(
+            side=idea.side,  # type: ignore[arg-type]
+            entry=idea.entry,
+            add_price=add_price,
+            extra_risk=extra,
+            open_risk=open_risk,
+        )
+        week_start = self.account.halts.week_start
+        if week_start <= 0:
+            raise ValueError("week_start must be > 0")
+        week_pnl = (self.account.equity - week_start) / week_start
+        if not pyramid_ok(week_pnl=week_pnl):
+            raise ValueError("behind week pace")
+        self._note_hyexec("pyramid", symbol=str(idea.symbol), now=now)
+        row = {
+            "action": got.action,
+            "symbol": idea.symbol,
+            "side": got.side,
+            "entry": str(got.entry),
+            "add_price": str(got.add_price),
+            "extra_risk": str(got.extra_risk),
+            "open_risk": str(got.open_risk),
+            "total_risk": str(got.total_risk),
+            "at": now.isoformat(),
+            "venue": False,
+        }
+        twins = [p for p in self.paper.open_for(idea.symbol) if p.state == "open"]
+        touch_id = twins[0].touch_id if twins else f"add_in_profit:{idea.symbol}"
+        existing = self.knowledge.get_journal_touch(touch_id) or {"touch_id": touch_id}
+        existing["add_in_profit"] = row
+        self.knowledge.put_journal_touch(touch_id, existing)
+        return row, [{"event": "add_in_profit", **row}]
 
     def _consume_commands(self, now: datetime) -> list[dict[str, Any]]:
         """Operator commands are claimed atomically from the one `desk_commands` table
@@ -2312,7 +2441,10 @@ class DeskLoop:
             if eq is not None and eq > 0 and (
                 self.account.equity != eq or not self.account.equity_source.startswith("exchange")
             ):
+                prev_src = self.account.equity_source
                 self.account.set_equity(eq, source=f"exchange:{self.user_mode}", now=now)
+                self._sync_window_halt(now, rebase=not prev_src.startswith("exchange"))
+                self._sync_hour_start(now)
                 out.append({"event": "equity", "equity": str(eq), "source": self.user_mode})
         # 3) venue flat while our filled twin is open → the venue closed it.
         #    Only after the venue has *shown* the position (or a fill) for this idea:
@@ -2598,8 +2730,202 @@ class DeskLoop:
             self._sentiment_mult = self.risk_config.sentiment_mult
         return self._sentiment_mult
 
-    def effective_target_risk(self) -> Decimal:
-        return target_after_drift(drift=self.drift_active, base=self.risk_config.target_risk_pct)
+    def _hyexec_serve_body(self) -> dict[str, Any] | None:
+        if not self.knowledge.available():
+            return None
+        raw = self.knowledge.meta("hyexec_serve")
+        if raw in {None, ""}:
+            return None
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return body if isinstance(body, dict) else None
+
+    def _refresh_hyexec_model_go(self) -> None:
+        """Serve writes the score. Desk never loads xgboost."""
+        body = self._hyexec_serve_body()
+        if body is None:
+            return
+        go = body.get("model_go")
+        self.hyexec_model_go = None if go is None else bool(go)
+
+    def _hyexec_go_for(self, symbol: str) -> bool | None:
+        body = self._hyexec_serve_body()
+        if body is not None:
+            by_sym = body.get("by_symbol")
+            if symbol and isinstance(by_sym, dict) and symbol in by_sym:
+                row = by_sym[symbol]
+                if isinstance(row, dict):
+                    go = row.get("model_go")
+                    return None if go is None else bool(go)
+            if symbol and isinstance(by_sym, dict) and by_sym and symbol not in by_sym:
+                return None
+            if "model_go" in body:
+                go = body.get("model_go")
+                if go is not None:
+                    return bool(go)
+                if not by_sym:
+                    return None
+        return self.hyexec_model_go
+
+    def _hyexec_score_for(self, symbol: str) -> Decimal | None:
+        body = self._hyexec_serve_body()
+        if body is None:
+            return None
+        by_sym = body.get("by_symbol")
+        if symbol and isinstance(by_sym, dict) and symbol in by_sym:
+            row = by_sym[symbol]
+            if isinstance(row, dict) and row.get("score") not in {None, ""}:
+                try:
+                    return Decimal(str(row["score"]))
+                except ArithmeticError:
+                    return None
+        if symbol and isinstance(by_sym, dict) and by_sym:
+            return None
+        if body.get("score") not in {None, ""}:
+            try:
+                return Decimal(str(body["score"]))
+            except ArithmeticError:
+                return None
+        return None
+
+    def _apply_hyexec_score_exit(self, now: datetime) -> None:
+        """Flatten a FLOOR remainder when the served score dropped. EXPAND holds."""
+        for pos in list(self.paper.positions.values()):
+            if pos.state != "open" or not pos.half_taken:
+                continue
+            raw = pos.labels.get("score_entry")
+            if raw in {None, ""}:
+                continue
+            try:
+                score_entry = Decimal(str(raw))
+            except ArithmeticError:
+                continue
+            score_now = self._hyexec_score_for(pos.symbol)
+            if score_now is None:
+                continue
+            px = self.last_price.get(pos.symbol)
+            if px is None:
+                px = pos.entry_px
+            if px is None:
+                continue
+            self.paper.note_score(
+                pos.paper_id,
+                now=now,
+                px=px,
+                score_now=score_now,
+                score_entry=score_entry,
+                drop=SCORE_DROP,
+                structure_ok=self._structure_ok_for(pos),
+            )
+
+    def allow_hyexec_send(self, *, book_ticket: bool, symbol: str = "") -> bool:
+        return may_send(book_ticket=book_ticket, model_go=self._hyexec_go_for(symbol))
+
+    def effective_target_risk(self, *, step: str = "std", window: str = "") -> Decimal:
+        base = target_after_drift(drift=self.drift_active, base=self.risk_config.target_risk_pct)
+        risk = effective_risk(
+            step=step,
+            phase_target=self.risk_config.target_risk_pct,
+            base_risk=base,
+            day_pnl=self.window_halt.day_pnl(),
+            window=window or "none",
+        )
+        return after_hour_dd(hour_dd=self._hour_dd(), risk=risk)
+
+    def _hour_dd(self) -> Decimal:
+        start = self._hour_start_equity
+        if start <= 0:
+            return Decimal("0")
+        return (self.account.equity - start) / start
+
+    def _load_hour_start(self) -> None:
+        if not self.knowledge.available():
+            return
+        raw = self.knowledge.meta("hyexec_hour_start")
+        if not raw:
+            return
+        try:
+            data = json.loads(raw)
+            at = datetime.fromisoformat(str(data["at"]))
+            equity = Decimal(str(data["equity"]))
+        except (KeyError, TypeError, ValueError, ArithmeticError, json.JSONDecodeError):
+            return
+        if equity <= 0:
+            return
+        self._hour_start_at = at
+        self._hour_start_equity = equity
+
+    def _sync_hour_start(self, now: datetime) -> None:
+        hour = require_utc(now).replace(minute=0, second=0, microsecond=0)
+        if self._hour_start_at is None or hour > self._hour_start_at:
+            self._hour_start_at = hour
+            self._hour_start_equity = self.account.equity
+            if self.knowledge.available():
+                self.knowledge.set_meta(
+                    "hyexec_hour_start",
+                    json.dumps(
+                        {"at": hour.isoformat(), "equity": str(self._hour_start_equity)},
+                        sort_keys=True,
+                    ),
+                )
+
+    @staticmethod
+    def _value_area(card: CardLive | None) -> tuple[Decimal | None, Decimal | None]:
+        if card is None:
+            return None, None
+        return _opt_px(card.volume.vah), _opt_px(card.volume.val)
+
+    def _book_plus_for(self, pos: PaperPosition) -> bool:
+        st = self.symbols.get(pos.symbol)
+        if st is None or not st.book.ready:
+            return False
+        imb = st.book.imbalance(5)
+        if imb is None:
+            return False
+        return imb > 0 if pos.side == "buy" else imb < 0
+
+    def _structure_ok_for(self, pos: PaperPosition) -> bool:
+        if pos.side == "buy" and self.btc.broke_support:
+            return False
+        if pos.side == "sell" and self.btc.broke_resistance:
+            return False
+        if pos.structural is None:
+            return False
+        px = self.last_price.get(pos.symbol)
+        if px is None:
+            px = pos.entry_px or pos.limit_px
+        return px > pos.structural if pos.side == "buy" else px < pos.structural
+
+    def _expand_now(
+        self, pos: PaperPosition, when: datetime, *, at_1r_take: bool = False
+    ) -> bool:
+        """FLOOR vs EXPAND at the +1R take. Submit-time stamps are not this clock."""
+        if pos.side == "buy" and self.btc.broke_support:
+            return False
+        if pos.side == "sell" and self.btc.broke_resistance:
+            return False
+        px = self.last_price.get(pos.symbol)
+        in_profit = at_1r_take
+        if not in_profit and pos.entry_px is not None and px is not None:
+            in_profit = px > pos.entry_px if pos.side == "buy" else px < pos.entry_px
+        return expand_ok(
+            in_profit=in_profit,
+            book_plus=self._book_plus_for(pos),
+            structure_ok=self._structure_ok_for(pos),
+            window=self.policy.window(when).name,
+            day_pnl=self.window_halt.day_pnl(),
+        )
+
+    def _sync_window_halt(self, now: datetime, *, rebase: bool = False) -> None:
+        assert self.account.halts is not None
+        day_start = self.account.halts.day_start
+        if rebase or self.window_halt.start != day_start:
+            self.window_halt = WindowHalt(start_equity=day_start)
+            if self.account.halts.peak > self.window_halt.peak:
+                self.window_halt.peak = self.account.halts.peak
+        self.window_halt.note_window(self.policy.window(now).name, self.account.equity)
 
     def _reload_instruments(self) -> None:
         """Signer refreshed instruments-info from the venue → registry rows (D-04)."""
@@ -2661,6 +2987,8 @@ class DeskLoop:
         now: datetime,
         source: str,
         tag: str,
+        vah: Decimal | None = None,
+        val: Decimal | None = None,
     ) -> str | None:
         """Same geometry as the live strategy, sized from the account, no EV gate:
         the shadow measures what the edge is worth *after* costs, it does not filter."""
@@ -2693,6 +3021,8 @@ class DeskLoop:
                 entry=row.trade_px,
                 manual_frac=self.risk_config.manual_stop_frac,
                 mode=self.risk_config.stop_mode,
+                vah=vah,
+                val=val,
             )
             stop = smart.stop
             if atr is not None and atr > 0:
@@ -2713,7 +3043,7 @@ class DeskLoop:
             entry=row.trade_px,
             stop=stop,
             lev=lev,
-            target_risk=self.effective_target_risk(),
+            target_risk=self.effective_target_risk(window=window.name),
             deposit_share=cfg.deposit_share_per_trade,
             qty_step=inst.qty_step,
             min_qty=inst.min_qty,
@@ -2796,6 +3126,13 @@ class DeskLoop:
             "turnover_rank": None if rank is None else rank.get(symbol),
             "zone_tf": zone.tf,
             "cav_tf": row.cav_tf or zone.tf,
+            "first_fact_tag": getattr(self.strategy, "last_first_fact_tag", None),
+            "aplus": bool(getattr(self.strategy, "last_aplus", False)),
+            "score_entry": (
+                None
+                if (score := self._hyexec_score_for(symbol)) is None
+                else str(score)
+            ),
         }
 
     def symbol_group(self, symbol: str, rank: Mapping[str, int] | None) -> str:
@@ -3326,6 +3663,11 @@ class DeskLoop:
                     "r_gross": payload["r_gross"],
                     "mae_r": payload["mae_r"],
                     "mfe_r": payload["mfe_r"],
+                    "tail_cut_r": payload["tail_cut_r"],
+                    "half_taken": pos.half_taken,
+                    "expand": (
+                        None if not pos.half_taken else bool(pos.labels.get("expand"))
+                    ),
                     "pnl_net": str(pos.pnl_net()),
                     "fees": str(pos.fees),
                     "funding": str(pos.funding),
@@ -3344,6 +3686,7 @@ class DeskLoop:
                 self.account.apply_pnl(
                     pnl=pos.realized, fees=pos.fees, funding=pos.funding, now=when, source="paper"
                 )
+                self._sync_window_halt(when)
             # (3) The twin is the desk's decision; the venue must follow it. flatten on
             # the venue = cancel resting entries + close whatever position is left, so a
             # stop/TP/time/expiry/veto here never leaves an orphan order or position.
@@ -3385,12 +3728,24 @@ class DeskLoop:
             return None, info
         lev = min(cfg.max_lev, inst.max_lev)
         room = self.account.halts.remaining_frac(self.account.sizing_equity())
+        window_name = str(labels.get("window") or "")
+        step = desk_step(
+            first_fact_tag=str(
+                labels.get("first_fact_tag")
+                or getattr(self.strategy, "last_first_fact_tag", None)
+                or "first_fact"
+            ),
+            size_mult=intent.size_mult,
+            aplus=bool(labels.get("aplus") or getattr(self.strategy, "last_aplus", False)),
+            window=window_name,
+            day_pnl=self.window_halt.day_pnl(),
+        )
         decision = size_position(
             equity=self.account.sizing_equity(),
             entry=intent.entry,
             stop=intent.stop,
             lev=lev,
-            target_risk=self.effective_target_risk(),
+            target_risk=self.effective_target_risk(step=step, window=window_name),
             deposit_share=cfg.deposit_share_per_trade,
             qty_step=inst.qty_step,
             min_qty=inst.min_qty,
@@ -3418,6 +3773,7 @@ class DeskLoop:
             "participating_share": str(cfg.participating_share),
             "equity_source": self.account.equity_source,
             "config_id": cfg.config_id,
+            "desk_step": step,
         }
         if decision.action != "accept":
             info["send_skip"] = f"size:{decision.binding}"
@@ -3427,7 +3783,6 @@ class DeskLoop:
         if not qok:
             info["send_skip"] = f"size_mult:{qwhy}"
             return None, info
-        window_name = str(labels.get("window") or "")
         hold = self._hold_hours.get(f"{intent.tag}|{window_name}", Decimal("2"))
         ev = ev_evaluate(
             qty=qty,
@@ -3737,6 +4092,30 @@ def _record_adds_from_diff(
                 st.adds.append(BookAdd(ts=ts, side=hit, px=px, qty=delta))
             elif delta < 0:
                 st.pulls.append(BookPull(ts=ts, side=hit, px=px, qty=-delta))
+
+
+def _feature_journal(row: FeatureRow | None) -> dict[str, Any]:
+    """PIT 5m vector on the touch. Same stamp as hyexec.features.feature_journal."""
+    return feature_journal(row)
+
+
+def _opt_px(raw: object) -> Decimal | None:
+    if raw in {None, "", "null", "none"}:
+        return None
+    try:
+        value = Decimal(str(raw))
+    except (ArithmeticError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _book_plus(book: Book, idea_side: str) -> bool | None:
+    if not book.ready:
+        return None
+    imb = book.imbalance(5)
+    if imb is None:
+        return None
+    return imb > 0 if idea_side == "buy" else imb < 0
 
 
 def _f(value: float | None) -> str | None:

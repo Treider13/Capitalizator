@@ -164,7 +164,7 @@ def test_clean_touch_is_zero_and_jury_is_unchanged(tmp_path: Path) -> None:
     assert journal["oko_set"] == "bounce|break|die"
     assert journal["oko_n_class"] == 0
     assert journal["zlg_label"] == "DEFEND"
-    assert journal["jury"] == "SILENCE"  # n<20 on CAV/ZLG, as before ОКО
+    assert journal["jury"] == "ACCORD"  # printed DEFEND is a book fact; n cuts size, not the vote
 
 
 def test_no_book_at_the_print_is_unknown_and_zero(tmp_path: Path) -> None:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from capitalizator.hyexec.features import NAMES as HYEXEC_FEATURE_NAMES
+
 JOURNAL_KEYS = (
     "zone_id",
     "touch_ts",
@@ -78,7 +80,10 @@ JOURNAL_KEYS = (
     "oko_footprint_side",
     "oko_oi_z",
     "oko_liq_rel",
-)
+    "book_plus",
+    "would_aplus",
+    "hyexec_as_of",
+) + tuple(f"hx_{name}" for name in HYEXEC_FEATURE_NAMES)
 
 KNOWLEDGE_TABLES = (
     "meta",

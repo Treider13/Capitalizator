@@ -421,7 +421,7 @@ def test_observe_gap_in_window_still_stamps() -> None:
     assert row.gesture == "DEFEND"
     assert row.cav_label == "REJECT"
     assert row.btc_regime == "box"
-    assert row.jury == "SILENCE"
+    assert row.jury == "ACCORD"
 
 
 def test_observe_on_fills_all_labels_and_stamps() -> None:
@@ -433,7 +433,7 @@ def test_observe_on_fills_all_labels_and_stamps() -> None:
     assert row.gesture == "DEFEND"
     assert row.cav_label == "REJECT"
     assert row.btc_regime == "box"
-    assert row.jury == "SILENCE"
+    assert row.jury == "ACCORD"
     assert row.rho_class_id == "bounce × REJECT × DEFEND × BTC_box"
 
 
@@ -456,7 +456,7 @@ def test_observe_unclosed_bar_is_noise() -> None:
     )
     row = observe(reg, inp, contour_on=True)[0]
     assert row.cav_label == "NOISE"
-    assert row.jury == "SILENCE"
+    assert row.jury == "ACCORD"
 
 
 def test_observe_two_runs_match() -> None:
@@ -523,7 +523,7 @@ def test_observe_two_pending_needs_touch_id() -> None:
         observe(reg, _observe_in(), contour_on=True)
     first_id = reg.touches[0].touch_id
     observe(reg, _observe_in(), contour_on=True, touch_id=first_id)
-    assert reg.touches[0].jury == "SILENCE"
+    assert reg.touches[0].jury == "ACCORD"
     assert reg.touches[1].jury is None
     assert reg.touches[1].tape_eaten is None
     assert reg.touches[1].gesture is None
@@ -538,7 +538,7 @@ def test_observe_if_on_reads_switch(tmp_path: Path) -> None:
     _write_hours24(vault.tape)
     enable(vault)
     changed = observe_if_on(vault, _reg(), _observe_in())
-    assert changed[0].jury == "SILENCE"
+    assert changed[0].jury == "ACCORD"
     assert changed[0].gesture == "DEFEND"
 
 
@@ -664,7 +664,7 @@ def test_observe_n_is_per_symbol() -> None:
     changed = observe(reg, _observe_in(), contour_on=True)
     assert changed[0].cav_label == "REJECT"
     assert changed[0].gesture == "DEFEND"
-    assert changed[0].jury == "SILENCE"
+    assert changed[0].jury == "ACCORD"
     assert changed[0].touch_id == reg.touches[0].touch_id
     assert all(row.jury == "ACCORD" for row in reg.touches[1:])
 
@@ -738,7 +738,7 @@ def test_observe_unknown_reads_btc_bars() -> None:
     )
     row = observe(_reg(), inp, contour_on=True)[0]
     assert row.btc_regime == "trend"
-    assert row.jury == "SILENCE"
+    assert row.jury == "ACCORD"
 
 
 def test_observe_unknown_btc_does_not_freeze_jury() -> None:
@@ -765,7 +765,7 @@ def test_observe_unknown_btc_does_not_freeze_jury() -> None:
     assert first[0].jury is None
     second = observe(reg, _observe_in(), contour_on=True)
     assert second[0].btc_regime == "box"
-    assert second[0].jury == "SILENCE"
+    assert second[0].jury == "ACCORD"
 
 
 def test_observe_btc_retry_ignores_centered_book() -> None:
@@ -805,7 +805,7 @@ def test_observe_btc_retry_ignores_centered_book() -> None:
     )
     stamped = observe(reg, later, contour_on=True)
     assert stamped[0].btc_regime == "box"
-    assert stamped[0].jury == "SILENCE"
+    assert stamped[0].jury == "ACCORD"
     assert stamped[0].tape_eaten is False
     assert stamped[0].gesture == "DEFEND"
 
@@ -856,7 +856,7 @@ def test_observe_known_news_labels_news() -> None:
     )
     row = observe(_reg(), inp, contour_on=True)[0]
     assert row.btc_regime == "news"
-    assert row.jury == "SILENCE"
+    assert row.jury == "ACCORD"
     assert row.tape_eaten is False
     assert row.gesture == "DEFEND"
 
@@ -988,7 +988,7 @@ def test_observe_foreign_gap_does_not_freeze() -> None:
     assert row.gesture == "DEFEND"
     assert row.cav_label == "REJECT"
     assert row.btc_regime == "box"
-    assert row.jury == "SILENCE"
+    assert row.jury == "ACCORD"
 
 
 def test_observe_naive_add_writes_nothing() -> None:
@@ -1054,7 +1054,7 @@ def test_observe_btc_retry_ignores_foreign_trades() -> None:
     )
     stamped = observe(reg, later, contour_on=True)
     assert stamped[0].btc_regime == "box"
-    assert stamped[0].jury == "SILENCE"
+    assert stamped[0].jury == "ACCORD"
     assert stamped[0].tape_eaten is False
     assert stamped[0].gesture == "DEFEND"
 
@@ -1107,5 +1107,5 @@ def test_observe_btc_retry_allows_unready_book() -> None:
     assert later.book.ready is False
     stamped = observe(reg, later, contour_on=True)
     assert stamped[0].btc_regime == "box"
-    assert stamped[0].jury == "SILENCE"
+    assert stamped[0].jury == "ACCORD"
     assert stamped[0].gesture == "DEFEND"

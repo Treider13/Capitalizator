@@ -811,6 +811,7 @@ class Knowledge:
             "ack_position",  # operator claims an unknown venue position
             "promote",  # champion ← challenger, with the exam report attached
             "drift_release",  # clear a window's Page-Hinkley size cut
+            "add_in_profit",  # second leg above/below entry; desk journals, no venue add
         }
     )
 

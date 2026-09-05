@@ -74,9 +74,9 @@ def test_stamp_jury_does_not_restamp() -> None:
     reg.fill_gesture(gesture="DEFEND")
     reg.fill_btc(regime="box")
     first = reg.stamp_jury()[0]
-    assert first.jury == "SILENCE"
+    assert first.jury == "ACCORD"
     assert reg.stamp_jury(n_cav=20, n_zlg=20) == []
-    assert reg.touches[0].jury == "SILENCE"
+    assert reg.touches[0].jury == "ACCORD"
 
 
 def test_fill_and_stamp_need_touch_id_when_several() -> None:

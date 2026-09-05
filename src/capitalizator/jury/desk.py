@@ -254,9 +254,16 @@ def _cav_bounce(cav: str | None, n: int) -> Voice:
 
 
 def _zlg_bounce(zlg: str | None, n: int) -> Voice:
+    """A printed gesture is a book fact at any n. Thin n cuts size, not the vote.
+
+    SILENCE is VETO (no ticket). Missing label is 0. n is accepted for callers
+    that still pass it; it does not mute DEFEND/IMPROVE.
+    """
+    if n < 0:
+        raise ValueError("n must be >= 0")
     if zlg == "SILENCE":
         return "VETO"
-    if zlg is None or n < N_MIN:
+    if zlg is None:
         return 0
     if zlg in {"DEFEND", "IMPROVE"}:
         return 1
@@ -294,9 +301,11 @@ def _cav_breakout(cav: str | None, n: int) -> Voice:
 
 
 def _zlg_breakout(zlg: str | None, n: int) -> Voice:
+    if n < 0:
+        raise ValueError("n must be >= 0")
     if zlg == "SILENCE":
         return "VETO"
-    if zlg is None or n < N_MIN:
+    if zlg is None:
         return 0
     if zlg == "RETREAT":
         return 1

@@ -175,13 +175,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--init", action="store_true")
     args = parser.parse_args(argv)
     vault = init_vault(Path(args.userdir)) if args.init else load_vault(Path(args.userdir))
+    from capitalizator.hyexec.backfill import backfill_vault
+
+    hyexec = backfill_vault(vault)
     knowledge = open_knowledge(vault)
     try:
         out = run_night(knowledge, day=args.day, now=datetime.now(tz=UTC))
         print(
             json.dumps(
-                {k: out[k] for k in ("day", "n_rows", "n_shadow", "r_shadow", "classes",
-                                      "exam_passed", "intel_sources")},
+                {
+                    **{k: out[k] for k in ("day", "n_rows", "n_shadow", "r_shadow",
+                                           "classes", "exam_passed", "intel_sources")},
+                    "hyexec_filled": hyexec.get("filled"),
+                    "hyexec_n_labeled": hyexec.get("n_labeled"),
+                },
                 ensure_ascii=False,
             )
         )

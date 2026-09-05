@@ -126,19 +126,26 @@ def _confirm(token: str, extra_hidden: Mapping[str, str] | None = None) -> str:
 
 def _command_form(token: str, kind: str, label: str, *, symbol_input: bool = False,
                   symbol_value: str | None = None, warn: bool = False,
-                  select: Sequence[str] | None = None) -> str:
+                  select: Sequence[str] | None = None,
+                  extra_fields: Sequence[tuple[str, str]] | None = None) -> str:
     parts = ["<form class='inline' method='post' action='/api/command'>"]
     hidden = {"kind": kind}
     if symbol_value is not None:
         hidden["symbol"] = symbol_value
     parts.append(_confirm(token, hidden))
     if symbol_input:
-        parts.append("<input name='symbol' placeholder='символ или ALL' value='ALL' size='12'/>")
+        placeholder = "символ" if kind == "add_in_profit" else "символ или ALL"
+        default = "" if kind == "add_in_profit" else "ALL"
+        parts.append(
+            f"<input name='symbol' placeholder='{placeholder}' value='{default}' size='12'/>"
+        )
     if select is not None:
         parts.append("<select name='symbol'><option value='ALL'>все окна</option>")
         for name in select:
             parts.append(f"<option value='{_e(name)}'>{_e(name)}</option>")
         parts.append("</select>")
+    for name, placeholder in extra_fields or ():
+        parts.append(f"<input name='{_e(name)}' placeholder='{_e(placeholder)}' size='14'/>")
     parts.append("<input name='reason' placeholder='причина (в журнал)' size='18'/>")
     parts.append(f"<button type='submit'{' class=\"warn\"' if warn else ''}>{_e(label)}</button></form>")
     return "".join(parts)
@@ -243,6 +250,18 @@ def render_ops_html(
         + "</p><p>"
         + _command_form(token, "promote", "Экзамен претендента (отчёт, без переключения)")
         + _command_form(token, "drift_release", "Снять дрейф окна", select=sorted(window_drift))
+        + "</p><p>"
+        + _command_form(
+            token,
+            "add_in_profit",
+            "Долить в плюсе (журнал, не биржа)",
+            symbol_input=True,
+            extra_fields=(
+                ("add_price", "цена долива"),
+                ("extra_risk", "добавочный риск"),
+            ),
+        )
+        + "<span class='hint'>Только лучше входа. На биржу не уходит: OMS add нет.</span>"
         + "</p>"
     )
 

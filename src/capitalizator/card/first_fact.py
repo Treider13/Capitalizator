@@ -1,7 +1,9 @@
 """1.7.3 / 2.11.4 — first fact is the fastest claim with our frequency.
 
-n<20 / SILENCE → shadow. Size never grows. A human first_fact field is not
-this module: CardDraft forbids extra keys. Does not open a position.
+SILENCE / missing gesture → shadow (no ticket). A printed book gesture with
+n<n_min → probe: the fact exists, size is cut, never raised. Mature n → full
+fact at size 1. A human first_fact field is not this module: CardDraft forbids
+extra keys. Does not open a position.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from decimal import Decimal
 from capitalizator.stats import n_min
 
 N_MIN = n_min()
+PROBE_SIZE = Decimal("0.40")
 _HORIZON = re.compile(r"^(\d+)(s|m|h|d)$")
 _UNIT_S = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
@@ -35,8 +38,10 @@ class RankedClaim:
 def resolve(gesture: str | None, n: int) -> FirstFact:
     if n < 0:
         raise ValueError("n must be >= 0")
-    if gesture is None or gesture == "SILENCE" or n < N_MIN:
+    if gesture is None or gesture == "SILENCE":
         return FirstFact(tag="shadow_gesture", first_fact=None, size_mult=Decimal("1"))
+    if n < N_MIN:
+        return FirstFact(tag="probe_gesture", first_fact=gesture, size_mult=PROBE_SIZE)
     return FirstFact(tag="first_fact", first_fact=gesture, size_mult=Decimal("1"))
 
 

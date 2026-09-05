@@ -115,8 +115,10 @@ def test_half_at_one_r_then_tp_on_remainder() -> None:
     assert pos.r_gross() == Decimal("3") / Decimal("2")
     assert pos.mfe_r() == Decimal("4.5") / Decimal("2")
     assert pos.r_net() < pos.r_gross()  # fees on entry, half and tp
+    assert pos.tail_cut_r() == pos.mfe_r() - pos.r_net()
     payload = pos.to_payload()
     assert payload["hold_s"] == 119.0 and payload["exit_reason"] == "tp"
+    assert payload["tail_cut_r"] == str(pos.tail_cut_r())
 
 
 def test_pending_expires_by_clock_and_by_print() -> None:
@@ -127,6 +129,7 @@ def test_pending_expires_by_clock_and_by_print() -> None:
     eng.on_clock(T0 + timedelta(minutes=31))
     assert pos.state == "closed" and pos.exit_reason == "expired" and pos.entry_px is None
     assert pos.r_net() is None  # unfilled is not scored
+    assert pos.tail_cut_r() is None
     pos2 = _buy(eng, paper_id="t2:shadow", touch_id="t2")
     eng.on_print(_print(T0 + timedelta(minutes=40), "150"))
     assert pos2.exit_reason == "expired"

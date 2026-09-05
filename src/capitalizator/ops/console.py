@@ -10,6 +10,7 @@ import argparse
 import html
 import json
 import secrets
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -352,14 +353,24 @@ def _page(snap: dict[str, Any], *, token: str = "") -> str:
     drift = learn.get("drift") or {}
     exam = learn.get("exam") or {}
     oko_n = learn.get("oko") or {}
+    hx = learn.get("hyexec") or {}
+    if hx.get("model_go") is None:
+        hx_go = "ждёт"
+    elif hx.get("model_go"):
+        hx_go = "да"
+    else:
+        hx_go = "нет"
     learn_block = (
-        "<h2>Учёба (контур C и ОКО)</h2>"
+        "<h2>Учёба (контур C, ОКО, hyexec)</h2>"
         f"<p>дрейф: {'есть' if drift.get('drift') else 'нет'} (n={_e(drift.get('n', 0))}, "
         f"целевой риск {_e(drift.get('target_risk', '—'))}) · классов в калибровке: "
         f"{_e(learn.get('calibration_classes', 0))} · экзамен претендента: "
         f"{'пройден' if exam.get('passed') else 'не пройден'}"
         f" (n чемпиона {_e((exam.get('champion') or {}).get('n', 0))}, "
         f"n претендента {_e((exam.get('challenger') or {}).get('n', 0))})</p>"
+        f"<p>hyexec: модель {'есть' if hx.get('model') else 'нет'} · "
+        f"меток {_e(hx.get('n_labeled', 0))} · векторов {_e(hx.get('n', 0))} · "
+        f"fit {'да' if hx.get('fit') else 'нет'} · тайминг {hx_go}</p>"
         f"<p>паспорта ОКО: {_e(oko_n.get('passports', 0))} (зрелых {_e(oko_n.get('mature', 0))}) · "
         f"память ловушек: {_e(oko_n.get('memory', 0))} · Зеркало: "
         f"{'пройдено' if oko_n.get('mirror_passed') else 'не пройдено / нет'} · "
@@ -429,6 +440,15 @@ def _json_or(raw: str | None, default: Any) -> Any:
         return default
 
 
+def _as_int(raw: object) -> int:
+    if raw in {None, ""}:
+        return 0
+    try:
+        return int(str(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _learning_snapshot(vault: Vault) -> dict[str, Any]:
     """Contour C / ОКО facts for the operator: drift, calibration, exam, passports."""
     knowledge = open_knowledge(vault, create=False)
@@ -462,11 +482,21 @@ def _learning_snapshot(vault: Vault) -> dict[str, Any]:
                 continue
         mirror = _j("oko:mirror") or {}
         sentiment = _j("sentiment") or {}
+        hx = _j("hyexec_serve")
+        if not isinstance(hx, dict):
+            hx = {}
         return {
             "drift": _j("drift") or {},
             "calibration_classes": len(calib) if isinstance(calib, dict) else 0,
             "exam": _j("exam_last") or _j("exam_night") or {},
             "champion_candidate": _j("champion_candidate"),
+            "hyexec": {
+                "model": bool(hx.get("model")),
+                "fit": bool(hx.get("fit")),
+                "n": _as_int(hx.get("n")),
+                "n_labeled": _as_int(hx.get("n_labeled")),
+                "model_go": None if hx.get("model_go") is None else bool(hx.get("model_go")),
+            },
             "oko": {
                 "passports": len(passports),
                 "mature": mature,
@@ -598,7 +628,7 @@ def render_ops(app: ConsoleApp, *, message: str | None = None) -> str:
             "signer_heartbeat", "desk_backlog", "recorder_status", "dead_man_last",
             "signer_requeued", "instruments_error_signer", "instruments_error_recorder",
             "intel_status", "llm_last_error", "reddit_auth_error", "paper_restored",
-            "paper_open_error", "oko_load_errors", "latency_decision", "decision_trace",
+            "paper_open_error",             "oko_load_errors", "latency_decision", "decision_trace",
         )
         meta: dict[str, str | None] = dict.fromkeys(keys)
         if knowledge.available():
@@ -776,20 +806,29 @@ class ConsoleApp:
             knowledge.close()
 
     def command(
-        self, kind: str, *, symbol: str | None, ack: bool, reason: str = ""
+        self,
+        kind: str,
+        *,
+        symbol: str | None,
+        ack: bool,
+        reason: str = "",
+        extra: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """flatten | release_halts | pause_entries | resume_entries | drift_release
-        → picked up by the desk tick. drift_release takes a window name in `symbol` (or ALL)."""
+        | add_in_profit → picked up by the desk tick. drift_release takes a window
+        name in `symbol` (or ALL). add_in_profit journals; it does not send."""
         if not ack:
             raise ValueError("ack required")
         if kind not in Knowledge.COMMAND_KINDS:
             raise ValueError(f"unknown command: {kind}")
-        if kind in {"flatten", "ack_position"} and not symbol:
+        if kind in {"flatten", "ack_position", "add_in_profit"} and not symbol:
             raise ValueError(f"{kind} needs a symbol" + (" (or ALL)" if kind == "flatten" else ""))
         knowledge = open_knowledge(self.vault, create=True)
         try:
             now = datetime.now(tz=UTC).isoformat()
             cmd = {"kind": kind, "symbol": symbol, "reason": reason or "operator", "at": now}
+            if extra:
+                cmd.update(extra)
             cmd_id = knowledge.enqueue_command(kind, cmd, created_ts=now)
             pending = sum(1 for c in knowledge.commands(limit=500) if c["status"] == "pending")
             return {"queued": {**cmd, "id": cmd_id}, "pending": pending}
@@ -1062,11 +1101,17 @@ def _handler(app: ConsoleApp) -> type[BaseHTTPRequestHandler]:
                             )
                             note = "вселенная применена; вступит после рестарта стола и рекордера"
                         else:
+                            extra = {
+                                key: payload[key]
+                                for key in ("add_price", "extra_risk")
+                                if payload.get(key) not in (None, "")
+                            }
                             out = app.command(
                                 str(payload.get("kind") or ""),
                                 symbol=payload.get("symbol"),
                                 ack=ack,
                                 reason=str(payload.get("reason") or ""),
+                                extra=extra or None,
                             )
                             note = f"команда поставлена в очередь (#{out['queued']['id']})"
                     except ValueError as exc:

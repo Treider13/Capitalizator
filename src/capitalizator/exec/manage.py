@@ -8,6 +8,10 @@ Does not place an order. Does not add size. No mechanical break-even knob.
 
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import Literal
+
+from capitalizator.hyexec.pyramid import ProfitAdd
 from capitalizator.risk.schema import ManageIntent
 
 
@@ -16,3 +20,20 @@ class TradeManager:
         if load_bearing and verdict in {"REFUTED", "veto"}:
             return ManageIntent(action="flatten")
         return None
+
+    def add_in_profit(
+        self,
+        *,
+        side: Literal["buy", "sell"],
+        entry: Decimal,
+        add_price: Decimal,
+        extra_risk: Decimal,
+        open_risk: Decimal,
+    ) -> ProfitAdd:
+        return ProfitAdd(
+            side=side,
+            entry=entry,
+            add_price=add_price,
+            extra_risk=extra_risk,
+            open_risk=open_risk,
+        )

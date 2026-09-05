@@ -27,6 +27,8 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from capitalizator.exec.fees import FeeTable
+from capitalizator.hyexec.expand import take_at_1r
+from capitalizator.hyexec.score_exit import remainder_action
 from capitalizator.types import MarketEvent, require_utc
 
 Side = Literal["buy", "sell"]
@@ -130,6 +132,7 @@ class PaperPosition:
         out["r_gross"] = s(self.r_gross())
         out["mae_r"] = s(self.mae_r())
         out["mfe_r"] = s(self.mfe_r())
+        out["tail_cut_r"] = s(self.tail_cut_r())
         out["hold_s"] = (
             (self.closed_at - self.filled_at).total_seconds()
             if self.closed_at and self.filled_at
@@ -194,6 +197,14 @@ class PaperPosition:
         if self.mfe_px is None or self.entry_px is None or self.r_px == 0:
             return None
         return self._favorable(self.mfe_px) / self.r_px
+
+    def tail_cut_r(self) -> Decimal | None:
+        """MFE given back at the exit. None until both MFE and r_net exist."""
+        mfe = self.mfe_r()
+        net = self.r_net()
+        if mfe is None or net is None:
+            return None
+        return mfe - net
 
 
 class PaperEngine:
@@ -473,6 +484,39 @@ class PaperEngine:
         self._exit(pos, require_utc(now), px, "soft", role="taker")
         return True
 
+    def note_score(
+        self,
+        paper_id: str,
+        *,
+        now: datetime,
+        px: Decimal,
+        score_now: Decimal,
+        score_entry: Decimal,
+        drop: Decimal,
+        structure_ok: bool = False,
+    ) -> bool:
+        """Flatten the remainder when the score drops. Never adds size.
+
+        EXPAND + live structure: score does not take the body (model noise).
+        """
+        pos = self.positions.get(paper_id)
+        if pos is None or pos.state != "open" or not pos.half_taken:
+            return False
+        expand = bool(pos.labels.get("expand"))
+        if (
+            remainder_action(
+                score_now=score_now,
+                score_entry=score_entry,
+                drop=drop,
+                expand=expand,
+                structure_ok=structure_ok,
+            )
+            != "flatten"
+        ):
+            return False
+        self._exit(pos, require_utc(now), px, "score", role="taker")
+        return True
+
     def flatten(
         self, symbol: str, px: Decimal, now: datetime, *, reason: str = "flatten"
     ) -> list[PaperPosition]:
@@ -603,7 +647,7 @@ class PaperEngine:
 
     def _take_half(self, pos: PaperPosition, when: datetime) -> None:
         px = self._half_px(pos)
-        part = pos.qty_open * HALF
+        part = pos.qty_open * take_at_1r(expand=bool(pos.labels.get("expand")))
         pos.realized += pos._favorable(px) * part
         pos.fees += part * px * self.fees.rate("maker")
         pos.qty_open -= part

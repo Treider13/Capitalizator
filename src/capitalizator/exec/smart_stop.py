@@ -135,6 +135,47 @@ def push_past_clusters(
     return out, True, best_level
 
 
+def widen_past_value_area(
+    *,
+    side: str,
+    stop: Decimal,
+    tick: Decimal,
+    vah: Decimal | None,
+    val: Decimal | None,
+) -> tuple[Decimal, bool, Decimal | None]:
+    """Push the stop past VAL (long) / VAH (short) when that is farther from entry.
+
+    A value-area edge on the entry side is ignored. This never tightens.
+    """
+    if side not in {"buy", "sell"}:
+        raise ValueError("side must be buy|sell")
+    if tick <= 0 or stop <= 0:
+        raise ValueError("tick/stop must be > 0")
+    levels: list[Decimal] = []
+    if side == "buy":
+        if val is not None and val > 0:
+            levels.append(val)
+        if vah is not None and vah > 0 and vah < stop:
+            levels.append(vah)
+    else:
+        if vah is not None and vah > 0:
+            levels.append(vah)
+        if val is not None and val > 0 and val > stop:
+            levels.append(val)
+    best = stop
+    used: Decimal | None = None
+    for level in levels:
+        pushed = level - tick if side == "buy" else level + tick
+        if (side == "buy" and pushed < best) or (side == "sell" and pushed > best):
+            best, used = pushed, level
+    if used is None:
+        return stop, False, None
+    out = (best / tick).to_integral_value(
+        rounding=ROUND_FLOOR if side == "buy" else ROUND_CEILING
+    ) * tick
+    return out, True, used
+
+
 def initial_stop(
     *,
     side: str,
@@ -152,6 +193,8 @@ def initial_stop(
     entry: Decimal | None = None,
     manual_frac: Decimal | None = None,
     max_stop_pct: Decimal | None = None,
+    vah: Decimal | None = None,
+    val: Decimal | None = None,
 ) -> StopDecision:
     """Widen the structural stop by a volatility buffer and push it past clusters.
 
@@ -194,6 +237,7 @@ def initial_stop(
             side=side, structural=structural, tick=tick, atr=atr, spread=spread, zones=zones,
             k_atr=k_atr, cluster_ticks=cluster_ticks, spread_mult=spread_mult, mode="hybrid",
             liq_levels=liq_levels, max_stop_atr=None, entry=entry,
+            vah=vah, val=val,
         )
         dist = (entry * manual_frac / tick).to_integral_value(rounding=ROUND_CEILING) * tick
         manual = entry - dist if side == "buy" else entry + dist
@@ -249,6 +293,13 @@ def initial_stop(
         )
         if moved and cluster_level is not None:
             comps["cluster_level"] = format(_plain(cluster_level), "f")
+    if mode in {"volatility", "hybrid"}:
+        stop, va_moved, va_level = widen_past_value_area(
+            side=side, stop=stop, tick=tick, vah=vah, val=val
+        )
+        if va_moved and va_level is not None:
+            comps["value_area"] = format(_plain(va_level), "f")
+            moved = moved or va_moved
     if stop <= 0:
         raise ValueError("stop would be <= 0")
     comps["buffer"] = str(buffer)

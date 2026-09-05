@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import pyarrow.parquet as pq
 
 from capitalizator.card.live import CardLive
-from capitalizator.desk.bars import closed_bars_from_trades
+from capitalizator.desk.bars import FEATURE_TFS, builder_tfs, closed_bars_from_trades
 from capitalizator.desk.loop import DeskLoop
 from capitalizator.ops.vault import VaultError, iter_regular_files
 from capitalizator.recorder.rows import rows_fast
@@ -474,13 +474,15 @@ def close_due_bars(desk: DeskLoop, symbol: str, now: datetime) -> list[dict[str,
         if st.bars_seeded < len(st.bars):
             builder.seed_closed(st.bars[st.bars_seeded :])
             st.bars_seeded = len(st.bars)
+        builder.seed_closed(st.feature_bars)
         for bar in builder.close_due(now):
             out.extend(desk.on_bar_close(bar))
         st.bars_seeded = len(st.bars)
         return out
-    tfs = desk.config.structure_tfs
+    tfs = builder_tfs(desk.config.structure_tfs)
     for tf in tfs:
-        already = {b.open_ts for b in st.bars if b.tf == tf}
+        pool = st.feature_bars if tf in FEATURE_TFS else st.bars
+        already = {b.open_ts for b in pool if b.tf == tf}
         for bar in closed_bars_from_trades(
             st.trades, symbol=symbol, tf=tf, now=now, already=already
         ):

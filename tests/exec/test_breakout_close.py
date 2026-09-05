@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from capitalizator.exec.breakout_close import BreakoutClose
+from decimal import Decimal
+
+from capitalizator.exec.breakout_close import CHASE_SIZE, BreakoutClose, breakout_size
 from capitalizator.ops.phase import breakout_enabled
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "capitalizator" / "exec"
@@ -64,6 +66,16 @@ def test_close_eaten_btc_when_enabled() -> None:
         )
         is True
     )
+
+
+def test_chase_without_retest_is_point_four() -> None:
+    assert breakout_size(retest=False) == CHASE_SIZE == Decimal("0.40")
+    assert breakout_size(retest=True) == Decimal("1")
+
+
+def test_phase_flag_stays_off() -> None:
+    """Main does not flip the flag. Chase exists behind allow_break=True."""
+    assert breakout_enabled() is False
 
 
 def test_bounce_uses_breakout_close_atom() -> None:

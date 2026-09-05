@@ -18,7 +18,7 @@ from pathlib import Path
 from capitalizator.btc.veto import BtcVeto
 from capitalizator.card.draft import CardDraft, load_bearing_ok, require_card
 from capitalizator.card.first_fact import resolve as resolve_first_fact
-from capitalizator.exec.breakout_close import BreakoutClose
+from capitalizator.exec.breakout_close import BreakoutClose, breakout_size
 from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.smart_stop import K_ATR_DEFAULT, initial_stop
 from capitalizator.jury.desk import (
@@ -49,6 +49,7 @@ SETUP_TAG = "bounce"
 MIN_R = Decimal("1.5")
 DEFAULT_R = Decimal("2")
 BREAK_MIN_R = Decimal("3")
+SCALP_SIZE = Decimal("0.70")
 # Ideas that trade *through* the zone (side flips, 3R from a real zone, no default
 # multiple). `failed_break` here is the LEGACY fade-of-a-spring short. The desk
 # never emits it any more: the same bar is `spring`, traded WITH the zone (D-01).
@@ -101,6 +102,8 @@ class BounceSnapshot:
     first_minute: bool = False
     close_beyond: bool = False
     allow_break: bool = False
+    # Unknown retest = chase (smaller). Desk must not invent a retest detector.
+    retest: bool = False
     card_bearing_verdict: str | None = None
     gesture_n: int = 0
     trades_in_window: int | None = None
@@ -127,6 +130,9 @@ class BounceSnapshot:
     # Operator ceiling on stop distance as a fraction of entry (Э1). None = unset.
     max_stop_pct: Decimal | None = None
     liq_levels: tuple[Decimal, ...] = ()
+    # Session value area from the card. Smart stop may widen to these, never tighten.
+    vah: Decimal | None = None
+    val: Decimal | None = None
     manual_stop_frac: Decimal | None = None
     # Symbol policy inputs for SessionPolicy (None = unknown, majors still pass).
     next_funding_at: datetime | None = None
@@ -260,7 +266,11 @@ def take_profit(
     if next_zone is not None:
         tp = next_zone.lo if side == "buy" else next_zone.hi
         reward = (tp - entry) if side == "buy" else (entry - tp)
-        if reward < need * r:
+        if reward <= 0:
+            return None
+        # Bounce/spring: a magnet closer than MIN_R is a scalp, not a skip.
+        # Break ideas still require the full multiple (no invented target).
+        if idea in _BREAK_IDEAS and reward < need * r:
             return None
         return tp
     if idea in _BREAK_IDEAS:
@@ -312,6 +322,8 @@ class BounceStrategy:
         self.first_minute = FirstMinute()
         # Journal-only: whether the last A+ idea's window would have allowed 5x.
         self.last_aplus_5x_ok: bool | None = None
+        self.last_aplus: bool = False
+        self.last_first_fact_tag: str = ""
         # Why the last `propose` returned None (`None` after an accepted proposal). The
         # desk journals it as `send_skip`: a refusal without a reason is a blind spot.
         self.last_skip: str | None = None
@@ -428,8 +440,11 @@ class BounceStrategy:
         if not macro.allow:
             return self._refuse("macro:blocked")
         fact = resolve_first_fact(snap.zlg_label, snap.gesture_n)
+        self.last_first_fact_tag = fact.tag
+        self.last_aplus = False
         if self.require_jury and fact.tag == "shadow_gesture":
             return self._refuse("first_fact:shadow_gesture")
+        # probe_gesture is a ticket: size is cut later, the idea is not skipped.
         if (
             self.require_jury
             and self.desk_mode in {"demo", "live"}
@@ -494,6 +509,7 @@ class BounceStrategy:
                 ),
                 btc_same=voices.btc == 1,
             )
+            self.last_aplus = aplus
             if aplus and not APlus.raises_lev_in_f1():
                 # A+ does not raise leverage in F1, so a window that forbids 5x is
                 # not a reason to drop the trade: it is taken at the base leverage.
@@ -531,6 +547,8 @@ class BounceStrategy:
                 manual_frac=snap.manual_stop_frac,
                 mode=snap.stop_mode,
                 max_stop_pct=snap.max_stop_pct,
+                vah=snap.vah,
+                val=snap.val,
             )
             stop = smart.stop
         except ValueError:
@@ -542,9 +560,14 @@ class BounceStrategy:
         tp = take_profit(side, snap.price, stop, snap.next_target, idea=idea)
         if tp is None:
             return self._refuse("tp:none")
+        risk_span = abs(snap.price - stop)
+        reward = abs(tp - snap.price)
+        scalp = idea not in _BREAK_IDEAS and reward < MIN_R * risk_span
         if not self.budget.allow_entry():
             return self._refuse("budget:spent")
-        if idea == "bounce":
+        if scalp:
+            tag = "scalp"
+        elif idea == "bounce":
             tag = SETUP_TAG
         elif idea == _LEGACY_FADE:
             tag = "failed_break_bounce"
@@ -563,6 +586,14 @@ class BounceStrategy:
         nmin = nmin_mult(n=snap.n_zlg, gesture=snap.zlg_label, phase="f1")
         if nmin < size:
             size = nmin
+        if fact.size_mult < size:
+            size = fact.size_mult
+        if scalp and SCALP_SIZE < size:
+            size = SCALP_SIZE
+        if idea == "breakout":
+            chase = breakout_size(retest=snap.retest)
+            if chase < size:
+                size = chase
         # Combined B+calendar multiplier lives on size_mult only.
         # Signer does qty * size_mult; stuffing the cut into qty would double-cut.
         intent = Intent(

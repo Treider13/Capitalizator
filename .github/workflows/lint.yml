@@ -22,7 +22,10 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install
-        run: pip install -e ".[dev,live]"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgomp1
+          pip install -e ".[dev,live,hyexec]"
       - name: Ruff
         run: ruff check src tests
       - name: Mypy (strict scope from pyproject)
