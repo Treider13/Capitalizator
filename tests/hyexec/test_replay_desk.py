@@ -298,6 +298,58 @@ def test_prelude_uses_snapshot_outside_last_two_hours(tmp_path: Path) -> None:
         knowledge.close()
 
 
+def test_prelude_keeps_each_symbol_snapshot(tmp_path: Path) -> None:
+    """One last_snap clock drops the other coin's diffs (BTC+ETH live tape)."""
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    btc_snap = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
+    btc_diff = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
+    eth_snap = datetime(2026, 8, 31, 15, 0, tzinfo=UTC)
+    ParquetSink(tape).write(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=btc_snap,
+            recv_ts=btc_snap,
+            seq=1,
+            payload={"bids": [["100.0", "5"]], "asks": [["100.2", "5"]]},
+        )
+    )
+    ParquetSink(tape).write(
+        MarketEvent(
+            stream="snapshot",
+            exchange="bybit",
+            symbol="ETHUSDT",
+            exchange_ts=eth_snap,
+            recv_ts=eth_snap,
+            seq=1,
+            payload={"bids": [["200.0", "3"]], "asks": [["200.1", "3"]]},
+        )
+    )
+    ParquetSink(tape).write(
+        MarketEvent(
+            stream="book_diff",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=btc_diff,
+            recv_ts=btc_diff,
+            seq=2,
+            payload={"b": [["100.0", "8"]], "a": []},
+        )
+    )
+    sand = init_vault(tmp_path / "sand")
+    knowledge = open_knowledge(sand)
+    try:
+        desk = DeskLoop(knowledge=knowledge, user_mode="learn")
+        play_book_prelude(desk, tape, DAY)
+        assert desk.state_for("BTCUSDT").book.ready is True
+        assert desk.state_for("ETHUSDT").book.ready is True
+        assert desk.state_for("BTCUSDT").book.levels("bid")[Decimal("100.0")] == Decimal("8")
+    finally:
+        knowledge.close()
+
+
 def test_replay_fills_hx_holes_from_tape(tmp_path: Path) -> None:
     sand = init_vault(tmp_path / "sand")
     knowledge = open_knowledge(sand)

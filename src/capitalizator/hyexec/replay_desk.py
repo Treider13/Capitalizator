@@ -59,11 +59,12 @@ def play_book_prelude(
     *,
     extra_zones: tuple[Zone, ...] = (),
 ) -> int:
-    """Last snapshot in RECENT_DAYS, then deltas after it, hour by hour.
+    """Last snapshot per symbol in RECENT_DAYS, then that coin's later deltas.
 
     Live hours are almost only book_diff (snapshot is subscribe/reconnect).
-    Taking the last BOOK_HOURS of whatever is on D-1 leaves BookDirty when
-    those hours have no origin. Diffs before the snapshot are not a book.
+    One clock for every symbol drops the other coin's diffs (BTC snap, then
+    ETH snap, then a BTC delta in between). Diffs before that symbol's
+    snapshot are not a book.
     """
     from capitalizator.desk.tape import TapeCursor
 
@@ -74,20 +75,27 @@ def play_book_prelude(
         days.append(cur)
     days.reverse()
     n = 0
-    last_snap: datetime | None = None
+    last_snap: dict[str, datetime] = {}
     for day in days:
         for hour in iter_day_hours(tape, day, streams=("snapshot", "resync")):
             desk.play(hour, extra_zones=extra_zones, now=clock_for(hour, day))
             n += len(hour)
-            last_snap = clock_for(hour, day)
-    if last_snap is None:
+            for event in hour:
+                prev = last_snap.get(event.symbol)
+                if prev is None or event.exchange_ts >= prev:
+                    last_snap[event.symbol] = event.exchange_ts
+    if not last_snap:
         return 0
-    snap_day = last_snap.date().isoformat()
+    first_snap_day = min(ts.date().isoformat() for ts in last_snap.values())
     for day in days:
-        if day < snap_day:
+        if day < first_snap_day:
             continue
         for hour in iter_day_hours(tape, day, streams=("book_diff", "bbo")):
-            later = [event for event in hour if event.exchange_ts >= last_snap]
+            later = [
+                event
+                for event in hour
+                if event.symbol in last_snap and event.exchange_ts >= last_snap[event.symbol]
+            ]
             if not later:
                 continue
             desk.play(later, extra_zones=extra_zones, now=clock_for(later, day))
