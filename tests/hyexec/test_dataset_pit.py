@@ -48,6 +48,7 @@ def test_complete_n_counts_only_full_vectors() -> None:
 
 def test_labeled_pairs_need_shadow_r_net() -> None:
     full = {key: "1" for key in FEATURE_KEYS}
+    full["touch_id"] = "t-full"
     full["paper"] = {"shadow": {"filled": True, "r_net": "1.25"}}
     hole = {key: "1" for key in FEATURE_KEYS}
     hole["paper"] = {"shadow": {"filled": True, "r_net": "2"}}
