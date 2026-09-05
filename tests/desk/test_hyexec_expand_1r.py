@@ -137,7 +137,7 @@ def test_expand_label_freezes_after_the_1r_take(tmp_path: Path) -> None:
     assert pos.labels["expand"] is True
     assert pos.qty_open == Decimal("1") * (1 - EXPAND_TAKE)
     desk.account.set_equity(
-        desk.window_halt.start_equity, source=desk.account.equity_source, now=WHEN
+        desk.window_halt.start, source=desk.account.equity_source, now=WHEN
     )
     desk._sync_window_halt(WHEN)
     desk.on_trade(_trade(WHEN + timedelta(minutes=2), "103", side="buy"), [])
