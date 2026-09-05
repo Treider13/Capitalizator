@@ -440,6 +440,15 @@ def _json_or(raw: str | None, default: Any) -> Any:
         return default
 
 
+def _as_int(raw: object) -> int:
+    if raw in {None, ""}:
+        return 0
+    try:
+        return int(str(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _learning_snapshot(vault: Vault) -> dict[str, Any]:
     """Contour C / ОКО facts for the operator: drift, calibration, exam, passports."""
     knowledge = open_knowledge(vault, create=False)
@@ -484,10 +493,8 @@ def _learning_snapshot(vault: Vault) -> dict[str, Any]:
             "hyexec": {
                 "model": bool(hx.get("model")),
                 "fit": bool(hx.get("fit")),
-                "n": int(hx["n"]) if hx.get("n") not in {None, ""} else 0,
-                "n_labeled": (
-                    int(hx["n_labeled"]) if hx.get("n_labeled") not in {None, ""} else 0
-                ),
+                "n": _as_int(hx.get("n")),
+                "n_labeled": _as_int(hx.get("n_labeled")),
                 "model_go": None if hx.get("model_go") is None else bool(hx.get("model_go")),
             },
             "oko": {
@@ -621,8 +628,7 @@ def render_ops(app: ConsoleApp, *, message: str | None = None) -> str:
             "signer_heartbeat", "desk_backlog", "recorder_status", "dead_man_last",
             "signer_requeued", "instruments_error_signer", "instruments_error_recorder",
             "intel_status", "llm_last_error", "reddit_auth_error", "paper_restored",
-            "paper_open_error", "oko_load_errors", "latency_decision", "decision_trace",
-            "hyexec_serve", "hyexec_event",
+            "paper_open_error",             "oko_load_errors", "latency_decision", "decision_trace",
         )
         meta: dict[str, str | None] = dict.fromkeys(keys)
         if knowledge.available():

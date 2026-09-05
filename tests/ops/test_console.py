@@ -81,6 +81,18 @@ def test_snapshot_reads_hyexec_serve_meta(tmp_path: Path) -> None:
         assert word not in page.lower()
 
 
+def test_corrupt_hyexec_serve_does_not_kill_snapshot(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    kn.set_meta("hyexec_serve", json.dumps({"n": "nope", "n_labeled": None, "model": True}))
+    kn.close()
+    snap = desk_snapshot(vault)
+    hx = snap["learning"]["hyexec"]
+    assert hx["n"] == 0
+    assert hx["n_labeled"] == 0
+    assert hx["model"] is True
+
+
 def test_html_has_no_advice(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     page = render_html(vault)
