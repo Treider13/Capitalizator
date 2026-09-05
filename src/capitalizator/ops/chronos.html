@@ -261,8 +261,8 @@
           fontFamily: "ui-sans-serif, system-ui, sans-serif"
         },
         grid: {
-          vertLines: {color: "#1a222c"},
-          horzLines: {color: "#1a222c"}
+          vertLines: {color: "#243040"},
+          horzLines: {color: "#243040"}
         },
         rightPriceScale: {borderColor: "#243040", scaleMargins: {top: 0.08, bottom: 0.08}},
         timeScale: {borderColor: "#243040", timeVisible: true, secondsVisible: false},
@@ -379,11 +379,15 @@
       const shown = shownBars(bars);
       if (!shown.length) {
         empty.style.display = "block";
-        if (host) host.className = "chart-host";
-        if (candleSeries) candleSeries.setData([]);
-        const canvas = document.getElementById("chart");
-        const ctx = canvas.getContext("2d");
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (ensureTv() && candleSeries) {
+          if (host) host.className = "chart-host engine-tv";
+          candleSeries.setData([]);
+        } else {
+          if (host) host.className = "chart-host engine-canvas";
+          const canvas = document.getElementById("chart");
+          const ctx = canvas.getContext("2d");
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
         return;
       }
       empty.style.display = "none";
