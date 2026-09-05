@@ -4,134 +4,57 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>ХРОНОС — стол</title>
-  <style>
-    :root {
-      --bg: #0b0e11;
-      --card: #12161c;
-      --line: #2b3139;
-      --text: #eaecef;
-      --muted: #848e9c;
-      --ok: #0ecb81;
-      --warn: #f0b90b;
-      --bad: #f6465d;
-      --bid: #0ecb81;
-      --ask: #f6465d;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
-    }
-    header {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      align-items: center;
-      padding: 10px 14px;
-      border-bottom: 1px solid var(--line);
-      background: #11161c;
-    }
-    .brand { font-weight: 700; letter-spacing: .12em; font-size: 16px; }
-    .pill {
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 2px 8px;
-      color: var(--muted);
-    }
-    .pill.ok { color: var(--ok); border-color: #0ecb8155; }
-    .pill.bad { color: var(--bad); border-color: #f6465d55; }
-    .grid {
-      display: grid;
-      grid-template-columns: 1.4fr .9fr;
-      gap: 8px;
-      padding: 8px;
-    }
-    @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
-    .col { display: flex; flex-direction: column; gap: 8px; }
-    section {
-      background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px 10px;
-    }
-    h2 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
-    .empty { color: var(--muted); }
-    canvas { width: 100%; height: 220px; background: #0e1419; border-radius: 4px; }
-    table { width: 100%; border-collapse: collapse; }
-    td, th { padding: 2px 4px; text-align: right; }
-    th { color: var(--muted); font-weight: 500; }
-    .bid { color: var(--bid); }
-    .ask { color: var(--ask); }
-    .why {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 6px;
-    }
-    .why article {
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 6px;
-      min-height: 56px;
-    }
-    .why b { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
-    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 8px 8px; }
-    .triple { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 0 8px 8px; }
-    .gates { display: flex; gap: 8px; flex-wrap: wrap; }
-    .gate { min-width: 72px; text-align: center; padding: 6px; border-radius: 6px; border: 1px solid var(--line); }
-    .gate.red { color: var(--bad); }
-    .gate.green { color: var(--ok); }
-    button, .dead {
-      background: #1e2329;
-      color: var(--muted);
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      padding: 4px 8px;
-    }
-    button:disabled, .dead { opacity: .5; cursor: not-allowed; }
-    button:not(:disabled) { color: var(--text); cursor: pointer; }
-    #service { margin: 0 8px 8px; padding: 8px 14px; border-top: 1px solid var(--line); }
-    #service h2 { font-size: 15px; color: var(--muted); margin: 14px 0 6px; }
-    #service table { border-collapse: collapse; font-size: 13px; }
-    #service td, #service th { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; }
-    nav.pages a { color: #8ab4f8; margin-right: 10px; font-size: 13px; }
-    footer { padding: 8px 14px 16px; color: var(--muted); font-size: 12px; }
-  </style>
+  <style>{{DESK_CSS}}</style>
 </head>
-<body>
-  <header>
-    <div class="brand">ХРОНОС</div>
-    <span class="pill">Деривативы · фьючерс</span>
-    <span class="pill">спот не торгуем</span>
-    <span id="mode" class="pill">режим —</span>
-    <span id="price" class="pill">цена —</span>
-    <span id="window" class="pill">окно —</span>
-    <span id="hello" class="pill">hello —</span>
-    <span id="cred" class="pill">ключ —</span>
-    <span id="latency" class="pill">решение —</span>
-    <span id="knobs" class="pill">маржа — · стоп —</span>
-    <label class="pill">символ
-      <select id="symbol"></select>
-    </label>
-    <nav class="pages"><a href="/ops">Управление</a><a href="/settings">Настройки</a><a href="/touch">Касание</a><a href="/api/glossary">Словарь</a></nav>
-    <form id="mode-form">
-      <input type="hidden" name="ack" value="1"/>
-      <button type="submit" name="mode" value="off">off</button>
-      <button type="submit" name="mode" value="learn">learn</button>
-      <button type="submit" name="mode" value="demo">demo</button>
-      <button type="submit" name="mode" value="live">live</button>
-    </form>
-    <span class="dead">заявка закрыта</span>
-    <span class="dead">вход закрыт</span>
+<body class="desk-app">
+  <header class="topbar">
+    <div class="topbar-row">
+      <div class="brand">ХРОНОС</div>
+      <span class="sub">Tape Desk</span>
+      <span class="pill">деривативы · фьючерс</span>
+      <span class="pill">спот не торгуем</span>
+      <label class="pill">символ
+        <select id="symbol"></select>
+      </label>
+      <div id="tf-bar">
+        <button type="button" class="tf" data-tf="15m">15m</button>
+        <button type="button" class="tf" data-tf="1h">1h</button>
+        <button type="button" class="tf" data-tf="4h">4h</button>
+        <button type="button" class="tf" data-tf="1d">1d</button>
+      </div>
+      <form id="mode-form">
+        <input type="hidden" name="ack" value="1"/>
+        <button type="submit" class="mode" name="mode" value="off">off</button>
+        <button type="submit" class="mode" name="mode" value="learn">learn</button>
+        <button type="submit" class="mode" name="mode" value="demo">demo</button>
+        <button type="submit" class="mode" name="mode" value="live">live</button>
+      </form>
+      <span id="mode" class="pill">режим —</span>
+      <span id="price" class="pill">цена —</span>
+      <span id="window" class="pill">окно —</span>
+      <span id="hello" class="pill">hello —</span>
+      <span id="cred" class="pill">ключ —</span>
+      <span id="latency" class="pill">решение —</span>
+      <span id="knobs" class="pill">маржа — · стоп —</span>
+    </div>
+    <div class="topbar-row">
+      {{NAV}}
+      <div class="gates" id="gates"></div>
+      <span class="status-lock">торги с консоли нельзя</span>
+      <span class="status-lock">сделок нет, пока нет ленты. Ключи сюда не попадают.</span>
+    </div>
   </header>
-  <section id="contour-box" style="margin:8px;">
+
+  <section id="contour-box" class="strip">
     <h2>Контур</h2>
     <div id="contour-status" class="empty">контур —</div>
     <div id="contour-action"></div>
   </section>
-  <section id="ready-box" style="margin:8px;">
-    <h2>Как включить стол — три шага на этой странице</h2>
+
+  <section id="ready-box" class="strip">
+    <details>
+      <summary id="ready-summary">Включение стола — ключ, hello, режим (живой мастер; также вкладка Настройки)</summary>
+      <h2>Как включить стол — три шага на этой странице</h2>
     <ol id="ready-steps" style="padding-left:20px;margin:6px 0;">
       <li>
         <b>Шаг 1. Ключ</b> — файл <code>secrets/bybit.json</code>, права 0600.
@@ -165,48 +88,69 @@
         </div>
       </li>
     </ol>
-    <p id="mode-note" class="empty">сначала ключ, потом hello на бирже, потом demo или live</p>
+      <p id="mode-note" class="empty">сначала ключ, потом hello на бирже, потом demo или live</p>
+    </details>
   </section>
-  <section id="exp-box" style="margin:8px;">
+
+  <section id="exp-box" class="strip">
     <h2>Опыт демо → live</h2>
     <div id="experience" class="empty">книга пуста</div>
   </section>
-  <div class="grid">
-    <div class="col">
-      <section>
-        <h2>График <span id="chart-tf">15m</span></h2>
-        <div id="tf-bar">
-          <button type="button" data-tf="15m">15m</button>
-          <button type="button" data-tf="1h">1h</button>
-          <button type="button" data-tf="4h">4h</button>
-          <button type="button" data-tf="1d">1d</button>
-        </div>
+
+  <div class="desk-grid">
+    <section class="panel book-panel">
+      <h2>Стакан</h2>
+      <div>
+        <button type="button" id="replay-book">книга с ленты</button>
+        <span id="replay-book-out" class="empty">реплея нет</span>
+      </div>
+      <div class="book-host" id="book-host">
+        <div id="book-gpu" class="book-gpu"></div>
+        <div id="book" class="ladder"><div class="empty">стакан пуст</div></div>
+      </div>
+      <div id="book-imbalance" class="imbalance" hidden><i id="book-bid-bar"></i><b></b></div>
+      <div id="book-imbalance-txt" class="empty"></div>
+    </section>
+    <section class="panel chart-panel">
+      <h2>График <span id="chart-tf">15m</span></h2>
+      <div class="chart-host" id="chart-host">
+        <div id="tv-chart"></div>
         <canvas id="chart" width="720" height="220"></canvas>
-        <div id="chart-empty" class="empty">лента пуста — свечей нет</div>
-        <label class="empty">реплей свечей
+      </div>
+      <div id="chart-empty" class="empty">лента пуста — свечей нет</div>
+      <div class="replay">
+        <button type="button" id="replay-play">▶</button>
+        <button type="button" class="speed" data-speed="0.25">0.25×</button>
+        <button type="button" class="speed" data-speed="1">1×</button>
+        <button type="button" class="speed" data-speed="4">4×</button>
+        <label>реплей свечей
           <input id="replay-bars" type="range" min="0" max="0" value="0"/>
         </label>
         <span id="replay-label" class="empty">все свечи</span>
-        <div>
-          <button type="button" id="replay-book">книга с ленты</button>
-          <span id="replay-book-out" class="empty">реплея нет</span>
-        </div>
-      </section>
-      <section>
-        <h2>Стакан</h2>
-        <table>
-          <thead><tr><th>bid</th><th>ask</th></tr></thead>
-          <tbody id="book"><tr><td colspan="2" class="empty">стакан пуст</td></tr></tbody>
-        </table>
-      </section>
-      <section>
+      </div>
+    </section>
+    <div class="right-col">
+      <section class="panel">
         <h2>Лента сделок</h2>
         <table>
           <thead><tr><th>время</th><th>цена</th><th>кол-во</th><th>сторона</th></tr></thead>
           <tbody id="trades"><tr><td colspan="4" class="empty">лента пуста</td></tr></tbody>
         </table>
       </section>
-      <section>
+      <section class="panel">
+        <h2>Почему сейчас</h2>
+        <div class="why" id="why"></div>
+        <div id="unset-atoms" class="empty">fib / rsi / fvg / sweep / gex — нет данных</div>
+      </section>
+      <section class="panel">
+        <h2>Почему не зашли</h2>
+        <div id="skip" class="empty">Касаний нет</div>
+      </section>
+      <section class="panel">
+        <h2>Почему зашли бы</h2>
+        <div id="shadow" class="empty">тени нет</div>
+      </section>
+      <section class="panel">
         <h2>Сделки и статистика</h2>
         <div id="paper-stats" class="empty">бумаги нет</div>
         <table>
@@ -215,54 +159,46 @@
         </table>
       </section>
     </div>
-    <div class="col">
-      <section>
-        <h2>Почему сейчас</h2>
-        <div class="why" id="why"></div>
-        <div id="unset-atoms" class="empty">fib / rsi / fvg / sweep / gex — нет данных</div>
-      </section>
-    </div>
   </div>
-  <div class="row2">
-    <section>
-      <h2>Почему не зашли</h2>
-      <div id="skip" class="empty">Касаний нет</div>
-    </section>
-    <section>
-      <h2>Почему зашли бы</h2>
-      <div id="shadow" class="empty">тени нет</div>
-    </section>
-  </div>
-  <div class="triple">
-    <section>
+
+  <div class="bottom-grid">
+    <section class="panel">
       <h2>Новости мира</h2>
       <div id="news" class="empty">макро-календарь пуст</div>
     </section>
-    <section>
+    <section class="panel">
       <h2>Люди</h2>
       <div id="authors" class="empty">постов нет</div>
     </section>
-    <section>
+    <section class="panel">
       <h2>ИИ</h2>
       <div id="llm" class="empty">нет данных</div>
     </section>
   </div>
-  <section style="margin:0 8px 8px;">
-    <h2>Пороги Ф0–Ф5</h2>
-    <div class="gates" id="gates"></div>
-  </section>
   {{SERVICE}}
-  <footer>
-    Стол. Торги с консоли нельзя. Сделок нет, пока нет ленты. Ключи сюда не попадают.
-  </footer>
+  <script src="/vendor/gsap.min.js"></script>
+  <script src="/vendor/EasePack.min.js"></script>
+  <script src="/vendor/lightweight-charts.standalone.production.js"></script>
+  <script src="/vendor/pixi.min.js"></script>
   <script>
     const BOOT = {{BOOT}};
     let symbol = (BOOT.symbols && BOOT.symbols[0]) || "BTCUSDT";
     let tf = "15m";
     let replayN = 0;
+    let replayTimer = null;
+    let replayTween = null;
+    let replaySpeed = 1;
     let lastBars = [];
     let lastZones = [];
     let lastTouch = null;
+    let tvChart = null;
+    let candleSeries = null;
+    let zoneLines = [];
+    let touchLine = null;
+    let bookApp = null;
+    let lastWhyKey = "";
+    let lastBookKey = "";
+    let refreshSeq = 0;
 
     function esc(s) {
       return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
@@ -270,17 +206,98 @@
     function jget(path) {
       return fetch(path, {cache: "no-store"}).then(r => r.ok ? r.json() : null).catch(() => null);
     }
-    function paintChart(bars, zones, touch) {
+    function markTf() {
+      document.querySelectorAll("#tf-bar .tf").forEach(btn => {
+        btn.classList.toggle("on", btn.getAttribute("data-tf") === tf);
+      });
+    }
+    function markMode(mode) {
+      document.querySelectorAll("#mode-form .mode").forEach(btn => {
+        btn.classList.toggle("on", btn.value === mode);
+      });
+    }
+    function markSpeed() {
+      document.querySelectorAll(".speed").forEach(btn => {
+        btn.classList.toggle("on", Number(btn.getAttribute("data-speed")) === replaySpeed);
+      });
+    }
+    function shownBars(bars) {
+      return replayN > 0 ? (bars || []).slice(0, replayN) : (bars || []);
+    }
+    function barTime(b) {
+      const raw = Date.parse(b.open_ts || b.close_ts || "");
+      if (!Number.isFinite(raw)) return null;
+      return Math.floor(raw / 1000);
+    }
+    function toCandles(bars) {
+      const out = [];
+      let last = 0;
+      (bars || []).forEach(b => {
+        let t = barTime(b);
+        if (t == null) return;
+        if (t <= last) t = last + 1;
+        last = t;
+        const o = Number(b.open), h = Number(b.high), l = Number(b.low), c = Number(b.close);
+        if (![o, h, l, c].every(Number.isFinite)) return;
+        out.push({time: t, open: o, high: h, low: l, close: c});
+      });
+      return out;
+    }
+    function replayEase() {
+      if (replaySpeed < 1 && window.gsap) {
+        try { return gsap.parseEase("slow(0.65, 0.8, false)"); } catch (e) {}
+      }
+      return "none";
+    }
+    function ensureTv() {
+      if (!window.LightweightCharts) return null;
+      const host = document.getElementById("tv-chart");
+      if (!host) return null;
+      if (tvChart) return tvChart;
+      try {
+        tvChart = LightweightCharts.createChart(host, {
+        layout: {
+          background: {color: "#080c10"},
+          textColor: "#8b9098",
+          fontSize: 11,
+          fontFamily: "ui-sans-serif, system-ui, sans-serif"
+        },
+        grid: {
+          vertLines: {color: "#243040"},
+          horzLines: {color: "#243040"}
+        },
+        rightPriceScale: {borderColor: "#243040", scaleMargins: {top: 0.08, bottom: 0.08}},
+        timeScale: {borderColor: "#243040", timeVisible: true, secondsVisible: false},
+        crosshair: {mode: LightweightCharts.CrosshairMode.Magnet},
+        localization: {locale: "ru-RU"}
+      });
+      candleSeries = tvChart.addCandlestickSeries({
+        upColor: "#00c853",
+        downColor: "#ff3b4e",
+        borderVisible: false,
+        wickUpColor: "#00c853",
+        wickDownColor: "#ff3b4e"
+      });
+      const fit = () => {
+        const r = host.getBoundingClientRect();
+        if (r.width > 8 && r.height > 8) tvChart.resize(Math.floor(r.width), Math.floor(r.height));
+      };
+      fit();
+      if (window.ResizeObserver) new ResizeObserver(fit).observe(host);
+      window.addEventListener("resize", fit);
+      return tvChart;
+      } catch (e) {
+        tvChart = null;
+        candleSeries = null;
+        return null;
+      }
+    }
+    function paintChartCanvas(bars, zones, touch) {
       const canvas = document.getElementById("chart");
-      const empty = document.getElementById("chart-empty");
       const ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const shown = replayN > 0 ? (bars || []).slice(0, replayN) : (bars || []);
-      if (!shown.length) {
-        empty.style.display = "block";
-        return;
-      }
-      empty.style.display = "none";
+      const shown = shownBars(bars);
+      if (!shown.length) return;
       const highs = shown.map(b => Number(b.high));
       const lows = shown.map(b => Number(b.low));
       let min = Math.min.apply(null, lows);
@@ -296,7 +313,7 @@
       shown.forEach((b, i) => {
         const o = Number(b.open), h = Number(b.high), l = Number(b.low), c = Number(b.close);
         const y = v => canvas.height - ((v - min) / (max - min)) * canvas.height;
-        ctx.strokeStyle = c >= o ? "#0ecb81" : "#f6465d";
+        ctx.strokeStyle = c >= o ? "#00c853" : "#ff3b4e";
         ctx.beginPath();
         ctx.moveTo(i * w + w / 2, y(h));
         ctx.lineTo(i * w + w / 2, y(l));
@@ -311,12 +328,12 @@
         const y1 = canvas.height - ((hi - min) / (max - min)) * canvas.height;
         const y2 = canvas.height - ((lo - min) / (max - min)) * canvas.height;
         const same = !z.tf || z.tf === tf;
-        ctx.fillStyle = same ? "rgba(240,185,11,0.18)" : "rgba(138,180,248,0.10)";
+        ctx.fillStyle = same ? "rgba(230,168,23,0.18)" : "rgba(94,234,212,0.10)";
         ctx.fillRect(0, Math.min(y1, y2), canvas.width, Math.abs(y2 - y1) || 2);
       });
       if (touch && touch.trade_px) {
         const y = canvas.height - ((Number(touch.trade_px) - min) / (max - min)) * canvas.height;
-        ctx.strokeStyle = "#f0b90b";
+        ctx.strokeStyle = "#e6a817";
         ctx.setLineDash([4, 3]);
         ctx.beginPath();
         ctx.moveTo(0, y);
@@ -324,6 +341,72 @@
         ctx.stroke();
         ctx.setLineDash([]);
       }
+    }
+    function paintChartTv(bars, zones, touch) {
+      if (!ensureTv() || !candleSeries) return false;
+      const shown = shownBars(bars);
+      const data = toCandles(shown);
+      candleSeries.setData(data);
+      zoneLines.forEach(line => { try { candleSeries.removePriceLine(line); } catch (e) {} });
+      zoneLines = [];
+      (zones || []).forEach(z => {
+        const lo = Number(z.lo), hi = Number(z.hi);
+        const same = !z.tf || z.tf === tf;
+        const color = same ? "#e6a817" : "#5eead4";
+        if (Number.isFinite(hi)) {
+          zoneLines.push(candleSeries.createPriceLine({
+            price: hi, color, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: z.label || z.tf || ""
+          }));
+        }
+        if (Number.isFinite(lo)) {
+          zoneLines.push(candleSeries.createPriceLine({
+            price: lo, color, lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: ""
+          }));
+        }
+      });
+      if (touchLine) {
+        try { candleSeries.removePriceLine(touchLine); } catch (e) {}
+        touchLine = null;
+      }
+      if (touch && touch.trade_px && Number.isFinite(Number(touch.trade_px))) {
+        touchLine = candleSeries.createPriceLine({
+          price: Number(touch.trade_px), color: "#e6a817", lineWidth: 2, lineStyle: 3,
+          axisLabelVisible: true, title: "касание"
+        });
+      }
+      if (data.length) {
+        const from = Math.max(-0.5, data.length - 80);
+        tvChart.timeScale().setVisibleLogicalRange({from, to: data.length + 3});
+      }
+      return true;
+    }
+    function paintChart(bars, zones, touch) {
+      const empty = document.getElementById("chart-empty");
+      const host = document.getElementById("chart-host");
+      const shown = shownBars(bars);
+      if (!shown.length) {
+        empty.style.display = "block";
+        if (ensureTv() && candleSeries) {
+          if (host) host.className = "chart-host engine-tv";
+          candleSeries.setData([]);
+        } else {
+          if (host) host.className = "chart-host engine-canvas";
+          const canvas = document.getElementById("chart");
+          const ctx = canvas.getContext("2d");
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+        return;
+      }
+      empty.style.display = "none";
+      try {
+        if (paintChartTv(bars, zones, touch)) {
+          if (host) host.className = "chart-host engine-tv";
+          return;
+        }
+      } catch (e) {
+      }
+      if (host) host.className = "chart-host engine-canvas";
+      paintChartCanvas(bars, zones, touch);
     }
     function whyBox(touch) {
       const t = touch || {};
@@ -353,7 +436,204 @@
         .map(([k, v]) => k + " " + (v == null || v === "" ? "нет данных" : String(v)))
         .join(" · ");
     }
+    function keyChanged(key) {
+      if (key === lastWhyKey) return false;
+      lastWhyKey = key;
+      return true;
+    }
+    function paintBookHtml(book) {
+      const el = document.getElementById("book");
+      const bids = (book && book.bids) || [];
+      const asks = (book && book.asks) || [];
+      const imb = document.getElementById("book-imbalance");
+      const imbTxt = document.getElementById("book-imbalance-txt");
+      if (!bids.length && !asks.length) {
+        el.innerHTML = '<div class="empty">стакан пуст</div>';
+        imb.hidden = true;
+        imbTxt.textContent = "";
+        return {bids, asks, empty: true};
+      }
+      const n = 12;
+      const askShow = asks.slice(0, n);
+      const bidShow = bids.slice(0, n);
+      const qtys = askShow.concat(bidShow).map(x => Number(x[1]) || 0);
+      const maxQ = Math.max.apply(null, qtys.concat([1]));
+      const askBid = askShow.reduce((s, a) => s + (Number(a[1]) || 0), 0);
+      const bidSum = bidShow.reduce((s, b) => s + (Number(b[1]) || 0), 0);
+      const tot = askBid + bidSum || 1;
+      let html = "";
+      askShow.slice().reverse().forEach(a => {
+        const w = Math.round(((Number(a[1]) || 0) / maxQ) * 100);
+        html += `<div class="row ask"><span class="bar ask" style="width:${w}%"></span>`
+          + `<span></span><span class="ask">${esc(a[0])}</span><span class="ask">${esc(a[1])}</span></div>`;
+      });
+      const mid = (bids[0] && bids[0][0]) || (asks[0] && asks[0][0]) || "—";
+      html += `<div class="mid">${esc(mid)}</div>`;
+      bidShow.forEach(b => {
+        const w = Math.round(((Number(b[1]) || 0) / maxQ) * 100);
+        html += `<div class="row bid"><span class="bar bid" style="width:${w}%"></span>`
+          + `<span class="bid">${esc(b[1])}</span><span class="bid">${esc(b[0])}</span><span></span></div>`;
+      });
+      el.innerHTML = html;
+      imb.hidden = false;
+      document.getElementById("book-bid-bar").style.flex = String(bidSum);
+      imb.querySelector("b").style.flex = String(askBid);
+      imbTxt.textContent = "bid " + Math.round(bidSum / tot * 100) + "% · ask "
+        + Math.round(askBid / tot * 100) + "%";
+      imbTxt.className = "";
+      return {bids, asks, askShow, bidShow, maxQ, empty: false};
+    }
+    function ensureBookGpu() {
+      if (!window.PIXI) return null;
+      const host = document.getElementById("book-gpu");
+      if (!host) return null;
+      if (bookApp) return bookApp;
+      try {
+        bookApp = new PIXI.Application({
+          background: 0x0c1014,
+          antialias: true,
+          resolution: Math.min(window.devicePixelRatio || 1, 2),
+          autoDensity: true,
+          width: Math.max(host.clientWidth || 240, 160),
+          height: Math.max(host.clientHeight || 360, 320)
+        });
+        host.appendChild(bookApp.view);
+        return bookApp;
+      } catch (e) {
+        bookApp = null;
+        return null;
+      }
+    }
+    function paintBookGpu(snap) {
+      const wrap = document.getElementById("book-host");
+      if (!wrap || !snap || snap.empty || !ensureBookGpu()) {
+        if (wrap) wrap.classList.remove("gpu");
+        return false;
+      }
+      wrap.classList.add("gpu");
+      const host = document.getElementById("book-gpu");
+      const w = Math.max((host && host.clientWidth) || wrap.clientWidth || 240, 160);
+      const rowH = 18;
+      const askShow = snap.askShow || [];
+      const bidShow = snap.bidShow || [];
+      const h = Math.max((askShow.length + bidShow.length + 2) * rowH, 320);
+      bookApp.renderer.resize(w, h);
+      bookApp.stage.alpha = 1;
+      bookApp.stage.removeChildren().forEach(c => {
+        try { c.destroy({children: true}); } catch (e) {}
+      });
+      const maxQ = snap.maxQ || 1;
+      const g = new PIXI.Graphics();
+      const styleAsk = {fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: 11, fill: 0xff3b4e};
+      const styleBid = {fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: 11, fill: 0x00c853};
+      const styleMid = {fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: 16, fill: 0xffffff, fontWeight: "700"};
+      let y = 4;
+      askShow.slice().reverse().forEach(a => {
+        const bw = ((Number(a[1]) || 0) / maxQ) * (w * 0.92);
+        g.beginFill(0xff3b4e, 0.28);
+        g.drawRect(w - bw, y + 1, bw, rowH - 2);
+        g.endFill();
+        const t = new PIXI.Text(String(a[0]) + "  " + String(a[1]), styleAsk);
+        t.x = w - 8; t.anchor.set(1, 0); t.y = y + 2;
+        bookApp.stage.addChild(t);
+        y += rowH;
+      });
+      const mid = (snap.bids[0] && snap.bids[0][0]) || (snap.asks[0] && snap.asks[0][0]) || "—";
+      const midText = new PIXI.Text(String(mid), styleMid);
+      midText.x = w / 2; midText.anchor.set(0.5, 0); midText.y = y;
+      bookApp.stage.addChild(midText);
+      y += rowH + 4;
+      bidShow.forEach(b => {
+        const bw = ((Number(b[1]) || 0) / maxQ) * (w * 0.92);
+        g.beginFill(0x00c853, 0.28);
+        g.drawRect(0, y + 1, bw, rowH - 2);
+        g.endFill();
+        const t = new PIXI.Text(String(b[1]) + "  " + String(b[0]), styleBid);
+        t.x = 8; t.y = y + 2;
+        bookApp.stage.addChild(t);
+        y += rowH;
+      });
+      bookApp.stage.addChildAt(g, 0);
+      const bookKey = JSON.stringify(askShow) + "|" + JSON.stringify(bidShow);
+      if (window.gsap && bookKey !== lastBookKey) {
+        lastBookKey = bookKey;
+        gsap.from(bookApp.stage, {alpha: 0.35, duration: 0.28, ease: "power1.out", overwrite: true});
+      }
+      return true;
+    }
+    function paintBook(book) {
+      const snap = paintBookHtml(book);
+      try {
+        paintBookGpu(snap);
+      } catch (e) {
+        const wrap = document.getElementById("book-host");
+        if (wrap) wrap.classList.remove("gpu");
+      }
+    }
+    function updateReplayLabel() {
+      const slider = document.getElementById("replay-bars");
+      document.getElementById("replay-label").textContent = replayN
+        ? ("свечей " + replayN + " / " + slider.max)
+        : "все свечи";
+    }
+    function stopReplay() {
+      if (replayTween && replayTween.kill) {
+        replayTween.kill();
+        replayTween = null;
+      }
+      if (replayTimer && typeof replayTimer === "number") {
+        clearInterval(replayTimer);
+      }
+      replayTimer = null;
+      document.getElementById("replay-play").textContent = "▶";
+    }
+    function startReplay() {
+      stopReplay();
+      const max = Number(document.getElementById("replay-bars").max) || 0;
+      if (!max) return;
+      if (!replayN) replayN = 1;
+      document.getElementById("replay-play").textContent = "❚❚";
+      if (window.gsap) {
+        const from = replayN;
+        const to = max;
+        if (from >= to) {
+          stopReplay();
+          return;
+        }
+        const duration = Math.max(0.28, (to - from) * (0.42 / replaySpeed));
+        const state = {i: from};
+        replayTween = gsap.to(state, {
+          i: to,
+          duration,
+          ease: replayEase(),
+          onUpdate() {
+            const i = Math.max(from, Math.round(state.i));
+            if (i === replayN) return;
+            replayN = i;
+            document.getElementById("replay-bars").value = String(replayN);
+            updateReplayLabel();
+            paintChart(lastBars, lastZones, lastTouch);
+          },
+          onComplete() { stopReplay(); }
+        });
+        replayTimer = replayTween;
+        return;
+      }
+      const ms = Math.max(80, Math.round(400 / replaySpeed));
+      replayTimer = setInterval(() => {
+        const cap = Number(document.getElementById("replay-bars").max) || 0;
+        if (replayN >= cap) {
+          stopReplay();
+          return;
+        }
+        replayN += 1;
+        document.getElementById("replay-bars").value = String(replayN);
+        updateReplayLabel();
+        paintChart(lastBars, lastZones, lastTouch);
+      }, ms);
+    }
     async function refresh() {
+      const seq = ++refreshSeq;
       const [status, bars, zones, book, trades, touch, dash, news, authors, llm, gates, hello, sessions, account, paper] = await Promise.all([
         jget("/api/status"),
         jget("/api/bars?symbol=" + encodeURIComponent(symbol) + "&tf=" + encodeURIComponent(tf) + "&limit=200"),
@@ -371,6 +651,7 @@
         jget("/api/account"),
         jget("/api/paper?limit=20")
       ]);
+      if (seq !== refreshSeq) return;
       const st = status || BOOT;
       const sel = document.getElementById("symbol");
       const symbols = (st.symbols && st.symbols.length) ? st.symbols : [symbol];
@@ -382,9 +663,15 @@
           symbol = sel.value;
           sel.dataset.list = key;
         }
-        sel.onchange = () => { symbol = sel.value; refresh(); };
+        sel.onchange = () => {
+          symbol = sel.value;
+          replayN = 0;
+          stopReplay();
+          refresh();
+        };
       }
       document.getElementById("mode").textContent = "режим " + (st.user_mode || "off");
+      markMode(st.user_mode || "off");
       const px = (st.last_price && (st.last_price[symbol] || Object.values(st.last_price)[0])) || "—";
       document.getElementById("price").textContent = symbol + " " + px;
       const sess = (sessions && sessions.now) || {};
@@ -409,6 +696,14 @@
         if (!credOk) note.textContent = "сейчас: шаг 1 — сохраните ключ";
         else if (!h.hello_ok) note.textContent = "сейчас: шаг 2 — проверьте ключ на бирже";
         else note.textContent = "сейчас: шаг 3 — demo или live";
+      }
+      const sum = document.getElementById("ready-summary");
+      if (sum) {
+        sum.textContent = !credOk
+          ? "шаг 1 · ключа нет — раскрыть формы или вкладка Настройки"
+          : (!h.hello_ok
+            ? "шаг 2 · hello нет — раскрыть или вкладка Настройки"
+            : "шаг 3 · режим — кнопки off/learn/demo/live в шапке");
       }
       const exp = (h.experience) || {};
       const expEl = document.getElementById("experience");
@@ -459,20 +754,36 @@
           };
         }
       }
-      const barRows = (bars && bars.bars) || [];
-      const zoneRows = (zones && zones.zones) || [];
-      lastBars = barRows;
-      lastZones = zoneRows;
-      lastTouch = touch && touch.touch;
+      if (bars && Array.isArray(bars.bars)) lastBars = bars.bars;
+      if (zones && Array.isArray(zones.zones)) lastZones = zones.zones;
+      if (touch && Object.prototype.hasOwnProperty.call(touch, "touch")) lastTouch = touch.touch;
+      const barRows = lastBars;
+      const zoneRows = lastZones;
       const tfEl = document.getElementById("chart-tf");
       if (tfEl) tfEl.textContent = tf;
+      markTf();
       const slider = document.getElementById("replay-bars");
       if (slider) {
-        slider.max = String(barRows.length);
-        if (replayN > barRows.length) replayN = 0;
+        const prevMax = Number(slider.max) || 0;
+        const newMax = barRows.length;
+        const playing = !!replayTimer;
+        slider.max = String(newMax);
+        if (replayN > newMax) {
+          replayN = 0;
+          if (playing) stopReplay();
+        } else if (playing && newMax !== prevMax && replayN < newMax) {
+          startReplay();
+        }
         slider.value = String(replayN);
+        updateReplayLabel();
       }
-      paintChart(barRows, zoneRows, lastTouch);
+      try {
+        paintChart(barRows, zoneRows, lastTouch);
+      } catch (e) {
+        const host = document.getElementById("chart-host");
+        if (host) host.className = "chart-host engine-canvas";
+        paintChartCanvas(barRows, zoneRows, lastTouch);
+      }
       const knobs = document.getElementById("knobs");
       if (knobs && dash && dash.risk) {
         const share = dash.risk.deposit_share_per_trade;
@@ -497,26 +808,14 @@
             ).join("")
           : '<tr><td colspan="4" class="empty">бумаги нет</td></tr>';
       }
-      const bookBody = document.getElementById("book");
-      const bids = (book && book.bids) || [];
-      const asks = (book && book.asks) || [];
-      const n = Math.max(bids.length, asks.length, 1);
-      if (!bids.length && !asks.length) {
-        bookBody.innerHTML = '<tr><td colspan="2" class="empty">стакан пуст</td></tr>';
-      } else {
-        let html = "";
-        for (let i = 0; i < Math.min(n, 12); i++) {
-          const b = bids[i] || ["", ""];
-          const a = asks[i] || ["", ""];
-          html += `<tr><td class="bid">${esc(b[0])} ${esc(b[1])}</td><td class="ask">${esc(a[0])} ${esc(a[1])}</td></tr>`;
-        }
-        bookBody.innerHTML = html;
+      if (book != null) paintBook(book);
+      if (trades && Array.isArray(trades.trades)) {
+        const tr = trades.trades;
+        document.getElementById("trades").innerHTML = tr.length
+          ? tr.slice().reverse().map(x => `<tr><td>${esc(x.ts)}</td><td class="num">${esc(x.px)}</td><td class="num">${esc(x.qty)}</td><td>${esc(x.side)}</td></tr>`).join("")
+          : '<tr><td colspan="4" class="empty">лента пуста</td></tr>';
       }
-      const tr = (trades && trades.trades) || [];
-      document.getElementById("trades").innerHTML = tr.length
-        ? tr.slice().reverse().map(x => `<tr><td>${esc(x.ts)}</td><td>${esc(x.px)}</td><td>${esc(x.qty)}</td><td>${esc(x.side)}</td></tr>`).join("")
-        : '<tr><td colspan="4" class="empty">лента пуста</td></tr>';
-      const latest = (touch && touch.touch) || null;
+      const latest = lastTouch || null;
       whyBox(latest);
       if (dash && dash.risk) {
         const risk = document.querySelectorAll("#why article")[7];
@@ -525,6 +824,11 @@
         if (refusals && dash.today) {
           refusals.innerHTML = `<b>отказы дня</b><div>касаний ${dash.today.n_touches} · теней ${dash.today.n_shadow} · пропусков ${dash.today.n_skip} · без ТВХ ${dash.today.n_no_tvh || 0}</div>`;
         }
+      }
+      const whyEl = document.getElementById("why");
+      const whyKey = whyEl ? whyEl.innerText : "";
+      if (window.gsap && keyChanged(whyKey)) {
+        gsap.from("#why article", {opacity: 0, y: 5, stagger: 0.045, duration: 0.38, ease: "power2.out", overwrite: true});
       }
       document.getElementById("skip").textContent = latest
         ? (latest.shadow_would ? "зашли бы в тень" : (latest.skip_reason || "пропуск без причины"))
@@ -578,12 +882,15 @@
       }
       refresh();
     });
-    document.getElementById("hello-on").addEventListener("click", async () => {
+    document.getElementById("hello-on").addEventListener("click", async ev => {
+      const btn = ev.currentTarget;
+      btn.disabled = true;
       const resp = await fetch("/api/hello", {
         method: "POST",
         headers: headers(),
         body: JSON.stringify({ack_token: BOOT.ack_token || ""})
       });
+      btn.disabled = false;
       if (!resp.ok) {
         setNote(await resp.text(), true);
       } else {
@@ -629,19 +936,33 @@
       if (!btn) return;
       tf = btn.getAttribute("data-tf") || "15m";
       replayN = 0;
+      stopReplay();
       refresh();
+    });
+    document.querySelectorAll(".speed").forEach(btn => {
+      btn.addEventListener("click", () => {
+        replaySpeed = Number(btn.getAttribute("data-speed")) || 1;
+        markSpeed();
+        if (replayTimer) startReplay();
+      });
+    });
+    document.getElementById("replay-play").addEventListener("click", () => {
+      if (replayTimer) stopReplay();
+      else startReplay();
     });
     const slider = document.getElementById("replay-bars");
     slider.addEventListener("input", () => {
+      if (replayTimer) stopReplay();
       replayN = Number(slider.value) || 0;
-      document.getElementById("replay-label").textContent = replayN
-        ? ("свечей " + replayN)
-        : "все свечи";
+      updateReplayLabel();
       paintChart(lastBars, lastZones, lastTouch);
     });
-    document.getElementById("replay-book").addEventListener("click", async () => {
+    document.getElementById("replay-book").addEventListener("click", async ev => {
+      const btn = ev.currentTarget;
+      btn.disabled = true;
       const out = document.getElementById("replay-book-out");
       const got = await jget("/api/replay?symbol=" + encodeURIComponent(symbol));
+      btn.disabled = false;
       if (!got) {
         out.textContent = "реплей не ответил";
         return;
@@ -653,7 +974,10 @@
       out.textContent = got.n
         ? ("чекпоинтов " + got.n + " · bid " + (got.last_bid || "—") + " · ask " + (got.last_ask || "—"))
         : "на ленте нет книги";
+      out.className = got.n ? "" : "empty";
     });
+    markTf();
+    markSpeed();
     refresh();
     let fallback = setInterval(refresh, 30000);
     let lastRefresh = 0;

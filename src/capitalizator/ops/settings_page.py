@@ -11,6 +11,7 @@ import html
 from collections.abc import Sequence
 from typing import Any
 
+from capitalizator.ops.desk_chrome import chrome_end, chrome_start
 from capitalizator.ops.settings import FIELDS, SOURCE_KINDS
 
 _KIND_RU = {
@@ -20,17 +21,6 @@ _KIND_RU = {
     "hl_wallet": "Hyperliquid (кошелёк 0x…)",
     "tradingview_own": "TradingView (свой аккаунт)",
 }
-
-_CSS = """
-body{font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#0e1116;color:#e6e6e6;margin:0;padding:24px;max-width:1100px}
-h1{font-size:22px;margin:0 0 6px}h2{font-size:17px;margin:26px 0 8px;color:#9fd3ff}
-.note{color:#9aa4b2;font-size:13px}.hint{color:#8b95a5;font-size:12px;margin:2px 0 8px}
-table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #222a35;padding:6px 8px;text-align:left;font-size:14px;vertical-align:top}
-input,select{background:#151b24;color:#e6e6e6;border:1px solid #2a3442;border-radius:6px;padding:6px 8px;min-width:260px}
-button{background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:6px 12px;cursor:pointer}button.warn{background:#7a2e2e}
-.set{color:#7ee787}.unset{color:#f0883e}.ack{margin-top:14px;padding:10px;border:1px dashed #3a4452;border-radius:8px}
-a{color:#9fd3ff}.card{background:#121821;border:1px solid #1f2a37;border-radius:10px;padding:14px;margin-bottom:14px}
-"""
 
 
 def render_settings_html(
@@ -44,17 +34,50 @@ def render_settings_html(
     groups: dict[str, list[dict[str, Any]]] = {}
     for f in fields:
         groups.setdefault(str(f["group"]), []).append(f)
+    extra = ".set{color:#7ee787}.unset{color:#f0883e}.ack{margin-top:14px;padding:10px;border:1px dashed #3a4452}"
     parts: list[str] = [
-        "<!doctype html><html lang='ru'><head><meta charset='utf-8'><title>Настройки — Capitalizator</title>",
-        f"<style>{_CSS}</style></head><body>",
+        chrome_start(title="Настройки — ХРОНОС", active="settings", extra_css=extra),
+        "<div class='page-body'>",
         "<h1>Настройки: ключи и источники</h1>",
         "<p class='note'>Секреты хранятся только на сервере в <code>secrets/settings.json</code> (права 0600), "
         "в журнал, бэкапы и логи не попадают. Здесь они показаны маской. Пустое поле — «не менять». "
-        "Каждое изменение пишет в хеш-цепь только <i>имена</i> полей. <a href='/'>← к столу</a>"
-        " · <a href='/ops'>Управление</a></p>",
+        "Каждое изменение пишет в хеш-цепь только <i>имена</i> полей.</p>",
     ]
     if message:
-        parts.append(f"<p class='note'><b>{html.escape(message)}</b></p>")
+        parts.append(f"<p class='pill ok'><b>{html.escape(message)}</b></p>")
+    parts.append("<div class='set-grid'><section class='panel'><h2>Как включить стол — 3 шага</h2>")
+    parts.append(
+        "<ol class='wizard'>"
+        "<li><b>Шаг 1. Ключ</b> — файл <code>secrets/bybit.json</code>, права 0600. "
+        "Секрет в журнал не возвращается."
+        "<form method='post' action='/api/settings'>"
+        "<input type='hidden' name='redirect' value='1'/>"
+        f"<input type='hidden' name='ack_token' value='{tok}'/>"
+        "<input type='text' name='bybit.api_key' placeholder='API-ключ' autocomplete='off' spellcheck='false'/>"
+        "<input type='password' name='bybit.api_secret' placeholder='секрет' autocomplete='off'/>"
+        "<select name='bybit.mode'>"
+        "<option value='demo' selected>учебный счёт Bybit Demo</option>"
+        "<option value='testnet'>testnet</option>"
+        "<option value='live_sub'>live сабаккаунт</option>"
+        "<option value='live_main'>live основной</option></select>"
+        "<label class='confirm'><input type='checkbox' name='confirm' required/> Подтверждаю: понимаю, что меняю</label> "
+        "<button type='submit'>1. Сохранить ключ</button></form></li>"
+        "<li><b>Шаг 2. Hello</b> — проверка ключа на бирже. Не галочка в журнале."
+        "<form method='post' action='/api/hello'>"
+        f"<input type='hidden' name='ack_token' value='{tok}'/>"
+        "<input type='hidden' name='redirect' value='1'/>"
+        "<button type='submit'>2. Проверить ключ на бирже</button></form></li>"
+        "<li><b>Шаг 3. Режим</b> — чемпион сам не повышается. Кнопка ордер не рисует. "
+        "Вход только при ACCORD и открытом окне."
+        "<form method='post' action='/mode'>"
+        f"<input type='hidden' name='ack_token' value='{tok}'/>"
+        "<button type='submit' name='mode' value='off'>off</button>"
+        "<button type='submit' name='mode' value='learn'>learn</button>"
+        "<button type='submit' name='mode' value='demo'>demo</button>"
+        "<button type='submit' name='mode' value='live'>live</button>"
+        "<input name='override_reason' placeholder='причина live, если гейт не пройден (≥ 8 знаков)' size='36'/>"
+        "</form></li></ol></section><div class='stack'>"
+    )
     for group, rows in groups.items():
         parts.append(f"<div class='card'><h2>{html.escape(group)}</h2>")
         parts.append("<form method='post' action='/api/settings'><input type='hidden' name='redirect' value='1'/>")
@@ -89,8 +112,8 @@ def render_settings_html(
                 "<button type='submit'>Проверить Telegram (тестовое сообщение)</button>"
             )
         parts.append("</form></div>")
-    # sources
-    parts.append("<div class='card'><h2>Источники внешней информации</h2>")
+    parts.append("</div><section class='panel'>")
+    parts.append("<h2>Источники внешней информации</h2>")
     parts.append(
         "<p class='note'>Внешняя информация — только фильтр риска, метка карточки и один голос жюри. "
         "Никогда не вход и не размер. Telegram и скрейпинг как источники запрещены каноном.</p>"
@@ -134,12 +157,13 @@ def render_settings_html(
         "<button type='submit'>Добавить</button></form>"
         "<div class='hint'>RSS — только https. Reddit — имя сабреддита без r/. X — имя аккаунта; читается через официальный API "
         "(нужен bearer выше). Hyperliquid — адрес кошелька; учитывается только когорта, не один кит. "
-        "TradingView — только свой аккаунт (sessionid выше).</div></div>"
+        "TradingView — только свой аккаунт (sessionid выше).</div></section></div>"
     )
     parts.append("<p class='note'>Ключи биржи можно задать и без консоли: переменные из "
                  "<code>.env.example</code> у процесса signer или файл "
-                 "<code>secrets/bybit.json</code> (0600). Эта страница пишет тот же файл.</p>")
-    parts.append("</body></html>")
+                 "<code>secrets/bybit.json</code> (0600). Эта страница пишет тот же файл.</p>"
+                 "</div>")
+    parts.append(chrome_end())
     return "".join(parts)
 
 

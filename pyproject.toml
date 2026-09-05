@@ -44,7 +44,7 @@ hyexec = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-"capitalizator.ops" = ["chronos.html"]
+"capitalizator.ops" = ["chronos.html", "vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -66,6 +66,8 @@ select = ["E", "F", "I", "UP"]
 "src/capitalizator/ops/settings.py" = ["E501"]
 "src/capitalizator/ops/settings_page.py" = ["E501"]
 "src/capitalizator/ops/ops_page.py" = ["E501"]
+"src/capitalizator/ops/desk_chrome.py" = ["E501"]
+"src/capitalizator/ops/touch_screen.py" = ["E501"]
 "src/capitalizator/ops/gen_status.py" = ["E501"]
 
 [tool.mypy]

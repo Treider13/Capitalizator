@@ -8,6 +8,7 @@ from typing import Any
 
 from capitalizator.card.live import CardLive, card_is_fresh, touch_line
 from capitalizator.ops.daily_map_report import contains_advice
+from capitalizator.ops.desk_chrome import chrome_end, chrome_start
 from capitalizator.ops.knowledge import Knowledge
 
 ADVICE = ("лонг", "шорт", "купи", "продай", "завтра")
@@ -138,48 +139,55 @@ def render_html(screen: dict[str, Any] | None) -> str:
     if screen is None:
         body = '<p class="empty">касаний нет</p>'
         title = "Касание"
+        extra = ""
     else:
         b = screen["b"]
         a = screen["a"]
         plus = html.escape(",".join(b["pluses"]) if b["pluses"] else "-")
         minus = html.escape(",".join(b["minuses"]) if b["minuses"] else "-")
-        body = f"""
-<pre>{html.escape(screen["line"])}</pre>
-<h3>B</h3>
-<table>
-<tr><th>verdict</th><td>{html.escape(str(b["verdict"]))}</td><th>macro</th><td>{html.escape(str(b["macro"]))}</td></tr>
-<tr><th>fib</th><td>{html.escape(str(b["fib"]))}</td><th>rsi</th><td>{html.escape(str(b["rsi"]))}</td></tr>
-<tr><th>gex</th><td>{html.escape(str(b["gex"]))}</td><th>fvg</th><td>{html.escape(str(b["fvg"]))}</td></tr>
-<tr><th>sweep</th><td>{html.escape(str(b["sweep"]))}</td><th>ob/bos</th><td>{html.escape(str(b["ob"]))}/{html.escape(str(b["bos"]))}</td></tr>
-<tr><th>regime</th><td>{html.escape(str(b["regime"]))}</td></tr>
-<tr><th>poc</th><td>{html.escape(str(b["poc"]))}</td><th>vah/val</th><td>{html.escape(str(b["vah"]))}/{html.escape(str(b["val"]))}</td></tr>
-<tr><th>rvol</th><td>{html.escape(str(b["rvol"]))}</td><th>venue</th><td>{html.escape(str(b["venue"]))}</td></tr>
-</table>
-<p>plus: {plus}</p>
-<p>minus: {minus}</p>
-<h3>A</h3>
-<table>
-<tr><th>jury</th><td>{html.escape(str(a["jury"]))}</td><th>skip</th><td>{html.escape(str(a["skip"]))}</td></tr>
-<tr><th>cav</th><td>{html.escape(str(a["cav"]))} n={int(a["n_cav"])}</td>
-<th>zlg</th><td>{html.escape(str(a["zlg"]))} n={int(a["n_zlg"])}</td></tr>
-<tr><th>tape</th><td>{html.escape(str(a["tape_eaten"]))}</td><th>btc</th><td>{html.escape(str(a["btc"]))}</td></tr>
-</table>
-"""
+        extra = (
+            "<div class='touch-grid'>"
+            "<section class='panel'><h2>кадр</h2>"
+            f"<pre class='flight'>{html.escape(screen['line'])}</pre>"
+            f"<p class='hint'>символ {html.escape(str(screen['symbol']))}</p></section>"
+            "<section class='panel'><h3>B</h3>"
+            "<p class='hint'>метки карточки, не совет</p>"
+            "<table>"
+            f"<tr><th>verdict</th><td>{html.escape(str(b['verdict']))}</td><th>macro</th><td>{html.escape(str(b['macro']))}</td></tr>"
+            f"<tr><th>fib</th><td>{html.escape(str(b['fib']))}</td><th>rsi</th><td>{html.escape(str(b['rsi']))}</td></tr>"
+            f"<tr><th>gex</th><td>{html.escape(str(b['gex']))}</td><th>fvg</th><td>{html.escape(str(b['fvg']))}</td></tr>"
+            f"<tr><th>sweep</th><td>{html.escape(str(b['sweep']))}</td><th>ob/bos</th><td>{html.escape(str(b['ob']))}/{html.escape(str(b['bos']))}</td></tr>"
+            f"<tr><th>regime</th><td>{html.escape(str(b['regime']))}</td></tr>"
+            f"<tr><th>poc</th><td>{html.escape(str(b['poc']))}</td><th>vah/val</th><td>{html.escape(str(b['vah']))}/{html.escape(str(b['val']))}</td></tr>"
+            f"<tr><th>rvol</th><td>{html.escape(str(b['rvol']))}</td><th>venue</th><td>{html.escape(str(b['venue']))}</td></tr>"
+            "</table>"
+            f"<p class='plus'>plus: {plus}</p>"
+            f"<p class='minus'>minus: {minus}</p>"
+            "<h3>A</h3>"
+            "<p class='hint'>голоса книги и ленты</p>"
+            "<table>"
+            f"<tr><th>jury</th><td>{html.escape(str(a['jury']))}</td><th>skip</th><td>{html.escape(str(a['skip']))}</td></tr>"
+            f"<tr><th>cav</th><td>{html.escape(str(a['cav']))} n={int(a['n_cav'])}</td>"
+            f"<th>zlg</th><td>{html.escape(str(a['zlg']))} n={int(a['n_zlg'])}</td></tr>"
+            f"<tr><th>tape</th><td>{html.escape(str(a['tape_eaten']))}</td><th>btc</th><td>{html.escape(str(a['btc']))}</td></tr>"
+            "</table></section>"
+            "<section class='panel'><h2>Почему не зашли</h2>"
+            f"<p>{html.escape(str(a['skip']))}</p>"
+            "<h2>Почему зашли бы</h2>"
+            f"<p>{html.escape(str(a.get('shadow') or '—'))}</p>"
+            "<p class='empty'>страница не советует и ордер не шлёт</p></section></div>"
+        )
         title = f"Касание {html.escape(str(screen['symbol']))}"
-    page = f"""<!DOCTYPE html>
-<html lang="ru"><head><meta charset="utf-8"/><title>{title}</title>
-<style>
-body {{ background:#0f1419; color:#e8eef4; font-family:sans-serif; margin:24px; }}
-th {{ color:#8b9aab; text-align:left; padding:6px; }}
-td {{ padding:6px; }}
-.empty {{ color:#8b9aab; }}
-pre {{ font-family:ui-monospace,monospace; }}
-</style></head><body>
-<h1>{title}</h1>
-<p class="empty">только метки. ордеров нет.</p>
-{body}
-</body></html>
-"""
+        body = extra
+    page = (
+        chrome_start(title=title, active="touch")
+        + "<div class='page-body'><h1>"
+        + title
+        + '</h1><p class="empty">только метки. ордеров нет.</p>'
+        + body
+        + "</div>"
+        + chrome_end()
+    )
     low = page.lower()
     for word in ADVICE:
         if word in low:
