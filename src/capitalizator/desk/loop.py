@@ -2782,6 +2782,8 @@ class DeskLoop:
                     return Decimal(str(row["score"]))
                 except ArithmeticError:
                     return None
+        if symbol and isinstance(by_sym, dict) and by_sym:
+            return None
         if body.get("score") not in {None, ""}:
             try:
                 return Decimal(str(body["score"]))

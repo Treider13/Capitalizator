@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 from capitalizator.desk.loop import DeskLoop
@@ -60,6 +61,22 @@ def test_desk_uses_per_symbol_serve_score(tmp_path: Path) -> None:
     desk = DeskLoop(knowledge=knowledge, user_mode="off")
     assert desk.allow_hyexec_send(book_ticket=True, symbol="ETHUSDT") is False
     assert desk.allow_hyexec_send(book_ticket=True, symbol="BTCUSDT") is True
+
+
+def test_score_exit_does_not_use_another_symbols_score(tmp_path: Path) -> None:
+    knowledge = open_knowledge(init_vault(tmp_path / "d"))
+    knowledge.set_meta(
+        "hyexec_serve",
+        json.dumps(
+            {
+                "score": -0.9,
+                "by_symbol": {"ETHUSDT": {"model_go": False, "score": -0.9}},
+            }
+        ),
+    )
+    desk = DeskLoop(knowledge=knowledge, user_mode="off")
+    assert desk._hyexec_score_for("ETHUSDT") == Decimal("-0.9")
+    assert desk._hyexec_score_for("BTCUSDT") is None
 
 
 def test_missing_symbol_score_is_book_alone_not_global_hold(tmp_path: Path) -> None:

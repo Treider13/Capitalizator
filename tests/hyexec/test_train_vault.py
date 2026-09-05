@@ -62,7 +62,7 @@ def test_cli_opens_vault_and_does_not_call_xgboost_train(
             knowledge.put_journal_touch(f"t{i}", _full_row())
     finally:
         knowledge.close()
-    assert main(["--userdir", str(vault.root)]) == 0
+    assert main(["--userdir", str(vault.root), "--once"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["fit"] is False
     assert out["n"] == 15

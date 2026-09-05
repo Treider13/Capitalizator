@@ -21,7 +21,7 @@ def test_hyexec_and_train_are_separate_services() -> None:
     assert "network_mode: none" in hyexec
     train = text.split("  hyexec-train:")[1]
     assert "network_mode: none" in train
-    assert 'restart: "no"' in train
+    assert 'restart: "no"' not in train
     assert "capitalizator.desk" not in hyexec
 
 

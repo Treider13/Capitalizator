@@ -135,8 +135,7 @@ services:
 
   hyexec-train:
     <<: *base
-    # Batch. unless-stopped would restart a process that must exit (no timer retrain).
-    restart: "no"
+    # Stays up. Fits once, then only when ADWIN flags — not on a clock.
     depends_on: { init: { condition: service_completed_successfully } }
     network_mode: none
     command: ["python", "-m", "capitalizator.hyexec.train", "--userdir", "/data"]

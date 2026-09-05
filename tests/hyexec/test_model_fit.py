@@ -36,7 +36,7 @@ def test_train_fits_fifteen_labeled_and_serve_scores(tmp_path: Path) -> None:
             knowledge.put_journal_touch(f"t{i}", _labeled(i, "1.5"))
     finally:
         knowledge.close()
-    assert main(["--userdir", str(vault.root)]) == 0
+    assert main(["--userdir", str(vault.root), "--once"]) == 0
     assert model_path(vault).is_file()
     assert model_path(vault).name == MODEL_NAME
     knowledge = open_knowledge(vault)
@@ -65,7 +65,7 @@ def test_train_negative_labels_make_serve_hold(tmp_path: Path) -> None:
             knowledge.put_journal_touch(f"t{i}", _labeled(i, "-1.0"))
     finally:
         knowledge.close()
-    assert main(["--userdir", str(vault.root)]) == 0
+    assert main(["--userdir", str(vault.root), "--once"]) == 0
     knowledge = open_knowledge(vault)
     try:
         body = tick(knowledge, now=WHEN, vault=vault)

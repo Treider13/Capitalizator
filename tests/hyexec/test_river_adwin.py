@@ -54,9 +54,13 @@ def test_size_cut_flag_does_not_need_river() -> None:
 
 def test_river_adwin_flags_a_mean_shift() -> None:
     pytest.importorskip("river")
-    from capitalizator.hyexec.river_adwin import drift_on
+    from capitalizator.hyexec.river_adwin import drift_on, push
 
     stable = [0.0] * 80
     assert drift_on(stable) is False
     shifted = stable + [1.0] * 80
     assert drift_on(shifted) is True
+    drifted, det = push(stable, detector=None)
+    assert drifted is False
+    drifted, _ = push([1.0] * 80, detector=det)
+    assert drifted is True
