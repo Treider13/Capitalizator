@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Literal
 
 Action = Literal["flatten", "hold"]
+SCORE_DROP = Decimal("0.20")
 
 
 def remainder_action(

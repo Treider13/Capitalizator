@@ -9,6 +9,7 @@ from capitalizator.hyexec.dataset import (
     complete_n,
     labeled_pairs,
     last_complete,
+    last_complete_by_symbol,
     matrix,
     plan_from_rows,
 )
@@ -56,6 +57,18 @@ def test_labeled_pairs_need_shadow_r_net() -> None:
     plan = plan_from_rows([full] * 15)
     assert plan["n_labeled"] == 15
     assert plan["fit"] is True
+
+
+def test_last_complete_by_symbol_does_not_bleed() -> None:
+    btc = {key: "1" for key in FEATURE_KEYS}
+    btc["symbol"] = "BTCUSDT"
+    btc["hyexec_as_of"] = "2026-09-01T10:00:00+00:00"
+    eth = {key: "2" for key in FEATURE_KEYS}
+    eth["symbol"] = "ETHUSDT"
+    eth["hyexec_as_of"] = "2026-09-01T10:05:00+00:00"
+    got = last_complete_by_symbol([btc, eth])
+    assert got["BTCUSDT"] == [1.0] * len(FEATURE_KEYS)
+    assert got["ETHUSDT"] == [2.0] * len(FEATURE_KEYS)
 
 
 def test_last_complete_prefers_newest_as_of() -> None:

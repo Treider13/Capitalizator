@@ -11,7 +11,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from capitalizator.hyexec.dataset import last_complete, plan_from_rows
+from capitalizator.hyexec.dataset import (
+    labeled_pairs,
+    last_complete,
+    last_complete_by_symbol,
+    plan_from_rows,
+)
 from capitalizator.hyexec.model import load_booster, model_go, predict_one
 
 IDLE_S = 5.0
@@ -37,19 +42,33 @@ def tick(knowledge: Any, *, now: datetime, vault: Any | None = None) -> dict[str
     score = None
     go = None
     loaded = False
+    by_symbol: dict[str, dict[str, Any]] = {}
+    drift = False
     if vault is not None:
         booster = load_booster(vault)
-        vec = last_complete(rows)
         if booster is not None:
             loaded = True
-        if booster is not None and vec is not None:
-            score = predict_one(booster, vec)
-            go = model_go(score)
+            for symbol, vec in last_complete_by_symbol(rows).items():
+                pred = predict_one(booster, vec)
+                by_symbol[symbol] = {"score": pred, "model_go": model_go(pred)}
+            vec = last_complete(rows)
+            if vec is not None:
+                score = predict_one(booster, vec)
+                go = model_go(score)
+        try:
+            from capitalizator.hyexec.river_adwin import drift_on
+
+            ys = labeled_pairs(rows)[1]
+            drift = bool(ys) and drift_on(ys)
+        except ImportError:
+            drift = False
     body = {
         "as_of": now.isoformat(),
         "model": loaded,
         "model_go": go,
         "score": score,
+        "by_symbol": by_symbol,
+        "drift": drift,
         **plan,
     }
     if knowledge.available():

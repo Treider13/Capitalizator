@@ -41,3 +41,39 @@ def test_desk_reads_serve_none_as_book_alone(tmp_path: Path) -> None:
     knowledge.set_meta("hyexec_serve", json.dumps({"model_go": None}))
     desk = DeskLoop(knowledge=knowledge, user_mode="off")
     assert desk.allow_hyexec_send(book_ticket=True) is True
+
+
+def test_desk_uses_per_symbol_serve_score(tmp_path: Path) -> None:
+    knowledge = open_knowledge(init_vault(tmp_path / "d"))
+    knowledge.set_meta(
+        "hyexec_serve",
+        json.dumps(
+            {
+                "model_go": False,
+                "by_symbol": {
+                    "ETHUSDT": {"model_go": False, "score": -0.4},
+                    "BTCUSDT": {"model_go": True, "score": 1.2},
+                },
+            }
+        ),
+    )
+    desk = DeskLoop(knowledge=knowledge, user_mode="off")
+    assert desk.allow_hyexec_send(book_ticket=True, symbol="ETHUSDT") is False
+    assert desk.allow_hyexec_send(book_ticket=True, symbol="BTCUSDT") is True
+
+
+def test_missing_symbol_score_is_book_alone_not_global_hold(tmp_path: Path) -> None:
+    """A hold on ETH is not a hold on BTC. Global model_go was the last print."""
+    knowledge = open_knowledge(init_vault(tmp_path / "d"))
+    knowledge.set_meta(
+        "hyexec_serve",
+        json.dumps(
+            {
+                "model_go": False,
+                "by_symbol": {"ETHUSDT": {"model_go": False, "score": -0.4}},
+            }
+        ),
+    )
+    desk = DeskLoop(knowledge=knowledge, user_mode="off")
+    assert desk.allow_hyexec_send(book_ticket=True, symbol="ETHUSDT") is False
+    assert desk.allow_hyexec_send(book_ticket=True, symbol="BTCUSDT") is True

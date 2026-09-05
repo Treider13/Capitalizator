@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from capitalizator.hyexec.score_exit import remainder_action
+from capitalizator.hyexec.score_exit import SCORE_DROP, remainder_action
+
+
+def test_score_drop_is_point_two() -> None:
+    assert SCORE_DROP == Decimal("0.20")
 
 
 def test_score_drop_flattens() -> None:

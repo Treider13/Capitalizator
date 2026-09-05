@@ -39,6 +39,23 @@ def labeled_pairs(
     return xs, ys
 
 
+def last_complete_by_symbol(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, list[float]]:
+    """Newest complete hx_* per symbol. A row without symbol is not a desk key."""
+    best: dict[str, tuple[str, list[float]]] = {}
+    for row, vec in zip(rows, matrix(rows), strict=True):
+        if any(v is None for v in vec):
+            continue
+        symbol = str(row.get("symbol") or "")
+        if not symbol:
+            continue
+        ts = str(row.get("hyexec_as_of") or row.get("touch_ts") or "")
+        if symbol not in best or ts >= best[symbol][0]:
+            best[symbol] = (ts, [float(v) for v in vec])
+    return {symbol: vec for symbol, (_ts, vec) in best.items()}
+
+
 def last_complete(rows: Sequence[Mapping[str, Any]]) -> list[float] | None:
     """Newest complete hx_* vector. Missing as_of loses to a stamped row."""
     best: list[float] | None = None

@@ -76,6 +76,7 @@ from capitalizator.exec.tvh import NO_TVH, tvh_ok
 from capitalizator.hyexec.adwin import after_hour_dd
 from capitalizator.hyexec.alerts import stamp as stamp_hyexec
 from capitalizator.hyexec.expand import expand_ok, take_at_1r
+from capitalizator.hyexec.score_exit import SCORE_DROP
 from capitalizator.hyexec.features import NAMES as HYEXEC_FEATURE_NAMES
 from capitalizator.hyexec.features import FeatureRow, build_features
 from capitalizator.hyexec.pace import pyramid_ok
@@ -1094,6 +1095,7 @@ class DeskLoop:
                 self._reload_instruments()
                 self._refresh_calibration(when)
                 self._refresh_correlation(when)
+                self._apply_hyexec_score_exit(when)
                 out.extend(self._sync_exchange_state(when))
                 out.extend(self._retire_zones(when))
             if force_flush:
@@ -2052,7 +2054,7 @@ class DeskLoop:
             self.knowledge.put_journal_touch(row.touch_id, payload_row)
         sent = False
         if (
-            self.allow_hyexec_send(book_ticket=shadow_would)
+            self.allow_hyexec_send(book_ticket=shadow_would, symbol=st.symbol)
             and skip is None
             and self.user_mode in {"demo", "live"}
             and self.hello_ok()
@@ -2729,25 +2731,96 @@ class DeskLoop:
             self._sentiment_mult = self.risk_config.sentiment_mult
         return self._sentiment_mult
 
-    def _refresh_hyexec_model_go(self) -> None:
-        """Serve writes the score. Desk never loads xgboost."""
+    def _hyexec_serve_body(self) -> dict[str, Any] | None:
         if not self.knowledge.available():
-            return
+            return None
         raw = self.knowledge.meta("hyexec_serve")
         if raw in {None, ""}:
-            return
+            return None
         try:
             body = json.loads(raw)
         except json.JSONDecodeError:
-            return
-        if not isinstance(body, dict):
+            return None
+        return body if isinstance(body, dict) else None
+
+    def _refresh_hyexec_model_go(self) -> None:
+        """Serve writes the score. Desk never loads xgboost."""
+        body = self._hyexec_serve_body()
+        if body is None:
             return
         go = body.get("model_go")
         self.hyexec_model_go = None if go is None else bool(go)
 
-    def allow_hyexec_send(self, *, book_ticket: bool) -> bool:
-        self._refresh_hyexec_model_go()
-        return may_send(book_ticket=book_ticket, model_go=self.hyexec_model_go)
+    def _hyexec_go_for(self, symbol: str) -> bool | None:
+        body = self._hyexec_serve_body()
+        if body is not None:
+            by_sym = body.get("by_symbol")
+            if symbol and isinstance(by_sym, dict) and symbol in by_sym:
+                row = by_sym[symbol]
+                if isinstance(row, dict):
+                    go = row.get("model_go")
+                    return None if go is None else bool(go)
+            if symbol and isinstance(by_sym, dict) and by_sym and symbol not in by_sym:
+                return None
+            if "model_go" in body:
+                go = body.get("model_go")
+                if go is not None:
+                    return bool(go)
+                if not by_sym:
+                    return None
+        return self.hyexec_model_go
+
+    def _hyexec_score_for(self, symbol: str) -> Decimal | None:
+        body = self._hyexec_serve_body()
+        if body is None:
+            return None
+        by_sym = body.get("by_symbol")
+        if symbol and isinstance(by_sym, dict) and symbol in by_sym:
+            row = by_sym[symbol]
+            if isinstance(row, dict) and row.get("score") not in {None, ""}:
+                try:
+                    return Decimal(str(row["score"]))
+                except ArithmeticError:
+                    return None
+        if body.get("score") not in {None, ""}:
+            try:
+                return Decimal(str(body["score"]))
+            except ArithmeticError:
+                return None
+        return None
+
+    def _apply_hyexec_score_exit(self, now: datetime) -> None:
+        """Flatten a FLOOR remainder when the served score dropped. EXPAND holds."""
+        for pos in list(self.paper.positions.values()):
+            if pos.state != "open" or not pos.half_taken:
+                continue
+            raw = pos.labels.get("score_entry")
+            if raw in {None, ""}:
+                continue
+            try:
+                score_entry = Decimal(str(raw))
+            except ArithmeticError:
+                continue
+            score_now = self._hyexec_score_for(pos.symbol)
+            if score_now is None:
+                continue
+            px = self.last_price.get(pos.symbol)
+            if px is None:
+                px = pos.entry_px
+            if px is None:
+                continue
+            self.paper.note_score(
+                pos.paper_id,
+                now=now,
+                px=px,
+                score_now=score_now,
+                score_entry=score_entry,
+                drop=SCORE_DROP,
+                structure_ok=self._structure_ok_for(pos),
+            )
+
+    def allow_hyexec_send(self, *, book_ticket: bool, symbol: str = "") -> bool:
+        return may_send(book_ticket=book_ticket, model_go=self._hyexec_go_for(symbol))
 
     def effective_target_risk(self, *, step: str = "std", window: str = "") -> Decimal:
         base = target_after_drift(drift=self.drift_active, base=self.risk_config.target_risk_pct)
@@ -3054,6 +3127,11 @@ class DeskLoop:
             "cav_tf": row.cav_tf or zone.tf,
             "first_fact_tag": getattr(self.strategy, "last_first_fact_tag", None),
             "aplus": bool(getattr(self.strategy, "last_aplus", False)),
+            "score_entry": (
+                None
+                if (score := self._hyexec_score_for(symbol)) is None
+                else str(score)
+            ),
         }
 
     def symbol_group(self, symbol: str, rank: Mapping[str, int] | None) -> str:
