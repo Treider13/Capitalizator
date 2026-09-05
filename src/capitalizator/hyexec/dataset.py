@@ -21,6 +21,11 @@ def complete_n(rows: Sequence[Mapping[str, Any]]) -> int:
     return sum(1 for vec in matrix(rows) if all(v is not None for v in vec))
 
 
+def plan_from_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    n = complete_n(rows)
+    return {"n": n, "n_rows": len(rows), "fit": can_fit(n)}
+
+
 def matrix(rows: Sequence[Mapping[str, Any]]) -> list[list[float | None]]:
     """One row per touch. A missing hx_* stays None — no fill."""
     out: list[list[float | None]] = []

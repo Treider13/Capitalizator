@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from capitalizator.hyexec.dataset import FEATURE_KEYS, can_fit, complete_n
-from capitalizator.hyexec.train import plan_from_rows, plan_from_userdir
+from capitalizator.hyexec.dataset import FEATURE_KEYS, can_fit, complete_n, plan_from_rows
+from capitalizator.hyexec.train import plan_from_userdir
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
 

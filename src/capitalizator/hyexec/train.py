@@ -11,12 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from capitalizator.hyexec.dataset import can_fit, complete_n
-
-
-def plan_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    n = complete_n(rows)
-    return {"n": n, "n_rows": len(rows), "fit": can_fit(n)}
+from capitalizator.hyexec.dataset import plan_from_rows
 
 
 def plan_from_userdir(userdir: Path) -> dict[str, Any]:
