@@ -126,3 +126,15 @@ services:
           fi
           sleep 30
         done
+
+  hyexec:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    network_mode: none
+    command: ["python", "-m", "capitalizator.hyexec.serve", "--userdir", "/data"]
+
+  hyexec-train:
+    <<: *base
+    depends_on: { init: { condition: service_completed_successfully } }
+    network_mode: none
+    command: ["python", "-m", "capitalizator.hyexec.train", "--userdir", "/data"]

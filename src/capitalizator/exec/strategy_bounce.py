@@ -317,6 +317,8 @@ class BounceStrategy:
         self.first_minute = FirstMinute()
         # Journal-only: whether the last A+ idea's window would have allowed 5x.
         self.last_aplus_5x_ok: bool | None = None
+        self.last_aplus: bool = False
+        self.last_first_fact_tag: str = ""
         # Why the last `propose` returned None (`None` after an accepted proposal). The
         # desk journals it as `send_skip`: a refusal without a reason is a blind spot.
         self.last_skip: str | None = None
@@ -433,6 +435,8 @@ class BounceStrategy:
         if not macro.allow:
             return self._refuse("macro:blocked")
         fact = resolve_first_fact(snap.zlg_label, snap.gesture_n)
+        self.last_first_fact_tag = fact.tag
+        self.last_aplus = False
         if self.require_jury and fact.tag == "shadow_gesture":
             return self._refuse("first_fact:shadow_gesture")
         # probe_gesture is a ticket: size is cut later, the idea is not skipped.
@@ -500,6 +504,7 @@ class BounceStrategy:
                 ),
                 btc_same=voices.btc == 1,
             )
+            self.last_aplus = aplus
             if aplus and not APlus.raises_lev_in_f1():
                 # A+ does not raise leverage in F1, so a window that forbids 5x is
                 # not a reason to drop the trade: it is taken at the base leverage.

@@ -73,6 +73,8 @@ from capitalizator.exec.strategy_bounce import (
 )
 from capitalizator.exec.trail import TrailEngine, TrailState
 from capitalizator.exec.tvh import NO_TVH, tvh_ok
+from capitalizator.hyexec.sizing import desk_step, effective_risk
+from capitalizator.hyexec.window_halt import WindowHalt
 from capitalizator.instruments import Instrument, InstrumentRegistry, InstrumentUnknown
 from capitalizator.jury.desk import (
     decide,
@@ -212,6 +214,7 @@ class DeskLoop:
         self.account = Account.load(knowledge, self.risk_config)
         self.risk = self.account.risk
         self.halts = self.account.halts
+        self.window_halt = WindowHalt(start_equity=self.account.equity)
         self.funding: dict[str, Decimal] = {}
         self._funding_hist: dict[str, list[Decimal]] = {}
         self._oi_hist: dict[str, list[tuple[datetime, Decimal]]] = {}
@@ -2312,7 +2315,9 @@ class DeskLoop:
             if eq is not None and eq > 0 and (
                 self.account.equity != eq or not self.account.equity_source.startswith("exchange")
             ):
+                prev_src = self.account.equity_source
                 self.account.set_equity(eq, source=f"exchange:{self.user_mode}", now=now)
+                self._sync_window_halt(now, rebase=not prev_src.startswith("exchange"))
                 out.append({"event": "equity", "equity": str(eq), "source": self.user_mode})
         # 3) venue flat while our filled twin is open → the venue closed it.
         #    Only after the venue has *shown* the position (or a fill) for this idea:
@@ -2598,8 +2603,22 @@ class DeskLoop:
             self._sentiment_mult = self.risk_config.sentiment_mult
         return self._sentiment_mult
 
-    def effective_target_risk(self) -> Decimal:
-        return target_after_drift(drift=self.drift_active, base=self.risk_config.target_risk_pct)
+    def effective_target_risk(self, *, step: str = "std", window: str = "") -> Decimal:
+        base = target_after_drift(drift=self.drift_active, base=self.risk_config.target_risk_pct)
+        return effective_risk(
+            step=step,
+            phase_target=self.risk_config.target_risk_pct,
+            base_risk=base,
+            day_pnl=self.window_halt.day_pnl(),
+            window=window or "none",
+        )
+
+    def _sync_window_halt(self, now: datetime, *, rebase: bool = False) -> None:
+        equity = self.account.equity
+        if rebase:
+            self.window_halt = WindowHalt(start_equity=equity)
+            return
+        self.window_halt.note_window(self.policy.window(now).name, equity)
 
     def _reload_instruments(self) -> None:
         """Signer refreshed instruments-info from the venue → registry rows (D-04)."""
@@ -2713,7 +2732,7 @@ class DeskLoop:
             entry=row.trade_px,
             stop=stop,
             lev=lev,
-            target_risk=self.effective_target_risk(),
+            target_risk=self.effective_target_risk(window=window.name),
             deposit_share=cfg.deposit_share_per_trade,
             qty_step=inst.qty_step,
             min_qty=inst.min_qty,
@@ -2796,6 +2815,8 @@ class DeskLoop:
             "turnover_rank": None if rank is None else rank.get(symbol),
             "zone_tf": zone.tf,
             "cav_tf": row.cav_tf or zone.tf,
+            "first_fact_tag": getattr(self.strategy, "last_first_fact_tag", None),
+            "aplus": bool(getattr(self.strategy, "last_aplus", False)),
         }
 
     def symbol_group(self, symbol: str, rank: Mapping[str, int] | None) -> str:
@@ -3344,6 +3365,7 @@ class DeskLoop:
                 self.account.apply_pnl(
                     pnl=pos.realized, fees=pos.fees, funding=pos.funding, now=when, source="paper"
                 )
+                self._sync_window_halt(when)
             # (3) The twin is the desk's decision; the venue must follow it. flatten on
             # the venue = cancel resting entries + close whatever position is left, so a
             # stop/TP/time/expiry/veto here never leaves an orphan order or position.
@@ -3385,12 +3407,24 @@ class DeskLoop:
             return None, info
         lev = min(cfg.max_lev, inst.max_lev)
         room = self.account.halts.remaining_frac(self.account.sizing_equity())
+        window_name = str(labels.get("window") or "")
+        step = desk_step(
+            first_fact_tag=str(
+                labels.get("first_fact_tag")
+                or getattr(self.strategy, "last_first_fact_tag", None)
+                or "first_fact"
+            ),
+            size_mult=intent.size_mult,
+            aplus=bool(labels.get("aplus") or getattr(self.strategy, "last_aplus", False)),
+            window=window_name,
+            day_pnl=self.window_halt.day_pnl(),
+        )
         decision = size_position(
             equity=self.account.sizing_equity(),
             entry=intent.entry,
             stop=intent.stop,
             lev=lev,
-            target_risk=self.effective_target_risk(),
+            target_risk=self.effective_target_risk(step=step, window=window_name),
             deposit_share=cfg.deposit_share_per_trade,
             qty_step=inst.qty_step,
             min_qty=inst.min_qty,
@@ -3427,7 +3461,6 @@ class DeskLoop:
         if not qok:
             info["send_skip"] = f"size_mult:{qwhy}"
             return None, info
-        window_name = str(labels.get("window") or "")
         hold = self._hold_hours.get(f"{intent.tag}|{window_name}", Decimal("2"))
         ev = ev_evaluate(
             qty=qty,

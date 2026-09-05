@@ -15,7 +15,8 @@ from decimal import Decimal
 from capitalizator.types import MarketEvent, require_utc
 from capitalizator.zones.model import Bar
 
-TF_MINUTES = {"15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+# 1m/5m are feature buckets only. ZoneEngine working_tf stays 15m (KNOWN_TFS).
+TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
 
 
 def bucket_open(ts: datetime, *, minutes: int) -> datetime:
