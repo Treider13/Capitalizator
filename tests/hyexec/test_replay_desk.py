@@ -13,7 +13,10 @@ from capitalizator.hyexec.replay_desk import (
     follow_open_papers,
     open_paper_n,
     replay_day,
+    seed_sandbox,
+    zones_from_knowledge,
 )
+from capitalizator.zones.model import Zone
 from capitalizator.hyexec.tape_day import load_day_events
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
@@ -166,3 +169,65 @@ def test_replay_day_without_now_uses_tape_clock(tmp_path: Path) -> None:
         knowledge.close()
     assert plan["clock"] == NOW.isoformat()
     assert plan["sent"] is False
+
+
+def test_seed_sandbox_copies_instruments_and_zones_not_journal(tmp_path: Path) -> None:
+    live = init_vault(tmp_path / "live")
+    sand = init_vault(tmp_path / "sand")
+    src = open_knowledge(live)
+    dst = open_knowledge(sand)
+    zone = Zone.create(
+        symbol="SOLUSDT",
+        tf="15m",
+        side="support",
+        lo=Decimal("100"),
+        hi=Decimal("101"),
+        method="prior_day_hl",
+        created_as_of=NOW,
+    )
+    try:
+        src.set_meta(
+            "instruments_snapshot",
+            json.dumps(
+                {
+                    "instruments": {
+                        "SOLUSDT": {
+                            "symbol": "SOLUSDT",
+                            "tick": "0.01",
+                            "qty_step": "0.1",
+                            "min_qty": "0.1",
+                            "min_notional": "5",
+                        }
+                    }
+                }
+            ),
+        )
+        src.put_zone(
+            zone.zone_id,
+            {
+                "zone_id": zone.zone_id,
+                "symbol": zone.symbol,
+                "tf": zone.tf,
+                "side": zone.side,
+                "lo": str(zone.lo),
+                "hi": str(zone.hi),
+                "method": zone.method,
+                "created_as_of": zone.created_as_of.isoformat(),
+            },
+        )
+        src.put_journal_touch("live-only", {"touch_id": "live-only", "symbol": "SOLUSDT"})
+        got = seed_sandbox(src=src, dst=dst)
+        assert got == {"instruments": 1, "zones": 1}
+        assert dst.meta("instruments_snapshot") == src.meta("instruments_snapshot")
+        assert {row["zone_id"] for row in dst.list_zones()} == {zone.zone_id}
+        assert dst.journal_rows() == []
+        stored = zones_from_knowledge(dst)
+        assert [z.zone_id for z in stored] == [zone.zone_id]
+        desk = DeskLoop(knowledge=dst, user_mode="learn")
+        assert desk.instrument_ok("SOLUSDT") is True
+        for z in stored:
+            desk.registry._zones[z.zone_id] = z
+        assert zone.zone_id in desk.registry._zones
+    finally:
+        src.close()
+        dst.close()

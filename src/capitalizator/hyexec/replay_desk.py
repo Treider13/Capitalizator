@@ -70,6 +70,38 @@ def follow_open_papers(
     return followed, last
 
 
+def seed_sandbox(*, src: Any, dst: Any) -> dict[str, int]:
+    """Copy venue facts the replay needs. Not journal, not paper, not user_mode."""
+    n_inst = 0
+    n_zones = 0
+    raw = src.meta("instruments_snapshot") if src.available() else None
+    if raw and dst.available():
+        dst.set_meta("instruments_snapshot", raw)
+        n_inst = 1
+    if src.available() and dst.available():
+        for row in src.list_zones():
+            zid = str(row.get("zone_id") or "")
+            if not zid:
+                continue
+            dst.put_zone(zid, row)
+            n_zones += 1
+    return {"instruments": n_inst, "zones": n_zones}
+
+
+def zones_from_knowledge(knowledge: Any) -> tuple[Zone, ...]:
+    """Stored map. load_pending only returns zones with a pending touch — replay needs all."""
+    if knowledge is None or not knowledge.available():
+        return ()
+    from capitalizator.memory.revive import zone_from_payload
+
+    out: list[Zone] = []
+    for row in knowledge.list_zones():
+        zone = zone_from_payload(row)
+        if zone is not None:
+            out.append(zone)
+    return tuple(out)
+
+
 def replay_day(
     *,
     tape: Path,
@@ -81,10 +113,14 @@ def replay_day(
 ) -> dict[str, Any]:
     events = load_day_events(tape, day)
     desk = DeskLoop(knowledge=knowledge, user_mode="learn")
+    stored = zones_from_knowledge(knowledge)
+    extras = tuple(extra_zones) + stored
+    for zone in extras:
+        desk.registry._zones[zone.zone_id] = zone
     when = now if now is not None else clock_for(events, day)
-    desk.play(events, extra_zones=extra_zones, now=when)
+    desk.play(events, extra_zones=extras, now=when)
     followed, follow_clock = follow_open_papers(
-        desk, tape, day, extra_zones=extra_zones, bound=follow_days
+        desk, tape, day, extra_zones=extras, bound=follow_days
     )
     desk.tick(follow_clock or when, force_flush=True)
     rows = knowledge.journal_rows() if knowledge.available() else []
@@ -93,6 +129,7 @@ def replay_day(
     plan["n_events"] = len(events)
     plan["n_followed"] = followed
     plan["n_open_paper"] = open_paper_n(desk)
+    plan["n_zones"] = len(stored)
     plan["clock"] = when.isoformat()
     plan["user_mode"] = "learn"
     plan["sent"] = False
@@ -105,6 +142,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--userdir", required=True)
     parser.add_argument("--day", required=True)
     parser.add_argument("--init", action="store_true")
+    parser.add_argument(
+        "--from-userdir",
+        default="",
+        help="Copy instruments_snapshot and zones from this vault. Not journal.",
+    )
     args = parser.parse_args(argv)
     from capitalizator.ops.knowledge import open_knowledge
     from capitalizator.ops.vault import init_vault, load_vault
@@ -112,15 +154,23 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.userdir)
     vault = init_vault(root) if args.init else load_vault(root)
     knowledge = open_knowledge(vault)
+    live = None
     try:
+        seeded = {"instruments": 0, "zones": 0}
+        if args.from_userdir:
+            live = open_knowledge(load_vault(Path(args.from_userdir)), create=False)
+            seeded = seed_sandbox(src=live, dst=knowledge)
         plan = replay_day(
             tape=Path(args.tape),
             knowledge=knowledge,
             day=args.day,
         )
+        plan["seeded"] = seeded
         print(json.dumps(plan, sort_keys=True))
         return 0
     finally:
+        if live is not None:
+            live.close()
         knowledge.close()
 
 
