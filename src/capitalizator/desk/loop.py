@@ -3568,7 +3568,9 @@ class DeskLoop:
                     "mfe_r": payload["mfe_r"],
                     "tail_cut_r": payload["tail_cut_r"],
                     "half_taken": pos.half_taken,
-                    "expand": bool(pos.labels.get("expand")),
+                    "expand": (
+                        None if not pos.half_taken else bool(pos.labels.get("expand"))
+                    ),
                     "pnl_net": str(pos.pnl_net()),
                     "fees": str(pos.fees),
                     "funding": str(pos.funding),
