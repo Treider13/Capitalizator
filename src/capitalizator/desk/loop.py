@@ -45,7 +45,7 @@ from capitalizator.champion.shadow_day import (
     persist_day,
     row_day_utc,
 )
-from capitalizator.desk.bars import TF_MINUTES, BarBuilder
+from capitalizator.desk.bars import FEATURE_TFS, TF_MINUTES, BarBuilder, builder_tfs
 from capitalizator.desk.paper_gates import snapshot as paper_gates_snapshot
 from capitalizator.desk.pictures import needs_new_card, picture_for
 from capitalizator.exec.ev_gate import evaluate as ev_evaluate
@@ -74,7 +74,9 @@ from capitalizator.exec.strategy_bounce import (
 from capitalizator.exec.trail import TrailEngine, TrailState
 from capitalizator.exec.tvh import NO_TVH, tvh_ok
 from capitalizator.hyexec.adwin import after_hour_dd
+from capitalizator.hyexec.alerts import stamp as stamp_hyexec
 from capitalizator.hyexec.expand import expand_ok, take_at_1r
+from capitalizator.hyexec.features import FeatureRow, build_features
 from capitalizator.hyexec.pace import pyramid_ok
 from capitalizator.hyexec.sizing import desk_step, effective_risk
 from capitalizator.hyexec.timing import may_send
@@ -159,6 +161,8 @@ class SymbolState:
     bar_builder: BarBuilder | None = None
     bars_seeded: int = 0
     trades_dropped: int = 0
+    feature_bars: list[Bar] = field(default_factory=list)
+    last_features: FeatureRow | None = None
     zlg_card: CardLive | None = None
     oko_window: OkoWindow | None = None
     oi: list[tuple[datetime, Decimal]] = field(default_factory=list)
@@ -398,7 +402,7 @@ class DeskLoop:
                 book=Book(tick_size=str(self.tick_for(symbol))),
                 bar_builder=BarBuilder(
                     symbol=symbol,
-                    tfs=self.config.structure_tfs,
+                    tfs=builder_tfs(self.config.structure_tfs),
                 ),
             )
         return self.symbols[symbol]
@@ -770,6 +774,8 @@ class DeskLoop:
         raise ValueError(f"unknown stream: {event.stream!r}")
 
     def on_bar_close(self, bar: Bar) -> list[dict[str, Any]]:
+        if bar.tf in FEATURE_TFS:
+            return self._on_feature_bar(bar)
         st = self.state_for(bar.symbol)
         st.bars.append(bar)
         if st.bar_builder is not None:
@@ -802,6 +808,26 @@ class DeskLoop:
         if bar.tf == self.config.working_tf or jury_events:
             return jury_events + trail_events + retired
         return retired
+
+    def _on_feature_bar(self, bar: Bar) -> list[dict[str, Any]]:
+        """1m/5m close: PIT features only. Not a zone, not a jury tick, no score."""
+        st = self.state_for(bar.symbol)
+        st.feature_bars.append(bar)
+        del st.feature_bars[:-240]
+        if st.bar_builder is not None:
+            st.bar_builder.seed_closed((bar,))
+        if bar.tf == "5m":
+            st.last_features = build_features(
+                bars_1m=[b for b in st.feature_bars if b.tf == "1m"],
+                bars_5m=[b for b in st.feature_bars if b.tf == "5m"],
+                bars_1h=[b for b in st.bars if b.tf == "1h"],
+                as_of=bar.close_ts,
+            )
+        return [{"event": "hyexec_features", "symbol": bar.symbol, "tf": bar.tf}]
+
+    def _note_hyexec(self, kind: str, *, symbol: str, now: datetime) -> None:
+        if self.knowledge.available():
+            stamp_hyexec(self.knowledge, kind=kind, symbol=symbol, at=now)
 
     def publish_card(self, symbol: str, now: datetime) -> CardLive:
         """Compute B labels and write claim b_card:SYMBOL. Never sends.
@@ -1001,6 +1027,8 @@ class DeskLoop:
                 )
                 expand = self._expand_now(pos, trade.exchange_ts, at_1r_take=True)
                 pos.labels["expand"] = expand
+                if self.policy.window(trade.exchange_ts).name == "overlap":
+                    self._note_hyexec("harvest", symbol=pos.symbol, now=trade.exchange_ts)
                 self._oms(
                     pos, "half_tp", trade.exchange_ts,
                     qty=str(base * take_at_1r(expand=expand)),
@@ -2138,6 +2166,8 @@ class DeskLoop:
                     payload_row.update(gate_info)
                     self.knowledge.put_journal_touch(row.touch_id, payload_row)
                     if sized is not None:
+                        if gate_info.get("desk_step") == "aplus":
+                            self._note_hyexec("aplus", symbol=st.symbol, now=closed_at)
                         intent_id = self.knowledge.enqueue_intent(
                             sized.model_dump(mode="json"),
                             created_ts=row.ts.isoformat(),
@@ -2278,9 +2308,10 @@ class DeskLoop:
         week_start = self.account.halts.week_start
         if week_start <= 0:
             raise ValueError("week_start must be > 0")
-        week_pnl = (equity - week_start) / week_start
+        week_pnl = (self.account.equity - week_start) / week_start
         if not pyramid_ok(week_pnl=week_pnl):
             raise ValueError("behind week pace")
+        self._note_hyexec("pyramid", symbol=str(idea.symbol), now=now)
         row = {
             "action": got.action,
             "symbol": idea.symbol,
@@ -3615,6 +3646,7 @@ class DeskLoop:
             "participating_share": str(cfg.participating_share),
             "equity_source": self.account.equity_source,
             "config_id": cfg.config_id,
+            "desk_step": step,
         }
         if decision.action != "accept":
             info["send_skip"] = f"size:{decision.binding}"

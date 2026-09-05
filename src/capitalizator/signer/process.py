@@ -645,6 +645,21 @@ def _alert_transitions(
                 knowledge, "dead_man", dead_raw,
                 f"[{mode}] ⚠️ Сторож снял входные ордера: {dead_raw}",
             )
+        hyexec_raw = knowledge.meta("hyexec_event") if knowledge.available() else None
+        if hyexec_raw:
+            from capitalizator.hyexec.alerts import event_text
+
+            try:
+                body = json.loads(hyexec_raw)
+                kind = str(body.get("kind") or "")
+                symbol = str(body.get("symbol") or "")
+                text = event_text(kind=kind, symbol=symbol)
+            except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                text = "hyexec"
+            alerter.on_change(
+                knowledge, "hyexec_event", hyexec_raw,
+                f"[{mode}] {text}",
+            )
     except Exception as exc:  # alerts never take the signer down
         if knowledge.available():
             knowledge.set_meta("alerts_last_error", type(exc).__name__)

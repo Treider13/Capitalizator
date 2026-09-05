@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -107,6 +108,16 @@ def test_venue_half_tp_uses_expand_take_when_live_ok(tmp_path: Path) -> None:
     desk.on_trade(_trade(WHEN + timedelta(seconds=1), "99.9"), [])
     half = next(c for c in desk.knowledge.oms_rows() if c["kind"] == "half_tp")
     assert Decimal(half["payload"]["qty"]) == EXPAND_TAKE
+
+
+def test_overlap_half_tp_stamps_harvest(tmp_path: Path) -> None:
+    desk = _desk(tmp_path, "demo")
+    desk.on_book("BTCUSDT", _bid_heavy_book(WHEN))
+    _submit_demo(desk)
+    desk.on_trade(_trade(WHEN + timedelta(seconds=1), "99.9"), [])
+    raw = desk.knowledge.meta("hyexec_event")
+    assert raw is not None
+    assert json.loads(raw)["kind"] == "harvest"
 
 
 def test_venue_half_tp_stays_floor_when_day_is_flat(tmp_path: Path) -> None:

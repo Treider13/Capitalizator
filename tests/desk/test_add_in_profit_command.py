@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -93,6 +94,30 @@ def test_add_in_profit_journals_and_does_not_send(tmp_path: Path) -> None:
     assert journal["add_in_profit"]["venue"] is False
     assert desk.knowledge.oms_rows() == []
     assert any(ev.get("event") == "add_in_profit" and ev.get("venue") is False for ev in out)
+
+
+def test_week_pace_uses_full_equity_not_sizing_slice(tmp_path: Path) -> None:
+    """Week pace is account PnL. A participating slice must not hide +7.5%."""
+    desk = _desk(tmp_path)
+    _open_long(desk)
+    desk.account.config = replace(desk.account.config, participating_share=Decimal("0.5"))
+    start = desk.account.halts.week_start
+    desk.account.set_equity(start * Decimal("1.075"), source=desk.account.equity_source, now=NOW)
+    assert desk.account.sizing_equity() == start * Decimal("1.075") * Decimal("0.5")
+    desk.knowledge.enqueue_command(
+        "add_in_profit",
+        {
+            "kind": "add_in_profit",
+            "symbol": "BTCUSDT",
+            "add_price": "101.5",
+            "extra_risk": "0.005",
+        },
+        created_ts=NOW.isoformat(),
+    )
+    desk.tick(NOW)
+    row = desk.knowledge.commands()[0]
+    assert row["status"] == "done"
+    assert row["result"]["action"] == "add_in_profit"
 
 
 def test_add_in_profit_behind_week_pace_fails(tmp_path: Path) -> None:

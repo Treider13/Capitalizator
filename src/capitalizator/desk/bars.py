@@ -17,6 +17,12 @@ from capitalizator.zones.model import Bar
 
 # 1m/5m are feature buckets only. ZoneEngine working_tf stays 15m (KNOWN_TFS).
 TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+FEATURE_TFS = ("1m", "5m")
+
+
+def builder_tfs(structure: tuple[str, ...]) -> tuple[str, ...]:
+    extra = tuple(tf for tf in FEATURE_TFS if tf not in structure)
+    return structure + extra
 
 
 def bucket_open(ts: datetime, *, minutes: int) -> datetime:
