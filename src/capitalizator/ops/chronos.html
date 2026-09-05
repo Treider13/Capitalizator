@@ -837,9 +837,19 @@
         ? (latest.shadow_side || "тень") + " · " + (latest.shadow_tag || "")
         : "тени нет";
       const newsRows = (news && news.events) || [];
-      document.getElementById("news").innerHTML = newsRows.length
-        ? newsRows.map(n => `<div>${esc(n.class)} ${esc(n.event_time)} ${esc(n.notes || "")}</div>`).join("")
-        : "макро-календарь пуст";
+      const newsStale = !!(news && news.stale);
+      const newsHead = newsStale
+        ? ('<div class="empty">' + esc((news && news.intel_stale_label) || "intel:stale") + '</div>')
+        : (news && news.heartbeat_age_s != null
+          ? ('<div class="empty">intel heartbeat ' + esc(String(news.heartbeat_age_s)) + 's</div>')
+          : '<div class="empty">intel:stale</div>');
+      const cardTok = news && news.card_status;
+      const cardLine = (cardTok === "no card" || cardTok === "stale")
+        ? ('<div class="empty">' + esc((news && news.card_status_label) || cardTok) + '</div>')
+        : "";
+      document.getElementById("news").innerHTML = newsHead + cardLine + (newsRows.length
+        ? newsRows.map(n => `<div>${esc(n.origin || "csv")} ${esc(n.clock || "-")} ${esc(n.class)} ${esc(n.event_time)} ${esc(n.notes || "")}</div>`).join("")
+        : '<div class="empty">макро-календарь пуст</div>');
       const people = (authors && authors.posts) || [];
       document.getElementById("authors").textContent = people.length ? people.map(p => p.text).join(" · ") : "постов нет";
       document.getElementById("llm").textContent = (llm && llm.summary) || "нет данных";

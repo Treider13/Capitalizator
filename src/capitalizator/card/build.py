@@ -15,6 +15,10 @@ from capitalizator.types import require_utc
 from capitalizator.zones.model import Bar
 
 IMMINENT_HOURS = 2
+# 2h veto follows the official CSV clock (variant R). Intel RSS must not invent it.
+IMMINENT_CLASSES = frozenset({"CPI", "FOMC", "NFP", "PCE"})
+# 24h size cut stays CPI+FOMC — NFP/PCE are us_data_day + event_windows, not a day-long cut.
+PRE_EVENT_24H_CLASSES = frozenset({"CPI", "FOMC"})
 
 
 def from_news(
@@ -54,7 +58,7 @@ def from_news(
     imminent = [
         row
         for row in hits
-        if row.event_class in {"CPI", "FOMC"}
+        if row.event_class in IMMINENT_CLASSES
         and timedelta_hours(row.event_time, when) <= IMMINENT_HOURS
         and row.event_time >= when
     ]
@@ -134,7 +138,7 @@ def from_news(
             pluses = (*pluses, "rvol_normal")
             bearing = "propose"
         if any(
-            row.event_class in {"CPI", "FOMC"}
+            row.event_class in PRE_EVENT_24H_CLASSES
             and timedelta_hours(row.event_time, when) <= 24
             and row.event_time >= when
             for row in hits

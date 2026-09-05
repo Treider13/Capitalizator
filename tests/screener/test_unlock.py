@@ -122,6 +122,15 @@ def test_other_symbol_does_not_cut_btc(tmp_path: Path) -> None:
     assert book.team_tomorrow("BTCUSDT", NOW) is False
 
 
+def test_foreign_symbol_is_rejected(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path / "u.csv",
+        "pepe-2026-09-01,PEPEUSDT,2026-09-01T00:00:00Z,2026-08-20T12:00:00Z,team,1,1,fixture\n",
+    )
+    with pytest.raises(UnlockError, match="universe"):
+        Unlocks.from_csv(path)
+
+
 def test_unknown_recipient_is_rejected(tmp_path: Path) -> None:
     path = _write(
         tmp_path / "u.csv",

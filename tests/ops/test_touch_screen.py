@@ -15,7 +15,12 @@ from capitalizator.ops.vault import init_vault
 NOW = datetime(2026, 8, 30, 14, 0, tzinfo=UTC)
 
 
-def _card() -> CardLive:
+def _card(
+    *,
+    sweep_long: str = "none",
+    sweep_short: str = "none",
+    sweep_status: str = "done",
+) -> CardLive:
     return CardLive(
         symbol="BTCUSDT",
         bearing_verdict="propose",
@@ -25,7 +30,9 @@ def _card() -> CardLive:
         rsi_htf="52",
         gex_bg="+2.1M",
         fvg_status="filled",
-        sweep_status="done",
+        sweep_status=sweep_status,  # type: ignore[arg-type]
+        sweep_long=sweep_long,  # type: ignore[arg-type]
+        sweep_short=sweep_short,  # type: ignore[arg-type]
         pluses=("session_profile", "htf_ok", "rvol_above_2"),
         minuses=("base_rate_unknown", "spread_cost"),
         volume=VolumeSnapshot(rvol="2.3", poc="100", vah="101", val="99"),
@@ -113,3 +120,64 @@ def test_p7_module_has_no_signer() -> None:
     import capitalizator.ops.touch_screen as pkg
 
     assert "signer" not in pkg.__dict__
+
+
+def test_p7_sweep_follows_idea_side() -> None:
+    long_card = _card(sweep_long="done", sweep_short="pending")
+    long_screen = touch_screen(
+        symbol="BTCUSDT",
+        card=long_card,
+        jury="ACCORD",
+        idea_side="buy",
+    )
+    assert long_screen["b"]["sweep_for"] == "done"
+    assert long_screen["b"]["sweep_long"] == "done"
+    assert "sweep_for:done" in long_screen["text"]
+    short_screen = touch_screen(
+        symbol="BTCUSDT",
+        card=_card(sweep_long="pending", sweep_short="done"),
+        jury="ACCORD",
+        idea_side="sell",
+    )
+    assert short_screen["b"]["sweep_for"] == "done"
+    assert short_screen["b"]["sweep_short"] == "done"
+    page = render_touch(short_screen)
+    for word in ("лонг", "шорт", "купи", "продай"):
+        assert word not in page.lower()
+
+
+def test_p7_footprint_is_opinion_not_advice() -> None:
+    screen = touch_screen(
+        symbol="BTCUSDT",
+        card=_card(),
+        jury="ACCORD",
+        cav="REJECT",
+        zlg="DEFEND",
+        tape_eaten=False,
+        oko_label="CLEAN",
+        oko_footprint="ICEBERG",
+        oko_footprint_side="bid",
+        oko_regime="RANGE",
+    )
+    assert screen["a"]["oko_footprint"] == "ICEBERG"
+    assert screen["a"]["oko_footprint_side"] == "bid"
+    assert screen["b"]["sweep_long"] in {"none", "done", "pending"}
+    assert screen["b"]["sweep_short"] in {"none", "done", "pending"}
+    assert "tape_eaten" in screen["text"]
+    page = render_touch(screen)
+    assert "ICEBERG" in page
+    assert "sweep_long" in page
+    for word in ("лонг", "шорт", "купи", "продай"):
+        assert word not in page.lower()
+        assert word not in screen["text"].lower()
+
+
+def test_no_iceberg_opens_helper() -> None:
+    src = Path(__file__).resolve().parents[2] / "src" / "capitalizator"
+    bounce = (src / "exec" / "strategy_bounce.py").read_text(encoding="utf-8")
+    eyelid = (src / "oko" / "eyelid.py").read_text(encoding="utf-8")
+    assert "iceberg_opens" not in bounce
+    assert "def oko_opens_size" in eyelid
+    from capitalizator.oko.eyelid import oko_opens_size
+
+    assert oko_opens_size() is False

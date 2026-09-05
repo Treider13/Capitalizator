@@ -15,10 +15,14 @@ from capitalizator.desk.bars import TF_MINUTES, closed_bars_from_trades
 from capitalizator.desk.tape import _parse, event_from_jsonl_line
 from capitalizator.exec.replay import ReplayEngine
 from capitalizator.llm.daily_summary import DailySummary
-from capitalizator.news_macro.ingest import NewsIngest, default_macro_path
+from capitalizator.news_macro.from_intel import calendar_from_intel
+from capitalizator.news_macro.ingest import NewsIngest, NewsRow, default_macro_path
+from capitalizator.news_macro.merge import heartbeat_view, screen_events
+from capitalizator.ops import i18n_ru
 from capitalizator.ops.daily_map_report import contains_advice
 from capitalizator.ops.gates_from_sqlite import gates_from_sqlite
 from capitalizator.ops.knowledge import open_knowledge
+from capitalizator.ops.touch_screen import latest as latest_touch_screen
 from capitalizator.ops.vault import Vault, VaultError, iter_regular_files
 from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rows import rows_fast
@@ -406,23 +410,43 @@ def trades_for(vault: Vault, *, symbol: str, limit: int = 50) -> list[dict[str, 
     return out[-limit:]
 
 
-def news_rows() -> list[dict[str, Any]]:
+def news_payload(vault: Vault | None = None, *, now: datetime | None = None) -> dict[str, Any]:
+    """CSV schedule + intel surprises + heartbeat. Missing heartbeat is stale."""
+    when = now if now is not None else datetime.now(tz=UTC)
+    csv: tuple[NewsRow, ...] = ()
     try:
-        ingest = NewsIngest.from_csv(default_macro_path())
+        csv = tuple(NewsIngest.from_csv(default_macro_path()).rows)
     except FileNotFoundError:
-        return []
-    return [
-        {
-            "event_id": row.event_id,
-            "class": row.event_class,
-            "event_time": row.event_time.isoformat(),
-            "known_at": row.known_at.isoformat(),
-            "assets": list(row.assets),
-            "source": row.source,
-            "notes": row.notes,
-        }
-        for row in ingest.rows
-    ]
+        csv = ()
+    intel: tuple[NewsRow, ...] = ()
+    heartbeat_raw: str | None = None
+    card_status = "no card"
+    if vault is not None:
+        knowledge = open_knowledge(vault, create=False)
+        try:
+            if knowledge.available():
+                intel = calendar_from_intel(knowledge, now=when)
+                heartbeat_raw = knowledge.meta("intel_heartbeat")
+                screen = latest_touch_screen(knowledge)
+                if screen is not None:
+                    verdict = str(screen["b"]["verdict"])
+                    card_status = verdict if verdict in {"no card", "stale"} else "fresh"
+        finally:
+            knowledge.close()
+    view = heartbeat_view(heartbeat_raw, now=when)
+    warn = card_status if card_status in {"no card", "stale"} else None
+    return {
+        "events": screen_events(csv=csv, intel=intel, now=when),
+        "card_status": card_status,
+        "card_status_label": i18n_ru.ru(warn) if warn else None,
+        "intel_stale_label": i18n_ru.ru("intel:stale") if view["stale"] else None,
+        **view,
+    }
+
+
+def news_rows() -> list[dict[str, Any]]:
+    """CSV-only list for callers without a vault."""
+    return list(news_payload()["events"])
 
 
 def author_sources(vault: Vault) -> list[dict[str, Any]]:

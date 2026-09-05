@@ -65,7 +65,19 @@ class Unlocks:
         return cls.from_csv(target)
 
     @classmethod
-    def from_csv(cls, path: Path | str) -> Unlocks:
+    def from_csv(
+        cls,
+        path: Path | str,
+        *,
+        universe: Sequence[str] | None = None,
+    ) -> Unlocks:
+        from capitalizator.screener.universe import load_desk_universe
+
+        names = (
+            frozenset(universe)
+            if universe is not None
+            else frozenset(load_desk_universe().symbols)
+        )
         text = Path(path).read_text(encoding="utf-8")
         reader = csv.DictReader(
             line for line in text.splitlines() if line.strip() and not line.startswith("#")
@@ -78,7 +90,7 @@ class Unlocks:
         extra = sorted(set(reader.fieldnames) - set(REQUIRED))
         if extra:
             raise UnlockError(f"unknown columns: {extra}")
-        rows = [_parse_row(raw, line=i) for i, raw in enumerate(reader, start=2)]
+        rows = [_parse_row(raw, line=i, universe=names) for i, raw in enumerate(reader, start=2)]
         return cls(rows)
 
     def visible(self, as_of: datetime) -> list[UnlockRow]:
@@ -107,11 +119,15 @@ class Unlocks:
         return False
 
 
-def _parse_row(raw: dict[str, str], *, line: int) -> UnlockRow:
+def _parse_row(
+    raw: dict[str, str], *, line: int, universe: frozenset[str] | None = None
+) -> UnlockRow:
     unlock_id = (raw.get("unlock_id") or "").strip()
     symbol = (raw.get("symbol") or "").strip()
     if not unlock_id or not symbol:
         raise UnlockError(f"line {line}: unlock_id and symbol are required")
+    if universe is not None and symbol not in universe:
+        raise UnlockError(f"line {line}: symbol {symbol} not in desk universe")
     recipient = (raw.get("recipient_type") or "").strip()
     if recipient not in RECIPIENTS:
         raise UnlockError(f"line {line}: unknown recipient_type {recipient!r}")

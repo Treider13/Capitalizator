@@ -11,9 +11,25 @@ from capitalizator.types import require_utc
 from capitalizator.zones.config import RegistryConfig, load_registry
 from capitalizator.zones.model import Bar, Zone, ZoneMethod, ZoneSide
 from capitalizator.zones.pair import invalidated
+from capitalizator.zones.session_vp import (
+    SESSION_VP_WINDOWS,
+    last_closed_bounds,
+    method_for,
+    session_profile,
+)
 
 # Levels whose price comes from a day/session/card, but CAV votes working_tf.
-MAP_VOTE_METHODS = frozenset({"prior_day_hl", "prior_session_hl", "vp_hyp"})
+MAP_VOTE_METHODS = frozenset(
+    {
+        "prior_day_hl",
+        "prior_session_hl",
+        "vp_hyp",
+        "session_vp_asia",
+        "session_vp_europe",
+        "session_vp_overlap",
+        "session_vp_us",
+    }
+)
 # Half-width of an S/R band as a fraction of that TF's ATR (noise envelope).
 # Tick epsilon stays the floor when ATR is unmeasured — never an invented move.
 ZONE_ATR_K = Decimal("0.25")
@@ -59,6 +75,7 @@ class ZoneEngine:
         out.extend(self._rounds(symbol, when, visible))
         out.extend(self._cluster(symbol, visible))
         out.extend(self._poc_from_card(symbol, when, visible, poc))
+        out.extend(self._session_vp(symbol, when, visible))
         out = [z for z in out if not invalidated(z, visible, t=when)]
         out.sort(key=lambda z: (z.created_as_of, z.method, z.side, z.lo))
         return out
@@ -291,6 +308,49 @@ class ZoneEngine:
             self._zone(symbol, vote_tf, "support", poc, poc + width, "vp_hyp", created),
             self._zone(symbol, vote_tf, "resistance", poc - width, poc, "vp_hyp", created),
         ]
+
+    def _session_vp(self, symbol: str, t: datetime, visible: list[Bar]) -> list[Zone]:
+        """Yesterday's Asia/London-overlap/US value-area edges. Empty session → none."""
+        from capitalizator.risk.sessions import SessionPolicy
+
+        policy = SessionPolicy.load()
+        vote_tf = self.config.working_tf
+        work = [b for b in visible if b.tf == vote_tf]
+        out: list[Zone] = []
+        for name in SESSION_VP_WINDOWS:
+            bounds = last_closed_bounds(policy.window_named(name), t)
+            if bounds is None:
+                continue
+            start, end = bounds
+            if end >= t:
+                continue
+            session = [b for b in work if start <= b.close_ts < end]
+            profile = session_profile(session, tick=self.tick_size)
+            if profile is None:
+                continue
+            _poc, vah, val = profile
+            method = method_for(name)
+            out.append(
+                self._zone(
+                    symbol,
+                    vote_tf,
+                    "support",
+                    *self._band(val, "support", bars=work, tf=vote_tf, created_as_of=end),
+                    method,
+                    end,
+                )
+            )
+            out.append(
+                self._zone(
+                    symbol,
+                    vote_tf,
+                    "resistance",
+                    *self._band(vah, "resistance", bars=work, tf=vote_tf, created_as_of=end),
+                    method,
+                    end,
+                )
+            )
+        return out
 
     def _zone(
         self,

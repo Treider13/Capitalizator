@@ -575,7 +575,7 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
     if path == "/api/dashboard":
         return chronos_data.dashboard(vault)
     if path == "/api/news":
-        return {"events": chronos_data.news_rows()}
+        return chronos_data.news_payload(vault)
     if path == "/api/authors":
         return {
             "posts": chronos_data.author_rows(vault),
