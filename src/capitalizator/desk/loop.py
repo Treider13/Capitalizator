@@ -75,6 +75,7 @@ from capitalizator.exec.trail import TrailEngine, TrailState
 from capitalizator.exec.tvh import NO_TVH, tvh_ok
 from capitalizator.hyexec.adwin import after_hour_dd
 from capitalizator.hyexec.expand import expand_ok, take_at_1r
+from capitalizator.hyexec.pace import pyramid_ok
 from capitalizator.hyexec.sizing import desk_step, effective_risk
 from capitalizator.hyexec.timing import may_send
 from capitalizator.hyexec.window_halt import WindowHalt
@@ -2274,6 +2275,12 @@ class DeskLoop:
             extra_risk=extra,
             open_risk=open_risk,
         )
+        week_start = self.account.halts.week_start
+        if week_start <= 0:
+            raise ValueError("week_start must be > 0")
+        week_pnl = (equity - week_start) / week_start
+        if not pyramid_ok(week_pnl=week_pnl):
+            raise ValueError("behind week pace")
         row = {
             "action": got.action,
             "symbol": idea.symbol,

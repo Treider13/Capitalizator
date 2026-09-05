@@ -10,6 +10,7 @@ from capitalizator.desk.loop import DeskLoop
 from capitalizator.hyexec.sizing import STEP_APLUS, STEP_PROBE, STEP_STD
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import init_vault
+from capitalizator.risk.schema import Intent
 
 NOW = datetime(2026, 9, 2, 14, 0, tzinfo=UTC)
 
@@ -118,6 +119,28 @@ def test_new_hour_rebases_hour_dd(tmp_path: Path) -> None:
     nxt = NOW.replace(hour=15)
     desk.tick(nxt)
     assert desk.effective_target_risk() == desk.risk_config.target_risk_pct
+
+
+def test_compound_uses_live_equity_not_day_start(tmp_path: Path) -> None:
+    """Risk % is of today's equity. Doubling the book must double qty."""
+    desk = _desk(tmp_path)
+    start = desk.account.equity
+    intent = Intent(
+        symbol="BTCUSDT",
+        side="buy",
+        entry=Decimal("100"),
+        stop=Decimal("98"),
+        tp=Decimal("104"),
+        tag="bounce",
+    )
+    first, info1 = desk._size_and_gate(intent, "BTCUSDT", NOW, labels={"window": "overlap"})
+    assert first is not None, info1
+    desk.account.set_equity(start * 2, source=desk.account.equity_source, now=NOW)
+    assert desk.account.sizing_equity() == start * 2
+    assert desk.window_halt.start == start
+    second, info2 = desk._size_and_gate(intent, "BTCUSDT", NOW, labels={"window": "overlap"})
+    assert second is not None, info2
+    assert second.qty == first.qty * 2
 
 
 def test_reloaded_hour_loss_still_halves(tmp_path: Path) -> None:

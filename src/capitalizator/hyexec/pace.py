@@ -13,6 +13,11 @@ def week_target() -> Decimal:
     return WEEK_PACE
 
 
+def pyramid_ok(*, week_pnl: Decimal) -> bool:
+    """Second leg only after the week has already made the pace. Catch-up is death."""
+    return week_pnl >= WEEK_PACE
+
+
 def behind_floor(
     *,
     month_pnl: Decimal,

@@ -69,6 +69,8 @@ def test_add_below_long_entry_fails(tmp_path: Path) -> None:
 def test_add_in_profit_journals_and_does_not_send(tmp_path: Path) -> None:
     desk = _desk(tmp_path)
     _open_long(desk)
+    start = desk.account.equity
+    desk.account.set_equity(start * Decimal("1.075"), source=desk.account.equity_source, now=NOW)
     desk.knowledge.enqueue_command(
         "add_in_profit",
         {
@@ -91,6 +93,26 @@ def test_add_in_profit_journals_and_does_not_send(tmp_path: Path) -> None:
     assert journal["add_in_profit"]["venue"] is False
     assert desk.knowledge.oms_rows() == []
     assert any(ev.get("event") == "add_in_profit" and ev.get("venue") is False for ev in out)
+
+
+def test_add_in_profit_behind_week_pace_fails(tmp_path: Path) -> None:
+    desk = _desk(tmp_path)
+    _open_long(desk)
+    desk.knowledge.enqueue_command(
+        "add_in_profit",
+        {
+            "kind": "add_in_profit",
+            "symbol": "BTCUSDT",
+            "add_price": "101.5",
+            "extra_risk": "0.005",
+        },
+        created_ts=NOW.isoformat(),
+    )
+    desk.tick(NOW)
+    row = desk.knowledge.commands()[0]
+    assert row["status"] == "failed"
+    assert "behind week pace" in str(row["result"])
+    assert desk.knowledge.oms_rows() == []
 
 
 def test_add_without_open_idea_fails(tmp_path: Path) -> None:

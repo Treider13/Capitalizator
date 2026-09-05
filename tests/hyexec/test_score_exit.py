@@ -37,3 +37,29 @@ def test_score_exit_cannot_add() -> None:
     )
     assert act != "add"
     assert act != "add_in_profit"
+
+
+def test_expand_with_live_structure_holds_on_score_drop() -> None:
+    assert (
+        remainder_action(
+            score_now=Decimal("0.40"),
+            score_entry=Decimal("0.70"),
+            drop=Decimal("0.20"),
+            expand=True,
+            structure_ok=True,
+        )
+        == "hold"
+    )
+
+
+def test_expand_dead_structure_still_flattens() -> None:
+    assert (
+        remainder_action(
+            score_now=Decimal("0.40"),
+            score_entry=Decimal("0.70"),
+            drop=Decimal("0.20"),
+            expand=True,
+            structure_ok=False,
+        )
+        == "flatten"
+    )

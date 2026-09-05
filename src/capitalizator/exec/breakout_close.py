@@ -6,6 +6,16 @@ Does not emit an Intent. Does not import signer. Flag stays false in F0–F2.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
+CHASE_SIZE = Decimal("0.40")
+RETEST_SIZE = Decimal("1")
+
+
+def breakout_size(*, retest: bool) -> Decimal:
+    """Retest keeps full size. Flow without a retest is a chase at 0.40."""
+    return RETEST_SIZE if retest else CHASE_SIZE
+
 
 class BreakoutClose:
     @staticmethod

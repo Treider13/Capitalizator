@@ -484,12 +484,26 @@ class PaperEngine:
         score_now: Decimal,
         score_entry: Decimal,
         drop: Decimal,
+        structure_ok: bool = False,
     ) -> bool:
-        """Flatten the remainder when the score drops. Never adds size."""
+        """Flatten the remainder when the score drops. Never adds size.
+
+        EXPAND + live structure: score does not take the body (model noise).
+        """
         pos = self.positions.get(paper_id)
         if pos is None or pos.state != "open" or not pos.half_taken:
             return False
-        if remainder_action(score_now=score_now, score_entry=score_entry, drop=drop) != "flatten":
+        expand = bool(pos.labels.get("expand"))
+        if (
+            remainder_action(
+                score_now=score_now,
+                score_entry=score_entry,
+                drop=drop,
+                expand=expand,
+                structure_ok=structure_ok,
+            )
+            != "flatten"
+        ):
             return False
         self._exit(pos, require_utc(now), px, "score", role="taker")
         return True

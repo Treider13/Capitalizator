@@ -193,6 +193,58 @@ def test_allow_break_false_blocks_green_breakout() -> None:
     )
 
 
+def test_breakout_without_retest_is_chase_size() -> None:
+    zone = _zone()
+    nxt = _zone(side="support", lo="96", hi="96.6")
+    got = _strategy().propose(
+        _snap(
+            idea="breakout",
+            allow_break=True,
+            close_beyond=True,
+            tape_eaten=True,
+            first_minute=False,
+            cav_label="THROUGH",
+            zlg_label="RETREAT",
+            n_cav=20,
+            n_zlg=20,
+            gesture_n=20,
+            btc_regime="box",
+            jury="ACCORD",
+            next_target=nxt,
+            zones=(zone, nxt),
+            retest=False,
+        )
+    )
+    assert got is not None
+    assert got.size_mult == Decimal("0.40")
+
+
+def test_breakout_retest_keeps_full_size() -> None:
+    zone = _zone()
+    nxt = _zone(side="support", lo="96", hi="96.6")
+    got = _strategy().propose(
+        _snap(
+            idea="breakout",
+            allow_break=True,
+            close_beyond=True,
+            tape_eaten=True,
+            first_minute=False,
+            cav_label="THROUGH",
+            zlg_label="RETREAT",
+            n_cav=20,
+            n_zlg=20,
+            gesture_n=20,
+            btc_regime="box",
+            jury="ACCORD",
+            next_target=nxt,
+            zones=(zone, nxt),
+            retest=True,
+        )
+    )
+    assert got is not None
+    assert got.size_mult == Decimal("1")
+
+
 def test_allow_break_true_uses_zone_target_and_stop_above_for_short() -> None:
     zone = _zone()
     nxt = _zone(side="support", lo="96", hi="96.6")

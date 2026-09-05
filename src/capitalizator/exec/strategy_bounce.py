@@ -18,7 +18,7 @@ from pathlib import Path
 from capitalizator.btc.veto import BtcVeto
 from capitalizator.card.draft import CardDraft, load_bearing_ok, require_card
 from capitalizator.card.first_fact import resolve as resolve_first_fact
-from capitalizator.exec.breakout_close import BreakoutClose
+from capitalizator.exec.breakout_close import BreakoutClose, breakout_size
 from capitalizator.exec.first_minute import FirstMinute
 from capitalizator.exec.smart_stop import K_ATR_DEFAULT, initial_stop
 from capitalizator.jury.desk import (
@@ -102,6 +102,8 @@ class BounceSnapshot:
     first_minute: bool = False
     close_beyond: bool = False
     allow_break: bool = False
+    # Unknown retest = chase (smaller). Desk must not invent a retest detector.
+    retest: bool = False
     card_bearing_verdict: str | None = None
     gesture_n: int = 0
     trades_in_window: int | None = None
@@ -583,6 +585,10 @@ class BounceStrategy:
             size = fact.size_mult
         if scalp and SCALP_SIZE < size:
             size = SCALP_SIZE
+        if idea == "breakout":
+            chase = breakout_size(retest=snap.retest)
+            if chase < size:
+                size = chase
         # Combined B+calendar multiplier lives on size_mult only.
         # Signer does qty * size_mult; stuffing the cut into qty would double-cut.
         intent = Intent(
