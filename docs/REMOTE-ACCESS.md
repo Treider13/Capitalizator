@@ -39,7 +39,7 @@ ssh -v -o ConnectTimeout=12 -i ~/.ssh/id_ed25519 trader@189.74.120.186
 | Что пишет ssh | Что делать |
 |---|---|
 | `Identity file … id_rsa not accessible` | Ключ `id_ed25519`, не `id_rsa` |
-| `Connection timed out` / висит | Ваш домашний IP сменился, UFW не пускает. Зайдите в [invapi.hostkey.com](https://invapi.hostkey.com) (логин панели, не `trader`) → сервер → **Console → Open Native Console**. Под `root`: `ufw allow from <вывод ifconfig.me> to any port 22 proto tcp` |
+| `Connection timed out` / висит | UFW пускает только домашний IP. **Сначала выключите VPN** и повторите. Если без VPN всё ещё висит — домашний IP сменился: [invapi.hostkey.com](https://invapi.hostkey.com) → сервер → **Console → Open Native Console**, под `root`: `ufw allow from <вывод ifconfig.me> to any port 22 proto tcp` |
 | `Permission denied` | На новом сервере нет вашего `.pub`. В той же Native Console: дописать `cat ~/.ssh/id_ed25519.pub` с ноутбука в `/home/trader/.ssh/authorized_keys` и `/root/.ssh/authorized_keys` |
 | `Connection refused` | `sshd` не запущен. Native Console: `systemctl start ssh` |
 | Зашло, браузер пустой | Открыли `http://189.74.120.186` — не то. Нужен туннель и **http://127.0.0.1:8082**. На сервере: `docker compose -f /srv/capitalizator/app/infra/deploy/compose.yml ps` (или `cd /srv/capitalizator/app/infra/deploy && docker compose ps`) |
