@@ -44,7 +44,7 @@ def venue_performance(
 ) -> dict[str, Any]:
     with store.analytics_lock:
         revision = store.meta("execution_revision:" + mode, 0)
-        cache_key = "performance:" + mode + (":" + str(since) if since else "")
+        cache_key = "performance:linear-v2:" + mode + (":" + str(since) if since else "")
         if policy:
             cache_key += ":policy:" + policy
         cached = store.meta(cache_key)
@@ -80,6 +80,9 @@ def _venue_performance(
     ignored = 0
     for record in rows:
         row = json.loads(record["body"])
+        if row.get("category", "linear") != "linear":
+            ignored += 1
+            continue
         symbol = row["symbol"]
         held, average, pnl = inventory.get(symbol, (0.0, 0.0, 0.0))
         if not held and row.get("execType", "Trade") != "Funding":

@@ -68,6 +68,9 @@ class Bybit:
             force_retry=False,
             log_requests=False,
         )
+        # The durable executor owns retries. pybit otherwise converts exhausted
+        # business retry codes into HTTP 400, losing the rejection evidence.
+        self.http.retry_codes.clear()
 
     def call(self, method: str, **params: Any) -> dict[str, Any]:
         try:
@@ -124,7 +127,7 @@ class Bybit:
             "get_executions", category="linear", startTime=start_ms, endTime=end_ms, limit=100
         )
 
-    def place(self, body: dict[str, Any]) -> dict[str, Any]:
+    def prepare_entry(self, body: dict[str, Any]) -> None:
         try:
             self.call(
                 "set_leverage",
@@ -136,6 +139,8 @@ class Bybit:
         except VenueError as exc:
             if exc.code != 110043:  # leverage already set
                 raise
+
+    def place(self, body: dict[str, Any]) -> dict[str, Any]:
         return self.call(
             "place_order",
             category="linear",

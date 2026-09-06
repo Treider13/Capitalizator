@@ -255,6 +255,15 @@ class ReplayVenue:
         self.equities[int(at // 86400)] = self.account()[0]
 
 
+def _recover_spot(venue: ReplayVenue, engine: Engine, symbol: str, at: float) -> None:
+    # A malformed generation cannot be reused by the recovery parser. Both
+    # books retain the last generation they successfully parsed, even on failure.
+    generation = max(venue.markets[symbol].spot.generation, engine.market.spot.generation)
+    fault = {"generation": generation, "status": "invalid_frame"}
+    venue.markets[symbol].ingest("spot_status", fault, at)
+    engine.process("spot_status", fault, at)
+
+
 def compare(
     source: Store,
     root: Path,
@@ -323,17 +332,38 @@ def compare(
                         venue.clock,
                         config.news_post_minutes,
                     )
-                    executor.tick(venue.clock, True)
+                    executor.tick(venue.clock, not shared.halted)
                 count += 1
                 continue
             if symbol not in config.symbols:
                 continue
             at, frame = event["received"], json.loads(event["body"])
             for store, shared, venue, executor, engines in lanes.values():
-                venue.advance(symbol, kind, frame, at)
+                try:
+                    venue.advance(symbol, kind, frame, at)
+                except (ValueError, KeyError, ArithmeticError, TypeError) as exc:
+                    store.event(at, symbol, kind, frame)
+                    if kind.startswith("spot_"):
+                        _recover_spot(venue, engines[symbol], symbol, at)
+                    else:
+                        venue.markets[symbol].ingest("gap", {}, at)
+                        engines[symbol].process("gap", {"reason": type(exc).__name__}, at)
+                        shared.halt("invalid_market_frame")
+                    continue
                 executor.reconcile(venue.clock)
-                engines[symbol].process(kind, frame, at)
-                executor.tick(venue.clock, True)
+                try:
+                    engines[symbol].process(kind, frame, at)
+                except (ValueError, KeyError, ArithmeticError, TypeError) as exc:
+                    if kind.startswith("spot_"):
+                        _recover_spot(venue, engines[symbol], symbol, at)
+                    else:
+                        engines[symbol].process("gap", {"reason": type(exc).__name__}, at)
+                        shared.halt("invalid_market_frame")
+                if kind == "gap" and frame.get("reason") == "feed_generation":
+                    shared.clear_halts(
+                        {k: v for k, v in shared.halts.items() if k == "invalid_market_frame"}
+                    )
+                executor.tick(venue.clock, not shared.halted)
             count += 1
             training_store = lanes["D"][0]
             total = int(training_store.rows("SELECT count(*) n FROM samples")[0]["n"])

@@ -61,7 +61,7 @@ class Runtime:
         self.policy_since = float(policy["since"])
         self.live_qualified = self.store.meta("live_qualified_policy") == config.version
         self.shared.paused = bool(self.store.meta("paused", False)) or (
-            changed_policy and self.shared.mode == "live"
+            (changed_policy or not self.live_qualified) and self.shared.mode == "live"
         )
         self.shared.calendar = load_desk_calendar()
         self.shared.news_required = True
@@ -163,6 +163,8 @@ class Runtime:
                         self.shared.halt("invalid_market_frame")
                 if kind == "book" and self.engines[symbol].market.valid:
                     with self.shared.lock:
+                        if epoch != self.epoch:
+                            continue
                         self.recovering.discard(symbol)
                         if not self.recovering and "recovering_feed" in self.shared.halts:
                             self.shared.clear_halts(
@@ -254,6 +256,7 @@ class Runtime:
                 self.shared.paused
                 or self.shared.halted
                 or not self.shared.broker_ready
+                or self.broker_reset
                 or self.mode_request
                 or self.supervisor.stop.is_set()
                 or self.supervisor.failed.is_set()
@@ -293,7 +296,11 @@ class Runtime:
             return False
         if not 0 <= now - market.get("ticker_at", 0) <= self.config.account_age_s:
             return False
-        if self.executor is None or now - self.executor.last_reconcile > self.config.account_age_s:
+        if (
+            self.executor is None
+            or bool(getattr(self.executor, "history_error", False))
+            or now - self.executor.last_reconcile > self.config.account_age_s
+        ):
             return False
         contracts = self.store.rows("SELECT state FROM contracts WHERE id=?", (order["contract"],))
         return bool(
@@ -322,6 +329,8 @@ class Runtime:
                 mode, requested = self.shared.mode, self.mode_request
                 reset = self.broker_reset
                 self.broker_reset = False
+                if reset:
+                    self.shared.broker_ready = False
                 allow = (
                     not self.shared.paused
                     and not self.shared.halted
@@ -767,6 +776,7 @@ class Runtime:
                             {
                                 "tf": tf,
                                 "rows": result["list"],
+                                "known_at": result["_known_at"],
                                 "_received_monotonic": time.monotonic(),
                             },
                             time.time(),
@@ -1145,9 +1155,26 @@ class Runtime:
                     "('pending','sending','unknown','accepted','partial','filled','cancelling')",
                     (mode,),
                 )
-                account = self.store.rows("SELECT body FROM account WHERE mode=?", (mode,))
+                account = self.store.rows("SELECT at,body FROM account WHERE mode=?", (mode,))
+                if account or credentials(self.root, mode) is not None:
+                    if (
+                        not account
+                        or not 0 <= time.time() - account[0]["at"] <= self.config.account_age_s
+                    ):
+                        raise ValueError("fresh account reconciliation required")
                 positions = json.loads(account[0]["body"])["positions"] if account else []
-                if rows or any(float(p.get("size") or 0) for p in positions):
+                venue_orders = json.loads(account[0]["body"])["orders"] if account else []
+                pending = self.store.rows(
+                    "SELECT id FROM commands WHERE mode=? "
+                    "AND state IN ('pending','failed') LIMIT 1",
+                    (mode,),
+                )
+                if (
+                    rows
+                    or venue_orders
+                    or pending
+                    or any(float(p.get("size") or 0) for p in positions)
+                ):
                     raise ValueError("account must be flat before changing credentials")
                 directory = self.root / "secrets"
                 directory.mkdir(mode=0o700, exist_ok=True)
@@ -1162,6 +1189,8 @@ class Runtime:
                 finally:
                     temp.unlink(missing_ok=True)
                 self.broker_reset = mode == self.shared.mode
+                if self.broker_reset:
+                    self.shared.broker_ready = False
             return {"saved": mode}
         if action == "mode":
             mode = body.get("mode")

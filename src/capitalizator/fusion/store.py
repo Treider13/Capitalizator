@@ -74,6 +74,17 @@ class Store:
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA busy_timeout=10000")
         self.db.executescript(SCHEMA)
+        with self.transaction() as db:
+            if not db.execute("SELECT 1 FROM meta WHERE key='linear_ledger_v2'").fetchone():
+                mixed_demo = db.execute(
+                    "SELECT 1 FROM executions WHERE mode='demo' "
+                    "AND json_extract(body,'$.category')<>'linear' LIMIT 1"
+                ).fetchone()
+                if mixed_demo:
+                    # A previous qualification may contain invented cross-category
+                    # episodes. Requalify once using the corrected calculation.
+                    db.execute("DELETE FROM meta WHERE key='live_qualified_policy'")
+                db.execute("INSERT INTO meta VALUES('linear_ledger_v2','true')")
 
     @contextmanager
     def transaction(self) -> Any:
@@ -89,6 +100,18 @@ class Store:
     def rows(self, sql: str, args: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         with self.lock:
             return [dict(r) for r in self.db.execute(sql, args).fetchall()]
+
+    @contextmanager
+    def snapshot(self) -> Any:
+        """Independent WAL read transaction; archive rotation cannot change its view."""
+        db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        try:
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            yield db
+        finally:
+            db.close()
 
     def meta(self, key: str, default: Any = None) -> Any:
         rows = self.rows("SELECT body FROM meta WHERE key=?", (key,))
@@ -145,6 +168,8 @@ class Store:
         return list(reversed(rows))
 
     def execution(self, mode: str, row: dict[str, Any]) -> bool:
+        if row.get("category", "linear") != "linear":
+            return False
         ident = str(row.get("execId") or "")
         if not ident:
             raise ValueError("execution missing execId")
@@ -205,11 +230,27 @@ class Store:
                 # One unresolved close intent per account/symbol. Multiple triggers
                 # must not create competing close IDs after an ambiguous send.
                 existing = db.execute(
-                    "SELECT id FROM commands WHERE mode=? AND symbol=? "
-                    "AND kind='flatten' AND state='pending' LIMIT 1",
+                    "SELECT id,body FROM commands WHERE mode=? AND symbol=? "
+                    "AND kind='flatten' AND state IN ('pending','failed') LIMIT 1",
                     (mode, symbol),
                 ).fetchone()
                 if existing:
+                    prior = json.loads(existing["body"])
+                    if (
+                        body.get("reason") == "operator"
+                        and prior.get("close_rejected")
+                        and not prior.get("close_attempted")
+                    ):
+                        # Explicit operator retry after a definitive rejection.
+                        # Ambiguous sends never enter this branch.
+                        prior.pop("close_rejected")
+                        db.execute(
+                            "UPDATE commands SET body=?,state='pending' WHERE id=?",
+                            (encode(prior), existing["id"]),
+                        )
+                        db.execute(
+                            "DELETE FROM dispatch WHERE kind='command' AND id=?", (existing["id"],)
+                        )
                     return
             if kind == "stop":
                 db.execute(

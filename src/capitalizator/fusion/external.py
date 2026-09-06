@@ -43,7 +43,13 @@ def bybit(path: str, params: dict[str, Any], timeout: float) -> dict[str, Any]:
     )
     if body.get("retCode") != 0:
         raise ValueError("public Bybit request rejected")
-    return dict(body["result"])
+    result = dict(body["result"])
+    if path == "market/kline":
+        known_at = float(body["time"]) / 1000
+        if not math.isfinite(known_at) or known_at <= 0:
+            raise ValueError("invalid Bybit history timestamp")
+        result["_known_at"] = known_at
+    return result
 
 
 def gamma(rows: list[dict[str, Any]], at: float) -> dict[str, Any]:
