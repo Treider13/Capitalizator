@@ -96,6 +96,9 @@ def reserve(
     stop = floor_step(contract.invalidation, instrument.tick)
     if entry <= 0 or stop <= 0 or side * (entry - stop) <= 0:
         return None, "invalid_stop"
+    if abs(entry - stop) / entry > config.max_stop_fraction:
+        # Keep the structural invalidation intact: a wider setup is ineligible.
+        return None, "stop_distance_limit"
     if side * (contract.target - entry) < config.minimum_rr * abs(entry - stop):
         return None, "reward_after_confirmation"
     leverage = min(config.leverage, instrument.max_leverage)
@@ -179,6 +182,7 @@ def reserve(
             min(
                 budget / unit_loss,
                 margin_free * leverage / entry,
+                equity * config.trade_margin_fraction * leverage / entry,
                 depth * config.participation,
                 instrument.max_qty,
             ),
@@ -204,6 +208,8 @@ def reserve(
             "risk": risk,
             "budget": budget,
             "unit_loss": unit_loss,
+            "max_stop_fraction": config.max_stop_fraction,
+            "trade_margin_fraction": config.trade_margin_fraction,
             "expires": min(contract.expires, at + config.entry_ttl_s),
         }
         db.execute(

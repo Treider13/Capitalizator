@@ -13,7 +13,7 @@ COPY infra /app/infra
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir -e ".[live]" && pip check
+RUN pip install --no-cache-dir -c requirements.lock -e ".[live]" && pip check
 USER trader
 # /data is the userdir (vault): knowledge/, tape/, reports/, secrets/. Mounted, never in the image.
 VOLUME ["/data"]

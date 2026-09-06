@@ -14,6 +14,15 @@ table{border-collapse:collapse;width:100%}td,th{padding:8px;text-align:left;bord
 <button onclick="act('pause',{paused:false})">Разрешить входы</button>
 <button onclick="act('flatten',{})">Закрыть позиции и остановить входы</button></div>
 <p id="result"></p><div class="cards" id="cards"></div>
+<details open><summary>Торговые лимиты</summary>
+<p>Лимиты действуют на новые сделки. Для изменения приостановите входы и дождитесь закрытия позиций и заявок. После сохранения система автоматически перезапустит контуры и останется на паузе.</p>
+<form id="settings" onsubmit="saveSettings(event)">
+<label>Одновременно пар <input id="max-positions" type="number" min="1" max="11" step="1" required></label>
+<label>Депозит на сделку, % маржи <input id="trade-margin" type="number" min="0.01" max="100" step="0.01" required></label>
+<label>Максимальный стоп, % цены входа <input id="max-stop" type="number" min="0.01" max="99.99" step="0.01" required></label>
+<label>Плечо <input id="leverage" type="number" min="1" max="10" step="0.01" required></label>
+<button type="submit">Сохранить и применить</button></form>
+<p id="applied-settings"></p><p>Стоп выбирается по структуре рынка в пределах лимита. Если нужен более широкий стоп, вход пропускается. Процент стопа — движение цены, а не процент убытка депозита. Общий бюджет риска и маржи может уменьшить размер сделки.</p></details>
 <details><summary>API-ключ выбранного счёта</summary>
 <p>Ключи Demo и Live хранятся отдельно. Смена ключа требует паузы и отсутствия открытых заявок и позиций.</p>
 <input id="key" autocomplete="off" placeholder="API key"><input id="secret" type="password" autocomplete="off" placeholder="API secret">
@@ -22,6 +31,9 @@ table{border-collapse:collapse;width:100%}td,th{padding:8px;text-align:left;bord
 <p>Для монет с анлоками нужен источник unlocks в news_sources.json. Состояние покрытия видно под графиком.</p>
 <input id="newskey" type="password" autocomplete="off" placeholder="Tokenomist API key">
 <button onclick="saveNewsKey()">Сохранить ключ новостей</button></details>
+<details><summary>Источники новостей по инструментам</summary>
+<p>Укажите RSS/Atom-ленту для конкретных пар. Для анлоков укажите идентификатор токена Tokenomist. Сохранение требует паузы входов; статус покрытия появится после получения данных.</p>
+<div id="news-sources"></div><button onclick="addNewsSource()">Добавить источник</button><button onclick="saveNewsSources()">Сохранить источники</button></details>
 <h2>График и действия системы</h2>
 <div><select id="symbol" onchange="connectChart()"></select><select id="tf" onchange="connectChart()"><option>1m</option><option>5m</option><option>15m</option><option>1h</option><option>4h</option></select>
 <label><input type="checkbox" id="zones" checked onchange="draw()">Зоны и уровни</label>
@@ -33,16 +45,28 @@ table{border-collapse:collapse;width:100%}td,th{padding:8px;text-align:left;bord
 <details open><summary>Контекст выбранной монеты и покрытие новостей</summary><pre id="context"></pre></details>
 <h2>Рынок и зоны</h2><table><thead><tr><th>Инструмент</th><th>AMD</th><th>Ликвидность</th><th>Профиль / FVG / OTE</th></tr></thead><tbody id="markets"></tbody></table>
 <h2>Позиции и ордера</h2><pre id="positions"></pre>
+<h2>Скринер крупных сделок</h2><p>Рейтинг наблюдавшихся крупных принтов. Направление потока не устанавливает личность или намерения участника.</p>
+<table><thead><tr><th>Пара</th><th>Крупнейший принт, ед.</th><th>Поток покупателей − продавцов</th><th>Block trades, ед.</th><th>Возраст, с</th></tr></thead><tbody id="whales"></tbody></table>
 <h2>Контракты и решения</h2><pre id="decisions"></pre>
 <details><summary>Обучение и состояние потоков</summary><pre id="diagnostics"></pre></details>
 <script>
 const token='__TOKEN__';
+const consoleInstance='__INSTANCE__';
+let settingsLoaded=false;
+let sourcesLoaded=false;
+function addNewsSource(source={name:'',kind:'rss',url:'',assets:[]}){const row=document.createElement('div');row.className='source-row';const name=document.createElement('input');name.className='source-name';name.placeholder='Название';name.value=source.name;const kind=document.createElement('select');kind.className='source-kind';for(const [v,t] of [['rss','RSS / Atom'],['unlocks','Анлоки Tokenomist']]){const o=document.createElement('option');o.value=v;o.textContent=t;kind.appendChild(o)}kind.value=source.kind;const address=document.createElement('input');address.className='source-address';address.placeholder='HTTPS URL или token ID';address.value=source.url||source.token_id||'';const assets=document.createElement('input');assets.className='source-assets';assets.placeholder='SOLUSDT, XAUUSDT';assets.value=source.assets.join(', ');const remove=document.createElement('button');remove.textContent='Удалить';remove.onclick=()=>row.remove();row.append(name,kind,address,assets,remove);document.getElementById('news-sources').appendChild(row);}
+async function saveNewsSources(){const sources=Array.from(document.querySelectorAll('.source-row')).map(row=>{const kind=row.querySelector('.source-kind').value;return {name:row.querySelector('.source-name').value.trim(),kind,[kind==='rss'?'url':'token_id']:row.querySelector('.source-address').value.trim(),assets:row.querySelector('.source-assets').value.split(',').map(v=>v.trim().toUpperCase()).filter(Boolean)}});await act('news_sources',{sources});}
+async function saveSettings(event){event.preventDefault();const value=id=>Number(document.getElementById(id).value);await act('settings',{max_positions:value('max-positions'),trade_margin_fraction:value('trade-margin')/100,max_stop_fraction:value('max-stop')/100,leverage:value('leverage')});}
 async function act(action,body){try{let r=await fetch('/api/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Control-Token':token},body:JSON.stringify(body)});let x=await r.json();document.getElementById('result').textContent=JSON.stringify(x);await refresh()}catch(e){document.getElementById('result').textContent=String(e)}}
 async function saveKeys(){await act('credentials',{mode:document.getElementById('mode').value,key:document.getElementById('key').value,secret:document.getElementById('secret').value});document.getElementById('key').value='';document.getElementById('secret').value=''}
 async function saveNewsKey(){await act('news_credentials',{key:document.getElementById('newskey').value});document.getElementById('newskey').value='';}
 function card(parent,label,value){let c=document.createElement('div');c.className='card';let h=document.createElement('strong');h.textContent=label;c.appendChild(h);let v=document.createElement('p');v.textContent=value;c.appendChild(v);parent.appendChild(c)}
-async function refresh(){try{let r=await fetch('/api/status');let s=await r.json();lastState=s;let selector=document.getElementById('symbol');if(!selector.options.length){for(let symbol of s.config.symbols){let option=document.createElement('option');option.textContent=symbol;selector.appendChild(option)}connectChart()}let h=document.getElementById('health');h.textContent=s.mode.toUpperCase()+' · '+(s.halted?'Остановка: '+s.reason:s.paused?'Входы приостановлены':s.broker?.ready?'Счёт подключён':'Обучение / ожидание подключения счёта');h.className=s.halted?'bad':'';
+async function refresh(){try{let r=await fetch('/api/status');let s=await r.json();if(s.console_instance!==consoleInstance){location.reload();return}lastState=s;let selector=document.getElementById('symbol');if(!selector.options.length){for(let symbol of s.config.symbols){let option=document.createElement('option');option.textContent=symbol;selector.appendChild(option)}connectChart()}let h=document.getElementById('health');h.textContent=s.mode.toUpperCase()+' · '+(s.halted?'Остановка: '+s.reason:s.paused?'Входы приостановлены':s.broker?.ready?'Счёт подключён':'Обучение / ожидание подключения счёта');h.className=s.halted?'bad':'';
 let c=document.getElementById('cards');c.replaceChildren();card(c,'Эквити',s.account?s.account.equity:'Нет данных счёта');card(c,'Реализованный P&L',s.performance.realized_net);card(c,'Закрытые эпизоды',s.performance.closed_episodes);card(c,'Модель',s.model||'Обучение на поступающих событиях');
+const cfg=s.config;if(!settingsLoaded){for(const [id,v] of Object.entries({'max-positions':cfg.max_positions,'trade-margin':cfg.trade_margin_fraction*100,'max-stop':cfg.max_stop_fraction*100,'leverage':cfg.leverage}))document.getElementById(id).value=v;document.getElementById('max-positions').max=cfg.symbols.length;settingsLoaded=true;}
+if(!sourcesLoaded){for(const source of s.news_sources||[])addNewsSource(source);sourcesLoaded=true;}
+document.getElementById('applied-settings').textContent=(s.restart_requested?'Перезапуск для применения… ':'Применено: ')+cfg.max_positions+' пар · маржа на сделку до '+(cfg.trade_margin_fraction*100).toFixed(2)+'% · стоп до '+(cfg.max_stop_fraction*100).toFixed(2)+'% · плечо '+cfg.leverage+' · общая маржа до '+(cfg.margin_fraction*100).toFixed(2)+'%';
+const whales=document.getElementById('whales');whales.replaceChildren();for(const [symbol,m] of Object.entries(s.markets).filter(([,m])=>m.block).sort((a,b)=>(b[1].block.context.largest_print*b[1].block.close)-(a[1].block.context.largest_print*a[1].block.close))){let tr=document.createElement('tr');for(const v of [symbol,m.block.context.largest_print,(m.block.flow*100).toFixed(1)+'%',m.block.context.block_trade_volume,Math.max(0,s.at-m.block.at).toFixed(1)]){let td=document.createElement('td');td.textContent=v;tr.appendChild(td)}whales.appendChild(tr);}
 let tb=document.getElementById('markets');tb.replaceChildren();for(let [symbol,m] of Object.entries(s.markets)){let tr=document.createElement('tr'), b=m.block?.context||{};for(let value of [symbol,b.amd||'Накопление данных',JSON.stringify({support:b.support,resistance:b.resistance,sweep:b.sweep}),JSON.stringify({profile:b.profile,fvg:b.fvg,ote:b.pairing?.ote,anchors:b.pairing?.anchors})]){let td=document.createElement('td');td.textContent=value;tr.appendChild(td)}tb.appendChild(tr)}
 document.getElementById('positions').textContent=JSON.stringify({account:s.account?JSON.parse(s.account.body):null,orders:s.orders.map(o=>({...o,body:JSON.parse(o.body)}))},null,2);
 document.getElementById('decisions').textContent=s.decisions.map(d=>new Date(d.at*1000).toISOString()+' '+d.symbol+' '+d.kind+' '+d.body).join('\n');
@@ -67,11 +91,13 @@ const ix=at=>{let i=rows.findIndex(b=>b.end>at);return i<0?rows.length-1:i;};
 function line(p,label,color,dash=[]){if(!Number.isFinite(p)||p<min||p>max)return;g.strokeStyle=color;g.setLineDash(dash);g.beginPath();g.moveTo(left,y(p));g.lineTo(right,y(p));g.stroke();g.setLineDash([]);g.fillStyle=color;g.fillText(label+' '+p.toPrecision(7),right+4,y(p)+4);}
 function zone(lo,hi,label,color){if(!Number.isFinite(lo)||!Number.isFinite(hi)||hi<min||lo>max)return;g.globalAlpha=.14;g.fillStyle=color;g.fillRect(left,y(Math.min(hi,max)),right-left,y(Math.max(lo,min))-y(Math.min(hi,max)));g.globalAlpha=1;g.fillStyle=color;g.fillText(label,left+8,y(Math.min(hi,max))+13);}
 for(let i=0;i<5;i++){let p=min+(max-min)*i/4;line(p,'','#334155');}
+const book=d.book_levels||{},peak=Math.max(1,...(book.bids||[]).map(p=>p[1]),...(book.asks||[]).map(p=>p[1]));if(d.quote.valid)for(const [side,color] of [['bids','#34d39955'],['asks','#fb718555']]){g.fillStyle=color;for(const [price,qty] of book[side]||[])if(price>=min&&price<=max)g.fillRect(right-qty/peak*70,y(price)-1,qty/peak*70,2);}
 const c=d.block?.context||{},s=d.structure||{};
 if(document.getElementById('zones').checked){
 for(let z of s.zones||[])zone(z.low,z.high,'FVG '+(z.side>0?'↑':'↓'),'#a78bfa');
 for(let [name,z] of Object.entries({BAG:s.geometry?.bag,OB:s.geometry?.order_block_zone}))if(z)zone(z.low,z.high,name,'#fbbf24');
 if(c.pairing?.ote)zone(...c.pairing.ote,'OTE '+c.pairing.htf+'/'+c.pairing.ltf,'#38bdf8');
+if(c.pairing?.anchors){const a=c.pairing.anchors,side=c.sweep,span=a.high-a.low;for(const f of [0,.5,.618,.786,1])line(side>0?a.high-f*span:a.low+f*span,'Fib '+f,'#38bdf8',[2,5]);}
 line(s.support,'Support','#34d399',[5,4]);line(s.resistance,'Resistance','#fb7185',[5,4]);
 for(let p of s.geometry?.equal_highs||[])line(p,'EQH','#f472b6',[2,5]);
 for(let p of s.geometry?.equal_lows||[])line(p,'EQL','#2dd4bf',[2,5]);
@@ -103,7 +129,7 @@ for(let event of lastState?.news?.events||[]){let at=Date.parse(event.event_time
 line(Number(d.quote.bid),'Bid','#e2e8f0');
 g.fillStyle='#94a3b8';for(let i=0;i<rows.length;i+=Math.max(1,Math.floor(rows.length/5)))g.fillText(new Date(rows[i].at*1000).toISOString().slice(5,16).replace('T',' '),x(i),510);
 const lag=(Date.now()/1000-(d.quote.book_at||0));document.getElementById('chart-status').textContent=d.mode.toUpperCase()+' · '+d.symbol+' · '+d.tf+' · AMD '+(c.amd||'данные накапливаются')+' · стакан '+(d.quote.valid?'валиден':'не готов')+' · возраст '+lag.toFixed(2)+' c · '+(d.forming?'последняя свеча формируется':'закрытые свечи');
-document.getElementById('context').textContent=JSON.stringify({data_quality:{history_gaps:s.history_gaps,contiguous_from:s.contiguous_from,contiguous_bars:s.bars},pairing:c.pairing,bos:s.bos,choch:s.choch,RSI_divergence:s.geometry?.rsi_divergence,profile:c.session_profiles,volume:c.volume_percentile,CVD:c.cvd,OI:c.oi_change_percentile,absorption_proxy:c.replenishment_absorption,gamma:d.options,news:lastState?.news?.coverage?.[d.symbol],headlines:(lastState?.news?.headlines||[]).filter(n=>!n.assets||n.assets.includes(d.symbol)||n.assets.includes('ALL')).slice(0,8),events:(lastState?.news?.events||[]).filter(e=>e.assets.includes(d.symbol)||e.assets.includes('ALL')).slice(-12)},null,2);
+document.getElementById('context').textContent=JSON.stringify({data_quality:{history_gaps:s.history_gaps,contiguous_from:s.contiguous_from,contiguous_bars:s.bars},pairing:c.pairing,bos:s.bos,choch:s.choch,RSI_14:s.geometry?.rsi,RSI_divergence:s.geometry?.rsi_divergence,profile:c.session_profiles,volume:c.volume_percentile,CVD:c.cvd,OI:c.oi_change_percentile,absorption_proxy:c.replenishment_absorption,gamma:d.options,news:lastState?.news?.coverage?.[d.symbol],headlines:(lastState?.news?.headlines||[]).filter(n=>!n.assets||n.assets.includes(d.symbol)||n.assets.includes('ALL')).slice(0,8),events:(lastState?.news?.events||[]).filter(e=>e.assets.includes(d.symbol)||e.assets.includes('ALL')).slice(-12)},null,2);
 chart.onmousemove=e=>{let i=Math.max(0,Math.min(rows.length-1,Math.floor((e.offsetX-left)/dx))),b=rows[i];document.getElementById('crosshair').textContent=new Date(b.at*1000).toISOString()+'  O '+b.open+' H '+b.high+' L '+b.low+' C '+b.close+' V '+b.volume;};
 }
 window.addEventListener('resize',draw);

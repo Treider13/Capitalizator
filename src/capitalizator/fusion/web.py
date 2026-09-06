@@ -16,6 +16,7 @@ PAGE = (Path(__file__).with_name("dashboard.html")).read_text(encoding="utf-8")
 
 def server(runtime: Any, port: int) -> ThreadingHTTPServer:
     token = secrets.token_urlsafe(32)
+    instance = secrets.token_hex(16)
     streams = threading.BoundedSemaphore(8)
 
     class Handler(BaseHTTPRequestHandler):
@@ -46,7 +47,9 @@ def server(runtime: Any, port: int) -> ThreadingHTTPServer:
                 return
             if self.path == "/":
                 self.send(
-                    200, PAGE.replace("__TOKEN__", token).encode(), "text/html; charset=utf-8"
+                    200,
+                    PAGE.replace("__TOKEN__", token).replace("__INSTANCE__", instance).encode(),
+                    "text/html; charset=utf-8",
                 )
             elif urlparse(self.path).path == "/api/stream":
                 query = parse_qs(urlparse(self.path).query)
@@ -81,7 +84,8 @@ def server(runtime: Any, port: int) -> ThreadingHTTPServer:
                 finally:
                     streams.release()
             elif self.path == "/api/status":
-                self.send(200, json.dumps(runtime.status(), allow_nan=False).encode())
+                body = {**runtime.status(), "console_instance": instance}
+                self.send(200, json.dumps(body, allow_nan=False).encode())
             else:
                 self.send(404, b"{}")
 

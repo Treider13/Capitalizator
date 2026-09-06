@@ -303,6 +303,9 @@ class Market:
             math.log1p(volume),
         )
         bars = list(self.bars)
+        gaps = [i for i in range(1, len(bars)) if bars[i].open_ts != bars[i - 1].close_ts]
+        if gaps:
+            bars = bars[gaps[-1] :]
         if bars and bars[-1].close_ts != self.geometry_at:
             self.geometry = geometry(bars, self.tick)
             self.geometry_at = bars[-1].close_ts
@@ -343,6 +346,8 @@ class Market:
             "volatility": vol,
             "atr": float(np.mean(ranges)) if ranges else vol * close,
             "depth": depth,
+            "bid_depth": bidq,
+            "ask_depth": askq,
             "bid": max(self.bids),
             "ask": min(self.asks),
             "profile": self.previous_profile,
@@ -423,6 +428,10 @@ class Market:
             "block": self.block_cache,
             "bid": max(self.bids) if self.bids else None,
             "ask": min(self.asks) if self.asks else None,
+            "book_levels": {
+                "bids": sorted(self.bids.items(), reverse=True)[:20],
+                "asks": sorted(self.asks.items())[:20],
+            },
         }
 
     def ingest(self, kind: str, frame: dict[str, Any], at: float) -> list[Block]:
@@ -442,6 +451,7 @@ class Market:
             self.structure.seed(bars, self.tick)
             self.builder.seed_closed(bars)
             self.bars = deque(self.structure.bars["1m"], maxlen=256)
+            self.geometry_at = None  # REST can repair history without advancing its last bar.
         elif kind == "gap":
             self.reset()
         return []

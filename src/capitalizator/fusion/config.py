@@ -10,8 +10,20 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Config:
-    symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT")
-    workers: int = 2
+    symbols: tuple[str, ...] = (
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "XRPUSDT",
+        "DOGEUSDT",
+        "BNBUSDT",
+        "ADAUSDT",
+        "AVAXUSDT",
+        "LINKUSDT",
+        "SUIUSDT",
+        "XAUUSDT",
+    )
+    workers: int = 4
     queue_capacity: int = 4096
     queue_quantum: int = 32
     block_trades: int = 64
@@ -28,6 +40,8 @@ class Config:
     day_loss_fraction: float = 0.02
     portfolio_risk_fraction: float = 0.01
     margin_fraction: float = 0.2
+    trade_margin_fraction: float = 0.1
+    max_stop_fraction: float = 0.05
     leverage: float = 2.0
     max_positions: int = 2
     participation: float = 0.01
@@ -60,7 +74,11 @@ class Config:
         if not self.symbols or len(set(self.symbols)) != len(self.symbols):
             raise ValueError("symbols must be nonempty and unique")
         if any(
-            not isinstance(s, str) or not s.isalnum() or not s.endswith("USDT")
+            not isinstance(s, str)
+            or not s.isascii()
+            or not s.isalnum()
+            or not s.isupper()
+            or not s.endswith("USDT")
             for s in self.symbols
         ):
             raise ValueError("only USDT linear symbols supported")
@@ -80,11 +98,16 @@ class Config:
             "day_loss_fraction",
             "portfolio_risk_fraction",
             "margin_fraction",
+            "max_stop_fraction",
             "participation",
             "confidence_alpha",
         ):
             if getattr(self, name) >= 1:
                 raise ValueError(f"{name} must be < 1")
+        if self.trade_margin_fraction > 1:
+            raise ValueError("trade_margin_fraction must be <= 1")
+        if not 1 <= self.leverage <= 10:
+            raise ValueError("leverage must be between 1 and 10")
         if self.confirmation_blocks >= self.horizon_blocks:
             raise ValueError("confirmation must leave a forecast horizon")
         if self.training_rows < self.live_samples or self.live_samples < self.demo_samples:
@@ -104,7 +127,7 @@ class Config:
     def version(self) -> str:
         return hashlib.sha256(
             json.dumps(
-                {"policy": "fusion-4-evidence-integrity", **asdict(self)}, sort_keys=True
+                {"policy": "fusion-5-risk-controls", **asdict(self)}, sort_keys=True
             ).encode()
         ).hexdigest()[:16]
 

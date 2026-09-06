@@ -303,8 +303,8 @@ def test_fast_news_published_while_other_source_is_still_waiting(tmp_path, monke
     waiting, release, published = threading.Event(), threading.Event(), threading.Event()
     original_publish = runtime._publish_news
 
-    def publish(cache, health, at):
-        original_publish(cache, health, at)
+    def publish(cache, health, at, revision=None):
+        original_publish(cache, health, at, revision)
         if any(r.event_id == "urgent" for r in runtime.shared.calendar):
             published.set()
 

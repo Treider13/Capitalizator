@@ -29,6 +29,7 @@ from capitalizator.fusion.news import calendar as merge_news
 from capitalizator.fusion.news import fetch as fetch_news
 from capitalizator.fusion.news import ingest as ingest_news
 from capitalizator.fusion.performance import venue_performance
+from capitalizator.fusion.risk import Instrument
 from capitalizator.fusion.store import Store, encode
 from capitalizator.fusion.structure import TFS
 from capitalizator.fusion.training import TrainingProcess
@@ -36,24 +37,34 @@ from capitalizator.news_macro.ingest import NewsRow, load_desk_calendar
 
 
 class Runtime:
-    def __init__(self, root: Path, config: Config, *, api_factory: Any = Bybit) -> None:
+    def __init__(
+        self,
+        root: Path,
+        config: Config,
+        *,
+        api_factory: Any = Bybit,
+        config_path: Path | None = None,
+    ) -> None:
         self.root, self.config, self.api_factory = root, config, api_factory
+        self.config_path = config_path or root / "config.json"
+        self.restart_requested = threading.Event()
         root.mkdir(parents=True, exist_ok=True)
         self.store = Store(root / "fusion.sqlite3")
         self.shared = Shared(self.store.meta("mode", "demo"))
         policy = self.store.meta("policy_epoch", {})
-        if policy.get("version") != config.version:
+        changed_policy = policy.get("version") != config.version
+        if changed_policy:
             policy = {"version": config.version, "since": time.time()}
-            self.store.put_meta("policy_epoch", policy)
-            if self.shared.mode == "live":
-                self.store.put_meta("paused", True)
         self.policy_since = float(policy["since"])
         self.live_qualified = self.store.meta("live_qualified_policy") == config.version
-        self.shared.paused = bool(self.store.meta("paused", False))
+        self.shared.paused = bool(self.store.meta("paused", False)) or (
+            changed_policy and self.shared.mode == "live"
+        )
         self.shared.calendar = load_desk_calendar()
         self.shared.news_required = True
         self.shared.news_coverage = {}
         self.news_sources = sources(root, config.symbols)
+        self.news_source_revision = 0
         self.supervisor = Supervisor()
         self.mailboxes = [
             Mailbox(config.queue_capacity, config.queue_quantum) for _ in range(config.workers)
@@ -396,7 +407,7 @@ class Runtime:
                     else self.config.macro_poll_s + 120
                     if name == "macro"
                     else 120.0
-                    if name in {"news", "archive", "history", "options"}
+                    if name in {"news", "archive", "history", "options", "metadata"}
                     else 30.0
                 )
                 if name != "trainer" and time.monotonic() - stamp > budget:
@@ -415,8 +426,16 @@ class Runtime:
     def _news(self) -> None:
         cache: dict[str, list[NewsRow]] = {}
         health: dict[str, Any] = {}
+        previous_revision = -1
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="news-source") as pool:
             while not self.supervisor.stop.is_set():
+                with self.shared.lock:
+                    revision = self.news_source_revision
+                    source_rows = copy.deepcopy(self.news_sources)
+                if revision != previous_revision:
+                    cache.clear()
+                    health.clear()
+                    previous_revision = revision
                 at = time.time()
                 try:
                     payload = fetch_news(self.config.http_timeout_s)
@@ -424,7 +443,7 @@ class Runtime:
                     health["bybit"] = {"ok": True, "at": time.time()}
                 except Exception as exc:
                     health["bybit"] = {"ok": False, "at": time.time(), "error": type(exc).__name__}
-                self._publish_news(cache, health, time.time())
+                self._publish_news(cache, health, time.time(), revision)
                 try:
                     provider_key = news_key(self.root)
                 except ValueError as exc:
@@ -434,7 +453,7 @@ class Runtime:
                     pool.submit(
                         fetch_source, row, self.config.http_timeout_s, at, provider_key
                     ): row
-                    for row in self.news_sources
+                    for row in source_rows
                 }
                 for future in as_completed(jobs):
                     if self.supervisor.stop.is_set():
@@ -496,14 +515,26 @@ class Runtime:
                             if isinstance(exc, ValueError)
                             else type(exc).__name__,
                         }
-                    self._publish_news(cache, health, time.time())
+                    self._publish_news(cache, health, time.time(), revision)
                     self.supervisor.beat("news")
-                self._publish_news(cache, health, time.time())
+                self._publish_news(cache, health, time.time(), revision)
                 self.supervisor.beat("news")
                 self.news_wake.wait(self.config.news_poll_s)
                 self.news_wake.clear()
 
     def _publish_news(
+        self,
+        cache: dict[str, list[NewsRow]],
+        health: dict[str, Any],
+        now: float,
+        revision: int | None = None,
+    ) -> None:
+        with self.shared.admission_lock:
+            if revision is not None and revision != self.news_source_revision:
+                return
+            self._publish_news_current(cache, health, now)
+
+    def _publish_news_current(
         self, cache: dict[str, list[NewsRow]], health: dict[str, Any], now: float
     ) -> None:
         from capitalizator.fusion.macro import coverage as macro_coverage
@@ -530,18 +561,22 @@ class Runtime:
             ]
             if not any(r["kind"] == "rss" for r in relevant):
                 missing.append("coin_news_not_configured")
-            if symbol not in {"BTCUSDT", "ETHUSDT"} and not any(
+            if symbol not in {"BTCUSDT", "ETHUSDT", "XAUUSDT"} and not any(
                 r["kind"] == "unlocks" for r in relevant
             ):
                 missing.append("token_unlocks_not_configured")
             missing.extend(macro_missing)
-            if not health.get("bybit", {}).get("ok"):
+            if (
+                not health.get("bybit", {}).get("ok")
+                or not 0 <= now - health["bybit"].get("at", 0) <= self.config.news_stale_s
+            ):
                 missing.append("bybit")
             coverage[symbol] = {
                 "at": now,
                 "ok": not missing,
                 "missing": missing,
                 "unlock_coverage": any(r["kind"] == "unlocks" for r in relevant),
+                "unlocks_applicable": symbol not in {"BTCUSDT", "ETHUSDT", "XAUUSDT"},
             }
         rows = [
             {
@@ -653,24 +688,33 @@ class Runtime:
         )
 
     def _history(self) -> None:
-        # Closed candles provide context only, never synthetic orderflow/training labels.
-        while not self.supervisor.stop.is_set():
-            for symbol in self.config.symbols:
-                for tf in TFS:
+        # Independent reads run concurrently; only the symbol owner mutates bars.
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="history-source") as pool:
+            while not self.supervisor.stop.is_set():
+                epoch = self.epoch
+                jobs = {
+                    pool.submit(
+                        public_get,
+                        "market/kline",
+                        {
+                            "category": "linear",
+                            "symbol": symbol,
+                            "interval": str(TF_MINUTES[tf]),
+                            "limit": 256,
+                        },
+                        self.config.http_timeout_s,
+                    ): (symbol, tf)
+                    for symbol in self.config.symbols
+                    for tf in TFS
+                }
+                for future in as_completed(jobs):
                     if self.supervisor.stop.is_set():
+                        for job in jobs:
+                            job.cancel()
                         return
-                    epoch = self.epoch
+                    symbol, tf = jobs[future]
                     try:
-                        result = public_get(
-                            "market/kline",
-                            {
-                                "category": "linear",
-                                "symbol": symbol,
-                                "interval": str(TF_MINUTES[tf]),
-                                "limit": 256,
-                            },
-                            self.config.http_timeout_s,
-                        )
+                        result = future.result()
                         item = (
                             symbol,
                             "history",
@@ -686,7 +730,57 @@ class Runtime:
                             {"at": time.time(), "error": type(exc).__name__},
                         )
                     self.supervisor.beat("history")
-            self.supervisor.stop.wait(self.config.context_poll_s)
+                self.supervisor.stop.wait(self.config.context_poll_s)
+
+    def _metadata(self) -> None:
+        # Tick sizes are public facts. Training must not depend on private API keys
+        # or assume that every asset (especially low-price alts) has tick=0.1.
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="instrument-source") as pool:
+            while not self.supervisor.stop.is_set():
+                jobs = {
+                    pool.submit(
+                        public_get,
+                        "market/instruments-info",
+                        {"category": "linear", "symbol": symbol},
+                        self.config.http_timeout_s,
+                    ): symbol
+                    for symbol in self.config.symbols
+                }
+                for future in as_completed(jobs):
+                    if self.supervisor.stop.is_set():
+                        for job in jobs:
+                            job.cancel()
+                        return
+                    symbol = jobs[future]
+                    try:
+                        rows = future.result()["list"]
+                        if not rows or rows[0].get("status") != "Trading":
+                            raise ValueError("instrument_not_trading")
+                        instrument = Instrument.parse(
+                            rows[0], (self.config.demo_maker_fee, self.config.demo_taker_fee)
+                        )
+                        with self.shared.lock:
+                            self.shared.public_instruments[symbol] = instrument
+                        self.store.put_meta(
+                            "public_instrument:" + symbol,
+                            {
+                                "at": time.time(),
+                                "ok": True,
+                                "tick": instrument.tick,
+                                "fees": "configured_demo_estimate",
+                            },
+                        )
+                    except Exception as exc:
+                        self.store.put_meta(
+                            "public_instrument:" + symbol,
+                            {
+                                "at": time.time(),
+                                "ok": False,
+                                "error": type(exc).__name__,
+                            },
+                        )
+                    self.supervisor.beat("metadata")
+                self.supervisor.stop.wait(self.config.context_poll_s)
 
     def _options(self) -> None:
         while not self.supervisor.stop.is_set():
@@ -734,6 +828,16 @@ class Runtime:
                 "another fusion runtime already owns this account directory"
             ) from None
         self._instance_fd = fd
+        # A second instance may inspect storage, but cannot alter the active
+        # policy/paused state before it owns the process lock.
+        self.store.put_meta(
+            "policy_epoch",
+            {
+                "version": self.config.version,
+                "since": self.policy_since,
+            },
+        )
+        self.store.put_meta("paused", self.shared.paused)
         with self.store.transaction() as db:
             db.execute("UPDATE contracts SET state='expired' WHERE state='observing'")
         for i in range(self.config.workers):
@@ -743,6 +847,7 @@ class Runtime:
         self.supervisor.start("maintenance", self._maintenance)
         self.supervisor.start("archive", self._archive)
         if public:
+            self.supervisor.start("metadata", self._metadata)
             self.supervisor.start("macro", self._macro)
             self.supervisor.start("news", self._news)
             self.supervisor.start("history", self._history)
@@ -765,6 +870,79 @@ class Runtime:
     def _control(
         self, action: str, body: dict[str, Any], qualification: Any = None
     ) -> dict[str, Any]:
+        if self.restart_requested.is_set():
+            raise ValueError("configuration restart in progress")
+        if action == "news_sources":
+            from capitalizator.fusion.external import validate_sources
+
+            rows = validate_sources(body.get("sources"), self.config.symbols)
+            with self.shared.lock:
+                if not self.shared.paused:
+                    raise ValueError("pause entries before changing news sources")
+            path = self.root / "news_sources.json"
+            temp = path.with_name("." + uuid.uuid4().hex)
+            try:
+                with temp.open("x", encoding="utf-8") as stream:
+                    json.dump(rows, stream, indent=2, allow_nan=False)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp, path)
+            finally:
+                temp.unlink(missing_ok=True)
+            with self.shared.lock:
+                self.shared.news_coverage = {}
+                self.news_sources = copy.deepcopy(rows)
+                self.news_source_revision += 1
+            self.news_wake.set()
+            return {"status": "sources_saved", "coverage": "awaiting_new_fetch"}
+        if action == "settings":
+            allowed = {"max_positions", "trade_margin_fraction", "max_stop_fraction", "leverage"}
+            if not body or set(body) - allowed:
+                raise ValueError("unsupported trading setting")
+            updated = replace(self.config, **body)
+            if updated.max_positions > len(updated.symbols):
+                raise ValueError("max_positions exceeds configured symbol count")
+            with self.shared.lock:
+                if not self.shared.paused or self.mode_request:
+                    raise ValueError(
+                        "pause entries and finish mode switch before changing settings"
+                    )
+                settings_mode = self.shared.mode
+            active = self.store.rows(
+                "SELECT id FROM orders WHERE mode=? AND state IN "
+                "('pending','sending','unknown','accepted','partial','filled','cancelling')",
+                (settings_mode,),
+            )
+            accounts = self.store.rows("SELECT at,body FROM account WHERE mode=?", (settings_mode,))
+            if active:
+                raise ValueError("resolve orders and close positions before changing settings")
+            if accounts or credentials(self.root, settings_mode) is not None:
+                if (
+                    not accounts
+                    or not 0 <= time.time() - accounts[0]["at"] <= self.config.account_age_s
+                ):
+                    raise ValueError("fresh account reconciliation required")
+                account = json.loads(accounts[0]["body"])
+                if account["orders"] or any(
+                    float(p.get("size") or 0) for p in account["positions"]
+                ):
+                    raise ValueError("account must have no positions or venue orders")
+            if updated == self.config:
+                return {"status": "unchanged", "config": asdict(updated)}
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            temp = self.config_path.with_name("." + uuid.uuid4().hex)
+            try:
+                with temp.open("x", encoding="utf-8") as stream:
+                    json.dump(asdict(updated), stream, indent=2, allow_nan=False)
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp, self.config_path)
+            finally:
+                temp.unlink(missing_ok=True)
+            self.store.put_meta("paused", True)
+            self.restart_requested.set()
+            return {"status": "restart_requested", "paused": True, "config": asdict(updated)}
         if action == "news_credentials":
             key = body.get("key")
             if not isinstance(key, str) or not key.strip():
@@ -910,6 +1088,7 @@ class Runtime:
             "tf": tf,
             "revision": closed_at,
             "quote": {k: market.get(k) for k in ("bid", "ask", "book_at", "valid")},
+            "book_levels": market.get("book_levels", {}),
             "forming": market.get("forming", {}).get(tf),
             "block": market.get("block"),
             "analytics": market.get("analytics", []),
@@ -935,7 +1114,14 @@ class Runtime:
                 "reason": self.shared.reason,
                 "halt_reasons": [value[1] for value in self.shared.halts.values()],
                 "mode_request": self.mode_request,
-                "markets": dict(self.shared.snapshots),
+                "markets": {
+                    symbol: {
+                        k: v
+                        for k, v in snapshot.items()
+                        if k not in {"chart", "forming", "analytics", "book_levels"}
+                    }
+                    for symbol, snapshot in self.shared.snapshots.items()
+                },
                 "options": dict(self.shared.external),
                 "model": self.shared.atlas.version if self.shared.atlas else None,
             }
@@ -956,8 +1142,10 @@ class Runtime:
                 ),
                 "decisions": self.store.rows("SELECT * FROM decisions ORDER BY id DESC LIMIT 40"),
                 "config": asdict(self.config),
+                "news_sources": copy.deepcopy(self.news_sources),
                 "config_version": self.config.version,
                 "policy_since": self.policy_since,
+                "restart_requested": self.restart_requested.is_set(),
             }
         )
         with self.supervisor.lock:

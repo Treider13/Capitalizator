@@ -67,10 +67,12 @@ def geometry(bars: list[Any], tick: float) -> dict[str, Any]:
         "equal_lows": [],
         "atr": None,
         "order_block_zone": None,
+        "rsi": None,
     }
     if len(bars) < 3:
         return result
     closes = [float(b.close) for b in bars]
+    result["rsi"] = stream_rsi(closes, period=14, unstable=0)
     high, low = [float(b.high) for b in bars], [float(b.low) for b in bars]
     tr = [
         max(high[i] - low[i], abs(high[i] - closes[i - 1]), abs(low[i] - closes[i - 1]))

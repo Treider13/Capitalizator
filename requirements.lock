@@ -23,3 +23,5 @@ websocket-client==1.9.2
 requests==2.33.1
 # Fusion isolated model worker native-thread budget, verified 2026-09-06.
 threadpoolctl==3.6.0
+# IANA sessions fallback, upstream release verified 2026-09-06.
+tzdata==2026.3

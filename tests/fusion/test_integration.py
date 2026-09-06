@@ -40,6 +40,7 @@ from capitalizator.fusion.web import PAGE, server
 @pytest.fixture
 def config():
     return Config(
+        symbols=("BTCUSDT", "ETHUSDT"),
         context_blocks=4,
         block_trades=2,
         block_seconds=0.001,

@@ -38,6 +38,7 @@ class Shared:
         self.halt_revision = 0
         self.atlas: Atlas | None = None
         self.instruments: dict[str, Instrument] = {}
+        self.public_instruments: dict[str, Instrument] = {}
         self.snapshots: dict[str, Any] = {}
         self.calendar: tuple[NewsRow, ...] = ()
         self.macro_calendar: tuple[NewsRow, ...] = ()
@@ -89,8 +90,13 @@ class Engine:
 
     def process(self, kind: str, frame: dict[str, Any], at: float) -> None:
         with self.shared.lock:
-            instrument = self.shared.instruments.get(self.symbol)
+            instrument = self.shared.instruments.get(
+                self.symbol
+            ) or self.shared.public_instruments.get(self.symbol)
         if instrument:
+            if self.market.tick != instrument.tick:
+                self.market.tick = instrument.tick
+                self.process("gap", {"reason": "instrument_tick_changed"}, at)
             self.market.tick = instrument.tick
         if (
             kind == "book"
@@ -188,9 +194,18 @@ class Engine:
 
     def on_block(self, block: Block) -> None:
         with self.shared.lock:
-            model, instrument = self.shared.atlas, self.shared.instruments.get(self.symbol)
+            model = self.shared.atlas
+            instrument = self.shared.instruments.get(
+                self.symbol
+            ) or self.shared.public_instruments.get(self.symbol)
             mode = self.shared.mode
             allow = not self.shared.paused and not self.shared.halted and self.shared.broker_ready
+        if instrument is None:
+            self.manage(block, None, mode)
+            self.store.decision(
+                block.at, self.symbol, "observe", {"reason": "instrument_metadata_missing"}
+            )
+            return
         cost = block.x[3] + (instrument.maker + instrument.taker if instrument else 0.0012)
         self._learn(block, cost)
         forecast = model.predict(block.x, self.config.confidence_alpha) if model else None
@@ -350,7 +365,12 @@ class Engine:
                 self.config,
                 block.at,
                 entry,
-                float(block.context["depth"]),
+                float(
+                    block.context.get(
+                        "bid_depth" if self.contract.side == 1 else "ask_depth",
+                        block.context["depth"],
+                    )
+                ),
                 block.x[3] * block.close,
                 float(block.context["funding"]),
                 fraction=factor,

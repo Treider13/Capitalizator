@@ -5,10 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "capitalizator"
 version = "0.1.0"
-description = "Private futures desk: zone, book, BTC veto. Own account only. No averaging."
+description = "Bybit USDT futures: causal market structure, reaction contracts and account risk."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "tzdata>=2024.1",
     "threadpoolctl>=3.5,<4",
     "numpy>=1.26,<3",
     "pydantic>=2.8,<3",
