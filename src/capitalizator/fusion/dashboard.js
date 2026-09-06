@@ -90,7 +90,7 @@ function renderStatus(s) {
   $('applied-settings').textContent=(s.restart_requested?'Перезапуск для применения… ':'Применено: ')+cfg.max_positions+' пар · маржа на сделку до '+fmt(cfg.trade_margin_fraction*100)+'% · стоп до '+fmt(cfg.max_stop_fraction*100)+'% · плечо '+cfg.leverage+' · общая маржа до '+fmt(cfg.margin_fraction*100)+'%';
   $('halt-reasons').textContent=(s.halt_reasons||[]).join(' · ');
   const whales=$('whales');whales.replaceChildren();for(const [symbol,m] of Object.entries(s.markets).filter(([,m])=>m.block).sort((a,b)=>(b[1].block.context.largest_print*b[1].block.close)-(a[1].block.context.largest_print*a[1].block.close))){row(whales,[symbol,fmt(m.block.context.largest_print),fmt(m.block.flow*100)+'%',fmt(m.block.context.block_trade_volume),fmt(Math.max(0,s.at-m.block.at))]);}if(!whales.children.length)empty(whales,'Нет наблюдавшихся блоков сделок.',5);
-  const markets=$('markets');markets.replaceChildren();for(const symbol of cfg.symbols){const m=s.markets[symbol]||{},b=m.block?.context||{};row(markets,[symbol,b.amd||'Накопление данных',pretty({support:b.support,resistance:b.resistance,sweep:b.sweep}),pretty({profile:b.profile,fvg:b.fvg,ote:b.pairing?.ote,anchors:b.pairing?.anchors})]);}
+  const markets=$('markets');markets.replaceChildren();for(const symbol of cfg.symbols){const m=s.markets[symbol]||{},b=m.block?.context||{};row(markets,[symbol,b.amd||'Накопление данных',pretty({support:b.support,resistance:b.resistance,sweep:b.sweep,daily:b.daily}),pretty({profile:b.profile,fvg:b.fvg,ote:b.pairing?.ote,anchors:b.pairing?.anchors})]);}
   const account=s.account?decoded(s.account.body):null,accountValid=!!account&&!account.decode_error&&Array.isArray(account.positions)&&Array.isArray(account.orders),positions=(accountValid?account.positions:[]).filter(p=>number(p.size)!==null&&Number(p.size)!==0);const target=$('position-rows');target.replaceChildren();for(const p of positions)row(target,[p.symbol,p.side,fmt(p.size),fmt(p.avgPrice),fmt(p.markPrice),fmt(p.unrealisedPnl),fmt(p.stopLoss)]);if(!positions.length)empty(target,accountValid?'В последнем снимке открытых позиций нет.':s.account?'Ошибка данных счёта — позиции неизвестны; исходная запись ниже.':'Нет снимка счёта — позиции неизвестны.',7);
   $('positions').textContent=pretty({account_at:s.account?.at,account,orders:(s.orders||[]).map(o=>({...o,body:decoded(o.body)}))});
   $('decisions').textContent=s.decisions?.length?s.decisions.map(d=>utc(d.at)+' '+d.symbol+' '+d.kind+'\n'+pretty(decoded(d.body))).join('\n\n'):'Решений ещё нет.';
@@ -108,7 +108,7 @@ function refresh() {
 }
 function clearChart(message) {
   const g=chart.getContext('2d');if(g)g.clearRect(0,0,chart.width,chart.height);
-  $('chart-errors').textContent='';$('chart-status').textContent=message;$('context').textContent=message;$('crosshair').textContent='OHLCV появится после получения свечей.';chart.onmousemove=chart.onpointerdown=chart.onkeydown=null;inspectedAt=null;
+  $('daily-status').textContent='D1 · ожидание актуального дневного контекста';$('daily-status').className='hint';$('chart-errors').textContent='';$('chart-status').textContent=message;$('context').textContent=message;$('crosshair').textContent='OHLCV появится после получения свечей.';chart.onmousemove=chart.onpointerdown=chart.onkeydown=null;inspectedAt=null;
   for(const venue of ['spot','linear']){$(venue+'-health').textContent=message;empty($(venue+'-book'),'Ожидание нового снимка',4)}$('book-comparison').textContent=message;
 }
 function connectChart() {

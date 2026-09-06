@@ -11,6 +11,7 @@ import numpy as np
 
 from capitalizator.fusion.atlas import Forecast
 from capitalizator.fusion.config import Config
+from capitalizator.fusion.daily import daily_target
 from capitalizator.fusion.market import Block
 from capitalizator.fusion.store import encode
 
@@ -108,15 +109,33 @@ def propose(
             and side * (poc - block.close) >= config.minimum_rr * distance
         ):
             target = float(poc)
+    daily = c.get("daily", {})
+    daily_check = daily_target(
+        daily,
+        side,
+        block.close,
+        target,
+        max(tick, float(c["ask"]) - float(c["bid"])),
+        block.at,
+    )
+    if not daily_check["allowed"]:
+        return None, daily_check["reason"]
+    target = float(daily_check["target"])
     reward = side * (target - block.close)
     if invalidation <= 0 or distance <= 0 or reward < config.minimum_rr * distance:
-        return None, "insufficient_structural_reward"
+        return None, (
+            "insufficient_daily_room"
+            if daily_check["limited"]
+            else "insufficient_structural_reward"
+        )
     scenarios = np.asarray(forecast.scenarios)
     flow = max(0.0, float(np.quantile(side * scenarios[:, 1], config.confidence_alpha)))
     refill = float(np.quantile(side * scenarios[:, 2], config.confidence_alpha))
     definition = {
         "hypothesis": "sweep_reclaim_amplification",
         "pairing": pairing,
+        "daily": daily,
+        "daily_check": daily_check,
         "alternative": "continued_pressure_or_absorption_failure",
         "support": c["support"],
         "resistance": c["resistance"],
@@ -159,6 +178,17 @@ def baseline(symbol: str, block: Block, config: Config, tick: float) -> Contract
         return None
     stop = float(c["sweep_extreme"]) - side * max(tick, block.x[3] * block.close)
     target = float(c["resistance"] if side == 1 else c["support"])
+    daily_check = daily_target(
+        c.get("daily", {}),
+        side,
+        block.close,
+        target,
+        max(tick, float(c["ask"]) - float(c["bid"])),
+        block.at,
+    )
+    if not daily_check["allowed"]:
+        return None
+    target = float(daily_check["target"])
     if side * (target - block.close) < config.minimum_rr * abs(block.close - stop):
         return None
     ident = hashlib.sha256(encode(["baseline", symbol, block.id, block.at]).encode()).hexdigest()[
@@ -182,5 +212,10 @@ def baseline(symbol: str, block: Block, config: Config, tick: float) -> Contract
         0.0,
         0.0,
         block.x,
-        {"hypothesis": "zone_sweep_reversal", "probability": None},
+        {
+            "hypothesis": "zone_sweep_reversal",
+            "probability": None,
+            "daily": c.get("daily", {}),
+            "daily_check": daily_check,
+        },
     )

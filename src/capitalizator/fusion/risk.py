@@ -205,6 +205,9 @@ def reserve(
             "contract_id": contract.id,
             "model_version": contract.model_version,
             "policy_version": contract.config_version,
+            "daily_buffer": contract.definition.get("daily_check", {}).get(
+                "buffer", instrument.tick
+            ),
             "risk": risk,
             "budget": budget,
             "unit_loss": unit_loss,

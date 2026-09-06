@@ -12,7 +12,10 @@ from capitalizator.desk.bars import TF_MINUTES
 from capitalizator.fusion.context import geometry, session_windows
 from capitalizator.zones.model import Bar
 
-TFS = ("1m", "5m", "15m", "1h", "4h")
+TFS = ("1m", "5m", "15m", "1h", "4h", "1d")
+# D1 must come from complete venue candles, never a partial startup trade bucket.
+TRADE_TFS = tuple(tf for tf in TFS if tf != "1d")
+BYBIT_INTERVALS = {tf: "D" if tf == "1d" else str(TF_MINUTES[tf]) for tf in TFS}
 PAIRS = (("15m", "1m"), ("1h", "5m"), ("4h", "15m"))
 
 
@@ -82,16 +85,17 @@ class Structure:
 
     def seed(self, bars: list[Bar], tick: float) -> None:
         for tf in TFS:
+            incoming = {b.open_ts: b for b in bars if b.tf == tf}
+            if not incoming:
+                continue
             current = {b.open_ts: b for b in self.bars[tf]}
-            for b in bars:
-                if b.tf == tf:
-                    # Authoritative REST closed candles repair partial first live buckets.
-                    current[b.open_ts] = b
-            if current:
-                self.bars[tf] = deque(
-                    sorted(current.values(), key=lambda b: b.open_ts)[-512:], maxlen=512
-                )
-                self._calculate(tf, tick)
+            # Authoritative REST closed candles repair partial first live buckets.
+            current.update(incoming)
+            merged = sorted(current.values(), key=lambda b: b.open_ts)[-512:]
+            if merged == list(self.bars[tf]):
+                continue
+            self.bars[tf] = deque(merged, maxlen=512)
+            self._calculate(tf, tick)
 
     def _calculate(self, tf: str, tick: float) -> None:
         stored = list(self.bars[tf])
@@ -196,6 +200,20 @@ class Structure:
             "sessions": session_windows(bars[0].open_ts.timestamp(), bars[-1].close_ts.timestamp()),
             "bars": len(bars),
         }
+        if tf == "1d":
+            self.cache[tf]["daily_levels"] = [
+                {**p, "kind": kind}
+                for kind, points in (("swing_high", highs[-20:]), ("swing_low", lows[-20:]))
+                for p in points
+            ] + [
+                {
+                    "price": float(getattr(bars[-1], field)),
+                    "at": bars[-1].open_ts.timestamp(),
+                    "known_at": bars[-1].close_ts.timestamp(),
+                    "kind": "previous_day_" + field,
+                }
+                for field in ("high", "low")
+            ]
         self.revision += 1
 
     def pair(self, side: int, price: float, low: float, high: float, at: float) -> dict[str, Any]:
