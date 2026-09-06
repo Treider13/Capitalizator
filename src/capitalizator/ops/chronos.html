@@ -17,6 +17,8 @@
         <select id="symbol"></select>
       </label>
       <div id="tf-bar">
+        <button type="button" class="tf" data-tf="1m">1m</button>
+        <button type="button" class="tf" data-tf="5m">5m</button>
         <button type="button" class="tf" data-tf="15m">15m</button>
         <button type="button" class="tf" data-tf="1h">1h</button>
         <button type="button" class="tf" data-tf="4h">4h</button>
@@ -195,10 +197,18 @@
     let candleSeries = null;
     let zoneLines = [];
     let touchLine = null;
-    let bookApp = null;
     let lastWhyKey = "";
-    let lastBookKey = "";
     let refreshSeq = 0;
+    let barsSeq = 0;
+    let chartSeriesKey = "";
+    let lastPaintedLen = 0;
+    let overlayKey = "";
+    let tapeBusy = false;
+    let tapeAgain = false;
+    let barsBusy = false;
+    let barsAgain = false;
+    let refreshBusy = false;
+    let refreshAgain = false;
 
     function esc(s) {
       return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
@@ -267,8 +277,12 @@
           horzLines: {color: "#243040"}
         },
         rightPriceScale: {borderColor: "#243040", scaleMargins: {top: 0.08, bottom: 0.08}},
-        timeScale: {borderColor: "#243040", timeVisible: true, secondsVisible: false},
-        crosshair: {mode: LightweightCharts.CrosshairMode.Magnet},
+        timeScale: {
+          borderColor: "#243040",
+          timeVisible: true,
+          secondsVisible: tf === "1m" || tf === "5m"
+        },
+        crosshair: {mode: LightweightCharts.CrosshairMode.Normal},
         localization: {locale: "ru-RU"}
       });
       candleSeries = tvChart.addCandlestickSeries({
@@ -346,37 +360,91 @@
       if (!ensureTv() || !candleSeries) return false;
       const shown = shownBars(bars);
       const data = toCandles(shown);
-      candleSeries.setData(data);
-      zoneLines.forEach(line => { try { candleSeries.removePriceLine(line); } catch (e) {} });
-      zoneLines = [];
-      (zones || []).forEach(z => {
-        const lo = Number(z.lo), hi = Number(z.hi);
-        const same = !z.tf || z.tf === tf;
-        const color = same ? "#e6a817" : "#5eead4";
-        if (Number.isFinite(hi)) {
-          zoneLines.push(candleSeries.createPriceLine({
-            price: hi, color, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: z.label || z.tf || ""
-          }));
+      const seriesKey = symbol + "|" + tf;
+      const reset = seriesKey !== chartSeriesKey;
+      // Lightweight Charts: setData = history, update = last live bar.
+      // tape_tick is faster than /api/bars; if it paints first, a later
+      // history payload must setData, not update the one forming candle.
+      const historyJump = data.length > lastPaintedLen + 1
+        || (data.length > 0 && data.length < lastPaintedLen);
+      if (reset || historyJump) {
+        chartSeriesKey = seriesKey;
+        lastPaintedLen = data.length;
+        candleSeries.setData(data);
+        if (tvChart && tvChart.timeScale) {
+          try {
+            tvChart.applyOptions({
+              timeScale: {secondsVisible: tf === "1m" || tf === "5m"}
+            });
+          } catch (e) {}
         }
-        if (Number.isFinite(lo)) {
-          zoneLines.push(candleSeries.createPriceLine({
-            price: lo, color, lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: ""
-          }));
+        if (data.length) {
+          const from = Math.max(-0.5, data.length - 80);
+          tvChart.timeScale().setVisibleLogicalRange({from, to: data.length + 3});
         }
-      });
-      if (touchLine) {
-        try { candleSeries.removePriceLine(touchLine); } catch (e) {}
-        touchLine = null;
+      } else if (data.length) {
+        lastPaintedLen = data.length;
+        const last = data[data.length - 1];
+        try {
+          candleSeries.update(last);
+        } catch (e) {
+          candleSeries.setData(data);
+        }
+      } else {
+        lastPaintedLen = 0;
+        candleSeries.setData([]);
       }
-      if (touch && touch.trade_px && Number.isFinite(Number(touch.trade_px))) {
-        touchLine = candleSeries.createPriceLine({
-          price: Number(touch.trade_px), color: "#e6a817", lineWidth: 2, lineStyle: 3,
-          axisLabelVisible: true, title: "касание"
+      const nextOverlay = JSON.stringify((zones || []).map(z => [z.zone_id, z.lo, z.hi, z.tf, z.method, z.side]))
+        + "|" + ((touch && (touch.trade_px || "")) || "")
+        + "|" + ((touch && (touch.touch_id || "")) || "");
+      if (reset || nextOverlay !== overlayKey) {
+        overlayKey = nextOverlay;
+        zoneLines.forEach(line => { try { candleSeries.removePriceLine(line); } catch (e) {} });
+        zoneLines = [];
+        (zones || []).forEach(z => {
+          const lo = Number(z.lo), hi = Number(z.hi);
+          const same = !z.tf || z.tf === tf;
+          const color = same ? "#e6a817" : "#5eead4";
+          const title = [z.method, z.tf, z.side].filter(Boolean).join(" ");
+          if (Number.isFinite(hi)) {
+            zoneLines.push(candleSeries.createPriceLine({
+              price: hi, color, lineWidth: same ? 2 : 1, lineStyle: 2,
+              axisLabelVisible: true, title: title || z.tf || ""
+            }));
+          }
+          if (Number.isFinite(lo)) {
+            zoneLines.push(candleSeries.createPriceLine({
+              price: lo, color, lineWidth: same ? 2 : 1, lineStyle: 2,
+              axisLabelVisible: false, title: ""
+            }));
+          }
         });
-      }
-      if (data.length) {
-        const from = Math.max(-0.5, data.length - 80);
-        tvChart.timeScale().setVisibleLogicalRange({from, to: data.length + 3});
+        if (touchLine) {
+          try { candleSeries.removePriceLine(touchLine); } catch (e) {}
+          touchLine = null;
+        }
+        if (touch && touch.trade_px && Number.isFinite(Number(touch.trade_px))) {
+          touchLine = candleSeries.createPriceLine({
+            price: Number(touch.trade_px), color: "#e6a817", lineWidth: 2, lineStyle: 3,
+            axisLabelVisible: true, title: "касание"
+          });
+        }
+        if (candleSeries.setMarkers) {
+          const marks = [];
+          const tTouch = touch && Date.parse(touch.touch_ts || touch.ts || "");
+          if (Number.isFinite(tTouch) && data.length) {
+            let nearest = data[0].time;
+            const want = Math.floor(tTouch / 1000);
+            data.forEach(c => {
+              if (Math.abs(c.time - want) < Math.abs(nearest - want)) nearest = c.time;
+            });
+            marks.push({
+              time: nearest, position: "inBar", color: "#e6a817",
+              shape: "circle", text: "касание"
+            });
+          }
+          try { candleSeries.setMarkers(marks); } catch (e) {}
+        }
       }
       return true;
     }
@@ -483,92 +551,10 @@
       imbTxt.className = "";
       return {bids, asks, askShow, bidShow, maxQ, empty: false};
     }
-    function ensureBookGpu() {
-      if (!window.PIXI) return null;
-      const host = document.getElementById("book-gpu");
-      if (!host) return null;
-      if (bookApp) return bookApp;
-      try {
-        bookApp = new PIXI.Application({
-          background: 0x0c1014,
-          antialias: true,
-          resolution: Math.min(window.devicePixelRatio || 1, 2),
-          autoDensity: true,
-          width: Math.max(host.clientWidth || 240, 160),
-          height: Math.max(host.clientHeight || 360, 320)
-        });
-        host.appendChild(bookApp.view);
-        return bookApp;
-      } catch (e) {
-        bookApp = null;
-        return null;
-      }
-    }
-    function paintBookGpu(snap) {
-      const wrap = document.getElementById("book-host");
-      if (!wrap || !snap || snap.empty || !ensureBookGpu()) {
-        if (wrap) wrap.classList.remove("gpu");
-        return false;
-      }
-      wrap.classList.add("gpu");
-      const host = document.getElementById("book-gpu");
-      const w = Math.max((host && host.clientWidth) || wrap.clientWidth || 240, 160);
-      const rowH = 18;
-      const askShow = snap.askShow || [];
-      const bidShow = snap.bidShow || [];
-      const h = Math.max((askShow.length + bidShow.length + 2) * rowH, 320);
-      bookApp.renderer.resize(w, h);
-      bookApp.stage.alpha = 1;
-      bookApp.stage.removeChildren().forEach(c => {
-        try { c.destroy({children: true}); } catch (e) {}
-      });
-      const maxQ = snap.maxQ || 1;
-      const g = new PIXI.Graphics();
-      const styleAsk = {fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: 11, fill: 0xff3b4e};
-      const styleBid = {fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: 11, fill: 0x00c853};
-      const styleMid = {fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: 16, fill: 0xffffff, fontWeight: "700"};
-      let y = 4;
-      askShow.slice().reverse().forEach(a => {
-        const bw = ((Number(a[1]) || 0) / maxQ) * (w * 0.92);
-        g.beginFill(0xff3b4e, 0.28);
-        g.drawRect(w - bw, y + 1, bw, rowH - 2);
-        g.endFill();
-        const t = new PIXI.Text(String(a[0]) + "  " + String(a[1]), styleAsk);
-        t.x = w - 8; t.anchor.set(1, 0); t.y = y + 2;
-        bookApp.stage.addChild(t);
-        y += rowH;
-      });
-      const mid = (snap.bids[0] && snap.bids[0][0]) || (snap.asks[0] && snap.asks[0][0]) || "—";
-      const midText = new PIXI.Text(String(mid), styleMid);
-      midText.x = w / 2; midText.anchor.set(0.5, 0); midText.y = y;
-      bookApp.stage.addChild(midText);
-      y += rowH + 4;
-      bidShow.forEach(b => {
-        const bw = ((Number(b[1]) || 0) / maxQ) * (w * 0.92);
-        g.beginFill(0x00c853, 0.28);
-        g.drawRect(0, y + 1, bw, rowH - 2);
-        g.endFill();
-        const t = new PIXI.Text(String(b[1]) + "  " + String(b[0]), styleBid);
-        t.x = 8; t.y = y + 2;
-        bookApp.stage.addChild(t);
-        y += rowH;
-      });
-      bookApp.stage.addChildAt(g, 0);
-      const bookKey = JSON.stringify(askShow) + "|" + JSON.stringify(bidShow);
-      if (window.gsap && bookKey !== lastBookKey) {
-        lastBookKey = bookKey;
-        gsap.from(bookApp.stage, {alpha: 0.35, duration: 0.28, ease: "power1.out", overwrite: true});
-      }
-      return true;
-    }
     function paintBook(book) {
-      const snap = paintBookHtml(book);
-      try {
-        paintBookGpu(snap);
-      } catch (e) {
-        const wrap = document.getElementById("book-host");
-        if (wrap) wrap.classList.remove("gpu");
-      }
+      const wrap = document.getElementById("book-host");
+      if (wrap) wrap.classList.remove("gpu");
+      paintBookHtml(book);
     }
     function updateReplayLabel() {
       const slider = document.getElementById("replay-bars");
@@ -632,15 +618,108 @@
         paintChart(lastBars, lastZones, lastTouch);
       }, ms);
     }
+    function applyChartPayload(bars, zones, touch) {
+      if (bars && Array.isArray(bars.bars)) lastBars = bars.bars;
+      if (zones && Array.isArray(zones.zones)) lastZones = zones.zones;
+      if (touch && Object.prototype.hasOwnProperty.call(touch, "touch")) lastTouch = touch.touch;
+      const tfEl = document.getElementById("chart-tf");
+      if (tfEl) tfEl.textContent = tf;
+      markTf();
+      const slider = document.getElementById("replay-bars");
+      if (slider) {
+        const prevMax = Number(slider.max) || 0;
+        const newMax = lastBars.length;
+        const playing = !!replayTimer;
+        slider.max = String(newMax);
+        if (replayN > newMax) {
+          replayN = 0;
+          if (playing) stopReplay();
+        } else if (playing && newMax !== prevMax && replayN < newMax) {
+          startReplay();
+        }
+        slider.value = String(replayN);
+        updateReplayLabel();
+      }
+      try {
+        paintChart(lastBars, lastZones, lastTouch);
+      } catch (e) {
+        const host = document.getElementById("chart-host");
+        if (host) host.className = "chart-host engine-canvas";
+        paintChartCanvas(lastBars, lastZones, lastTouch);
+      }
+      whyBox(lastTouch);
+    }
+    async function loadBars() {
+      if (barsBusy) { barsAgain = true; return; }
+      barsBusy = true;
+      try {
+        do {
+          barsAgain = false;
+          const seq = ++barsSeq;
+          markTf();
+          const tfEl = document.getElementById("chart-tf");
+          if (tfEl) tfEl.textContent = tf;
+          const bars = await jget("/api/bars?symbol=" + encodeURIComponent(symbol) + "&tf=" + encodeURIComponent(tf) + "&limit=200");
+          if (seq !== barsSeq) continue;
+          applyChartPayload(bars, null, null);
+          const [zones, touch] = await Promise.all([
+            jget("/api/zones?symbol=" + encodeURIComponent(symbol)),
+            jget("/api/touch/latest?symbol=" + encodeURIComponent(symbol))
+          ]);
+          if (seq !== barsSeq) continue;
+          applyChartPayload(bars, zones, touch);
+        } while (barsAgain);
+      } finally {
+        barsBusy = false;
+      }
+    }
+    async function tickTape() {
+      if (tapeBusy) { tapeAgain = true; return; }
+      tapeBusy = true;
+      try {
+        do {
+          tapeAgain = false;
+          const got = await jget(
+            "/api/tape?symbol=" + encodeURIComponent(symbol) + "&tf=" + encodeURIComponent(tf)
+          );
+          if (!got) continue;
+          if (got.book) paintBook(got.book);
+          if (got.last_price) {
+            const priceEl = document.getElementById("price");
+            if (priceEl) priceEl.textContent = symbol + " " + got.last_price;
+          }
+          if (Array.isArray(got.trades)) {
+            const tr = got.trades;
+            document.getElementById("trades").innerHTML = tr.length
+              ? tr.slice().reverse().map(x => `<tr><td>${esc(x.ts)}</td><td class="num">${esc(x.px)}</td><td class="num">${esc(x.qty)}</td><td>${esc(x.side)}</td></tr>`).join("")
+              : '<tr><td colspan="4" class="empty">лента пуста</td></tr>';
+          }
+          if (got.forming) {
+            const row = got.forming;
+            if (!lastBars.length) lastBars = [row];
+            else {
+              const last = lastBars[lastBars.length - 1];
+              if (last.forming || last.open_ts === row.open_ts) lastBars[lastBars.length - 1] = row;
+              else lastBars.push(row);
+            }
+            if (lastBars.length > 220) lastBars = lastBars.slice(-200);
+            paintChart(lastBars, lastZones, lastTouch);
+          }
+        } while (tapeAgain);
+      } finally {
+        tapeBusy = false;
+      }
+    }
     async function refresh() {
-      const seq = ++refreshSeq;
-      const [status, bars, zones, book, trades, touch, dash, news, authors, llm, gates, hello, sessions, account, paper] = await Promise.all([
+      if (refreshBusy) { refreshAgain = true; return; }
+      refreshBusy = true;
+      try {
+        do {
+          refreshAgain = false;
+          markTf();
+          const seq = ++refreshSeq;
+          const [status, dash, news, authors, llm, gates, hello, sessions, account, paper] = await Promise.all([
         jget("/api/status"),
-        jget("/api/bars?symbol=" + encodeURIComponent(symbol) + "&tf=" + encodeURIComponent(tf) + "&limit=200"),
-        jget("/api/zones?symbol=" + encodeURIComponent(symbol)),
-        jget("/api/book?symbol=" + encodeURIComponent(symbol)),
-        jget("/api/trades?symbol=" + encodeURIComponent(symbol) + "&limit=50"),
-        jget("/api/touch/latest?symbol=" + encodeURIComponent(symbol)),
         jget("/api/dashboard"),
         jget("/api/news?symbol=" + encodeURIComponent(symbol)),
         jget("/api/authors"),
@@ -651,7 +730,7 @@
         jget("/api/account"),
         jget("/api/paper?limit=20")
       ]);
-      if (seq !== refreshSeq) return;
+      if (seq !== refreshSeq) continue;
       const st = status || BOOT;
       const sel = document.getElementById("symbol");
       const symbols = (st.symbols && st.symbols.length) ? st.symbols : [symbol];
@@ -667,6 +746,10 @@
           symbol = sel.value;
           replayN = 0;
           stopReplay();
+          chartSeriesKey = "";
+          overlayKey = "";
+          loadBars();
+          tickTape();
           refresh();
         };
       }
@@ -754,36 +837,6 @@
           };
         }
       }
-      if (bars && Array.isArray(bars.bars)) lastBars = bars.bars;
-      if (zones && Array.isArray(zones.zones)) lastZones = zones.zones;
-      if (touch && Object.prototype.hasOwnProperty.call(touch, "touch")) lastTouch = touch.touch;
-      const barRows = lastBars;
-      const zoneRows = lastZones;
-      const tfEl = document.getElementById("chart-tf");
-      if (tfEl) tfEl.textContent = tf;
-      markTf();
-      const slider = document.getElementById("replay-bars");
-      if (slider) {
-        const prevMax = Number(slider.max) || 0;
-        const newMax = barRows.length;
-        const playing = !!replayTimer;
-        slider.max = String(newMax);
-        if (replayN > newMax) {
-          replayN = 0;
-          if (playing) stopReplay();
-        } else if (playing && newMax !== prevMax && replayN < newMax) {
-          startReplay();
-        }
-        slider.value = String(replayN);
-        updateReplayLabel();
-      }
-      try {
-        paintChart(barRows, zoneRows, lastTouch);
-      } catch (e) {
-        const host = document.getElementById("chart-host");
-        if (host) host.className = "chart-host engine-canvas";
-        paintChartCanvas(barRows, zoneRows, lastTouch);
-      }
       const knobs = document.getElementById("knobs");
       if (knobs && dash && dash.risk) {
         const share = dash.risk.deposit_share_per_trade;
@@ -806,14 +859,7 @@
           ? paperRows.slice(0, 20).map(x =>
               `<tr><td>${esc(x.source)}</td><td>${esc(x.side)}</td><td>${esc(x.entry_px)}</td><td>${esc(x.r_net)}</td></tr>`
             ).join("")
-          : '<tr><td colspan="4" class="empty">бумаги нет</td></tr>';
-      }
-      if (book != null) paintBook(book);
-      if (trades && Array.isArray(trades.trades)) {
-        const tr = trades.trades;
-        document.getElementById("trades").innerHTML = tr.length
-          ? tr.slice().reverse().map(x => `<tr><td>${esc(x.ts)}</td><td class="num">${esc(x.px)}</td><td class="num">${esc(x.qty)}</td><td>${esc(x.side)}</td></tr>`).join("")
-          : '<tr><td colspan="4" class="empty">лента пуста</td></tr>';
+            : '<tr><td colspan="4" class="empty">бумаги нет</td></tr>';
       }
       const latest = lastTouch || null;
       whyBox(latest);
@@ -858,6 +904,10 @@
         const row = g[k] || {};
         return `<div class="gate ${row.ok ? "green" : "red"}">${k.toUpperCase()} ${row.ok ? "да" : "нет"}</div>`;
       }).join("");
+        } while (refreshAgain);
+      } finally {
+        refreshBusy = false;
+      }
     }
     function setNote(text, sticky) {
       const note = document.getElementById("mode-note");
@@ -947,7 +997,13 @@
       tf = btn.getAttribute("data-tf") || "15m";
       replayN = 0;
       stopReplay();
-      refresh();
+      chartSeriesKey = "";
+      overlayKey = "";
+      markTf();
+      const tfEl = document.getElementById("chart-tf");
+      if (tfEl) tfEl.textContent = tf;
+      loadBars();
+      tickTape();
     });
     document.querySelectorAll(".speed").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -988,14 +1044,14 @@
     });
     markTf();
     markSpeed();
+    tickTape();
+    loadBars();
     refresh();
+    setInterval(tickTape, 400);
+    setInterval(loadBars, 60000);
     let fallback = setInterval(refresh, 30000);
-    let lastRefresh = 0;
     function refreshSoon() {
-      const now = Date.now();
-      if (now - lastRefresh < 10000) return;
-      lastRefresh = now;
-      refresh();
+      tickTape();
     }
     try {
       const es = new EventSource("/api/stream");

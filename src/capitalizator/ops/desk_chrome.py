@@ -48,6 +48,8 @@ code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px}
 .pill.ok{color:var(--bid);border-color:#00c85355}
 .pill.bad{color:var(--ask);border-color:#ff3b4e55}
 .pill.warn{color:var(--warn);border-color:#f0b90b55}
+#tf-bar{display:flex;gap:3px;flex-wrap:wrap}
+button.tf{padding:3px 7px;font:11px/1.2 ui-monospace,Menlo,Consolas,monospace}
 .status-lock{color:#9aa7b5;cursor:default}
 .gates{display:flex;gap:4px;flex-wrap:wrap}
 .gate{
