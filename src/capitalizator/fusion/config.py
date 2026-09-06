@@ -53,6 +53,8 @@ class Config:
     news_poll_s: float = 60.0
     context_poll_s: float = 60.0
     chart_refresh_s: float = 0.2
+    macro_poll_s: float = 3600.0
+    macro_stale_s: float = 86400.0
 
     def __post_init__(self) -> None:
         if not self.symbols or len(set(self.symbols)) != len(self.symbols):
@@ -101,7 +103,7 @@ class Config:
     @property
     def version(self) -> str:
         return hashlib.sha256(
-            json.dumps({"policy": "fusion-2-raw-mtf", **asdict(self)}, sort_keys=True).encode()
+            json.dumps({"policy": "fusion-3-causal-news", **asdict(self)}, sort_keys=True).encode()
         ).hexdigest()[:16]
 
     @classmethod

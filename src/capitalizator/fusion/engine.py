@@ -40,6 +40,8 @@ class Shared:
         self.instruments: dict[str, Instrument] = {}
         self.snapshots: dict[str, Any] = {}
         self.calendar: tuple[NewsRow, ...] = ()
+        self.macro_calendar: tuple[NewsRow, ...] = ()
+        self.macro_health: dict[str, Any] = {}
         self.broker_ready = False
         self.switching = False
         self.news_required = False
@@ -357,7 +359,7 @@ class Engine:
         if not accounts:
             return
         account = accounts[0]
-        if block.at - account["at"] > self.config.account_age_s:
+        if not 0 <= block.at - account["at"] <= self.config.account_age_s:
             return  # Exchange worker retains independent stop/reconciliation protection.
         for pos in json.loads(account["body"])["positions"]:
             if pos["symbol"] != self.symbol or not float(pos.get("size") or 0):
@@ -426,3 +428,4 @@ class Engine:
                     block.at,
                     {"stop": stop, "reason": "conditional_tail"},
                 )
+                self.shared.broker_wake.set()

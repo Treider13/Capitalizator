@@ -9,6 +9,7 @@ description = "Private futures desk: zone, book, BTC veto. Own account only. No 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "threadpoolctl>=3.5,<4",
     "numpy>=1.26,<3",
     "pydantic>=2.8,<3",
     "pyarrow>=16,<23",

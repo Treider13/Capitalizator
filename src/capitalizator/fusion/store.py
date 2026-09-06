@@ -49,6 +49,9 @@ CREATE INDEX IF NOT EXISTS order_symbol ON orders(mode,symbol,created);
 CREATE TABLE IF NOT EXISTS commands(
  id TEXT PRIMARY KEY, mode TEXT NOT NULL, symbol TEXT NOT NULL,
  kind TEXT NOT NULL, at REAL NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS dispatch(
+ kind TEXT NOT NULL, id TEXT NOT NULL, attempted REAL NOT NULL, next_at REAL NOT NULL,
+ error TEXT NOT NULL DEFAULT '', PRIMARY KEY(kind,id));
 """
 
 
@@ -195,6 +198,16 @@ class Store:
 
     def command(self, ident: str, mode: str, symbol: str, kind: str, at: float, body: Any) -> None:
         with self.transaction() as db:
+            if kind == "flatten":
+                # One unresolved close intent per account/symbol. Multiple triggers
+                # must not create competing close IDs after an ambiguous send.
+                existing = db.execute(
+                    "SELECT id FROM commands WHERE mode=? AND symbol=? "
+                    "AND kind='flatten' AND state='pending' LIMIT 1",
+                    (mode, symbol),
+                ).fetchone()
+                if existing:
+                    return
             if kind == "stop":
                 db.execute(
                     "UPDATE commands SET state='superseded' "

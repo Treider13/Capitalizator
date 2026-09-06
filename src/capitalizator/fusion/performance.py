@@ -39,19 +39,25 @@ def metrics(
     }
 
 
-def venue_performance(store: Store, mode: str, since: float = 0) -> dict[str, Any]:
+def venue_performance(
+    store: Store, mode: str, since: float = 0, policy: str | None = None
+) -> dict[str, Any]:
     with store.analytics_lock:
         revision = store.meta("execution_revision:" + mode, 0)
         cache_key = "performance:" + mode + (":" + str(since) if since else "")
+        if policy:
+            cache_key += ":policy:" + policy
         cached = store.meta(cache_key)
         if cached is not None and cached["revision"] == revision:
             return dict(cached["report"])
-        report = _venue_performance(store, mode, since)
+        report = _venue_performance(store, mode, since, policy)
         store.put_meta(cache_key, {"revision": revision, "report": report})
         return report
 
 
-def _venue_performance(store: Store, mode: str, since: float = 0) -> dict[str, Any]:
+def _venue_performance(
+    store: Store, mode: str, since: float = 0, policy: str | None = None
+) -> dict[str, Any]:
     rows = store.rows(
         "SELECT * FROM executions WHERE mode=? AND at>=? ORDER BY at,id", (mode, since)
     )
@@ -59,10 +65,31 @@ def _venue_performance(store: Store, mode: str, since: float = 0) -> dict[str, A
     episodes: list[float] = []
     fees = realized = 0.0
     incomplete = False
+    attributed: dict[str, bool] = {}
+    owned = (
+        {
+            r["id"]
+            for r in store.rows(
+                "SELECT id FROM orders WHERE mode=? AND json_extract(body,'$.policy_version')=?",
+                (mode, policy),
+            )
+        }
+        if policy
+        else set()
+    )
+    ignored = 0
     for record in rows:
         row = json.loads(record["body"])
+        symbol = row["symbol"]
+        held, average, pnl = inventory.get(symbol, (0.0, 0.0, 0.0))
+        if not held and row.get("execType", "Trade") != "Funding":
+            attributed[symbol] = not policy or record["order_id"] in owned
+        included = attributed.get(symbol, not policy)
+        if not included:
+            ignored += 1
         fee = float(row.get("execFee") or 0)
-        fees += fee
+        if included:
+            fees += fee
         if row.get("execType", "Trade") == "Funding":
             symbol = row["symbol"]
             if symbol in inventory:
@@ -78,8 +105,8 @@ def _venue_performance(store: Store, mode: str, since: float = 0) -> dict[str, A
             continue
         qty = float(row.get("execQty") or 0) * (1 if row["side"] == "Buy" else -1)
         price = float(row["execPrice"])
-        symbol = row["symbol"]
-        held, average, pnl = inventory.get(symbol, (0.0, 0.0, 0.0))
+        if policy and held * qty > 0 and record["order_id"] not in owned and included:
+            incomplete = True  # Mixed manual/bot inventory cannot qualify the policy.
         if float(row.get("closedSize") or 0) > abs(held) + 1e-10:
             incomplete = True
         pnl -= fee
@@ -89,11 +116,15 @@ def _venue_performance(store: Store, mode: str, since: float = 0) -> dict[str, A
         else:
             closing = min(abs(held), abs(qty))
             gain = closing * (price - average) * (1 if held > 0 else -1)
-            realized += gain
+            if included:
+                realized += gain
             pnl += gain
             new = held + qty
             if abs(new) < 1e-10 or held * new < 0:
-                episodes.append(pnl)
+                if included:
+                    episodes.append(pnl)
+                if held * new < 0 and policy:
+                    incomplete = True  # A reversal spans two owners/entry decisions.
                 pnl = 0.0
                 average = price if new else 0.0
         inventory[symbol] = (new, average, pnl)
@@ -119,5 +150,7 @@ def _venue_performance(store: Store, mode: str, since: float = 0) -> dict[str, A
         "episodes": metrics(episodes, periods=1),
         "lower_episode_net": lower,
         "incomplete_inventory": incomplete,
+        "policy": policy,
+        "ignored_executions": ignored,
         "scope": "unique available executions; account equity includes unrealized P&L",
     }

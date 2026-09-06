@@ -44,5 +44,7 @@
   "model_max_age_s": 3600.0,
   "news_poll_s": 60.0,
   "context_poll_s": 60.0,
-  "chart_refresh_s": 0.2
+  "chart_refresh_s": 0.2,
+  "macro_poll_s": 3600.0,
+  "macro_stale_s": 86400.0
 }

@@ -21,3 +21,5 @@ pybit==5.17.0
 numpy==2.5.2
 websocket-client==1.9.2
 requests==2.33.1
+# Fusion isolated model worker native-thread budget, verified 2026-09-06.
+threadpoolctl==3.6.0

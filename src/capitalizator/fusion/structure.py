@@ -9,7 +9,7 @@ from typing import Any
 
 from capitalizator.card.sweep import fractals
 from capitalizator.desk.bars import TF_MINUTES
-from capitalizator.fusion.context import geometry
+from capitalizator.fusion.context import geometry, session_windows
 from capitalizator.zones.model import Bar
 
 TFS = ("1m", "5m", "15m", "1h", "4h")
@@ -179,6 +179,7 @@ class Structure:
             "geometry": g,
             "zones": zones[-30:],
             "candles": [candle(b) for b in bars],
+            "sessions": session_windows(bars[0].open_ts.timestamp(), bars[-1].close_ts.timestamp()),
             "bars": len(bars),
         }
         self.revision += 1

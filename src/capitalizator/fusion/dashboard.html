@@ -43,7 +43,7 @@ async function saveNewsKey(){await act('news_credentials',{key:document.getEleme
 function card(parent,label,value){let c=document.createElement('div');c.className='card';let h=document.createElement('strong');h.textContent=label;c.appendChild(h);let v=document.createElement('p');v.textContent=value;c.appendChild(v);parent.appendChild(c)}
 async function refresh(){try{let r=await fetch('/api/status');let s=await r.json();lastState=s;let selector=document.getElementById('symbol');if(!selector.options.length){for(let symbol of s.config.symbols){let option=document.createElement('option');option.textContent=symbol;selector.appendChild(option)}connectChart()}let h=document.getElementById('health');h.textContent=s.mode.toUpperCase()+' · '+(s.halted?'Остановка: '+s.reason:s.paused?'Входы приостановлены':s.broker?.ready?'Счёт подключён':'Обучение / ожидание подключения счёта');h.className=s.halted?'bad':'';
 let c=document.getElementById('cards');c.replaceChildren();card(c,'Эквити',s.account?s.account.equity:'Нет данных счёта');card(c,'Реализованный P&L',s.performance.realized_net);card(c,'Закрытые эпизоды',s.performance.closed_episodes);card(c,'Модель',s.model||'Обучение на поступающих событиях');
-let tb=document.getElementById('markets');tb.replaceChildren();for(let [symbol,m] of Object.entries(s.markets)){let tr=document.createElement('tr'), b=m.block?.context||{};for(let value of [symbol,b.amd||'Накопление данных',JSON.stringify({support:b.support,resistance:b.resistance,sweep:b.sweep}),JSON.stringify({profile:b.profile,fvg:b.fvg,ote_long:b.ote_long,ote_short:b.ote_short})]){let td=document.createElement('td');td.textContent=value;tr.appendChild(td)}tb.appendChild(tr)}
+let tb=document.getElementById('markets');tb.replaceChildren();for(let [symbol,m] of Object.entries(s.markets)){let tr=document.createElement('tr'), b=m.block?.context||{};for(let value of [symbol,b.amd||'Накопление данных',JSON.stringify({support:b.support,resistance:b.resistance,sweep:b.sweep}),JSON.stringify({profile:b.profile,fvg:b.fvg,ote:b.pairing?.ote,anchors:b.pairing?.anchors})]){let td=document.createElement('td');td.textContent=value;tr.appendChild(td)}tb.appendChild(tr)}
 document.getElementById('positions').textContent=JSON.stringify({account:s.account?JSON.parse(s.account.body):null,orders:s.orders.map(o=>({...o,body:JSON.parse(o.body)}))},null,2);
 document.getElementById('decisions').textContent=s.decisions.map(d=>new Date(d.at*1000).toISOString()+' '+d.symbol+' '+d.kind+' '+d.body).join('\n');
 document.getElementById('diagnostics').textContent=JSON.stringify({training:s.training,broker:s.broker,queues:s.queues,private_queue:s.private_queue,errors:s.worker_errors},null,2);
@@ -77,19 +77,25 @@ for(let p of s.geometry?.equal_highs||[])line(p,'EQH','#f472b6',[2,5]);
 for(let p of s.geometry?.equal_lows||[])line(p,'EQL','#2dd4bf',[2,5]);
 for(let [name,p] of Object.entries(c.session_profiles||{})){line(p.poc,name+' POC','#fbbf24');line(p.val,name+' VAL','#94a3b8',[2,4]);line(p.vah,name+' VAH','#94a3b8',[2,4]);}
 for(let p of Object.values(c.session_profiles||{})){let bins=p.histogram||[],vmax=Math.max(...bins.map(b=>b[1]),1);g.fillStyle='#fbbf2440';for(let [price,v] of bins)if(price>=min&&price<=max)g.fillRect(right-v/vmax*90,y(price)-2,v/vmax*90,4);}
+function segment(points,label,color){if(!points||points.length!==2||points[1][0]<rows[0].at||points[0][0]>rows.at(-1).end)return;g.strokeStyle=color;g.beginPath();g.moveTo(x(ix(points[0][0])),y(points[0][1]));g.lineTo(x(ix(points[1][0])),y(points[1][1]));g.stroke();g.fillStyle=color;g.fillText(label,x(ix(points[1][0]))+4,y(points[1][1])-5);}
+for(let points of Object.values(s.geometry?.trend_segments||{}))segment(points,'Trend','#94a3b8');
+segment(s.geometry?.rsi_divergence?.segment,'RSI div','#c084fc');
+if(c.sweep)line(c.sweep===1?c.support:c.resistance,'Sweep '+(c.sweep>0?'↑':'↓'),'#fb923c');
+if(s.bos)line(s.bos>0?s.resistance:s.support,s.choch?'CHoCH':'BOS','#60a5fa');
 if(c.pairing?.poi)zone(c.pairing.poi.low,c.pairing.poi.high,'HTF '+c.pairing.poi.kind,'#60a5fa');
 for(let z of (d.options?.strikes||[]).filter(z=>z.gross>0).sort((a,b)=>b.gross-a.gross).slice(0,3))line(z.price,'Γ unsigned','#d946ef',[1,4]);
 }
-if(document.getElementById('sessions').checked){for(let i=1;i<rows.length;i++){
-for(let [name,tz,hour,end,color] of [['Tokyo','Asia/Tokyo',9,18,'#64748b'],['London','Europe/London',8,17,'#93c5fd'],['NY','America/New_York',8,17,'#f9a8d4']]){
-const fmt=new Intl.DateTimeFormat('en-GB',{timeZone:tz,hour:'2-digit',hourCycle:'h23'});
-let a=Number(fmt.format(new Date(rows[i-1].at*1000))),b=Number(fmt.format(new Date(rows[i].at*1000)));
-if((b===hour||b===end)&&a!==b){g.strokeStyle=color;g.globalAlpha=.35;g.beginPath();g.moveTo(x(i),top);g.lineTo(x(i),bottom);g.stroke();g.globalAlpha=1;g.fillStyle=color;g.fillText(name+' '+(b===hour?'open':'close'),x(i)+2,top+12);}}}}
+if(document.getElementById('sessions').checked){for(let v of s.sessions||[]){
+if(v.at<rows[0].at||v.at>rows.at(-1).end)continue;
+const i=ix(v.at),bar=rows[i],px=left+(i+(v.at-bar.at)/(bar.end-bar.at))*dx;
+g.strokeStyle='#93c5fd';g.globalAlpha=.35;g.beginPath();g.moveTo(px,top);g.lineTo(px,bottom);g.stroke();g.globalAlpha=1;g.fillStyle='#93c5fd';g.fillText(v.name+' '+v.boundary,px+2,top+12);
+}}
 const vmax=Math.max(...rows.map(b=>b.volume),1);
 rows.forEach((b,i)=>{g.strokeStyle=g.fillStyle=b.close>=b.open?'#34d399':'#fb7185';g.beginPath();g.moveTo(x(i),y(b.high));g.lineTo(x(i),y(b.low));g.stroke();g.fillRect(x(i)-Math.max(1,dx*.3),y(Math.max(b.open,b.close)),Math.max(1,dx*.6),Math.max(1,Math.abs(y(b.open)-y(b.close))));g.globalAlpha=.5;g.fillRect(x(i)-dx*.3,485-b.volume/vmax*65,Math.max(1,dx*.6),b.volume/vmax*65);g.globalAlpha=1;});
 let analytics=(d.analytics||[]).filter(a=>a.at>=rows[0].at);if(analytics.length>1){let lo=Math.min(...analytics.map(a=>a.cvd)),hi=Math.max(...analytics.map(a=>a.cvd)),range=hi-lo||1;g.strokeStyle='#38bdf8';g.beginPath();analytics.forEach((a,i)=>{let px=x(ix(a.at)),py=483-(a.cvd-lo)/range*60;if(i)g.lineTo(px,py);else g.moveTo(px,py);});g.stroke();g.fillStyle='#38bdf8';g.fillText('Volume / CVD',12,419);}
 if(document.getElementById('fills').checked){
-for(let o of d.orders||[])if(['pending','sending','unknown','accepted','partial','filled'].includes(o.state)){line(Number(o.stop),'SL','#f87171');line(Number(o.target),'TP','#4ade80');}
+for(let o of d.orders||[])if(['pending','sending','unknown','accepted','partial','filled'].includes(o.state)){if(!(d.positions||[]).length)line(Number(o.stop),'SL planned','#f87171');line(Number(o.target),'TP','#4ade80');}
+for(let p of d.positions||[]){line(Number(p.stopLoss),'SL venue','#f87171');line(Number(p.avgPrice),'Entry venue','#22d3ee',[3,3]);}
 for(let f of d.fills||[]){if(f.at<rows[0].at||f.execType==='Funding')continue;let px=Number(f.execPrice);if(px<min||px>max)continue;let a=x(ix(f.at)),b=y(px),dir=f.side==='Buy'?1:-1;g.fillStyle=dir>0?'#22d3ee':'#f97316';g.beginPath();g.moveTo(a,b);g.lineTo(a-5,b+dir*10);g.lineTo(a+5,b+dir*10);g.closePath();g.fill();}
 for(let k of d.contracts||[]){let q=k.definition;if(k.at<rows[0].at||q.entry<min||q.entry>max)continue;let a=x(ix(k.at)),b=y(q.entry);g.strokeStyle=k.state==='confirmed'?'#4ade80':k.state==='refuted'?'#f87171':'#a78bfa';g.beginPath();g.moveTo(a,b-5);g.lineTo(a+5,b);g.lineTo(a,b+5);g.lineTo(a-5,b);g.closePath();g.stroke();}
 }
