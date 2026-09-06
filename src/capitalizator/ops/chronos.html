@@ -642,7 +642,7 @@
         jget("/api/trades?symbol=" + encodeURIComponent(symbol) + "&limit=50"),
         jget("/api/touch/latest?symbol=" + encodeURIComponent(symbol)),
         jget("/api/dashboard"),
-        jget("/api/news"),
+        jget("/api/news?symbol=" + encodeURIComponent(symbol)),
         jget("/api/authors"),
         jget("/api/llm_summary"),
         jget("/api/gates"),

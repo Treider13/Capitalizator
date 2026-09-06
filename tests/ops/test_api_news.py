@@ -8,6 +8,7 @@ from http.server import HTTPServer
 from pathlib import Path
 from threading import Thread
 
+from capitalizator.card.live import CardLive, VolumeSnapshot
 from capitalizator.ops.console import ConsoleApp, _handler
 from capitalizator.ops.knowledge import open_knowledge
 from capitalizator.ops.vault import Vault, init_vault
@@ -105,3 +106,68 @@ def test_chronos_html_mentions_intel_stale() -> None:
     assert "n.origin" in text
     assert "card_status" in text
     assert "no card" in text
+    assert "/api/news?symbol=" in text
+
+
+def _card(*, known_at: datetime) -> CardLive:
+    return CardLive(
+        symbol="BTCUSDT",
+        bearing_verdict="propose",
+        known_at=known_at,
+        fib_zone="OTE",
+        fib_level="0.718",
+        rsi_htf="52",
+        gex_bg="+2.1M",
+        fvg_status="filled",
+        sweep_status="done",
+        pluses=("session_profile", "htf_ok", "rvol_above_2"),
+        minuses=("base_rate_unknown", "spread_cost"),
+        volume=VolumeSnapshot(rvol="2.3", poc="100", vah="101", val="99"),
+    )
+
+
+def test_api_news_card_status_is_per_symbol(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    kn.put_card_live("BTCUSDT", _card(known_at=datetime.now(tz=UTC)).to_payload())
+    kn.close()
+    httpd, thread, host, port = _serve(vault)
+    try:
+        btc = _json_get(host, port, "/api/news?symbol=BTCUSDT")
+        eth = _json_get(host, port, "/api/news?symbol=ETHUSDT")
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=2)
+    assert btc["card_status"] == "fresh"
+    assert btc["card_status_label"] is None
+    assert eth["card_status"] == "no card"
+
+
+def test_api_news_stale_card_uses_touch_token(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    kn.put_card_live("BTCUSDT", _card(known_at=NOW).to_payload())
+    kn.close()
+    httpd, thread, host, port = _serve(vault)
+    try:
+        news = _json_get(host, port, "/api/news?symbol=BTCUSDT")
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=2)
+    assert news["card_status"] == "stale"
+    assert "stale" in news["card_status_label"]
+
+
+def test_api_news_corrupt_card_is_not_500(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    kn.put_card_live("BTCUSDT", {"symbol": "BTCUSDT", "bearing_verdict": "propose"})
+    kn.close()
+    httpd, thread, host, port = _serve(vault)
+    try:
+        news = _json_get(host, port, "/api/news?symbol=BTCUSDT")
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=2)
+    assert news["card_status"] == "no card"
+    assert news["events"]

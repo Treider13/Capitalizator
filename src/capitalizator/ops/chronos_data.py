@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 
 from capitalizator.authors.ingest import AuthorsIngest
 from capitalizator.book.reconstruct import BookDirty
+from capitalizator.card.live import CardLive, card_is_fresh
 from capitalizator.desk.bars import TF_MINUTES, closed_bars_from_trades
 from capitalizator.desk.tape import _parse, event_from_jsonl_line
 from capitalizator.exec.replay import ReplayEngine
@@ -21,8 +22,7 @@ from capitalizator.news_macro.merge import heartbeat_view, screen_events
 from capitalizator.ops import i18n_ru
 from capitalizator.ops.daily_map_report import contains_advice
 from capitalizator.ops.gates_from_sqlite import gates_from_sqlite
-from capitalizator.ops.knowledge import open_knowledge
-from capitalizator.ops.touch_screen import latest as latest_touch_screen
+from capitalizator.ops.knowledge import Knowledge, open_knowledge
 from capitalizator.ops.vault import Vault, VaultError, iter_regular_files
 from capitalizator.recorder.gap import SeqFault
 from capitalizator.recorder.rows import rows_fast
@@ -410,7 +410,31 @@ def trades_for(vault: Vault, *, symbol: str, limit: int = 50) -> list[dict[str, 
     return out[-limit:]
 
 
-def news_payload(vault: Vault | None = None, *, now: datetime | None = None) -> dict[str, Any]:
+def _card_status(knowledge: Knowledge, *, symbol: str | None, now: datetime) -> str:
+    """Same tokens as touch_screen. A bad card is a dash, not a 500."""
+    target = (symbol or "").strip()
+    if not target:
+        return "no card"
+    if not knowledge.available():
+        return "no card"
+    raw = knowledge.get_card_live(target)
+    if raw is None:
+        return "no card"
+    try:
+        card = CardLive.from_payload(raw)
+    except (ValueError, KeyError, TypeError):
+        return "no card"
+    if not card_is_fresh(card, symbol=target, now=now):
+        return "stale"
+    return "fresh"
+
+
+def news_payload(
+    vault: Vault | None = None,
+    *,
+    now: datetime | None = None,
+    symbol: str | None = None,
+) -> dict[str, Any]:
     """CSV schedule + intel surprises + heartbeat. Missing heartbeat is stale."""
     when = now if now is not None else datetime.now(tz=UTC)
     csv: tuple[NewsRow, ...] = ()
@@ -427,10 +451,7 @@ def news_payload(vault: Vault | None = None, *, now: datetime | None = None) -> 
             if knowledge.available():
                 intel = calendar_from_intel(knowledge, now=when)
                 heartbeat_raw = knowledge.meta("intel_heartbeat")
-                screen = latest_touch_screen(knowledge)
-                if screen is not None:
-                    verdict = str(screen["b"]["verdict"])
-                    card_status = verdict if verdict in {"no card", "stale"} else "fresh"
+                card_status = _card_status(knowledge, symbol=symbol, now=when)
         finally:
             knowledge.close()
     view = heartbeat_view(heartbeat_raw, now=when)
