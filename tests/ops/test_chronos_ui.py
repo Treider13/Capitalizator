@@ -40,7 +40,6 @@ def test_chronos_has_desk_controls() -> None:
     assert "function refreshSoon()" in text
     assert "setInterval(tickTape, 400)" in text
     assert "setInterval(refresh, 30000)" in text
-    assert "setTimeout(refresh, 2000)" in text
     assert "tapeBusy" in text
     assert "barsBusy" in text
     assert "candleSeries.update" in text

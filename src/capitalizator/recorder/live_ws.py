@@ -9,10 +9,11 @@ book; the deltas the desk needs for the 8 s ZLG/ОКО window never arrive. Same
     `allLiquidation.<sym>` for the desk universe (docs/v5/websocket/public/*);
     subscribed in chunks of ≤10 args, re-subscribed after a reconnect;
   * every frame gets its own `recv_ts` on arrival (socket thread), then is
-    parked in a *per-stream* queue (book cannot fill the cap and drop trades);
-    the main thread round-robins those queues and normalises with TradesNormalizer /
-    BybitBookWs (gap → REST snapshot via RestSnapshot) / ticker_events /
-    liquidation_events and writes through `BufferedParquetSink` (immutable parts);
+    parked in a per-stream queue (book cannot fill the cap and drop trades);
+    the main thread drains trades first, then book, and normalises with
+    TradesNormalizer / BybitBookWs (gap → REST snapshot via RestSnapshot) /
+    ticker_events / liquidation_events and writes through `BufferedParquetSink`
+    (immutable parts);
   * a status JSON (frames, last age per stream, gaps, dropped, socket state) is
     written for the console every second — an honest "recorder silent for N s".
 """
@@ -63,10 +64,10 @@ class StreamStat:
 
 
 STREAMS = ("trades", "book", "ticker", "liquidation")
-# Book is the firehose. One shared queue lets orderbook fill the cap and
-# publicTrade never lands — same starve as origin vs trade jsonl. Official
-# Bybit is still one socket / many topics; parking is per stream, like
-# nautilus Databento `_live_clients` vs `_live_clients_mbo`.
+# orderbook.200 is the firehose. One shared park lets book fill the cap and
+# publicTrade never lands — same starve TapeCursor already split: origin jsonl
+# has its own budget, trades do not share it. Official Bybit is still one
+# socket / many topics; parking is per stream. Drain trades first, then book.
 _STREAM_QSIZE = {"trades": 50_000, "book": 100_000, "ticker": 25_000, "liquidation": 25_000}
 
 
@@ -199,20 +200,14 @@ class LiveRecorder:
     # --- main thread ---------------------------------------------------------------------
     def drain(self, *, max_frames: int = 20_000) -> int:
         n = 0
-        while n < max_frames:
-            progress = False
-            for name in STREAMS:
-                if n >= max_frames:
-                    break
+        for name in STREAMS:
+            while n < max_frames:
                 try:
                     recv_ts, frame = self._qs[name].get_nowait()
                 except queue.Empty:
-                    continue
+                    break
                 self.handle(name, frame, recv_ts=recv_ts)
                 n += 1
-                progress = True
-            if not progress:
-                break
         assert self.sink is not None
         self.sink.maybe_flush(time.monotonic())
         if self.rest_fallback:
