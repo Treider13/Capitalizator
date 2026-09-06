@@ -43,6 +43,8 @@ def test_chronos_has_desk_controls() -> None:
     assert "tapeBusy" in text
     assert "barsBusy" in text
     assert "candleSeries.update" in text
+    assert "candleSeries.setData" in text
+    assert "historyJump" in text
     assert "/api/tape" in text
     assert 'id="replay-bars"' in text
     assert 'id="replay-book"' in text
