@@ -375,6 +375,15 @@ class Executor:
         kind, symbol = command["kind"], command["symbol"]
         body = json.loads(command["body"])
         if kind == "flatten":
+            # Closing revokes the original trading thesis permanently. A terminal
+            # cancel and an empty position snapshot can precede a late partial
+            # fill's position update; _protect must still close that exposure.
+            with self.store.transaction() as db:
+                db.execute(
+                    "UPDATE contracts SET state='refuted',updated=? WHERE state='confirmed' "
+                    "AND id IN (SELECT contract FROM orders WHERE mode=? AND symbol=?)",
+                    (at, self.mode, symbol),
+                )
             pending = self.store.rows(
                 "SELECT id,state,symbol FROM orders WHERE mode=? AND symbol=?", (self.mode, symbol)
             )

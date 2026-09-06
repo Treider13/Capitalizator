@@ -21,7 +21,8 @@ def main() -> None:
     args = parser.parse_args()
     local_config = args.userdir / "config.json"
     config_path = args.config or local_config
-    config = Config.load(config_path if config_path.is_file() else None)
+    # An explicit path is an operator instruction, never an optional fallback.
+    config = Config.load(args.config or (local_config if local_config.exists() else None))
     if args.status:
         from urllib.request import urlopen
 
