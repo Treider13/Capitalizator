@@ -349,7 +349,9 @@ def test_console_csrf_host_validation_and_readable_script(tmp_path, config):
         with urlopen(url, timeout=3) as response:
             page = response.read().decode()
         token = page.split("const token='")[1].split("'")[0]
-        assert ".join('\\n')" in PAGE
+        assert 'src="/assets/dashboard.js"' in PAGE
+        with urlopen(url + "/assets/dashboard.js", timeout=3) as response:
+            assert "function connectChart()" in response.read().decode()
         with pytest.raises(HTTPError) as error:
             urlopen(Request(url + "/api/pause", data=b'{"paused":true}', method="POST"), timeout=3)
         assert error.value.code == 403

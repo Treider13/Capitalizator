@@ -11,7 +11,18 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from capitalizator.fusion.console_records import records
+
 PAGE = (Path(__file__).with_name("dashboard.html")).read_text(encoding="utf-8")
+ASSETS = {
+    "/assets/" + name: (Path(__file__).with_name(name).read_bytes(), mime)
+    for name, mime in (
+        ("dashboard.css", "text/css; charset=utf-8"),
+        ("dashboard.js", "text/javascript; charset=utf-8"),
+        ("chart.js", "text/javascript; charset=utf-8"),
+        ("depth.js", "text/javascript; charset=utf-8"),
+    )
+}
 
 
 def server(runtime: Any, port: int) -> ThreadingHTTPServer:
@@ -51,6 +62,22 @@ def server(runtime: Any, port: int) -> ThreadingHTTPServer:
                     PAGE.replace("__TOKEN__", token).replace("__INSTANCE__", instance).encode(),
                     "text/html; charset=utf-8",
                 )
+            elif self.path in ASSETS:
+                content, mime = ASSETS[self.path]
+                self.send(200, content, mime)
+            elif urlparse(self.path).path == "/api/records":
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    limit = int(query.get("limit", ["20"])[0])
+                    before = int(query["before"][0]) if "before" in query else None
+                    with runtime.shared.lock:
+                        mode = runtime.shared.mode
+                    body = records(
+                        runtime.store, mode, query.get("kind", [""])[0], limit, before
+                    )
+                    self.send(200, json.dumps(body, allow_nan=False).encode())
+                except ValueError as exc:
+                    self.send(400, json.dumps({"error": str(exc)}).encode())
             elif urlparse(self.path).path == "/api/stream":
                 query = parse_qs(urlparse(self.path).query)
                 symbol = query.get("symbol", [runtime.config.symbols[0]])[0]

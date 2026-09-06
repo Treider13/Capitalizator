@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
+from importlib import import_module
+from types import ModuleType
 
 import numpy as np
 
@@ -17,8 +19,9 @@ from capitalizator.zones.model import Bar
 
 _TF_MINUTES = {"1h": 60, "4h": 240}
 
+talib: ModuleType | None
 try:
-    import talib
+    talib = import_module("talib")
 
     talib.set_unstable_period("RSI", RSI_UNSTABLE_PERIOD)
     _TALIB = True
@@ -57,6 +60,7 @@ def stream_rsi(
 
 
 def _talib_stream(closes: list[float], *, period: int) -> float | None:
+    assert talib is not None
     arr = np.asarray(closes, dtype=float)
     raw = talib.stream.RSI(arr, timeperiod=period)
     if raw is None:

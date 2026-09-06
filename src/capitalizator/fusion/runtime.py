@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shlex
 import shutil
 import threading
 import time
@@ -1265,6 +1266,31 @@ class Runtime:
             body["candles"] = series.get("candles", [])
         return body
 
+    def maintenance_commands(self) -> dict[str, Any]:
+        """Show existing offline tools with actual paths; never run them via HTTP."""
+        root = self.root.resolve()
+        suffix = time.strftime("%Y%m%d-%H%M%S", time.gmtime(self.started))
+        config = (
+            " --config " + shlex.quote(str(self.config_path.resolve()))
+            if self.config_path.exists()
+            else ""
+        )
+        return {
+            "shell": "POSIX",
+            "commands": [
+                "# Linux / macOS (POSIX). Use a NEW output directory for each run.",
+                "python -m capitalizator.fusion.replay --userdir "
+                + shlex.quote(str(root))
+                + " --output "
+                + shlex.quote(str(root.parent / (root.name + "-replay-" + suffix)))
+                + config,
+                "python -m capitalizator.fusion.backup --userdir "
+                + shlex.quote(str(root))
+                + " --dest "
+                + shlex.quote(str(root.parent / (root.name + "-backup-" + suffix))),
+            ],
+        }
+
     def status(self) -> dict[str, Any]:
         with self.shared.lock:
             mode = self.shared.mode
@@ -1285,6 +1311,9 @@ class Runtime:
                 },
                 "options": dict(self.shared.external),
                 "model": self.shared.atlas.version if self.shared.atlas else None,
+                "active_model_report": (
+                    copy.deepcopy(self.shared.atlas.report) if self.shared.atlas else None
+                ),
             }
         accounts = self.store.rows("SELECT * FROM account WHERE mode=?", (mode,))
         body.update(
@@ -1306,6 +1335,7 @@ class Runtime:
                 "news_sources": copy.deepcopy(self.news_sources),
                 "config_version": self.config.version,
                 "policy_since": self.policy_since,
+                "maintenance": self.maintenance_commands(),
                 "restart_requested": self.restart_requested.is_set(),
             }
         )

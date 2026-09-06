@@ -49,7 +49,7 @@ hyexec = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-"capitalizator.fusion" = ["dashboard.html"]
+"capitalizator.fusion" = ["dashboard.html", "dashboard.css", "dashboard.js", "chart.js", "depth.js"]
 "capitalizator.ops" = ["chronos.html", "vendor/*"]
 
 [tool.pytest.ini_options]
