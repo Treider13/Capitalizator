@@ -195,7 +195,7 @@ def test_history_worker_requests_D_and_chart_exposes_daily_on_every_timeframe(tm
 
     def get(path, params, timeout):
         calls.append(params)
-        return {"list": daily_rows(NOW) if params["interval"] == "D" else []}
+        return {"list": daily_rows(NOW) if params["interval"] == "D" else [], "_known_at": NOW}
 
     try:
         with (

@@ -495,7 +495,9 @@ class Market:
                 # Bybit S is the liquidated position side, not the aggressor side.
                 self.liquidations += float(row["v"]) * (-1 if row["S"] == "Buy" else 1)
         elif kind == "history":
-            bars = parse_history(self.symbol, frame["tf"], frame["rows"], at)
+            bars = parse_history(
+                self.symbol, frame["tf"], frame["rows"], min(at, float(frame.get("known_at", at)))
+            )
             self.structure.seed(bars, self.tick)
             self.builder.seed_closed(bars)
             self.bars = deque(self.structure.bars["1m"], maxlen=256)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
+import socket
 import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +25,48 @@ ASSETS = {
         ("depth.js", "text/javascript; charset=utf-8"),
     )
 }
+
+
+class ConsoleServer(ThreadingHTTPServer):
+    """Join handlers after waking clients blocked in request/header reads."""
+
+    daemon_threads = False
+    block_on_close = True
+
+    def __init__(self, address: Any, handler: Any) -> None:
+        self.clients: set[socket.socket] = set()
+        self.clients_lock = threading.Lock()
+        self.closing = False
+        super().__init__(address, handler)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        with self.clients_lock:
+            if self.closing:
+                self.shutdown_request(request)
+                return
+            self.clients.add(request)
+            try:
+                super().process_request(request, client_address)
+            except BaseException:
+                self.clients.discard(request)
+                raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self.clients_lock:
+                self.clients.discard(request)
+
+    def server_close(self) -> None:
+        with self.clients_lock:
+            self.closing = True
+            for client in self.clients:
+                try:
+                    client.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass  # Handler may already have completed the socket close.
+        super().server_close()
 
 
 def server(runtime: Any, port: int) -> ThreadingHTTPServer:
@@ -142,7 +185,5 @@ def server(runtime: Any, port: int) -> ThreadingHTTPServer:
             except (ValueError, KeyError) as exc:
                 self.send(400, json.dumps({"error": str(exc)}).encode())
 
-    http = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    http.daemon_threads = False
-    http.block_on_close = True
+    http = ConsoleServer(("127.0.0.1", port), Handler)
     return http

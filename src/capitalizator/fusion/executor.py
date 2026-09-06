@@ -25,6 +25,23 @@ STATUS = {
     "Deactivated": "cancelled",
 }
 
+UNKNOWN_CODES = {10000, 10016, 10019, 110072, 20006}
+RETRYABLE_REJECTIONS = {10002, 10006}
+
+
+def order_state(venue: dict[str, Any], previous: str, has_fill: bool = False) -> str:
+    state = STATUS.get(venue["orderStatus"], "unknown")
+    if state in {"cancelled", "rejected"} and (
+        float(venue.get("cumExecQty") or 0) > 0
+        or has_fill
+        or previous in {"partial", "filled"}
+        or venue["orderStatus"] == "PartiallyFilledCanceled"
+    ):
+        # Terminal order is not proof of zero exposure. Use the same two-flat
+        # reconciliation path as Filled, preserving its risk reservation.
+        return "filled"
+    return state
+
 
 class Executor:
     def __init__(
@@ -46,6 +63,8 @@ class Executor:
         self.entry_lock = entry_lock if entry_lock is not None else nullcontext()
         self.authorize = authorize
         self.position_versions: dict[tuple[str, int], float] = {}
+        self.absent_positions: set[tuple[str, int]] = set()
+        self.history_error = ""
         # Sending was persisted before the network call; a crash makes it unknown.
         with store.transaction() as db:
             db.execute(
@@ -57,6 +76,12 @@ class Executor:
 
     def set_state(self, ident: str, state: str, at: float, error: str = "") -> None:
         with self.store.transaction() as db:
+            if state in {"partial", "filled"}:
+                db.execute(
+                    "UPDATE orders SET body=json_set(body,'$.has_fill',json('true')) "
+                    "WHERE id=? AND mode=?",
+                    (ident, self.mode),
+                )
             db.execute(
                 "UPDATE orders SET state=?,updated=?,error=? WHERE id=? AND mode=?",
                 (state, at, error, ident, self.mode),
@@ -65,6 +90,8 @@ class Executor:
     def private(self, frame: dict[str, Any], at: float) -> None:
         topic = str(frame.get("topic") or "")
         for row in frame.get("data") or []:
+            if row.get("category", "linear") != "linear":
+                continue
             if topic.startswith("position"):
                 key = (str(row["symbol"]), int(row.get("positionIdx") or 0))
                 updated = float(row.get("updatedTime") or at * 1000)
@@ -72,6 +99,14 @@ class Executor:
                 if not math.isfinite(updated) or not math.isfinite(size) or size < 0:
                     raise ValueError("invalid private position")
                 if updated < self.position_versions.get(key, 0):
+                    continue
+                if size > 0 and key in self.absent_positions:
+                    # REST omitted this position. WS may be delayed or a new fill;
+                    # neither local receipt time nor the old positive version can
+                    # decide which. Fence entries until a fresh REST observation.
+                    self.last_reconcile = 0
+                    with self.store.transaction() as db:
+                        db.execute("UPDATE account SET at=0 WHERE mode=?", (self.mode,))
                     continue
                 self.position_versions[key] = updated
                 self.positions = [
@@ -101,9 +136,13 @@ class Executor:
                     # REST reconciliation is authoritative for reversals/races; a late
                     # New notification must not turn Filled back into accepted.
                     existing = self.store.rows(
-                        "SELECT state FROM orders WHERE id=? AND mode=?", (ident, self.mode)
+                        "SELECT state,body FROM orders WHERE id=? AND mode=?", (ident, self.mode)
                     )
-                    state = STATUS[row["orderStatus"]]
+                    state = order_state(
+                        row,
+                        existing[0]["state"] if existing else "unknown",
+                        bool(existing and json.loads(existing[0]["body"]).get("has_fill")),
+                    )
                     if existing:
                         old = existing[0]["state"]
                         advances = (
@@ -131,13 +170,27 @@ class Executor:
         ]
         cursor = float(self.store.meta("execution_cursor:" + self.mode, at - 3600))
         # Bybit history query is bounded to seven days. Page every interval on restart.
-        while cursor < at:
-            end = min(at, cursor + 6 * 86400)
-            for execution in self.api.executions(int(max(0, cursor - 60) * 1000), int(end * 1000)):
-                self.store.execution(self.mode, execution)
-            cursor = end
-            self.store.put_meta("execution_cursor:" + self.mode, cursor)
+        self.history_error = ""
+        try:
+            while cursor < at:
+                end = min(at, cursor + 6 * 86400)
+                for execution in self.api.executions(
+                    int(max(0, cursor - 60) * 1000), int(end * 1000)
+                ):
+                    self.store.execution(self.mode, execution)
+                cursor = end
+                self.store.put_meta("execution_cursor:" + self.mode, cursor)
+        except Exception as exc:
+            self.history_error = f"execution history: {type(exc).__name__}"
+            if isinstance(exc, VenueError):
+                self.history_error += f" ({exc.code})"
+        self.store.put_meta(
+            "execution_history:" + self.mode, {"at": at, "error": self.history_error}
+        )
         self.positions = [p for p in positions if float(p.get("size") or 0) > 0]
+        present = {(str(p["symbol"]), int(p.get("positionIdx") or 0)) for p in self.positions}
+        known = set(self.position_versions) | {(s, 0) for s in self.config.symbols}
+        self.absent_positions = known - present
         for p in positions:
             key = (str(p["symbol"]), int(p.get("positionIdx") or 0))
             self.position_versions[key] = max(
@@ -164,7 +217,9 @@ class Executor:
                 continue
             venue = open_by_id.get(row["id"]) or self.api.lookup(row["symbol"], row["id"])
             if venue:
-                state = STATUS.get(venue["orderStatus"], "unknown")
+                state = order_state(
+                    venue, row["state"], json.loads(row["body"]).get("has_fill", False)
+                )
                 if state == "filled" and not any(
                     p["symbol"] == row["symbol"] for p in self.positions
                 ):
@@ -183,6 +238,23 @@ class Executor:
         self.last_reconcile = at
         self.last_error = ""
         self._protect(at)
+        for command in self.store.rows(
+            "SELECT id,symbol FROM commands WHERE mode=? AND kind='flatten' AND state='failed'",
+            (self.mode,),
+        ):
+            if any(p["symbol"] == command["symbol"] for p in self.positions):
+                continue
+            if any(
+                row["symbol"] == command["symbol"]
+                for row in self.store.rows(
+                    "SELECT symbol FROM orders WHERE mode=? AND state IN "
+                    "('pending','sending','unknown','accepted','partial','filled','cancelling')",
+                    (self.mode,),
+                )
+            ):
+                continue
+            with self.store.transaction() as db:
+                db.execute("UPDATE commands SET state='done' WHERE id=?", (command["id"],))
 
     def _protect(self, at: float) -> None:
         for pos in self.positions:
@@ -278,7 +350,7 @@ class Executor:
     def tick(self, at: float, allow_entries: bool) -> None:
         if at - self.last_reconcile >= self.config.reconcile_s:
             self.reconcile(at)
-        allow_entries = allow_entries and not self.day_halted
+        allow_entries = allow_entries and not self.day_halted and not self.history_error
         # Bounded control batch followed by bounded entry batch prevents starvation.
         errors = []
         for command in self.store.rows(
@@ -298,9 +370,11 @@ class Executor:
                     "command", command["id"], at, at + self.config.reconcile_s, type(exc).__name__
                 )
                 errors.append(exc)
-        if errors:
-            # Caller reports degraded broker health. No entries after failed protection.
-            raise errors[0]
+        if self.history_error:
+            errors.append(RuntimeError(self.history_error))
+        # Failed protection/history revokes entry authorization, but must not
+        # prevent cancellation of existing exposure on this or other symbols.
+        allow_entries = allow_entries and not errors
         rows = self.store.rows(
             "SELECT o.* FROM orders o LEFT JOIN dispatch d "
             "ON d.kind='cancel' AND d.id=o.id LEFT JOIN contracts c ON c.id=o.contract "
@@ -327,15 +401,31 @@ class Executor:
                     if self.authorize is not None and not self.authorize(row):
                         self.set_state(row["id"], "cancelled", at, "authorization_revoked")
                         continue
+                    prepare = getattr(self.api, "prepare_entry", None)
+                    if prepare is not None:
+                        try:
+                            prepare(json.loads(row["body"]))
+                        except Exception as exc:
+                            # No create request was sent, so no ambiguous order
+                            # exists. Keep the failure visible in the order ledger.
+                            self.set_state(
+                                row["id"],
+                                "rejected",
+                                at,
+                                "preparation_failed:"
+                                + (str(exc) if isinstance(exc, VenueError) else type(exc).__name__),
+                            )
+                            continue
+                        if self.authorize is not None and not self.authorize(row):
+                            self.set_state(row["id"], "cancelled", at, "authorization_revoked")
+                            continue
                     self.set_state(row["id"], "sending", at)
                     try:
                         result = self.api.place(json.loads(row["body"]))
                     except VenueError as exc:
                         self.set_state(
                             row["id"],
-                            "unknown"
-                            if exc.code in {10000, 10016, 10019, 110072, 20006}
-                            else "rejected",
+                            "unknown" if exc.code in UNKNOWN_CODES else "rejected",
                             at,
                             str(exc),
                         )
@@ -349,7 +439,13 @@ class Executor:
                                 (result.get("orderId"), at, row["id"]),
                             )
             elif not valid or not allow_entries:
-                self._cancel(row, at)
+                try:
+                    self._cancel(row, at)
+                except Exception as exc:
+                    errors.append(exc)
+        if errors:
+            # Report degraded health after every due cancellation had a chance.
+            raise errors[0]
 
     def _dispatch(self, kind: str, ident: str, at: float, next_at: float, error: str = "") -> None:
         with self.store.transaction() as db:
@@ -399,6 +495,9 @@ class Executor:
                 p for p in positions if p["symbol"] == symbol and float(p.get("size") or 0)
             ]
             for pos in positions:
+                rejected = body.get("close_rejected")
+                if rejected and rejected not in RETRYABLE_REJECTIONS:
+                    raise VenueError(int(rejected), "close requires operator retry")
                 ident = body.get("close_link") or ("acx-" + command["id"][-24:])
                 previous = self.api.lookup(symbol, ident)
                 send = previous is None and not body.get("close_attempted")
@@ -412,12 +511,30 @@ class Executor:
                     ident = f"{ident[:28]}-{revision}"
                     send = True
                 if send:
+                    body.pop("close_rejected", None)
                     body["close_link"], body["close_attempted"] = ident, True
                     with self.store.transaction() as db:
                         db.execute(
                             "UPDATE commands SET body=? WHERE id=?", (encode(body), command["id"])
                         )
-                    self.api.close_position(pos, ident)
+                    try:
+                        self.api.close_position(pos, ident)
+                    except VenueError as exc:
+                        if exc.code not in UNKNOWN_CODES:
+                            body["close_attempted"] = False
+                            body["close_rejected"] = exc.code
+                            with self.store.transaction() as db:
+                                db.execute(
+                                    "UPDATE commands SET body=?,state=? WHERE id=?",
+                                    (
+                                        encode(body),
+                                        "pending" if exc.code in RETRYABLE_REJECTIONS else "failed",
+                                        command["id"],
+                                    ),
+                                )
+                        raise
+                    else:
+                        body.pop("close_rejected", None)
             if positions:
                 with self.store.transaction() as db:
                     db.execute(

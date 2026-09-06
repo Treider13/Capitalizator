@@ -125,15 +125,23 @@ def reserve(
             return None, "account_stale"
         if db.execute(
             "SELECT 1 FROM commands WHERE mode=? AND symbol=? "
-            "AND kind='flatten' AND state='pending' LIMIT 1",
+            "AND kind='flatten' AND state IN ('pending','failed') LIMIT 1",
             (mode, contract.symbol),
         ).fetchone():
             return None, "exit_unresolved"
         body = json.loads(account["body"])
         positions = [p for p in body["positions"] if float(p.get("size") or 0) > 0]
         venue_orders = body["orders"]
+        owned = {
+            r["id"]
+            for r in db.execute(
+                "SELECT id FROM orders WHERE mode=? AND state IN "
+                "('pending','sending','unknown','accepted','partial','filled','cancelling')",
+                (mode,),
+            )
+        }
         if any(
-            not str(o.get("orderLinkId") or "").startswith("acr-")
+            str(o.get("orderLinkId") or "") not in owned
             and not o.get("reduceOnly")
             and not o.get("closeOnTrigger")
             for o in venue_orders

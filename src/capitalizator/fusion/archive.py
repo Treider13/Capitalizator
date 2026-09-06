@@ -49,7 +49,12 @@ def archive_events(store: Store, root: Path, before: float, batch: int) -> int:
 
 def events(store: Store, root: Path) -> Any:
     """Yield durable actor-journal order without loading the full tape."""
-    manifests = store.rows("SELECT body FROM meta WHERE key LIKE 'archive:%'")
+    with store.snapshot() as db:
+        yield from _snapshot_events(db, root)
+
+
+def _snapshot_events(db: Any, root: Path) -> Any:
+    manifests = db.execute("SELECT body FROM meta WHERE key LIKE 'archive:%'").fetchall()
     import json
 
     files = [json.loads(r["body"]) for r in manifests]
@@ -62,7 +67,12 @@ def events(store: Store, root: Path) -> Any:
         yield from rows
     cursor = 0
     while True:
-        rows = store.rows("SELECT * FROM events WHERE id>? ORDER BY id LIMIT 10000", (cursor,))
+        rows = [
+            dict(row)
+            for row in db.execute(
+                "SELECT * FROM events WHERE id>? ORDER BY id LIMIT 10000", (cursor,)
+            ).fetchall()
+        ]
         if not rows:
             break
         yield from rows
