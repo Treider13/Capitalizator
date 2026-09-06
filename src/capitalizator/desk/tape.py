@@ -113,6 +113,11 @@ class TapeCursor:
     MAX_BYTES = 8 * 1024 * 1024  # jsonl bytes per pass
     MAX_ROWS = 60_000  # parquet rows per pass
     BOOK_HOURS = 2  # production first pass: book deltas only this recent
+    # Live orderbook.200 jsonl for the desk universe can fill MAX_BYTES alone.
+    # Trades then never leave the last parquet print (VPS 2026-09-06: tape_uptime
+    # stuck at 21:45 while recorder last_trade was now, hours24 frozen, contour red).
+    TRADE_BYTES_FRAC = 0.25
+    TRADE_ROWS_FRAC = 0.25
     _BOOK_PARTS = frozenset({"book_diff", "snapshot", "bbo", "resync"})
     _BOOK_ORIGIN = frozenset({"snapshot", "resync"})
     _BOOK_DELTA = frozenset({"book_diff", "bbo"})
@@ -178,12 +183,16 @@ class TapeCursor:
             elif path.suffix == ".parquet":
                 parquet_paths.append(path)
         events: list[MarketEvent] = []
-        budget_bytes = self.max_bytes
-        budget_rows = self.max_rows
+        trade_byte_budget = max(1, int(self.max_bytes * self.TRADE_BYTES_FRAC))
+        delta_byte_budget = max(1, self.max_bytes - trade_byte_budget)
+        trade_row_budget = max(1, int(self.max_rows * self.TRADE_ROWS_FRAC))
+        book_row_budget = max(1, self.max_rows - trade_row_budget)
         self.backlog = False
         # Official: snapshot, then delta. Origin jsonl is small; it does not
         # share the delta/trade budget.
         # https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
+        # Deltas and trades each keep a slice: L200 must not starve publicTrade
+        # (hours24 / tape_uptime) and trade parquet must not skip the live book.
         origin_jsonl = [p for p in jsonl_paths if _book_role(p) == "origin"]
         delta_jsonl = [p for p in jsonl_paths if _book_role(p) == "delta"]
         other_jsonl = [p for p in jsonl_paths if _book_role(p) is None]
@@ -192,22 +201,24 @@ class TapeCursor:
                 continue
             got, used = self._tail_jsonl(path, max(self.max_bytes, 1 << 20))
             events.extend(got)
+        leftover_delta = delta_byte_budget
         for path in delta_jsonl:
             if self._skip_old_book(path, now):
                 continue
-            if budget_bytes <= 0:
+            if leftover_delta <= 0:
                 self.backlog = True
                 break
-            got, used = self._tail_jsonl(path, budget_bytes)
+            got, used = self._tail_jsonl(path, leftover_delta)
             events.extend(got)
-            budget_bytes -= used
+            leftover_delta -= used
+        leftover_trades = trade_byte_budget
         for path in other_jsonl:
-            if budget_bytes <= 0:
+            if leftover_trades <= 0:
                 self.backlog = True
                 break
-            got, used = self._tail_jsonl(path, budget_bytes)
+            got, used = self._tail_jsonl(path, leftover_trades)
             events.extend(got)
-            budget_bytes -= used
+            leftover_trades -= used
         book_pq = [
             p
             for p in parquet_paths
@@ -216,20 +227,28 @@ class TapeCursor:
         origin_pq = [p for p in book_pq if _book_role(p) == "origin"]
         delta_pq = [p for p in book_pq if _book_role(p) != "origin"]
         other_pq = [p for p in parquet_paths if _book_stream(p) is None]
-        book_pq = origin_pq + delta_pq
-        for path in book_pq + other_pq:
+        leftover_book_rows = book_row_budget
+        for path in origin_pq + delta_pq:
             hour_key = path.parent / path.name.split(".")[0]
             if hour_key in live_dirs:
                 continue  # the live feed already delivered these rows
-            is_book = _book_stream(path) is not None
-            if not is_book and budget_rows <= 0:
+            if leftover_book_rows <= 0:
                 self.backlog = True
                 break
-            row_cap = max(budget_rows, 50_000) if is_book else budget_rows
-            got, used = self._read_parquet(path, row_cap)
+            got, used = self._read_parquet(path, leftover_book_rows)
             events.extend(got)
-            if not is_book:
-                budget_rows -= used
+            leftover_book_rows -= used
+        leftover_trade_rows = trade_row_budget
+        for path in other_pq:
+            hour_key = path.parent / path.name.split(".")[0]
+            if hour_key in live_dirs:
+                continue  # the live feed already delivered these rows
+            if leftover_trade_rows <= 0:
+                self.backlog = True
+                break
+            got, used = self._read_parquet(path, leftover_trade_rows)
+            events.extend(got)
+            leftover_trade_rows -= used
         events.sort(key=lambda e: (e.exchange_ts, e.symbol, e.stream))
         return events
 

@@ -336,6 +336,106 @@ def test_live_book_is_read_while_trade_parquet_is_still_backlogged(tmp_path: Pat
     assert "book_diff" in streams
 
 
+def test_live_book_jsonl_cannot_starve_trade_jsonl(tmp_path: Path) -> None:
+    """VPS 2026-09-06: L200 jsonl filled MAX_BYTES; publicTrade never tailed.
+
+    hours24 / tape_uptime froze on the last parquet print while recorder was live.
+    A reserved trade slice must land at least one print in the same pass.
+    """
+    from datetime import timedelta
+
+    from capitalizator.desk.tape import TapeCursor
+    from capitalizator.recorder.sink_parquet import BufferedParquetSink
+    from capitalizator.types import MarketEvent
+
+    now = datetime(2026, 9, 6, 1, 50, tzinfo=UTC)
+    sink = BufferedParquetSink(tmp_path, flush_every_s=60, max_rows=10_000, live_jsonl=True)
+    pad = "x" * 400
+    for i in range(80):
+        ts = now - timedelta(seconds=80 - i)
+        sink.write(
+            MarketEvent(
+                stream="book_diff",
+                exchange="bybit",
+                symbol="BTCUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                seq=i + 1,
+                payload={"b": [["79754.0", pad]], "a": []},
+            )
+        )
+    for i in range(5):
+        ts = now + timedelta(seconds=i)
+        sink.write(
+            MarketEvent(
+                stream="trades",
+                exchange="bybit",
+                symbol="BTCUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                seq=100 + i,
+                payload={"px": "79591.6", "qty": "1", "side": "sell"},
+            )
+        )
+    sink.flush()
+    cur = TapeCursor(replay_all_first=False, max_bytes=8 * 1024, book_hours=2)
+    batch = cur.fresh_rows(tmp_path, now=now + timedelta(minutes=1))
+    assert cur.backlog
+    assert any(e.stream == "book_diff" for e in batch)
+    trades = [e for e in batch if e.stream == "trades"]
+    assert trades, "trade jsonl must not wait until book deltas drain"
+    assert trades[0].payload["px"] == "79591.6"
+
+
+def test_book_parquet_cannot_starve_trade_parquet(tmp_path: Path) -> None:
+    """Book parts used to take max(budget, 50k) without decrementing the row budget."""
+    from datetime import timedelta
+
+    from capitalizator.desk.tape import TapeCursor
+    from capitalizator.recorder.sink_parquet import BufferedParquetSink
+    from capitalizator.types import MarketEvent
+
+    now = datetime(2026, 9, 6, 1, 50, tzinfo=UTC)
+    books = BufferedParquetSink(tmp_path, flush_every_s=60, max_rows=100_000)
+    t_book = now - timedelta(minutes=30)
+    for i in range(400):
+        ts = t_book + timedelta(seconds=i)
+        books.write(
+            MarketEvent(
+                stream="book_diff",
+                exchange="bybit",
+                symbol="BTCUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                seq=i + 1,
+                payload={"b": [["100", "1"]], "a": []},
+            )
+        )
+    books.flush()
+    books.close()
+    trades = BufferedParquetSink(tmp_path, flush_every_s=60, max_rows=100_000)
+    t_old = now - timedelta(hours=3)
+    for i in range(40):
+        ts = t_old + timedelta(seconds=i)
+        trades.write(
+            MarketEvent(
+                stream="trades",
+                exchange="bybit",
+                symbol="ETHUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                seq=i,
+                payload={"px": "3000", "qty": "1", "side": "buy"},
+            )
+        )
+    trades.flush()
+    trades.close()
+    cur = TapeCursor(replay_all_first=False, max_rows=80, book_hours=2)
+    batch = cur.fresh_rows(tmp_path, now=now)
+    assert any(e.stream == "trades" and e.symbol == "ETHUSDT" for e in batch)
+    assert any(e.stream == "book_diff" and e.symbol == "BTCUSDT" for e in batch)
+
+
 def test_production_restart_reads_snapshot_before_old_book_diffs(tmp_path: Path) -> None:
     """Official orderbook.200: snapshot first, then delta.
 
