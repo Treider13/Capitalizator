@@ -30,6 +30,8 @@ jobs:
         run: ruff check src tests
       - name: Mypy (strict scope from pyproject)
         run: mypy
+      - name: Fusion strict types
+        run: mypy --follow-imports=silent src/capitalizator/fusion
       - name: Tests
         run: pytest
       - name: No keys in src

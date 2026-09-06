@@ -8,7 +8,7 @@ Does not import signer. Does not promote.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -169,7 +169,7 @@ def challenger_tag(row: Mapping[str, Any]) -> str | None:
     return "phase_exit_breakout"
 
 
-def summarize(rows: list[Mapping[str, Any]], *, day: str) -> ShadowDay:
+def summarize(rows: Sequence[Mapping[str, Any]], *, day: str) -> ShadowDay:
     day_rows = [row for row in rows if row_day_utc(row) == day]
     would = [row for row in day_rows if _truthy(row.get("shadow_would"))]
     scored: list[Decimal] = []

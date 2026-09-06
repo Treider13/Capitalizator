@@ -1,0 +1,38 @@
+<!doctype html><html lang="ru"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Capitalizator · Atlas</title><style>
+body{font:16px system-ui;background:#111827;color:#e5e7eb;margin:24px;max-width:1400px}
+button,select,input{font:inherit;padding:9px;margin:5px;background:#243247;color:white;border:1px solid #64748b;border-radius:6px}
+button{cursor:pointer} .cards{display:flex;flex-wrap:wrap;gap:12px}.card{background:#1e293b;padding:16px;min-width:210px;border-radius:9px}
+pre{white-space:pre-wrap;word-break:break-word;background:#1e293b;padding:14px;font-size:13px} .bad{color:#fca5a5}
+table{border-collapse:collapse;width:100%}td,th{padding:8px;text-align:left;border-bottom:1px solid #334155}
+</style><h1>Capitalizator · Атлас и контракты реакции</h1>
+<p id="health">Подключение…</p><div>
+<select id="mode"><option value="demo">Bybit Demo</option><option value="live">Bybit Live</option></select>
+<button onclick="act('mode',{mode:document.getElementById('mode').value})">Переключить счёт</button>
+<button onclick="act('pause',{paused:true})">Пауза входов</button>
+<button onclick="act('pause',{paused:false})">Разрешить входы</button>
+<button onclick="act('flatten',{})">Закрыть позиции и остановить входы</button></div>
+<p id="result"></p><div class="cards" id="cards"></div>
+<details><summary>API-ключ выбранного счёта</summary>
+<p>Ключи Demo и Live хранятся отдельно. Смена ключа требует паузы и отсутствия открытых заявок и позиций.</p>
+<input id="key" autocomplete="off" placeholder="API key"><input id="secret" type="password" autocomplete="off" placeholder="API secret">
+<button onclick="saveKeys()">Сохранить ключ</button></details>
+<h2>Рынок и зоны</h2><table><thead><tr><th>Инструмент</th><th>AMD</th><th>Ликвидность</th><th>Профиль / FVG / OTE</th></tr></thead><tbody id="markets"></tbody></table>
+<h2>Позиции и ордера</h2><pre id="positions"></pre>
+<h2>Контракты и решения</h2><pre id="decisions"></pre>
+<details><summary>Обучение и состояние потоков</summary><pre id="diagnostics"></pre></details>
+<script>
+const token='__TOKEN__';
+async function act(action,body){try{let r=await fetch('/api/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Control-Token':token},body:JSON.stringify(body)});let x=await r.json();document.getElementById('result').textContent=JSON.stringify(x);await refresh()}catch(e){document.getElementById('result').textContent=String(e)}}
+async function saveKeys(){await act('credentials',{mode:document.getElementById('mode').value,key:document.getElementById('key').value,secret:document.getElementById('secret').value});document.getElementById('key').value='';document.getElementById('secret').value=''}
+function card(parent,label,value){let c=document.createElement('div');c.className='card';let h=document.createElement('strong');h.textContent=label;c.appendChild(h);let v=document.createElement('p');v.textContent=value;c.appendChild(v);parent.appendChild(c)}
+async function refresh(){try{let r=await fetch('/api/status');let s=await r.json();let h=document.getElementById('health');h.textContent=s.mode.toUpperCase()+' · '+(s.halted?'Остановка: '+s.reason:s.paused?'Входы приостановлены':s.broker?.ready?'Счёт подключён':'Обучение / ожидание подключения счёта');h.className=s.halted?'bad':'';
+let c=document.getElementById('cards');c.replaceChildren();card(c,'Эквити',s.account?s.account.equity:'Нет данных счёта');card(c,'Реализованный P&L',s.performance.realized_net);card(c,'Закрытые эпизоды',s.performance.closed_episodes);card(c,'Модель',s.model||'Обучение на поступающих событиях');
+let tb=document.getElementById('markets');tb.replaceChildren();for(let [symbol,m] of Object.entries(s.markets)){let tr=document.createElement('tr'), b=m.block?.context||{};for(let value of [symbol,b.amd||'Накопление данных',JSON.stringify({support:b.support,resistance:b.resistance,sweep:b.sweep}),JSON.stringify({profile:b.profile,fvg:b.fvg,ote_long:b.ote_long,ote_short:b.ote_short})]){let td=document.createElement('td');td.textContent=value;tr.appendChild(td)}tb.appendChild(tr)}
+document.getElementById('positions').textContent=JSON.stringify({account:s.account?JSON.parse(s.account.body):null,orders:s.orders.map(o=>({...o,body:JSON.parse(o.body)}))},null,2);
+document.getElementById('decisions').textContent=s.decisions.map(d=>new Date(d.at*1000).toISOString()+' '+d.symbol+' '+d.kind+' '+d.body).join('\n');
+document.getElementById('diagnostics').textContent=JSON.stringify({training:s.training,broker:s.broker,queues:s.queues,private_queue:s.private_queue,errors:s.worker_errors},null,2);
+}catch(e){document.getElementById('health').textContent='Нет связи с системой: '+e}}
+refresh();setInterval(refresh,3000);
+</script></html>

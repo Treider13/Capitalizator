@@ -34,7 +34,7 @@ def _ts(raw: object) -> datetime | None:
     if raw in (None, ""):
         return None
     try:
-        return datetime.fromtimestamp(int(raw) / 1000, tz=UTC)
+        return datetime.fromtimestamp(int(str(raw)) / 1000, tz=UTC)
     except (TypeError, ValueError, OSError):
         return None
 

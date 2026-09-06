@@ -9,6 +9,7 @@ from decimal import Decimal
 from capitalizator.card.gex import OptionRow
 from capitalizator.card.labels import BLabels, compute_b_labels
 from capitalizator.card.live import CardLive, VolumeSnapshot
+from capitalizator.card.smc import SmcSide
 from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.screener.universe import load_desk_universe
 from capitalizator.types import require_utc
@@ -35,8 +36,8 @@ def from_news(
     gex_bg: str | None = None,
     fvg_status: str | None = None,
     sweep_status: str | None = None,
-    ob_status: str | None = None,
-    bos_status: str | None = None,
+    ob_status: SmcSide | None = None,
+    bos_status: SmcSide | None = None,
     venue: str = "perp",
     universe: Sequence[str] | None = None,
     spot_acked: bool = False,
@@ -78,8 +79,8 @@ def from_news(
         and symbol not in names
     ]
 
-    pluses: list[str]
-    minuses: list[str]
+    pluses: tuple[str, ...]
+    minuses: tuple[str, ...]
     bearing: str
     macro = Decimal("1")
 

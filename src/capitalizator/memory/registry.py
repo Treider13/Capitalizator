@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from hashlib import blake2s
-from typing import Literal
+from typing import Any, Literal
 
 from capitalizator.book.reconstruct import Book, _canon
 from capitalizator.memory.hashlog import HashChain, touch_payload
@@ -715,7 +715,7 @@ class Registry:
         touch_id: str | None = None,
         overwrite: bool = False,
         require_touch_id: bool = True,
-        **fields: object,
+        **fields: Any,
     ) -> list[Touch]:
         """Voices: write empty keys only. Journal: overwrite=True may restamp every row."""
         if require_touch_id:

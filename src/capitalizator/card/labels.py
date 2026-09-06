@@ -10,7 +10,7 @@ from capitalizator.card.fvg import fvg_status
 from capitalizator.card.gex import OptionRow, gex_bg
 from capitalizator.card.live import FibZone, FvgStatus, SweepStatus, fib_zone_at
 from capitalizator.card.rsi import rsi_htf
-from capitalizator.card.smc import bos_status, ob_status
+from capitalizator.card.smc import SmcSide, bos_status, ob_status
 from capitalizator.card.sweep import fractals, sweep_status, sweep_status_for
 from capitalizator.zones.model import Bar
 
@@ -24,8 +24,8 @@ class BLabels:
     sweep_status: SweepStatus = "none"
     fib_zone: FibZone = "none"
     fib_level: str | None = None
-    ob_status: str | None = None
-    bos_status: str | None = None
+    ob_status: SmcSide | None = None
+    bos_status: SmcSide | None = None
     gex_bg: str | None = None
     fib_zone_short: FibZone = "none"
     fib_level_short: str | None = None

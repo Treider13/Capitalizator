@@ -13,7 +13,7 @@ else
   echo "no .git in $APP: deploying the uploaded tree as is"
 fi
 cd infra/deploy
-[ -f .env ] || { cp ../../.env.example .env; chmod 600 .env; echo "created infra/deploy/.env from .env.example — fill BYBIT_* (or use /data/secrets/bybit.json)"; }
+[ -f .env ] || { cp ../../.env.example .env; chmod 600 .env; echo "created infra/deploy/.env from .env.example — configure separate Demo/Live keys in the localhost console"; }
 export CAP_DATA="$DATA/userdir"
 export CAP_UID="$(id -u)" CAP_GID="$(id -g)"
 docker compose build --pull

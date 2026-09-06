@@ -86,7 +86,7 @@ def survived_adds(
     prints_by_px: dict[Decimal, list[tuple[datetime, Decimal | None]]] = {}
     for row in prints:
         ts, px = row[0], row[1]
-        qty = row[2] if len(row) > 2 else None  # type: ignore[misc]
+        qty = row[2] if len(row) > 2 else None
         prints_by_px.setdefault(px, []).append((require_utc(ts), qty))
     remaining: dict[int, Decimal] = {i: a.qty for i, a in enumerate(in_adds)}
     by_level: dict[tuple[str, Decimal], list[tuple[datetime, int]]] = {}
@@ -100,7 +100,7 @@ def survived_adds(
         ]
         if any(q is None for q in near):
             continue  # legacy prints without volume: executed, not pulled
-        executed = sum(near, Decimal("0"))
+        executed = sum((q for q in near if q is not None), Decimal("0"))
         left = pull.qty - executed  # only the unexplained part is a pull
         if left <= 0:
             continue
@@ -195,7 +195,7 @@ class ZLG:
                 a_in += qty
             else:
                 a_back += qty
-        buckets = {
+        buckets: dict[Gesture, Decimal] = {
             "DEFEND": a_same,
             "RETREAT": a_back,
             "IMPROVE": a_in,

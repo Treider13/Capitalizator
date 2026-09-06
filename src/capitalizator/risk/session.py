@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -45,7 +46,7 @@ def _find_time_yaml() -> Path:
     raise FileNotFoundError("infra/time.yaml missing")
 
 
-def load_time_config() -> dict:
+def load_time_config() -> dict[str, Any]:
     raw = yaml.safe_load(_find_time_yaml().read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("time.yaml must be a mapping")

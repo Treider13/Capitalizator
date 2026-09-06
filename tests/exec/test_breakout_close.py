@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from decimal import Decimal
+from pathlib import Path
 
 from capitalizator.exec.breakout_close import CHASE_SIZE, BreakoutClose, breakout_size
 from capitalizator.ops.phase import breakout_enabled

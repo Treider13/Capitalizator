@@ -17,4 +17,4 @@ RUN pip install --no-cache-dir -e ".[live,hyexec]" && pip check
 USER trader
 # /data is the userdir (vault): knowledge/, tape/, reports/, secrets/. Mounted, never in the image.
 VOLUME ["/data"]
-CMD ["python", "-m", "capitalizator.desk", "--userdir", "/data"]
+CMD ["python", "-m", "capitalizator.fusion", "--userdir", "/data/fusion"]

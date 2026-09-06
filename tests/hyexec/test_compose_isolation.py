@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-COMPOSE = Path(__file__).resolve().parents[2] / "infra" / "deploy" / "compose.yml"
+COMPOSE = Path(__file__).resolve().parents[2] / "infra" / "deploy" / "compose.legacy.yml"
 
 
 def test_desk_still_has_no_network() -> None:

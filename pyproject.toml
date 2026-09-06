@@ -9,6 +9,7 @@ description = "Private futures desk: zone, book, BTC veto. Own account only. No 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "numpy>=1.26,<3",
     "pydantic>=2.8,<3",
     "pyarrow>=16,<23",
     "duckdb>=1.1,<2",
@@ -44,6 +45,7 @@ hyexec = [
 where = ["src"]
 
 [tool.setuptools.package-data]
+"capitalizator.fusion" = ["dashboard.html"]
 "capitalizator.ops" = ["chronos.html", "vendor/*"]
 
 [tool.pytest.ini_options]
