@@ -470,6 +470,7 @@ class Executor:
     def _command(self, command: dict[str, Any], at: float) -> None:
         kind, symbol = command["kind"], command["symbol"]
         body = json.loads(command["body"])
+        cancel_errors: list[Exception] = []
         if kind == "flatten":
             # Closing revokes the original trading thesis permanently. A terminal
             # cancel and an empty position snapshot can precede a late partial
@@ -488,7 +489,12 @@ class Executor:
                     if row["state"] == "pending":
                         self.set_state(row["id"], "cancelled", at)
                     else:
-                        self._cancel(row, at)
+                        try:
+                            self._cancel(row, at)
+                        except Exception as exc:
+                            # The filled portion still needs a reduce-only close
+                            # even if cancellation of the remainder is unavailable.
+                            cancel_errors.append(exc)
             # Re-read actual position; a paper fill never supplies this quantity.
             _, positions, _ = self.api.account()
             positions = [
@@ -502,6 +508,8 @@ class Executor:
                 previous = self.api.lookup(symbol, ident)
                 send = previous is None and not body.get("close_attempted")
                 if previous is None and body.get("close_attempted"):
+                    if cancel_errors:
+                        raise cancel_errors[0]
                     return  # Empty lookup after timeout does not permit a new close id.
                 if previous and previous.get("orderStatus") in {"Cancelled", "Rejected", "Filled"}:
                     # IOC can leave a residual. New revision only after a terminal
@@ -540,12 +548,16 @@ class Executor:
                     db.execute(
                         "UPDATE commands SET body=? WHERE id=?", (encode(body), command["id"])
                     )
+                if cancel_errors:
+                    raise cancel_errors[0]
                 return  # Completed only on a later venue-flat observation.
             unresolved = self.store.rows(
                 "SELECT id FROM orders WHERE mode=? AND symbol=? AND state IN "
                 "('pending','sending','unknown','accepted','partial','cancelling') LIMIT 1",
                 (self.mode, symbol),
             )
+            if cancel_errors:
+                raise cancel_errors[0]
             if unresolved:
                 # Cancel ACK is not terminal: retain the close intent for a late fill.
                 return

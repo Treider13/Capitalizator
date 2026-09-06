@@ -719,3 +719,28 @@ def test_replay_news_respects_invalid_market_halt(store, tmp_path, monkeypatch):
     a.compare(store, tmp_path, tmp_path / "replay", cfg, {"BTCUSDT": a.INST})
     news_ticks = [allowed for at, allowed in observed if at == 102]
     assert news_ticks and not any(news_ticks)
+
+
+@pytest.mark.parametrize("cancel_error", [TimeoutError, ValueError])
+def test_cancel_failure_does_not_prevent_closing_filled_exposure(store, cancel_error):
+    payload = a.seed_order(store)
+    venue = a.Venue()
+    venue.positions = [a.position()]
+    venue.orders[payload["orderLinkId"]] = {"orderStatus": "PartiallyFilled", "cumExecQty": "1"}
+    executor = a.Executor(store, venue, a.CFG)
+    executor.set_state(payload["orderLinkId"], "partial", 102)
+
+    def fail_cancel(*args):
+        raise cancel_error("cancel endpoint unavailable")
+
+    venue.cancel = fail_cancel
+    store.command("operator-close", "demo", "BTCUSDT", "flatten", 103, {"reason": "operator"})
+    with pytest.raises(cancel_error):
+        executor.tick(103, False)
+    assert venue.closes == ["acx-operator-close"]
+    assert store.rows("SELECT state FROM commands WHERE id='operator-close'")[0]["state"] == "pending"
+    # Restart and another cancellation failure must not duplicate an ambiguous close.
+    executor = a.Executor(store, venue, a.CFG)
+    with pytest.raises(cancel_error):
+        executor.tick(110, False)
+    assert venue.closes == ["acx-operator-close"]
