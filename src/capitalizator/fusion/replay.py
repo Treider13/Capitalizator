@@ -15,6 +15,7 @@ from typing import Any
 from capitalizator.fusion.archive import events
 from capitalizator.fusion.atlas import train
 from capitalizator.fusion.config import Config
+from capitalizator.fusion.cross_market import entry_check
 from capitalizator.fusion.engine import Engine, Shared
 from capitalizator.fusion.executor import Executor
 from capitalizator.fusion.market import Market
@@ -278,7 +279,15 @@ def compare(
         executor = Executor(store, venue, config)
         engines = {s: Engine(s, store, shared, config, variant=variant) for s in config.symbols}
         executor.authorize = lambda order, es=engines, v=venue: (
-            es[order["symbol"]].fresh(v.clock) and es[order["symbol"]].news_allows(v.clock)
+            es[order["symbol"]].fresh(v.clock)
+            and es[order["symbol"]].news_allows(v.clock)
+            and entry_check(
+                es[order["symbol"]].market.cross_market(),
+                1 if json.loads(order["body"])["side"] == "Buy" else -1,
+                v.clock,
+                config,
+            )
+            == "ready"
         )
         lanes[variant] = (store, shared, venue, executor, engines)
     count, last_train = 0, 0
@@ -347,6 +356,7 @@ def compare(
                 "small-order replay; no endogenous market impact",
                 "unclosed positions marked to market, never invented as closed trades",
                 "synthetic fixtures validate mechanics, not profitability",
+                "archives without spot L2 cannot authorize entries under the dual-book policy",
             ],
         }
         for variant, (store, _, venue, executor, _) in lanes.items():

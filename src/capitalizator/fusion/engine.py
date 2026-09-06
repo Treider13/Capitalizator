@@ -17,6 +17,7 @@ from capitalizator.fusion.atlas import Atlas
 from capitalizator.fusion.concurrency import FairLock
 from capitalizator.fusion.config import Config
 from capitalizator.fusion.contracts import Contract, baseline, propose
+from capitalizator.fusion.cross_market import entry_check
 from capitalizator.fusion.market import Block, Market
 from capitalizator.fusion.risk import Instrument, reserve
 from capitalizator.fusion.store import Store, encode
@@ -38,6 +39,7 @@ class Shared:
         self.halt_revision = 0
         self.atlas: Atlas | None = None
         self.instruments: dict[str, Instrument] = {}
+        self.public_instruments: dict[str, Instrument] = {}
         self.snapshots: dict[str, Any] = {}
         self.calendar: tuple[NewsRow, ...] = ()
         self.macro_calendar: tuple[NewsRow, ...] = ()
@@ -88,9 +90,16 @@ class Engine:
         self.contract_state = "none"
 
     def process(self, kind: str, frame: dict[str, Any], at: float) -> None:
+        if kind in {"book", "spot_book"} and not isinstance(frame.get("data"), dict):
+            raise ValueError("book_payload_must_be_an_object")
         with self.shared.lock:
-            instrument = self.shared.instruments.get(self.symbol)
+            instrument = self.shared.instruments.get(
+                self.symbol
+            ) or self.shared.public_instruments.get(self.symbol)
         if instrument:
+            if self.market.tick != instrument.tick:
+                self.market.tick = instrument.tick
+                self.process("gap", {"reason": "instrument_tick_changed"}, at)
             self.market.tick = instrument.tick
         if (
             kind == "book"
@@ -98,7 +107,12 @@ class Engine:
             and (frame.get("type") == "snapshot" or frame.get("data", {}).get("u") == 1)
         ):
             self.process("gap", {"reason": "venue_book_reset"}, at)
-        self.store.event(at, self.symbol, kind, frame)
+        self.store.event(
+            at,
+            self.symbol,
+            kind,
+            {k: v for k, v in frame.items() if k != "_received_monotonic"},
+        )
         if kind == "gap":
             self.unlabeled.clear()
             self.origin_costs.clear()
@@ -188,9 +202,18 @@ class Engine:
 
     def on_block(self, block: Block) -> None:
         with self.shared.lock:
-            model, instrument = self.shared.atlas, self.shared.instruments.get(self.symbol)
+            model = self.shared.atlas
+            instrument = self.shared.instruments.get(
+                self.symbol
+            ) or self.shared.public_instruments.get(self.symbol)
             mode = self.shared.mode
             allow = not self.shared.paused and not self.shared.halted and self.shared.broker_ready
+        if instrument is None:
+            self.manage(block, None, mode)
+            self.store.decision(
+                block.at, self.symbol, "observe", {"reason": "instrument_metadata_missing"}
+            )
+            return
         cost = block.x[3] + (instrument.maker + instrument.taker if instrument else 0.0012)
         self._learn(block, cost)
         forecast = model.predict(block.x, self.config.confidence_alpha) if model else None
@@ -312,6 +335,12 @@ class Engine:
             self.transition("expired", block.at, "model_not_live_qualified")
         elif not self.fresh(block.at):
             self.transition("expired", block.at, "stale_market")
+        elif (
+            cross_reason := entry_check(
+                self.market.cross_market(), self.contract.side, block.at, self.config
+            )
+        ) != "ready":
+            self.transition("expired", block.at, cross_reason)
         elif self.variant in {"C", "D"} and forecast.edge(self.contract.side, cost) <= 0:
             self.transition("expired", block.at, "edge_consumed_while_waiting")
         else:
@@ -350,7 +379,12 @@ class Engine:
                 self.config,
                 block.at,
                 entry,
-                float(block.context["depth"]),
+                float(
+                    block.context.get(
+                        "bid_depth" if self.contract.side == 1 else "ask_depth",
+                        block.context["depth"],
+                    )
+                ),
                 block.x[3] * block.close,
                 float(block.context["funding"]),
                 fraction=factor,
@@ -366,6 +400,7 @@ class Engine:
         m = self.market
         return bool(
             m.valid
+            and entry_check(m.cross_market(), 0, at, self.config) == "ready"
             and 0 <= at - m.book_at <= self.config.max_data_age_s
             and 0 <= at - m.ticker_at <= self.config.account_age_s
             and m.bids

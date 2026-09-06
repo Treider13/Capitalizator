@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
-from capitalizator.fusion.news import sentiment
+from capitalizator.fusion.news import mentioned_assets, sentiment
 from capitalizator.news_macro.ingest import NewsRow
 
 
@@ -117,6 +117,14 @@ def rss(body: bytes, source: dict[str, Any], at: float) -> list[dict[str, Any]]:
         link = fields.get("link")
         url = (link.attrib.get("href") or value("link")) if link is not None else source["url"]
         title = value("title")
+        text = title + " " + (value("description") or value("summary") or value("content"))
+        assets = (
+            mentioned_assets(text, source["assets"])
+            if source.get("match_assets", False)
+            else list(source["assets"])
+        )
+        if not assets:
+            continue
         result.append(
             {
                 "id": hashlib.sha256(
@@ -125,8 +133,8 @@ def rss(body: bytes, source: dict[str, Any], at: float) -> list[dict[str, Any]]:
                 "title": title,
                 "url": url,
                 "published": published,
-                "assets": list(source["assets"]),
-                "sentiment": sentiment(title + " " + value("description")),
+                "assets": assets,
+                "sentiment": sentiment(text),
                 "source": source["name"],
             }
         )
@@ -136,6 +144,8 @@ def rss(body: bytes, source: dict[str, Any], at: float) -> list[dict[str, Any]]:
 def unlocks(payload: dict[str, Any], source: dict[str, Any], at: float) -> list[NewsRow]:
     if payload.get("status") is not True:
         raise ValueError("unlock provider rejected request")
+    if not isinstance(payload.get("data"), list):
+        raise ValueError("unlock provider omitted event list")
     out = []
     now = datetime.fromtimestamp(at, UTC)
     for row in payload.get("data", []):
@@ -202,20 +212,92 @@ def sources(root: Path, symbols: tuple[str, ...]) -> list[dict[str, Any]]:
             "url": "https://blog.ethereum.org/feed.xml",
             "assets": ["ETHUSDT"],
         },
+        {
+            "name": "crypto-market-news",
+            "kind": "rss",
+            "url": "https://cointelegraph.com/rss",
+            "assets": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"],
+            "match_assets": True,
+        },
+        {
+            "name": "solana-network-status",
+            "kind": "rss",
+            "url": "https://status.solana.com/history.rss",
+            "assets": ["SOLUSDT"],
+        },
+        {
+            "name": "dogecoin-foundation",
+            "kind": "rss",
+            "url": "https://foundation.dogecoin.com/blog/index.xml",
+            "assets": ["DOGEUSDT"],
+        },
+        {
+            "name": "world-gold-council",
+            "kind": "rss",
+            "url": "https://www.gold.org/rss.xml",
+            "assets": ["XAUUSDT"],
+        },
+        {
+            "name": "gold-market-news",
+            "kind": "rss",
+            "url": "https://www.fxstreet.com/rss/news",
+            "assets": ["XAUUSDT"],
+            "match_assets": True,
+        },
+        {
+            "name": "solana-unlocks",
+            "kind": "unlocks",
+            "token_id": "solana",
+            "assets": ["SOLUSDT"],
+        },
     ]
-    rows = json.loads(path.read_text()) if path.exists() else defaults
+    rows = (
+        json.loads(path.read_text())
+        if path.exists()
+        else [
+            {**r, "assets": [s for s in r["assets"] if s in symbols]}
+            for r in defaults
+            if set(r["assets"]) & set(symbols)
+        ]
+    )
+    return validate_sources(rows, symbols)
+
+
+def validate_sources(rows: Any, symbols: tuple[str, ...]) -> list[dict[str, Any]]:
     if not isinstance(rows, list) or len(rows) > 32:
         raise ValueError("news_sources must be a list of at most 32 sources")
     names: set[str] = set()
     for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not row["name"]:
+            raise ValueError("source name required")
+        if row.get("kind") not in {"rss", "unlocks"}:
+            raise ValueError("unsupported source kind")
         if row["name"] in names or row["kind"] not in {"rss", "unlocks"}:
             raise ValueError("duplicate source or unsupported adapter")
         names.add(row["name"])
-        if not row["assets"] or any(a not in symbols and a != "ALL" for a in row["assets"]):
-            if path.exists():
-                raise ValueError("news assets must match configured symbols")
-        if row["kind"] == "rss" and urlparse(row["url"]).scheme != "https":
-            raise ValueError("news URL requires HTTPS")
+        if not isinstance(row.get("match_assets", False), bool):
+            raise ValueError("match_assets must be boolean")
+        assets = row.get("assets")
+        if (
+            not isinstance(assets, list)
+            or not assets
+            or any(not isinstance(a, str) or (a not in symbols and a != "ALL") for a in assets)
+        ):
+            raise ValueError("news assets must match configured symbols")
+        if row.get("match_assets") and "ALL" in assets:
+            raise ValueError("filtered sources require explicit assets")
+        if row["kind"] == "rss":
+            url = row.get("url")
+            if (
+                not isinstance(url, str)
+                or urlparse(url).scheme != "https"
+                or not urlparse(url).hostname
+            ):
+                raise ValueError("news URL requires HTTPS and a hostname")
+            if urlparse(url).username or urlparse(url).password:
+                raise ValueError("news URL may not contain credentials")
+        elif not isinstance(row.get("token_id"), str) or not row["token_id"].strip():
+            raise ValueError("unlock source requires token_id")
     return [r for r in rows if "ALL" in r["assets"] or set(r["assets"]) & set(symbols)]
 
 

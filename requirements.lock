@@ -1,25 +1,44 @@
-# Runtime + [dev] pins after `pip install -e ".[dev]"` on 2026-08-31.
-# Only this project's tree. Not a freeze of the VM. pytz is unused and omitted.
+# Constraints from the isolated Python 3.12 environment, 2026-09-06.
+# Base + dev/live/hyexec/talib, including transitive dependencies.
+# Use -c with the desired extras; constraints do not install unused extras.
 annotated-types==0.8.0
+build==1.6.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+cloudpickle==3.1.2
 duckdb==1.5.5
+idna==3.19
 iniconfig==2.3.0
+joblib==1.6.0
+librt==0.15.0
+mypy==1.20.2
+mypy_extensions==1.1.0
+narwhals==2.25.0
+numpy==2.5.2
+nvidia-nccl-cu12==2.31.2
 packaging==24.0
+pathspec==1.1.1
 pluggy==1.6.0
 pyarrow==22.0.0
+pybit==5.17.0
+pycryptodome==3.23.0
 pydantic==2.13.5
 pydantic_core==2.46.5
 Pygments==2.21.0
+pyproject_hooks==1.2.0
 pytest==8.4.2
 PyYAML==6.0.1
+requests==2.33.1
+river==0.26.1
 ruff==0.16.5
-mypy==1.20.2
+scikit-learn==1.9.0
+scipy==1.18.1
+TA-Lib==0.7.1
+threadpoolctl==3.6.0
 types-PyYAML==6.0.12.20260815
 typing-inspection==0.4.4
 typing_extensions==4.15.0
-# [live] extra — exchange gateway / live recorder (pip install -e ".[live]"), pinned 2026-09-02.
-pybit==5.17.0
-numpy==2.5.2
+tzdata==2026.3
+urllib3==2.7.0
 websocket-client==1.9.2
-requests==2.33.1
-# Fusion isolated model worker native-thread budget, verified 2026-09-06.
-threadpoolctl==3.6.0
+xgboost==2.1.4

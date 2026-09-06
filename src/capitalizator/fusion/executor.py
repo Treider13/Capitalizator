@@ -246,6 +246,12 @@ class Executor:
             invalid = (pos["side"] == "Buy" and liq > 0 and stop <= liq) or (
                 pos["side"] == "Sell" and liq > 0 and stop >= liq
             )
+            entry = float(pos.get("avgPrice") or 0)
+            side = 1 if pos["side"] == "Buy" else -1
+            max_stop = float(body.get("max_stop_fraction", self.config.max_stop_fraction))
+            # Verify actual fill/venue stop too; a planned stop is not fill evidence.
+            invalid = invalid or not all(math.isfinite(v) for v in (entry, stop, mark))
+            invalid = invalid or entry <= 0 or side * (entry - stop) > entry * max_stop
             if invalid or at - rows[0]["created"] >= self.config.max_hold_s:
                 self.store.command(
                     "risk-exit-" + rows[0]["id"],
@@ -369,6 +375,15 @@ class Executor:
         kind, symbol = command["kind"], command["symbol"]
         body = json.loads(command["body"])
         if kind == "flatten":
+            # Closing revokes the original trading thesis permanently. A terminal
+            # cancel and an empty position snapshot can precede a late partial
+            # fill's position update; _protect must still close that exposure.
+            with self.store.transaction() as db:
+                db.execute(
+                    "UPDATE contracts SET state='refuted',updated=? WHERE state='confirmed' "
+                    "AND id IN (SELECT contract FROM orders WHERE mode=? AND symbol=?)",
+                    (at, self.mode, symbol),
+                )
             pending = self.store.rows(
                 "SELECT id,state,symbol FROM orders WHERE mode=? AND symbol=?", (self.mode, symbol)
             )
@@ -409,6 +424,14 @@ class Executor:
                         "UPDATE commands SET body=? WHERE id=?", (encode(body), command["id"])
                     )
                 return  # Completed only on a later venue-flat observation.
+            unresolved = self.store.rows(
+                "SELECT id FROM orders WHERE mode=? AND symbol=? AND state IN "
+                "('pending','sending','unknown','accepted','partial','cancelling') LIMIT 1",
+                (self.mode, symbol),
+            )
+            if unresolved:
+                # Cancel ACK is not terminal: retain the close intent for a late fill.
+                return
         elif kind == "stop":
             _, positions, _ = self.api.account()
             for pos in positions:

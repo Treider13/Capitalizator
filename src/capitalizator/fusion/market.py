@@ -15,6 +15,7 @@ from capitalizator.desk.bars import BarBuilder
 from capitalizator.exec.fvg_mark import latest_fvg
 from capitalizator.fusion.config import Config
 from capitalizator.fusion.context import absorption, geometry, rank, sessions
+from capitalizator.fusion.cross_market import SpotBook, book_metrics
 from capitalizator.fusion.flow import Flow
 from capitalizator.fusion.structure import TFS, Structure, candle, parse_history
 from capitalizator.recorder.normalize import normalize_bybit_public_trade
@@ -95,10 +96,13 @@ def session_key(at: float) -> str:
 class Market:
     def __init__(self, symbol: str, config: Config, tick: float = 0.1) -> None:
         self.symbol, self.config, self.tick = symbol, config, tick
+        self.spot = SpotBook(symbol)
         self.bids: dict[float, float] = {}
         self.asks: dict[float, float] = {}
         self.book_u = 0
         self.book_at = 0.0
+        self.book_exchange_at: float | None = None
+        self.book_received_mono: float | None = None
         self.trade_at = 0.0
         self.ticker_at = 0.0
         self.valid = False
@@ -142,6 +146,8 @@ class Market:
     def reset(self) -> None:
         self.valid = False
         self.book_u = 0
+        self.book_exchange_at = None
+        self.book_received_mono = None
         self.pending.clear()
         self.amd_phase, self.amd_side, self.amd_origin = "unclassified", 0, 0
         self.blocks.clear()
@@ -171,6 +177,16 @@ class Market:
         snapshot = frame.get("type") == "snapshot" or u == 1
         if not snapshot and (not self.valid or u <= self.book_u):
             return
+        stamp = float(frame["ts"]) / 1000 if frame.get("ts") is not None else None
+        if stamp is not None and (
+            not math.isfinite(stamp)
+            or stamp <= 0
+            or (
+                not snapshot and self.book_exchange_at is not None and stamp < self.book_exchange_at
+            )
+        ):
+            self.reset()
+            raise ValueError("invalid_or_regressed_futures_timestamp")
         if snapshot:
             if not self.book_u:
                 self.observation_start = at
@@ -189,6 +205,8 @@ class Market:
                 else:
                     book.pop(px, None)
         self.book_u, self.book_at = u, at
+        self.book_exchange_at = stamp
+        self.book_received_mono = frame.get("_received_monotonic")
         self.valid = bool(self.bids and self.asks and max(self.bids) < min(self.asks))
 
     def trades(self, frame: dict[str, Any], at: float) -> list[Block]:
@@ -205,6 +223,8 @@ class Market:
                 self.ids.remove(self.id_queue.popleft())
             event = normalize_bybit_public_trade(raw, recv_ts=datetime.fromtimestamp(at, UTC))
             exch = event.exchange_ts.timestamp()
+            if not 0 <= at - exch <= self.config.max_data_age_s:
+                raise ValueError("trade_timestamp_outside_receipt_window")
             if exch < self.last_exchange_trade:
                 self.late_trades += 1
                 continue  # Never rewrite a finished contract/bar.
@@ -303,6 +323,9 @@ class Market:
             math.log1p(volume),
         )
         bars = list(self.bars)
+        gaps = [i for i in range(1, len(bars)) if bars[i].open_ts != bars[i - 1].close_ts]
+        if gaps:
+            bars = bars[gaps[-1] :]
         if bars and bars[-1].close_ts != self.geometry_at:
             self.geometry = geometry(bars, self.tick)
             self.geometry_at = bars[-1].close_ts
@@ -343,6 +366,8 @@ class Market:
             "volatility": vol,
             "atr": float(np.mean(ranges)) if ranges else vol * close,
             "depth": depth,
+            "bid_depth": bidq,
+            "ask_depth": askq,
             "bid": max(self.bids),
             "ask": min(self.asks),
             "profile": self.previous_profile,
@@ -365,6 +390,7 @@ class Market:
             "at": at,
             "book_at": self.book_at,
             "ticker_at": self.ticker_at,
+            "cross_market": self.cross_market(),
             "mark": self.ticker.get("markPrice"),
             "funding": float(self.ticker.get("fundingRate") or 0),
         }
@@ -420,13 +446,42 @@ class Market:
             "ticker_at": self.ticker_at,
             "trade_at": self.trade_at,
             "late_trades": self.late_trades,
+            "cross_market": self.cross_market(),
+            "spot_levels": {
+                "bids": sorted(self.spot.bids.items(), reverse=True)[:20],
+                "asks": sorted(self.spot.asks.items())[:20],
+            },
             "block": self.block_cache,
             "bid": max(self.bids) if self.bids else None,
             "ask": min(self.asks) if self.asks else None,
+            "book_levels": {
+                "bids": sorted(self.bids.items(), reverse=True)[:20],
+                "asks": sorted(self.asks.items())[:20],
+            },
+        }
+
+    def cross_market(self) -> dict[str, Any]:
+        spot = self.spot.snapshot()
+        linear = {
+            **book_metrics(self.bids, self.asks),
+            "book_at": self.book_at,
+            "exchange_at": self.book_exchange_at,
+            "received_monotonic": self.book_received_mono,
+        }
+        linear["valid"] = bool(linear["valid"] and self.valid)
+        ready = spot["valid"] and linear["valid"]
+        return {
+            "spot": spot,
+            "linear": linear,
+            "basis_bps": (linear["mid"] / spot["mid"] - 1) * 10000 if ready else None,
+            "imbalance_gap": linear["imbalance"] - spot["imbalance"] if ready else None,
+            "opposed": spot["imbalance"] * linear["imbalance"] < 0 if ready else None,
         }
 
     def ingest(self, kind: str, frame: dict[str, Any], at: float) -> list[Block]:
-        if kind == "book":
+        if kind.startswith("spot_"):
+            self.spot.ingest(kind, frame, at)
+        elif kind == "book":
             self.book(frame, at)
         elif kind == "trades":
             return self.trades(frame, at)
@@ -442,6 +497,7 @@ class Market:
             self.structure.seed(bars, self.tick)
             self.builder.seed_closed(bars)
             self.bars = deque(self.structure.bars["1m"], maxlen=256)
+            self.geometry_at = None  # REST can repair history without advancing its last bar.
         elif kind == "gap":
             self.reset()
         return []

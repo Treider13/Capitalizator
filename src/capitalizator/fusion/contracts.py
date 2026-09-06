@@ -125,6 +125,7 @@ def propose(
         "source_at": block.at,
         "costs": costs,
         "live_ready": forecast.live_ready,
+        "cross_market": c.get("cross_market", {}),
     }
     ident = hashlib.sha256(
         encode([symbol, block.at, block.id, forecast.version, config.version]).encode()

@@ -40,6 +40,7 @@ from capitalizator.fusion.web import PAGE, server
 @pytest.fixture
 def config():
     return Config(
+        symbols=("BTCUSDT", "ETHUSDT"),
         context_blocks=4,
         block_trades=2,
         block_seconds=0.001,
@@ -502,10 +503,24 @@ def test_candidate_new_reaction_risk_reservation_and_venue_send(store, config):
     shared.atlas = KnownModel()
     engine = Engine("BTCUSDT", store, shared, config)
     engine.market.book(
-        {"type": "snapshot", "data": {"u": 1, "b": [["100", "1000"]], "a": [["100.01", "1000"]]}},
+        {
+            "type": "snapshot",
+            "ts": 101000,
+            "data": {"u": 1, "b": [["100", "1000"]], "a": [["100.01", "1000"]]},
+        },
         101,
     )
     engine.market.ticker_at = 101
+    engine.market.ingest(
+        "spot_book",
+        {
+            "generation": 1,
+            "type": "snapshot",
+            "ts": 101000,
+            "data": {"s": "BTCUSDT", "u": 1, "b": [["100", "1000"]], "a": [["100.01", "1000"]]},
+        },
+        101,
+    )
     for i in range(4):
         engine.market.blocks.append(block(ident=i, at=90 + i))
     c = {
