@@ -293,6 +293,7 @@ def test_book_requires_snapshot_and_trade_dedup(config):
 
 def test_market_labels_mature_without_any_trades_on_account(store, config):
     shared = Shared()
+    shared.public_instruments["BTCUSDT"] = instrument()
     engine = Engine("BTCUSDT", store, shared, config)
     engine.process("book", book_frame(), 100)
     for i in range(12):
@@ -435,6 +436,9 @@ def test_partial_fill_flatten_uses_venue_qty_not_original_order(store, config):
     assert venue.closes[0][0]["size"] == "0.007"
     assert "acr-c1" in venue.cancels
     ex.tick(104, False)
+    assert store.rows("SELECT state FROM commands")[0]["state"] == "pending"
+    ex.reconcile(105)
+    ex.tick(106, False)
     assert store.rows("SELECT state FROM commands")[0]["state"] == "done"
 
 

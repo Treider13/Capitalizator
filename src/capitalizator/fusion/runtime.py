@@ -25,6 +25,7 @@ from capitalizator.fusion.exchange import Bybit, credentials, news_key
 from capitalizator.fusion.executor import Executor
 from capitalizator.fusion.external import bybit as public_get
 from capitalizator.fusion.external import fetch_source, gamma, sources
+from capitalizator.fusion.news import NO_SCHEDULED_UNLOCKS
 from capitalizator.fusion.news import calendar as merge_news
 from capitalizator.fusion.news import fetch as fetch_news
 from capitalizator.fusion.news import ingest as ingest_news
@@ -561,7 +562,7 @@ class Runtime:
             ]
             if not any(r["kind"] == "rss" for r in relevant):
                 missing.append("coin_news_not_configured")
-            if symbol not in {"BTCUSDT", "ETHUSDT", "XAUUSDT"} and not any(
+            if symbol not in NO_SCHEDULED_UNLOCKS and not any(
                 r["kind"] == "unlocks" for r in relevant
             ):
                 missing.append("token_unlocks_not_configured")
@@ -576,7 +577,7 @@ class Runtime:
                 "ok": not missing,
                 "missing": missing,
                 "unlock_coverage": any(r["kind"] == "unlocks" for r in relevant),
-                "unlocks_applicable": symbol not in {"BTCUSDT", "ETHUSDT", "XAUUSDT"},
+                "unlocks_applicable": symbol not in NO_SCHEDULED_UNLOCKS,
             }
         rows = [
             {

@@ -5,7 +5,7 @@
 
 | Поле | По умолчанию | Смысл |
 | --- | --- | --- |
-| symbols | 10 криптопар + XAUUSDT | Фиксированный проектный universe |
+| symbols | BTC, ETH, XAU, SOL, BNB, DOGE / USDT | Фиксированный проектный universe |
 | workers | 4 | Market threads; один владелец на символ |
 | max_positions | 2 | Максимум одновременно занятых символов, включая pending/unknown и реальные позиции |
 | trade_margin_fraction | 0.10 | До 10% equity в начальной марже одной новой сделки |

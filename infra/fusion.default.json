@@ -2,15 +2,10 @@
   "symbols": [
     "BTCUSDT",
     "ETHUSDT",
+    "XAUUSDT",
     "SOLUSDT",
-    "XRPUSDT",
-    "DOGEUSDT",
     "BNBUSDT",
-    "ADAUSDT",
-    "AVAXUSDT",
-    "LINKUSDT",
-    "SUIUSDT",
-    "XAUUSDT"
+    "DOGEUSDT"
   ],
   "workers": 4,
   "queue_capacity": 4096,

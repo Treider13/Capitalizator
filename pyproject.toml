@@ -31,7 +31,8 @@ live = [
     "pybit>=5.17,<6",
     "websocket-client>=1.8,<2",
 ]
-# Wilder RSI etalon. Needs the TA-Lib C library. B falls back to in-repo Wilder.
+# Optional Wilder RSI etalon. Supported wheels bundle the native TA-Lib library;
+# source builds require it separately. B otherwise uses the in-repo Wilder code.
 talib = [
     "numpy>=1.26,<3",
     "TA-Lib>=0.4.32,<1",

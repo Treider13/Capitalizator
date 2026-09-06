@@ -15,6 +15,9 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,7 +28,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgomp1
-          pip install -e ".[dev,live,hyexec]"
+          pip install -c requirements.lock -e ".[dev,live,hyexec,talib]"
+          pip check
       - name: Ruff
         run: ruff check src tests
       - name: Mypy (strict scope from pyproject)

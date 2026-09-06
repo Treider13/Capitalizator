@@ -30,6 +30,29 @@ NEGATIVE = frozenset(
     }
 )
 POSITIVE = frozenset({"resumed", "restored", "resolved", "approved", "approval"})
+ASSET_TERMS = {
+    "BTCUSDT": ("bitcoin", "btc", "btcusdt"),
+    "ETHUSDT": ("ethereum", "ether", "eth", "ethusdt"),
+    "XAUUSDT": ("gold", "xau", "xauusd", "xauusdt"),
+    "SOLUSDT": ("solana", "sol", "solusdt"),
+    "BNBUSDT": ("bnb", "binance coin", "bnbusdt", "bsc"),
+    "DOGEUSDT": ("dogecoin", "doge", "dogeusdt"),
+}
+# Protocol issuance / physical commodity / completed original vesting are not
+# forthcoming cliff unlocks. Evidence and limits are recorded in DATA-AND-STRATEGY.
+NO_SCHEDULED_UNLOCKS = frozenset({"BTCUSDT", "ETHUSDT", "XAUUSDT", "DOGEUSDT", "BNBUSDT"})
+
+
+def mentioned_assets(text: str, candidates: list[str] | tuple[str, ...]) -> list[str]:
+    plain = re.sub(r"<[^>]*>", " ", text).lower()
+    return [
+        symbol
+        for symbol in candidates
+        if any(
+            re.search(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", plain)
+            for term in ASSET_TERMS.get(symbol, (symbol.lower(),))
+        )
+    ]
 
 
 def sentiment(text: str) -> float:
@@ -69,6 +92,7 @@ def ingest(store: Store, payload: dict[str, Any], at: float) -> list[NewsRow]:
         known = float(seen.setdefault(ident, at))
         value = sentiment(title + " " + description)
         classification = classify_title(title)
+        assets = mentioned_assets(title + " " + description, tuple(ASSET_TERMS)) or ["ALL"]
         store.put_meta(
             "news_item:" + ident,
             {
@@ -78,6 +102,7 @@ def ingest(store: Store, payload: dict[str, Any], at: float) -> list[NewsRow]:
                 "known_at": known,
                 "sentiment": value,
                 "class": classification,
+                "assets": assets,
             },
         )
         # Old announcements discovered on startup are recorded, not fresh shocks.
@@ -90,7 +115,7 @@ def ingest(store: Store, payload: dict[str, Any], at: float) -> list[NewsRow]:
                 classification,
                 when,
                 when,
-                ("ALL",),
+                tuple(assets),
                 url,
                 "UTC",
                 "surprise_blackout",
