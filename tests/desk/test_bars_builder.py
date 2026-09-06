@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from capitalizator.desk.bars import BarBuilder, closed_bars_from_trades
+from capitalizator.desk.bars import BarBuilder, closed_bars_from_trades, forming_bar_from_trades
 from capitalizator.types import MarketEvent
 
 T0 = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
@@ -55,6 +55,26 @@ def test_next_bucket_print_parks_previous_bar_nothing_lost() -> None:
     assert [b.close for b in bars] == [Decimal("100")]
     assert builder.open_bucket("15m") is not None
     assert builder.open_bucket("15m").close == Decimal("101")
+
+
+def test_forming_bar_from_trades_matches_open_bucket() -> None:
+    trades = [
+        _trade(T0 + timedelta(minutes=1), "100"),
+        _trade(T0 + timedelta(minutes=2), "102"),
+        _trade(T0 + timedelta(minutes=16), "101"),
+    ]
+    now = T0 + timedelta(minutes=17)
+    closed = closed_bars_from_trades(trades, symbol="BTCUSDT", tf="15m", now=now, already=set())
+    forming = forming_bar_from_trades(trades, symbol="BTCUSDT", tf="15m", now=now)
+    builder = BarBuilder(symbol="BTCUSDT", tfs=("15m",))
+    for trade in trades:
+        builder.on_trade(trade)
+    assert [b.close for b in closed] == [Decimal("102")]
+    assert forming is not None
+    assert forming.close == Decimal("101")
+    assert builder.open_bucket("15m") is not None
+    assert builder.open_bucket("15m").close == forming.close
+    assert forming.close_ts > now
 
 
 def test_late_print_never_rewrites_closed_bar() -> None:

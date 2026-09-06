@@ -16,8 +16,10 @@ from capitalizator.types import MarketEvent, require_utc
 from capitalizator.zones.model import Bar
 
 # 1m/5m are feature buckets only. ZoneEngine working_tf stays 15m (KNOWN_TFS).
+# Chronos may *show* every TF we actually build. 3m does not exist.
 TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
 FEATURE_TFS = ("1m", "5m")
+CHART_TFS = ("1m", "5m", "15m", "1h", "4h", "1d")
 
 
 def builder_tfs(structure: tuple[str, ...]) -> tuple[str, ...]:
@@ -77,6 +79,52 @@ def closed_bars_from_trades(
             )
         )
     return out
+
+
+def forming_bar_from_trades(
+    trades: Sequence[MarketEvent],
+    *,
+    symbol: str,
+    tf: str,
+    now: datetime,
+) -> Bar | None:
+    """Open bucket for display only. Same prints as BarBuilder.open_bucket. Never CAV."""
+    minutes = TF_MINUTES.get(tf)
+    if minutes is None:
+        raise ValueError(f"unsupported working tf: {tf!r}")
+    start = bucket_open(now, minutes=minutes)
+    close_ts = start + timedelta(minutes=minutes)
+    if close_ts <= now:
+        return None
+    px: list[Decimal] = []
+    vol = Decimal("0")
+    for trade in trades:
+        if trade.symbol != symbol or trade.stream != "trades":
+            continue
+        if bucket_open(trade.exchange_ts, minutes=minutes) != start:
+            continue
+        try:
+            price = Decimal(str(trade.payload["px"]))
+            qty = Decimal(str(trade.payload.get("qty") or "0"))
+        except (KeyError, ArithmeticError):
+            continue
+        if price <= 0 or qty < 0:
+            continue
+        px.append(price)
+        vol += qty
+    if not px:
+        return None
+    return Bar(
+        symbol=symbol,
+        tf=tf,
+        open_ts=start,
+        close_ts=close_ts,
+        open=px[0],
+        high=max(px),
+        low=min(px),
+        close=px[-1],
+        volume=vol,
+    )
 
 
 @dataclass

@@ -564,6 +564,9 @@ def _api_get(vault: Vault, path: str, qs: dict[str, list[str]]) -> dict[str, Any
         return {"symbol": symbol or "", "zones": chronos_data.zones_for(vault, symbol=symbol or "")}
     if path == "/api/book":
         return chronos_data.book_for(vault, symbol=symbol or "")
+    if path == "/api/tape":
+        tf = (qs.get("tf") or ["15m"])[0] or "15m"
+        return chronos_data.tape_tick(vault, symbol=symbol or "", tf=tf)
     if path == "/api/replay":
         return chronos_data.replay_for(vault, symbol=symbol or "")
     if path == "/api/trades":

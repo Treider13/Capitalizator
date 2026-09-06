@@ -467,6 +467,7 @@ def test_chronos_api_empty_shapes(tmp_path: Path) -> None:
             "/api/llm_summary",
             "/api/gates",
             "/api/hello/status",
+            "/api/tape?symbol=BTCUSDT&tf=15m",
         ]
         for path in paths:
             conn = HTTPConnection(host, port, timeout=3)
@@ -627,6 +628,13 @@ def test_chronos_api_reads_vault_not_examples(tmp_path: Path) -> None:
         bars = _json_get(host, port, "/api/bars?symbol=BTCUSDT&tf=15m&limit=200")
         assert bars["bars"], "closed bars must come from parquet trades"
         assert all(row["symbol"] == "BTCUSDT" for row in bars["bars"])
+        m1 = _json_get(host, port, "/api/bars?symbol=BTCUSDT&tf=1m&limit=200")
+        assert m1["tf"] == "1m"
+        assert m1["bars"], "1m is a real TF we build, not a dead button"
+        missing_tf = _json_get(host, port, "/api/bars?symbol=BTCUSDT&tf=3m&limit=10")
+        assert missing_tf["tf"] == "3m" and missing_tf["bars"] == []
+        tape = _json_get(host, port, "/api/tape?symbol=BTCUSDT&tf=15m")
+        assert tape["book"]["bids"][0][0] == "100.4"
         eth_bars = _json_get(host, port, "/api/bars?symbol=ETHUSDT&tf=15m&limit=200")
         assert eth_bars["bars"] == []
 
