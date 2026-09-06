@@ -34,8 +34,8 @@ class Shared:
         self.external: dict[str, dict[str, Any]] = {}
         self.mode = mode
         self.paused = False
-        self.halted = False
-        self.reason = ""
+        self.halts: dict[str, tuple[int, str]] = {}
+        self.halt_revision = 0
         self.atlas: Atlas | None = None
         self.instruments: dict[str, Instrument] = {}
         self.snapshots: dict[str, Any] = {}
@@ -50,7 +50,26 @@ class Shared:
 
     def halt(self, reason: str) -> None:
         with self.lock:
-            self.halted, self.reason = True, reason
+            self.halt_revision += 1
+            key = reason if reason.startswith("worker_stale:") else reason.split(":", 1)[0]
+            self.halts[key] = (self.halt_revision, reason)
+
+    @property
+    def halted(self) -> bool:
+        with self.lock:
+            return bool(self.halts)
+
+    @property
+    def reason(self) -> str:
+        with self.lock:
+            return "; ".join(value[1] for value in self.halts.values())
+
+    def clear_halts(self, observed: dict[str, tuple[int, str]]) -> None:
+        """Clear only the exact incidents repaired, never a newer or unrelated fault."""
+        with self.lock:
+            for key, value in observed.items():
+                if self.halts.get(key) == value:
+                    del self.halts[key]
 
 
 class Engine:

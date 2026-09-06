@@ -103,7 +103,9 @@ class Config:
     @property
     def version(self) -> str:
         return hashlib.sha256(
-            json.dumps({"policy": "fusion-3-causal-news", **asdict(self)}, sort_keys=True).encode()
+            json.dumps(
+                {"policy": "fusion-4-evidence-integrity", **asdict(self)}, sort_keys=True
+            ).encode()
         ).hexdigest()[:16]
 
     @classmethod

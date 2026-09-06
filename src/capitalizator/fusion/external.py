@@ -50,15 +50,22 @@ def gamma(rows: list[dict[str, Any]], at: float) -> dict[str, Any]:
     strikes: dict[float, float] = {}
     total_oi = weighted_iv = gross = 0.0
     for row in rows:
-        oi, g, price, iv = (
-            float(row.get(k) or 0) for k in ("openInterest", "gamma", "underlyingPrice", "markIv")
-        )
-        if not all(math.isfinite(v) for v in (oi, g, price, iv)) or min(oi, price, iv) < 0:
-            raise ValueError("invalid option data")
-        if not oi or not price:
+        if row.get("openInterest") in (None, ""):
+            raise ValueError("missing option open interest")
+        oi = float(row["openInterest"])
+        if not math.isfinite(oi) or oi < 0:
+            raise ValueError("invalid option open interest")
+        if not oi:
             continue
+        if any(row.get(k) in (None, "") for k in ("gamma", "underlyingPrice", "markIv")):
+            raise ValueError("missing option Greeks or valuation")
+        g, price, iv = (float(row[k]) for k in ("gamma", "underlyingPrice", "markIv"))
+        if not all(math.isfinite(v) for v in (g, price, iv)) or g < 0 or min(price, iv) <= 0:
+            raise ValueError("invalid option data")
         strike = float(str(row["symbol"]).split("-")[2])
-        value = abs(g) * oi * price * price * 0.01
+        if not math.isfinite(strike) or strike <= 0:
+            raise ValueError("invalid option strike")
+        value = g * oi * price * price * 0.01
         gross += value
         total_oi += oi
         weighted_iv += oi * iv

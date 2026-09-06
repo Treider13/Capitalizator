@@ -132,8 +132,10 @@ class Runtime:
                 if kind == "book" and self.engines[symbol].market.valid:
                     with self.shared.lock:
                         self.recovering.discard(symbol)
-                        if not self.recovering and self.shared.reason.startswith("recovering_feed"):
-                            self.shared.halted, self.shared.reason = False, ""
+                        if not self.recovering and "recovering_feed" in self.shared.halts:
+                            self.shared.clear_halts(
+                                {"recovering_feed": self.shared.halts["recovering_feed"]}
+                            )
             self.supervisor.beat(f"market-{index}")
 
     def _trainer(self) -> None:
@@ -356,7 +358,7 @@ class Runtime:
             ):
                 self.shared.halt("public_socket_disconnected: resnapshot required")
             with self.shared.lock:
-                reason = self.shared.reason
+                incidents = dict(self.shared.halts)
             recoverable = (
                 "market_queue_overflow",
                 "market_processing_lag",
@@ -365,7 +367,7 @@ class Runtime:
             )
             if (
                 self.public_ws is not None
-                and reason.startswith(recoverable)
+                and any(key in recoverable for key in incidents)
                 and now - last_recovery > 5
             ):
                 last_recovery = now
@@ -373,13 +375,18 @@ class Runtime:
                 with self.shared.lock:
                     self.epoch += 1
                     self.recovering = set(self.config.symbols)
-                    self.shared.reason = "recovering_feed"
+                    self.shared.clear_halts(
+                        {key: value for key, value in incidents.items() if key in recoverable}
+                    )
+                    self.shared.halt("recovering_feed")
                 self._open_public()
-            if reason.startswith("private_queue_overflow") and self.executor:
+            if "private_queue_overflow" in incidents and self.executor:
                 # REST worker repairs unique executions/positions before clearing this halt.
                 if self.executor.last_reconcile > self.private_overflow_at:
                     with self.shared.lock:
-                        self.shared.halted, self.shared.reason = False, ""
+                        self.shared.clear_halts(
+                            {"private_queue_overflow": incidents["private_queue_overflow"]}
+                        )
             with self.supervisor.lock:
                 beats = dict(self.supervisor.heartbeats)
             for name, stamp in beats.items():
@@ -926,6 +933,7 @@ class Runtime:
                 "paused": self.shared.paused,
                 "halted": self.shared.halted,
                 "reason": self.shared.reason,
+                "halt_reasons": [value[1] for value in self.shared.halts.values()],
                 "mode_request": self.mode_request,
                 "markets": dict(self.shared.snapshots),
                 "options": dict(self.shared.external),
