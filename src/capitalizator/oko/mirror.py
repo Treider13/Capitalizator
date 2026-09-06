@@ -29,7 +29,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from capitalizator.book.reconstruct import Book, _canon
 from capitalizator.book.wall_watch import WallEvent
@@ -327,7 +327,7 @@ def _merged(base: tuple[MarketEvent, ...], extra: list[MarketEvent]) -> tuple[Ma
 
 
 def _replace(raw: RawWindow, **changes: Any) -> RawWindow:
-    fields = dict(
+    fields: dict[str, Any] = dict(
         symbol=raw.symbol,
         zone=raw.zone,
         t0=raw.t0,
@@ -441,6 +441,9 @@ def _inject_walls(
     at_s: int,
     pull_s: int,
 ) -> RawWindow:
+    if side not in {"bid", "ask"}:
+        raise ValueError("side must be bid or ask")
+    typed_side: Literal["bid", "ask"] = "bid" if side == "bid" else "ask"
     if not 0 < at_s < pull_s <= raw.window_s:
         raise ValueError("need 0 < at_s < pull_s <= window_s")
     t_add = raw.t0 + timedelta(seconds=at_s)
@@ -470,7 +473,7 @@ def _inject_walls(
     path.sort(key=lambda row: row[0])
     adds = tuple(
         sorted(
-            (*raw.adds, *(BookAdd(ts=t_add, side=side, px=px, qty=qty) for px, qty in walls)),
+            (*raw.adds, *(BookAdd(ts=t_add, side=typed_side, px=px, qty=qty) for px, qty in walls)),
             key=lambda a: a.ts,
         )
     )
@@ -478,12 +481,14 @@ def _inject_walls(
     for px, qty in walls:
         events.append(
             WallEvent(
-                symbol=raw.symbol, px=_canon(px), side=side, size=qty, kind="appeared", ts=t_add
+                symbol=raw.symbol, px=_canon(px), side=typed_side, size=qty,
+                kind="appeared", ts=t_add
             )
         )
         events.append(
             WallEvent(
-                symbol=raw.symbol, px=_canon(px), side=side, size=qty, kind="pulled", ts=t_pull
+                symbol=raw.symbol, px=_canon(px), side=typed_side, size=qty,
+                kind="pulled", ts=t_pull
             )
         )
     events.sort(key=lambda e: e.ts)

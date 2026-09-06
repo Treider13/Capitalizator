@@ -29,7 +29,7 @@ from typing import Literal
 from capitalizator.book.reconstruct import Book
 from capitalizator.oko.retina import RawWindow, RetinaFrame, levels_in_window
 from capitalizator.tape.classify import TapeClassifier
-from capitalizator.types import require_utc
+from capitalizator.types import MarketEvent, require_utc
 from capitalizator.zlg.gesture import BookAdd
 
 ShadowLabel = Literal["CLEAN", "SPOOF", "LAYERING", "CASCADE", "THIN", "UNKNOWN"]
@@ -89,7 +89,7 @@ class ShadowReport:
     book_trust: float | None
     tape_trust: float | None
     fingerprint: tuple[int, ...]
-    evidence: dict[str, str]
+    evidence: dict[str, str | None]
     # False before the Passport churn norm is mature: scores are raw, not a veto.
     calibrated: bool = True
     churn_share: float = 0.0
@@ -144,7 +144,7 @@ def report(raw: RawWindow, frame: RetinaFrame, *, churn_z: Decimal | None = None
     spoof_opp = _spoof_score(opp, frame.depth_opp_pre)
     layering, layered_levels = _layering(zone, opp)
     calibrated = churn_z is not None
-    if calibrated:
+    if churn_z is not None:
         z = float(churn_z)
         if z < CHURN_EXCESS_Z:
             # normal churn for this symbol: the window shows nothing beyond the norm
@@ -232,7 +232,7 @@ def _scan_side(
     depth_pre: Decimal,
     side: str,
     inside: list[tuple[datetime, Book]],
-    prints: list,
+    prints: list[MarketEvent],
 ) -> SideScan:
     """Adds on one side inside the window: how much left without a print."""
     clf = TapeClassifier()
@@ -354,7 +354,7 @@ def _cascade(frame: RetinaFrame) -> bool:
     )
 
 
-def _tape_trust(raw: RawWindow, frame: RetinaFrame, prints: list) -> float | None:
+def _tape_trust(raw: RawWindow, frame: RetinaFrame, prints: list[MarketEvent]) -> float | None:
     if len(prints) < TAPE_MIN_PRINTS:
         return None
     pairs = Counter(

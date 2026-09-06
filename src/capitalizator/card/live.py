@@ -183,7 +183,8 @@ class CardLive:
 
     @classmethod
     def from_payload(cls, raw: dict[str, Any]) -> CardLive:
-        vol = raw.get("volume") if isinstance(raw.get("volume"), dict) else {}
+        raw_volume = raw.get("volume")
+        vol = raw_volume if isinstance(raw_volume, dict) else {}
         known = raw["known_at"]
         if isinstance(known, str):
             text = known.replace("Z", "+00:00") if known.endswith("Z") else known
@@ -192,18 +193,18 @@ class CardLive:
             known_at = known
         return cls(
             symbol=str(raw["symbol"]),
-            bearing_verdict=raw["bearing_verdict"],  # type: ignore[arg-type]
+            bearing_verdict=raw["bearing_verdict"],
             known_at=known_at,
             macro_multiplier=Decimal(str(raw.get("macro_multiplier") or "1")),
-            fib_zone=raw.get("fib_zone") or "none",  # type: ignore[arg-type]
+            fib_zone=raw.get("fib_zone") or "none",
             fib_level=raw.get("fib_level"),
             rsi_htf=raw.get("rsi_htf"),
             gex_bg=raw.get("gex_bg"),
-            fvg_status=raw.get("fvg_status") or "none",  # type: ignore[arg-type]
-            sweep_status=raw.get("sweep_status") or "none",  # type: ignore[arg-type]
+            fvg_status=raw.get("fvg_status") or "none",
+            sweep_status=raw.get("sweep_status") or "none",
             ob_status=raw.get("ob_status"),
             bos_status=raw.get("bos_status"),
-            market_regime=raw.get("market_regime") or "none",  # type: ignore[arg-type]
+            market_regime=raw.get("market_regime") or "none",
             jury_b_for=int(raw.get("jury_b_for") or 0),
             jury_b_n=int(raw.get("jury_b_n") or 0),
             volume=VolumeSnapshot(
@@ -223,11 +224,11 @@ class CardLive:
             pluses=tuple(str(x) for x in (raw.get("pluses") or ())),
             minuses=tuple(str(x) for x in (raw.get("minuses") or ())),
             card_id=str(raw.get("card_id") or ""),
-            venue=raw.get("venue") or "perp",  # type: ignore[arg-type]
-            fib_zone_short=raw.get("fib_zone_short") or "none",  # type: ignore[arg-type]
+            venue=raw.get("venue") or "perp",
+            fib_zone_short=raw.get("fib_zone_short") or "none",
             fib_level_short=raw.get("fib_level_short"),
-            sweep_long=raw.get("sweep_long") or "none",  # type: ignore[arg-type]
-            sweep_short=raw.get("sweep_short") or "none",  # type: ignore[arg-type]
+            sweep_long=raw.get("sweep_long") or "none",
+            sweep_short=raw.get("sweep_short") or "none",
         )
 
 

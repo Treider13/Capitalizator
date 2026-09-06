@@ -56,7 +56,7 @@ def partition_path(data_root: Path, event: MarketEvent) -> Path:
     )
 
 
-def _row(event: MarketEvent) -> dict:
+def _row(event: MarketEvent) -> dict[str, Any]:
     return {
         "stream": event.stream,
         "exchange": event.exchange,
@@ -68,7 +68,7 @@ def _row(event: MarketEvent) -> dict:
     }
 
 
-def live_row(row: dict) -> dict:
+def live_row(row: dict[str, Any]) -> dict[str, Any]:
     """The parquet row with timestamps as ISO strings — one JSON line of the live feed."""
     return {
         **row,
@@ -83,7 +83,7 @@ class ParquetSink:
     ) -> None:
         self.data_root = data_root
         self.accepted_count = 0
-        self._rows: dict[Path, list[dict]] = {}
+        self._rows: dict[Path, list[dict[str, Any]]] = {}
         self._on_write = on_write
 
     def _notify(self) -> None:
@@ -118,7 +118,7 @@ class ParquetSink:
             if not stat.S_ISREG(lock_st.st_mode):
                 raise ValueError(f"not a regular file: {path.name}.lock")
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            rows: list[dict] = []
+            rows: list[dict[str, Any]] = []
             try:
                 exist_fd = os.open(path.name, os.O_RDONLY | nofollow, dir_fd=dir_fd)
             except FileNotFoundError:
@@ -200,7 +200,7 @@ class BufferedParquetSink:
         self.accepted_count = 0
         self.flushed_count = 0
         self.parts_written = 0
-        self._buf: dict[Path, list[dict]] = {}
+        self._buf: dict[Path, list[dict[str, Any]]] = {}
         self._seq: dict[Path, int] = {}
         self._last_flush: float | None = None
         self._live: dict[Path, Any] = {}
@@ -223,7 +223,7 @@ class BufferedParquetSink:
             self._on_write()
 
     # --- live jsonl ------------------------------------------------------------------
-    def _append_live(self, hour_path: Path, row: dict) -> None:
+    def _append_live(self, hour_path: Path, row: dict[str, Any]) -> None:
         live_path = hour_path.with_suffix(".jsonl")
         fh = self._live.get(live_path)
         if fh is None:
@@ -279,7 +279,7 @@ class BufferedParquetSink:
             self._notify()
         return written
 
-    def _write_part(self, hour_path: Path, rows: list[dict]) -> Path:
+    def _write_part(self, hour_path: Path, rows: list[dict[str, Any]]) -> Path:
         try:
             ensure_real_parent(self.data_root)
         except VaultError as exc:

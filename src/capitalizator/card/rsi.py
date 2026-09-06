@@ -7,8 +7,10 @@ extension is present. Otherwise the same Wilder seed + smooth, in-repo.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
+
+import numpy as np
 
 from capitalizator.card.params import RSI_HTF_TF, RSI_PERIOD, RSI_UNSTABLE_PERIOD
 from capitalizator.zones.model import Bar
@@ -16,14 +18,12 @@ from capitalizator.zones.model import Bar
 _TF_MINUTES = {"1h": 60, "4h": 240}
 
 try:
-    import numpy as np
     import talib
 
     talib.set_unstable_period("RSI", RSI_UNSTABLE_PERIOD)
     _TALIB = True
 except (ImportError, AttributeError):  # pragma: no cover - extension optional
-    np = None  # type: ignore[assignment]
-    talib = None  # type: ignore[assignment]
+    talib = None
     _TALIB = False
 
 
@@ -119,7 +119,7 @@ def _resample(bars: Sequence[Bar], tf: str) -> list[Bar]:
     src = [b for b in bars if b.tf == "15m"] or list(bars)
     if not src:
         return []
-    buckets: dict = {}
+    buckets: dict[datetime, list[Bar]] = {}
     for bar in src:
         total = bar.open_ts.hour * 60 + bar.open_ts.minute
         floor = total - (total % minutes)
@@ -134,7 +134,7 @@ def _resample(bars: Sequence[Bar], tf: str) -> list[Bar]:
         close_ts = open_ts + span - timedelta(microseconds=1)
         if group[-1].close_ts < close_ts and len(group) * 15 < minutes:
             continue
-        vol = sum((b.volume or Decimal("0")) for b in group)
+        vol = sum((b.volume or Decimal("0") for b in group), Decimal("0"))
         out.append(
             Bar(
                 symbol=group[0].symbol,

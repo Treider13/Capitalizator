@@ -26,7 +26,7 @@ class TapeClassifier:
         side = str(trade.payload.get("side") or "").lower()
         if side not in {"buy", "sell"}:
             raise ValueError(f"unknown taker side: {side!r}")
-        return side
+        return "buy" if side == "buy" else "sell"
 
     def eaten(
         self,

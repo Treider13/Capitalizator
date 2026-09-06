@@ -29,13 +29,15 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
+from capitalizator.book.reconstruct import Book
 from capitalizator.oko.retina import RawWindow, RetinaFrame
 from capitalizator.oko.shadow import FINGERPRINT_LEN as SHADOW_FP_LEN
 from capitalizator.tape.classify import TapeClassifier
-from capitalizator.types import require_utc
+from capitalizator.types import MarketEvent, require_utc
 
 FootprintLabel = Literal[
     "BUILD_LONG", "BUILD_SHORT", "UNWIND", "ICEBERG", "ABSORB", "SWEEP", "NONE"
@@ -203,12 +205,12 @@ def _direction(raw: RawWindow, frame: RetinaFrame) -> int | None:
 
 
 def _iceberg(
-    raw: RawWindow, prints: list, inside: list
+    raw: RawWindow, prints: list[MarketEvent], inside: list[tuple[datetime, Book]]
 ) -> tuple[FootSide | None, Decimal | None, int]:
     if len(inside) < 2 or not prints:
         return None, None, 0
     clf = TapeClassifier()
-    executed: dict[tuple[str, Decimal], Decimal] = defaultdict(lambda: Decimal("0"))
+    executed: dict[tuple[FootSide, Decimal], Decimal] = defaultdict(lambda: Decimal("0"))
     for trade in prints:
         taker = clf.taker_side(trade)
         hit: FootSide = "bid" if taker == "sell" else "ask"

@@ -27,7 +27,7 @@ Getter = Callable[[str], bytes | str | dict[str, Any]]
 def _default_get(url: str) -> bytes:
     req = Request(url, headers={"User-Agent": "capitalizator-recorder"})
     with urlopen(req, timeout=10) as resp:  # noqa: S310 - fixed https host
-        return resp.read()
+        return bytes(resp.read())
 
 
 def fetch_instruments(

@@ -129,7 +129,7 @@ def _int(raw: dict[str, Any], key: str) -> int:
     value = raw[key]
     if isinstance(value, bool) or not isinstance(value, int):
         raise RegistryConfigError(f"{key} must be an int")
-    return value
+    return int(value)
 
 
 def _tf(raw: dict[str, Any], key: str) -> str:

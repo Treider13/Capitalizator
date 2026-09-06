@@ -105,4 +105,4 @@ class RestTicker:
 
 def _default_get(url: str) -> bytes:
     with urlopen(url, timeout=10) as resp:  # noqa: S310 — public market data only
-        return resp.read()
+        return bytes(resp.read())

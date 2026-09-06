@@ -1,0 +1,106 @@
+<!doctype html><html lang="ru"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Capitalizator · Atlas</title><style>
+body{font:16px system-ui;background:#111827;color:#e5e7eb;margin:24px;max-width:1400px}
+button,select,input{font:inherit;padding:9px;margin:5px;background:#243247;color:white;border:1px solid #64748b;border-radius:6px}
+button{cursor:pointer} .cards{display:flex;flex-wrap:wrap;gap:12px}.card{background:#1e293b;padding:16px;min-width:210px;border-radius:9px}
+pre{white-space:pre-wrap;word-break:break-word;background:#1e293b;padding:14px;font-size:13px} .bad{color:#fca5a5}
+table{border-collapse:collapse;width:100%}td,th{padding:8px;text-align:left;border-bottom:1px solid #334155}
+</style><h1>Capitalizator · Атлас и контракты реакции</h1>
+<p id="health">Подключение…</p><div>
+<select id="mode"><option value="demo">Bybit Demo</option><option value="live">Bybit Live</option></select>
+<button onclick="act('mode',{mode:document.getElementById('mode').value})">Переключить счёт</button>
+<button onclick="act('pause',{paused:true})">Пауза входов</button>
+<button onclick="act('pause',{paused:false})">Разрешить входы</button>
+<button onclick="act('flatten',{})">Закрыть позиции и остановить входы</button></div>
+<p id="result"></p><div class="cards" id="cards"></div>
+<details><summary>API-ключ выбранного счёта</summary>
+<p>Ключи Demo и Live хранятся отдельно. Смена ключа требует паузы и отсутствия открытых заявок и позиций.</p>
+<input id="key" autocomplete="off" placeholder="API key"><input id="secret" type="password" autocomplete="off" placeholder="API secret">
+<button onclick="saveKeys()">Сохранить ключ</button></details>
+<details><summary>Источник анлоков Tokenomist</summary>
+<p>Для монет с анлоками нужен источник unlocks в news_sources.json. Состояние покрытия видно под графиком.</p>
+<input id="newskey" type="password" autocomplete="off" placeholder="Tokenomist API key">
+<button onclick="saveNewsKey()">Сохранить ключ новостей</button></details>
+<h2>График и действия системы</h2>
+<div><select id="symbol" onchange="connectChart()"></select><select id="tf" onchange="connectChart()"><option>1m</option><option>5m</option><option>15m</option><option>1h</option><option>4h</option></select>
+<label><input type="checkbox" id="zones" checked onchange="draw()">Зоны и уровни</label>
+<label><input type="checkbox" id="fills" checked onchange="draw()">Сделки и контракты</label>
+<label><input type="checkbox" id="sessions" checked onchange="draw()">Сессии</label>
+<label>Свечей <input id="count" type="range" min="30" max="256" value="120" oninput="draw()"></label></div>
+<p id="chart-status">Ожидание свечей</p><canvas id="chart" style="width:100%;height:520px;background:#0b1220;border:1px solid #334155" aria-label="Свечи, зоны ликвидности, контракты и исполнения"></canvas>
+<p id="crosshair">Наведите курсор: время UTC, OHLCV. Контурные ромбы — гипотезы; заполненные треугольники — исполнения Bybit.</p>
+<details open><summary>Контекст выбранной монеты и покрытие новостей</summary><pre id="context"></pre></details>
+<h2>Рынок и зоны</h2><table><thead><tr><th>Инструмент</th><th>AMD</th><th>Ликвидность</th><th>Профиль / FVG / OTE</th></tr></thead><tbody id="markets"></tbody></table>
+<h2>Позиции и ордера</h2><pre id="positions"></pre>
+<h2>Контракты и решения</h2><pre id="decisions"></pre>
+<details><summary>Обучение и состояние потоков</summary><pre id="diagnostics"></pre></details>
+<script>
+const token='__TOKEN__';
+async function act(action,body){try{let r=await fetch('/api/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Control-Token':token},body:JSON.stringify(body)});let x=await r.json();document.getElementById('result').textContent=JSON.stringify(x);await refresh()}catch(e){document.getElementById('result').textContent=String(e)}}
+async function saveKeys(){await act('credentials',{mode:document.getElementById('mode').value,key:document.getElementById('key').value,secret:document.getElementById('secret').value});document.getElementById('key').value='';document.getElementById('secret').value=''}
+async function saveNewsKey(){await act('news_credentials',{key:document.getElementById('newskey').value});document.getElementById('newskey').value='';}
+function card(parent,label,value){let c=document.createElement('div');c.className='card';let h=document.createElement('strong');h.textContent=label;c.appendChild(h);let v=document.createElement('p');v.textContent=value;c.appendChild(v);parent.appendChild(c)}
+async function refresh(){try{let r=await fetch('/api/status');let s=await r.json();lastState=s;let selector=document.getElementById('symbol');if(!selector.options.length){for(let symbol of s.config.symbols){let option=document.createElement('option');option.textContent=symbol;selector.appendChild(option)}connectChart()}let h=document.getElementById('health');h.textContent=s.mode.toUpperCase()+' · '+(s.halted?'Остановка: '+s.reason:s.paused?'Входы приостановлены':s.broker?.ready?'Счёт подключён':'Обучение / ожидание подключения счёта');h.className=s.halted?'bad':'';
+let c=document.getElementById('cards');c.replaceChildren();card(c,'Эквити',s.account?s.account.equity:'Нет данных счёта');card(c,'Реализованный P&L',s.performance.realized_net);card(c,'Закрытые эпизоды',s.performance.closed_episodes);card(c,'Модель',s.model||'Обучение на поступающих событиях');
+let tb=document.getElementById('markets');tb.replaceChildren();for(let [symbol,m] of Object.entries(s.markets)){let tr=document.createElement('tr'), b=m.block?.context||{};for(let value of [symbol,b.amd||'Накопление данных',JSON.stringify({support:b.support,resistance:b.resistance,sweep:b.sweep}),JSON.stringify({profile:b.profile,fvg:b.fvg,ote_long:b.ote_long,ote_short:b.ote_short})]){let td=document.createElement('td');td.textContent=value;tr.appendChild(td)}tb.appendChild(tr)}
+document.getElementById('positions').textContent=JSON.stringify({account:s.account?JSON.parse(s.account.body):null,orders:s.orders.map(o=>({...o,body:JSON.parse(o.body)}))},null,2);
+document.getElementById('decisions').textContent=s.decisions.map(d=>new Date(d.at*1000).toISOString()+' '+d.symbol+' '+d.kind+' '+d.body).join('\n');
+document.getElementById('diagnostics').textContent=JSON.stringify({training:s.training,broker:s.broker,queues:s.queues,private_queue:s.private_queue,errors:s.worker_errors},null,2);
+}catch(e){document.getElementById('health').textContent='Нет связи с системой: '+e}}
+
+let stream=null, chartData=null, candles=[], lastState=null;
+const chart=document.getElementById('chart');
+function connectChart(){if(stream)stream.close();candles=[];chartData=null;
+let symbol=document.getElementById('symbol').value;if(!symbol)return;
+stream=new EventSource('/api/stream?symbol='+encodeURIComponent(symbol)+'&tf='+document.getElementById('tf').value);
+stream.onmessage=e=>{chartData=JSON.parse(e.data);if(chartData.candles)candles=chartData.candles;draw()};
+stream.onerror=()=>{document.getElementById('chart-status').textContent='Нет потока графика · переподключение';};}
+function draw(){if(!chartData)return;const d=chartData, ratio=window.devicePixelRatio||1;
+const w=chart.clientWidth,h=520;chart.width=w*ratio;chart.height=h*ratio;const g=chart.getContext('2d');g.scale(ratio,ratio);g.font='11px system-ui';
+let rows=candles.slice();if(d.forming){rows=rows.filter(b=>b.at<d.forming.at);rows.push(d.forming)}rows=rows.slice(-Number(document.getElementById('count').value));
+if(!rows.length){g.fillStyle='#cbd5e1';g.fillText('Ожидание реальных закрытых свечей / REST backfill',20,40);return;}
+let min=Math.min(...rows.map(b=>b.low)),max=Math.max(...rows.map(b=>b.high)),span=max-min||max*.001;min-=span*.08;max+=span*.08;
+let left=12,right=w-110,top=20,bottom=400,dx=(right-left)/rows.length;
+const y=p=>bottom-(p-min)/(max-min)*(bottom-top),x=i=>left+(i+.5)*dx;
+const ix=at=>{let i=rows.findIndex(b=>b.end>at);return i<0?rows.length-1:i;};
+function line(p,label,color,dash=[]){if(!Number.isFinite(p)||p<min||p>max)return;g.strokeStyle=color;g.setLineDash(dash);g.beginPath();g.moveTo(left,y(p));g.lineTo(right,y(p));g.stroke();g.setLineDash([]);g.fillStyle=color;g.fillText(label+' '+p.toPrecision(7),right+4,y(p)+4);}
+function zone(lo,hi,label,color){if(!Number.isFinite(lo)||!Number.isFinite(hi)||hi<min||lo>max)return;g.globalAlpha=.14;g.fillStyle=color;g.fillRect(left,y(Math.min(hi,max)),right-left,y(Math.max(lo,min))-y(Math.min(hi,max)));g.globalAlpha=1;g.fillStyle=color;g.fillText(label,left+8,y(Math.min(hi,max))+13);}
+for(let i=0;i<5;i++){let p=min+(max-min)*i/4;line(p,'','#334155');}
+const c=d.block?.context||{},s=d.structure||{};
+if(document.getElementById('zones').checked){
+for(let z of s.zones||[])zone(z.low,z.high,'FVG '+(z.side>0?'↑':'↓'),'#a78bfa');
+for(let [name,z] of Object.entries({BAG:s.geometry?.bag,OB:s.geometry?.order_block_zone}))if(z)zone(z.low,z.high,name,'#fbbf24');
+if(c.pairing?.ote)zone(...c.pairing.ote,'OTE '+c.pairing.htf+'/'+c.pairing.ltf,'#38bdf8');
+line(s.support,'Support','#34d399',[5,4]);line(s.resistance,'Resistance','#fb7185',[5,4]);
+for(let p of s.geometry?.equal_highs||[])line(p,'EQH','#f472b6',[2,5]);
+for(let p of s.geometry?.equal_lows||[])line(p,'EQL','#2dd4bf',[2,5]);
+for(let [name,p] of Object.entries(c.session_profiles||{})){line(p.poc,name+' POC','#fbbf24');line(p.val,name+' VAL','#94a3b8',[2,4]);line(p.vah,name+' VAH','#94a3b8',[2,4]);}
+for(let p of Object.values(c.session_profiles||{})){let bins=p.histogram||[],vmax=Math.max(...bins.map(b=>b[1]),1);g.fillStyle='#fbbf2440';for(let [price,v] of bins)if(price>=min&&price<=max)g.fillRect(right-v/vmax*90,y(price)-2,v/vmax*90,4);}
+if(c.pairing?.poi)zone(c.pairing.poi.low,c.pairing.poi.high,'HTF '+c.pairing.poi.kind,'#60a5fa');
+for(let z of (d.options?.strikes||[]).filter(z=>z.gross>0).sort((a,b)=>b.gross-a.gross).slice(0,3))line(z.price,'Γ unsigned','#d946ef',[1,4]);
+}
+if(document.getElementById('sessions').checked){for(let i=1;i<rows.length;i++){
+for(let [name,tz,hour,end,color] of [['Tokyo','Asia/Tokyo',9,18,'#64748b'],['London','Europe/London',8,17,'#93c5fd'],['NY','America/New_York',8,17,'#f9a8d4']]){
+const fmt=new Intl.DateTimeFormat('en-GB',{timeZone:tz,hour:'2-digit',hourCycle:'h23'});
+let a=Number(fmt.format(new Date(rows[i-1].at*1000))),b=Number(fmt.format(new Date(rows[i].at*1000)));
+if((b===hour||b===end)&&a!==b){g.strokeStyle=color;g.globalAlpha=.35;g.beginPath();g.moveTo(x(i),top);g.lineTo(x(i),bottom);g.stroke();g.globalAlpha=1;g.fillStyle=color;g.fillText(name+' '+(b===hour?'open':'close'),x(i)+2,top+12);}}}}
+const vmax=Math.max(...rows.map(b=>b.volume),1);
+rows.forEach((b,i)=>{g.strokeStyle=g.fillStyle=b.close>=b.open?'#34d399':'#fb7185';g.beginPath();g.moveTo(x(i),y(b.high));g.lineTo(x(i),y(b.low));g.stroke();g.fillRect(x(i)-Math.max(1,dx*.3),y(Math.max(b.open,b.close)),Math.max(1,dx*.6),Math.max(1,Math.abs(y(b.open)-y(b.close))));g.globalAlpha=.5;g.fillRect(x(i)-dx*.3,485-b.volume/vmax*65,Math.max(1,dx*.6),b.volume/vmax*65);g.globalAlpha=1;});
+let analytics=(d.analytics||[]).filter(a=>a.at>=rows[0].at);if(analytics.length>1){let lo=Math.min(...analytics.map(a=>a.cvd)),hi=Math.max(...analytics.map(a=>a.cvd)),range=hi-lo||1;g.strokeStyle='#38bdf8';g.beginPath();analytics.forEach((a,i)=>{let px=x(ix(a.at)),py=483-(a.cvd-lo)/range*60;if(i)g.lineTo(px,py);else g.moveTo(px,py);});g.stroke();g.fillStyle='#38bdf8';g.fillText('Volume / CVD',12,419);}
+if(document.getElementById('fills').checked){
+for(let o of d.orders||[])if(['pending','sending','unknown','accepted','partial','filled'].includes(o.state)){line(Number(o.stop),'SL','#f87171');line(Number(o.target),'TP','#4ade80');}
+for(let f of d.fills||[]){if(f.at<rows[0].at||f.execType==='Funding')continue;let px=Number(f.execPrice);if(px<min||px>max)continue;let a=x(ix(f.at)),b=y(px),dir=f.side==='Buy'?1:-1;g.fillStyle=dir>0?'#22d3ee':'#f97316';g.beginPath();g.moveTo(a,b);g.lineTo(a-5,b+dir*10);g.lineTo(a+5,b+dir*10);g.closePath();g.fill();}
+for(let k of d.contracts||[]){let q=k.definition;if(k.at<rows[0].at||q.entry<min||q.entry>max)continue;let a=x(ix(k.at)),b=y(q.entry);g.strokeStyle=k.state==='confirmed'?'#4ade80':k.state==='refuted'?'#f87171':'#a78bfa';g.beginPath();g.moveTo(a,b-5);g.lineTo(a+5,b);g.lineTo(a,b+5);g.lineTo(a-5,b);g.closePath();g.stroke();}
+}
+for(let event of lastState?.news?.events||[]){let at=Date.parse(event.event_time)/1000;if(at>=rows[0].at&&at<=rows.at(-1).end&&(event.assets.includes(d.symbol)||event.assets.includes('ALL'))){g.fillStyle='#fbbf24';g.beginPath();g.arc(x(ix(at)),top+30,5,0,2*Math.PI);g.fill();g.fillText(event.event_class,x(ix(at))+7,top+34);}}
+line(Number(d.quote.bid),'Bid','#e2e8f0');
+g.fillStyle='#94a3b8';for(let i=0;i<rows.length;i+=Math.max(1,Math.floor(rows.length/5)))g.fillText(new Date(rows[i].at*1000).toISOString().slice(5,16).replace('T',' '),x(i),510);
+const lag=(Date.now()/1000-(d.quote.book_at||0));document.getElementById('chart-status').textContent=d.mode.toUpperCase()+' · '+d.symbol+' · '+d.tf+' · AMD '+(c.amd||'данные накапливаются')+' · стакан '+(d.quote.valid?'валиден':'не готов')+' · возраст '+lag.toFixed(2)+' c · '+(d.forming?'последняя свеча формируется':'закрытые свечи');
+document.getElementById('context').textContent=JSON.stringify({pairing:c.pairing,bos:s.bos,choch:s.choch,RSI_divergence:s.geometry?.rsi_divergence,profile:c.session_profiles,volume:c.volume_percentile,CVD:c.cvd,OI:c.oi_change_percentile,absorption_proxy:c.replenishment_absorption,gamma:d.options,news:lastState?.news?.coverage?.[d.symbol],headlines:(lastState?.news?.headlines||[]).filter(n=>!n.assets||n.assets.includes(d.symbol)||n.assets.includes('ALL')).slice(0,8),events:(lastState?.news?.events||[]).filter(e=>e.assets.includes(d.symbol)||e.assets.includes('ALL')).slice(-12)},null,2);
+chart.onmousemove=e=>{let i=Math.max(0,Math.min(rows.length-1,Math.floor((e.offsetX-left)/dx))),b=rows[i];document.getElementById('crosshair').textContent=new Date(b.at*1000).toISOString()+'  O '+b.open+' H '+b.high+' L '+b.low+' C '+b.close+' V '+b.volume;};
+}
+window.addEventListener('resize',draw);
+async function statusLoop(){await refresh();setTimeout(statusLoop,2000)}statusLoop();
+
+</script></html>

@@ -32,7 +32,7 @@ def snapshot(
             a_price=last_price,
             a_wall=walls,
         )
-    vols = [b.volume for b in vol_bars]
+    vols = [b.volume for b in vol_bars if b.volume is not None]
     total = sum(vols, Decimal("0"))
     typical = [((b.high + b.low + b.close) / 3, v) for b, v in zip(vol_bars, vols, strict=True)]
     vwap = sum((px * v for px, v in typical), Decimal("0")) / total

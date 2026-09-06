@@ -55,7 +55,7 @@ class BookDiffNormalizer:
         recv_ts: datetime,
         exchange: ExchangeName = "bybit",
     ) -> MarketEvent:
-        stream = "snapshot" if kind == "snapshot" else "book_diff"
+        stream: Literal["snapshot", "book_diff"] = "snapshot" if kind == "snapshot" else "book_diff"
         return MarketEvent(
             stream=stream,
             exchange=exchange,

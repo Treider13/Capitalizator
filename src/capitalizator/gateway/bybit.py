@@ -206,6 +206,8 @@ class BybitGateway:
         sec = res.get("timeSecond")
         if nano:
             return datetime.fromtimestamp(int(nano) / 1e9, tz=UTC)
+        if sec is None:
+            raise ValueError("server time response is missing seconds")
         return datetime.fromtimestamp(int(sec), tz=UTC)
 
     def instruments(self) -> list[dict[str, Any]]:

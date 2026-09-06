@@ -1,0 +1,113 @@
+"""Loopback console. Two venue modes, separate pause/close controls, CSRF token."""
+
+from __future__ import annotations
+
+import hmac
+import json
+import secrets
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+PAGE = (Path(__file__).with_name("dashboard.html")).read_text(encoding="utf-8")
+
+
+def server(runtime: Any, port: int) -> ThreadingHTTPServer:
+    token = secrets.token_urlsafe(32)
+    streams = threading.BoundedSemaphore(8)
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args: Any) -> None:
+            return  # Requests may carry control data; decisions are logged structurally.
+
+        def send(self, code: int, body: bytes, content_type: str = "application/json") -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def trusted_host(self) -> bool:
+            assert isinstance(self.server, ThreadingHTTPServer)
+            bound_port = self.server.server_port
+            return self.headers.get("Host", "") in {
+                f"127.0.0.1:{bound_port}",
+                f"localhost:{bound_port}",
+            }
+
+        def do_GET(self) -> None:
+            if not self.trusted_host():
+                self.send(403, b'{"error":"host"}')
+                return
+            if self.path == "/":
+                self.send(
+                    200, PAGE.replace("__TOKEN__", token).encode(), "text/html; charset=utf-8"
+                )
+            elif urlparse(self.path).path == "/api/stream":
+                query = parse_qs(urlparse(self.path).query)
+                symbol = query.get("symbol", [runtime.config.symbols[0]])[0]
+                tf = query.get("tf", ["1m"])[0]
+                try:
+                    first = runtime.chart(symbol, tf)
+                except ValueError:
+                    self.send(400, b'{"error":"chart parameters"}')
+                    return
+                if not streams.acquire(blocking=False):
+                    self.send(429, b'{"error":"stream limit"}')
+                    return
+                try:
+                    self.connection.settimeout(5)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Accel-Buffering", "no")
+                    self.end_headers()
+                    body = first
+                    while not runtime.supervisor.stop.is_set():
+                        self.wfile.write(
+                            b"data: " + json.dumps(body, allow_nan=False).encode() + b"\n\n"
+                        )
+                        self.wfile.flush()
+                        if runtime.supervisor.stop.wait(runtime.config.chart_refresh_s):
+                            break
+                        body = runtime.chart(symbol, tf, body["revision"])
+                except (OSError, ConnectionError):
+                    pass
+                finally:
+                    streams.release()
+            elif self.path == "/api/status":
+                self.send(200, json.dumps(runtime.status(), allow_nan=False).encode())
+            else:
+                self.send(404, b"{}")
+
+        def do_POST(self) -> None:
+            origin = self.headers.get("Origin")
+            if (
+                not self.trusted_host()
+                or not hmac.compare_digest(self.headers.get("X-Control-Token", ""), token)
+                or (origin and urlparse(origin).netloc != self.headers.get("Host"))
+            ):
+                self.send(403, b'{"error":"control authorization"}')
+                return
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 8192:
+                    raise ValueError("invalid request size")
+                body = json.loads(self.rfile.read(size))
+                if not isinstance(body, dict):
+                    raise ValueError("object required")
+                action = self.path.removeprefix("/api/")
+                result = runtime.control(action, body)
+                self.send(200, json.dumps(result).encode())
+            except (ValueError, KeyError) as exc:
+                self.send(400, json.dumps({"error": str(exc)}).encode())
+
+    http = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    http.daemon_threads = False
+    http.block_on_close = True
+    return http

@@ -1,4 +1,4 @@
-# One image, five processes (compose picks the command). python:3.12 — the project pins
+# Fusion image with one account writer. python:3.12 — the project pins
 # pyarrow/duckdb/pydantic wheels for 3.12; the VPS system Python (3.14) is not used.
 FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TZ=UTC HOME=/tmp
@@ -13,8 +13,8 @@ COPY infra /app/infra
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir -e ".[live,hyexec]" && pip check
+RUN pip install --no-cache-dir -e ".[live]" && pip check
 USER trader
 # /data is the userdir (vault): knowledge/, tape/, reports/, secrets/. Mounted, never in the image.
 VOLUME ["/data"]
-CMD ["python", "-m", "capitalizator.desk", "--userdir", "/data"]
+CMD ["python", "-m", "capitalizator.fusion", "--userdir", "/data/fusion"]

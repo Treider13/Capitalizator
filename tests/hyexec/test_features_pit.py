@@ -104,7 +104,7 @@ def test_bos_5m_uses_existing_smc_atom() -> None:
     ohlc[10] = ("111", "114", "108", "110")
     ohlc[11] = ("125", "140", "124", "135")
     bars = []
-    for i, (o, h, l, c) in enumerate(ohlc):
+    for i, (o, h, low, c) in enumerate(ohlc):
         close_ts = AS_OF - td(minutes=5 * (11 - i))
         bars.append(
             Bar(
@@ -114,7 +114,7 @@ def test_bos_5m_uses_existing_smc_atom() -> None:
                 close_ts=close_ts,
                 open=Decimal(o),
                 high=Decimal(h),
-                low=Decimal(l),
+                low=Decimal(low),
                 close=Decimal(c),
                 volume=Decimal("1"),
             )

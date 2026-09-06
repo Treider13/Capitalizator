@@ -22,7 +22,7 @@ class PitStore:
     def query(self, sql: str, *, as_of: datetime) -> list[dict[str, Any]]:
         as_of_u = require_utc(as_of)
         visible = [e for e in self._events if known_by(e.recv_ts, as_of_u)]
-        rows = [
+        rows: list[dict[str, Any]] = [
             {
                 "stream": e.stream,
                 "exchange": e.exchange,

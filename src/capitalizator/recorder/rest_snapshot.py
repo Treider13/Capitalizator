@@ -45,7 +45,9 @@ def book_times(
     ts = data.get("ts") if data.get("ts") is not None else frame.get("ts")
     if cts is None and ts is None:
         raise ValueError("book payload missing cts and ts")
-    engine = datetime.fromtimestamp(int(cts if cts is not None else ts) / 1000, tz=UTC)
+    timestamp = cts if cts is not None else ts
+    assert timestamp is not None
+    engine = datetime.fromtimestamp(int(timestamp) / 1000, tz=UTC)
     system = None
     if ts is not None:
         system = datetime.fromtimestamp(int(ts) / 1000, tz=UTC)
@@ -139,4 +141,4 @@ class RestSnapshot:
 
 def _default_get(url: str) -> bytes:
     with urlopen(url, timeout=10) as resp:  # noqa: S310 — public market data only
-        return resp.read()
+        return bytes(resp.read())

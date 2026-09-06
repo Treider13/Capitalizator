@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-COMPOSE = Path(__file__).resolve().parents[2] / "infra" / "deploy" / "compose.yml"
+COMPOSE = Path(__file__).resolve().parents[2] / "infra" / "deploy" / "compose.legacy.yml"
 
 
 def test_desk_still_has_no_network() -> None:
@@ -27,7 +27,7 @@ def test_hyexec_and_train_are_separate_services() -> None:
 
 
 def test_image_installs_hyexec_extra() -> None:
-    text = (Path(__file__).resolve().parents[2] / "infra" / "deploy" / "Dockerfile").read_text()
+    text = (Path(__file__).resolve().parents[2] / "infra" / "deploy" / "Dockerfile.legacy").read_text()
     assert ".[live,hyexec]" in text
     assert "libgomp1" in text
 

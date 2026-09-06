@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -239,6 +240,7 @@ class LiveRecorder:
         return written
 
     def handle(self, stream: str, frame: Frame, *, recv_ts: datetime) -> list[MarketEvent]:
+        frame = dict(frame)
         stat = self.stats[stream]
         stat.frames += 1
         stat.last_at = recv_ts
@@ -256,7 +258,7 @@ class LiveRecorder:
                     fetch = self.fetch_snapshot
                     worker = BybitBookWs(
                         symbol=symbol,
-                        fetch_snapshot=(lambda s=symbol: fetch(s)) if fetch else None,
+                        fetch_snapshot=partial(fetch, symbol) if fetch else None,
                     )
                     self.books[symbol] = worker
                 events = worker.ingest_frames([frame], recv_ts=recv_ts)
