@@ -104,20 +104,18 @@ class TapeCursor:
     first pass (`book_hours`): a book is only valid from its next snapshot anyway.
     Official orderbook.200: snapshot, then delta. Origin jsonl is read first so a
     restart does not spend the byte budget on `book_diff` and never apply the
-    snapshot (live SOLUSDT stayed empty). No time-seek stitch.
+    snapshot (live SOLUSDT stayed empty). Trade jsonl has its own MAX_BYTES pool
+    for the same reason origin does not share leftover with deltas — live L200
+    can fill one pass alone (VPS 2026-09-06: tape_uptime stuck at 21:45).
+    No time-seek stitch.
     """
 
     RECENT_DAYS = 2
     # sized so one pass stays well under the 30 s dead-man: a longer pass starves the
     # desk heartbeat and the signer blocks entries with reason `desk` while catching up
-    MAX_BYTES = 8 * 1024 * 1024  # jsonl bytes per pass
+    MAX_BYTES = 8 * 1024 * 1024  # jsonl bytes per stream group per pass
     MAX_ROWS = 60_000  # parquet rows per pass
     BOOK_HOURS = 2  # production first pass: book deltas only this recent
-    # Live orderbook.200 jsonl for the desk universe can fill MAX_BYTES alone.
-    # Trades then never leave the last parquet print (VPS 2026-09-06: tape_uptime
-    # stuck at 21:45 while recorder last_trade was now, hours24 frozen, contour red).
-    TRADE_BYTES_FRAC = 0.25
-    TRADE_ROWS_FRAC = 0.25
     _BOOK_PARTS = frozenset({"book_diff", "snapshot", "bbo", "resync"})
     _BOOK_ORIGIN = frozenset({"snapshot", "resync"})
     _BOOK_DELTA = frozenset({"book_diff", "bbo"})
@@ -183,16 +181,16 @@ class TapeCursor:
             elif path.suffix == ".parquet":
                 parquet_paths.append(path)
         events: list[MarketEvent] = []
-        trade_byte_budget = max(1, int(self.max_bytes * self.TRADE_BYTES_FRAC))
-        delta_byte_budget = max(1, self.max_bytes - trade_byte_budget)
-        trade_row_budget = max(1, int(self.max_rows * self.TRADE_ROWS_FRAC))
-        book_row_budget = max(1, self.max_rows - trade_row_budget)
+        budget_bytes = self.max_bytes
+        budget_rows = self.max_rows
         self.backlog = False
         # Official: snapshot, then delta. Origin jsonl is small; it does not
-        # share the delta/trade budget.
+        # share the delta budget.
         # https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
-        # Deltas and trades each keep a slice: L200 must not starve publicTrade
-        # (hours24 / tape_uptime) and trade parquet must not skip the live book.
+        # Trades get the same treatment: own MAX_BYTES leftover, not whatever
+        # L200 did not eat. Bybit publicTrade is a separate WS topic; nautilus
+        # DatabentoDataClient keeps two live clients per dataset (MBO vs rest)
+        # for the same reason — one stream filling the socket must not stall the other.
         origin_jsonl = [p for p in jsonl_paths if _book_role(p) == "origin"]
         delta_jsonl = [p for p in jsonl_paths if _book_role(p) == "delta"]
         other_jsonl = [p for p in jsonl_paths if _book_role(p) is None]
@@ -201,17 +199,16 @@ class TapeCursor:
                 continue
             got, used = self._tail_jsonl(path, max(self.max_bytes, 1 << 20))
             events.extend(got)
-        leftover_delta = delta_byte_budget
         for path in delta_jsonl:
             if self._skip_old_book(path, now):
                 continue
-            if leftover_delta <= 0:
+            if budget_bytes <= 0:
                 self.backlog = True
                 break
-            got, used = self._tail_jsonl(path, leftover_delta)
+            got, used = self._tail_jsonl(path, budget_bytes)
             events.extend(got)
-            leftover_delta -= used
-        leftover_trades = trade_byte_budget
+            budget_bytes -= used
+        leftover_trades = self.max_bytes
         for path in other_jsonl:
             if leftover_trades <= 0:
                 self.backlog = True
@@ -227,28 +224,20 @@ class TapeCursor:
         origin_pq = [p for p in book_pq if _book_role(p) == "origin"]
         delta_pq = [p for p in book_pq if _book_role(p) != "origin"]
         other_pq = [p for p in parquet_paths if _book_stream(p) is None]
-        leftover_book_rows = book_row_budget
-        for path in origin_pq + delta_pq:
+        book_pq = origin_pq + delta_pq
+        for path in book_pq + other_pq:
             hour_key = path.parent / path.name.split(".")[0]
             if hour_key in live_dirs:
                 continue  # the live feed already delivered these rows
-            if leftover_book_rows <= 0:
+            is_book = _book_stream(path) is not None
+            if not is_book and budget_rows <= 0:
                 self.backlog = True
                 break
-            got, used = self._read_parquet(path, leftover_book_rows)
+            row_cap = max(budget_rows, 50_000) if is_book else budget_rows
+            got, used = self._read_parquet(path, row_cap)
             events.extend(got)
-            leftover_book_rows -= used
-        leftover_trade_rows = trade_row_budget
-        for path in other_pq:
-            hour_key = path.parent / path.name.split(".")[0]
-            if hour_key in live_dirs:
-                continue  # the live feed already delivered these rows
-            if leftover_trade_rows <= 0:
-                self.backlog = True
-                break
-            got, used = self._read_parquet(path, leftover_trade_rows)
-            events.extend(got)
-            leftover_trade_rows -= used
+            if not is_book:
+                budget_rows -= used
         events.sort(key=lambda e: (e.exchange_ts, e.symbol, e.stream))
         return events
 
