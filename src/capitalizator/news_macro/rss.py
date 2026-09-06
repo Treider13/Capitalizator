@@ -5,11 +5,21 @@ Caller passes already-fetched XML. This module does not open sockets.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from xml.etree import ElementTree
 
-from capitalizator.news_macro.ingest import NEWS_CLASSES, NewsRow
+from capitalizator.news_macro.ingest import NewsRow
 from capitalizator.types import require_utc
+
+_FOMC = re.compile(r"fomc|powell|federal\s+reserve", re.I)
+_CPI = re.compile(r"\bcpi\b", re.I)
+_NFP = re.compile(r"\b(nfp|non[\s-]?farm|payrolls?)\b", re.I)
+_PCE = re.compile(r"\b(pce|personal\s+consumption)\b", re.I)
+_HACK = re.compile(r"hack|exploit", re.I)
+_LISTING = re.compile(r"\b(listing|listed|lists|will\s+list)\b", re.I)
+_ETF = re.compile(r"\betf\b", re.I)
+_SEC = re.compile(r"\bsec\b", re.I)
 
 FORBIDDEN_HOSTS = ("t.me", "telegram", "discord.com")
 
@@ -58,17 +68,25 @@ def parse_rss(
 
 
 def classify_title(title: str) -> str:
-    low = title.lower()
-    if "fomc" in low or "powell" in low or "federal reserve" in low:
+    """Official tokens only. Unknown → OTHER, never a silent FOMC.
+
+    NFP/PCE are classified *before* LISTING so payrolls cannot match `list`.
+    Listing needs a word (`listing` / `lists` / `will list`), not a substring.
+    """
+    if _FOMC.search(title):
         return "FOMC"
-    if "cpi" in low:
+    if _CPI.search(title):
         return "CPI"
-    if "hack" in low or "exploit" in low:
+    if _NFP.search(title):
+        return "NFP"
+    if _PCE.search(title):
+        return "PCE"
+    if _HACK.search(title):
         return "HACK"
-    if "list" in low:
+    if _LISTING.search(title):
         return "LISTING"
-    if "etf" in low:
+    if _ETF.search(title):
         return "ETF"
-    if "sec" in low:
+    if _SEC.search(title):
         return "SEC"
-    return "OTHER" if "OTHER" in NEWS_CLASSES else "FOMC"
+    return "OTHER"

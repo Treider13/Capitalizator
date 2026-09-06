@@ -95,6 +95,7 @@ from capitalizator.memory.registry import Registry, Touch
 from capitalizator.memory.revive import PENDING, load_pending
 from capitalizator.news_macro.from_intel import calendar_from_intel, claims_from_intel
 from capitalizator.news_macro.ingest import NewsRow
+from capitalizator.news_macro.merge import merged_calendar
 from capitalizator.news_macro.rules import MacroRules
 from capitalizator.news_macro.sentiment import decide as sentiment_decide
 from capitalizator.news_macro.unlocks import Unlocks
@@ -830,20 +831,26 @@ class DeskLoop:
         if self.knowledge.available():
             stamp_hyexec(self.knowledge, kind=kind, symbol=symbol, at=now)
 
+    def _gate_calendar(self, now: datetime) -> tuple[NewsRow, ...]:
+        """One clock for card B and propose(): CSV schedule + intel surprises."""
+        intel = (
+            calendar_from_intel(self.knowledge, now=now) if self.knowledge.available() else ()
+        )
+        return merged_calendar(csv=self.calendar, intel=intel, now=now)
+
     def publish_card(self, symbol: str, now: datetime) -> CardLive:
         """Compute B labels and write claim b_card:SYMBOL. Never sends.
 
-        Live intel (RSS announcements, classified titles) is merged into the
-        calendar so a HACK/CPI/FOMC print can veto or cut. A sole whale claim
-        is a hold — whales never enter.
+        Live intel surprises (HACK/SEC/LISTING) merge into the calendar so a
+        coin event can veto. Scheduled CPI/FOMC/NFP/PCE clocks stay on the CSV.
+        A sole whale claim is a hold — whales never enter.
         """
         bars = self.state_for(symbol).bars
         vol = volume_snapshot(bars)
-        intel_cal = calendar_from_intel(self.knowledge, now=now)
         card = card_from_news(
             symbol=symbol,
             now=now,
-            calendar=tuple(self.calendar) + intel_cal,
+            calendar=self._gate_calendar(now),
             volume=vol,
             bars=bars,
         )
@@ -1502,10 +1509,8 @@ class DeskLoop:
                 stored = None
             if stored is not None and card_is_fresh(stored, symbol=symbol, now=now):
                 return stored
-        intel_cal = (
-            calendar_from_intel(self.knowledge, now=now) if self.knowledge.available() else ()
-        )
-        if not self.calendar and not intel_cal:
+        cal = self._gate_calendar(now)
+        if not cal:
             return None
         return self.publish_card(symbol, now)
 
@@ -2093,7 +2098,7 @@ class DeskLoop:
                     # The closed bar's liquidity label; a dead bar is not a market to enter.
                     volume_ok=row.bar_quality != "illiquid",
                     lev=self.risk_config.max_lev,
-                    calendar=self.calendar,
+                    calendar=self._gate_calendar(closed_at),
                     unlock_today=self.unlocks.team_today(st.symbol, closed_at),
                     unlock_tomorrow=self.unlocks.team_tomorrow(st.symbol, closed_at),
                     # instruments-info status: anything but Trading is not a market we enter

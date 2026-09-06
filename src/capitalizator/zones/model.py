@@ -18,6 +18,10 @@ ZoneMethod = Literal[
     "round",
     "prior_session_hl",
     "vp_hyp",
+    "session_vp_asia",
+    "session_vp_europe",
+    "session_vp_overlap",
+    "session_vp_us",
 ]
 
 

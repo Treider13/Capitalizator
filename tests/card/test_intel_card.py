@@ -161,6 +161,50 @@ def test_sole_whale_intel_holds_card(tmp_path: Path) -> None:
     assert "whale_only" in card.minuses
 
 
+def test_publish_card_rss_cpi_without_csv_does_not_veto(tmp_path: Path) -> None:
+    """Intel CPI chatter is a headline, not an 08:30 ET clock."""
+    vault = init_vault(tmp_path / "desk")
+    kn = open_knowledge(vault)
+    kn.put_intel_item(
+        "rss-cpi",
+        kind="rss",
+        source_id="rss:https://example.com/feed",
+        known_at=NOW.isoformat(),
+        payload={
+            "text": "US CPI due in one hour",
+            "event_class": "CPI",
+            "event_time": (NOW + timedelta(hours=1)).isoformat(),
+            "url": "https://example.com/cpi",
+        },
+    )
+    desk = DeskLoop(knowledge=kn, user_mode="off", calendar=())
+    card = desk.publish_card("BTCUSDT", NOW)
+    kn.close()
+    assert "fomc_inside_2h" not in card.minuses
+
+
+def test_from_news_nfp_csv_inside_2h_vetoes() -> None:
+    row = row_from_item(
+        {
+            "id": "nfp-csv",
+            "kind": "rss",
+            "known_at": NOW.isoformat(),
+            "event_time": (NOW + timedelta(hours=1)).isoformat(),
+            "text": "NFP",
+            "event_class": "NFP",
+        }
+    )
+    assert row is not None
+    card = from_news(
+        symbol="BTCUSDT",
+        now=NOW,
+        calendar=(row,),
+        volume=VolumeSnapshot(rvol="3"),
+    )
+    assert card.bearing_verdict == "veto"
+    assert "fomc_inside_2h" in card.minuses
+
+
 def test_author_weights_fill_jury_b(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "desk")
     kn = open_knowledge(vault)

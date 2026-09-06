@@ -127,6 +127,33 @@ def test_nfp_morning_blocked_by_calendar_not_clock() -> None:
     assert _strategy().propose(_snap(now=NFP_MORNING, no_us_today=True)) is None
 
 
+def test_hack_in_merged_calendar_vetoes_propose() -> None:
+    from capitalizator.card.build import from_news
+    from capitalizator.card.live import VolumeSnapshot
+    from capitalizator.news_macro.ingest import NewsRow
+    from capitalizator.news_macro.merge import merged_calendar
+
+    now = SESSION
+    hack = NewsRow(
+        event_id="rss-hack",
+        event_class="HACK",
+        event_time=now,
+        known_at=now,
+        assets=("BTCUSDT",),
+        source="intel",
+        announce_tz="UTC",
+        size_rule="intel",
+        notes="hot wallet hack",
+        raw="hot wallet hack",
+    )
+    cal = merged_calendar(csv=(), intel=(hack,), now=now)
+    card = from_news(
+        symbol="BTCUSDT", now=now, calendar=cal, volume=VolumeSnapshot(rvol="3")
+    )
+    assert card.bearing_verdict == "veto"
+    assert _strategy().propose(_snap(now=now, calendar=cal, b_verdict=card.bearing_verdict)) is None
+
+
 def test_signer_applies_intent_size_mult() -> None:
     raw = unsigned_from_intent(
         {
