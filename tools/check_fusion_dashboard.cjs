@@ -43,10 +43,11 @@ function fixture(at=100,symbol='BTCUSDT',tf='1m'){
 }
 function emit(s,data){s.onmessage({data:JSON.stringify(data)});render();}
 (async()=>{
- ready();await settle();render();assert.equal(streams.length,1);assert.equal(nodes.get('symbol').options.length,6);assert.equal(run('recordPanels.size'),8);assert.match(nodes.get('position-rows').children[0].children[0].textContent,/неизвестны/);
+ ready();await settle();render();assert.equal(streams.length,1);assert.equal(nodes.get('symbol').options.length,6);assert.equal(run('recordPanels.size'),11);assert.match(nodes.get('position-rows').children[0].children[0].textContent,/неизвестны/);
  const initial=streams.at(-1);emit(initial,fixture());assert(draws>100);assert.match(nodes.get('chart-status').textContent,/BTCUSDT/);assert.equal(JSON.parse(nodes.get('context').textContent).data_quality.history_gaps,1);assert.equal(run('depthFrames.linear.length'),1);assert.equal(run('depthFrames.linear[0].bids[0][1]'),2);assert.equal(run('depthFrames.spot[0].bids[0][1]'),20);
  // Layers and real OHLCV remain functional.
  for(const id of ['zones','fills','sessions'])nodes.get(id).checked=false;run('draw();chart.onmousemove({offsetX:100})');assert.match(nodes.get('crosshair').textContent,/O 100/);
+ run("chart.onpointerdown({offsetX:100});chart.onkeydown({key:'Home',preventDefault(){}})");assert.match(nodes.get('crosshair').textContent,/O 100 H/);
  // Old stream callbacks cannot repopulate a newly selected symbol.
  nodes.get('symbol').value='ETHUSDT';run('connectChart()');assert(initial.closed);emit(initial,fixture());assert.equal(run('chartData'),null);assert.equal(run('depthFrames.linear.length'),0);emit(streams.at(-1),fixture(100,'ETHUSDT'));assert.equal(run('chartData.symbol'),'ETHUSDT');
  // Limit memory to real one-second snapshots; never add an interpolated frame.
@@ -70,6 +71,31 @@ function emit(s,data){s.onmessage({data:JSON.stringify(data)});render();}
  run("addNewsSource({name:'<img onerror=attack()>',kind:'rss',url:'https://example.com/rss',assets:['BTCUSDT'],match_assets:true})");await run('saveNewsSources()');assert.equal(posts.at(-1).body.sources[0].name,'<img onerror=attack()>');assert.equal(posts.at(-1).body.sources[0].assets[0],'BTCUSDT');
  // Reduced motion snaps the camera; server instance changes force token renewal.
  media.matches=true;run('cameraTo(-10,20)');assert.equal(run('cameraFrame'),null);assert.equal(run('camera.yaw'),-10);
- state={...state,console_instance:'new-instance'};await run('refresh()');assert.equal(reloaded,1);
- console.log(JSON.stringify({status:'passed',draw_calls:draws,scenarios:16,scope:'Strict DOM/canvas model; no browser rendering or live exchange execution'}));
+ await settle();state={...state,console_instance:'new-instance'};await run('refresh()');assert.equal(reloaded,1);
+ // Audit regressions: malformed records must not freeze unrelated sections.
+ await settle();state={...state,console_instance:'instance',at:200,mode:'demo',account:{at:200,equity:100,body:'{broken'},decisions:[{at:0,symbol:'BTCUSDT',kind:'test',body:'{broken'}],training:{version:'audit'},news:{coverage:{},events:[],headlines:[{title:'Actual RSS schema',published:100,assets:['BTCUSDT']}]}};
+ await run('refresh()');render();assert.match(nodes.get('position-rows').children[0].children[0].textContent,/Ошибка данных счёта/);assert.match(nodes.get('training-state').textContent,/audit/);assert.match(nodes.get('decisions').textContent,/decode_error/);assert.match(nodes.get('headlines').children[0].children[1].textContent,/UTC/);assert.match(nodes.get('account-freshness').textContent,/Устарел/);assert.notEqual(run('fmt(0.00000001)'),'0');
+ // A past/future fill must not be moved onto a current candle, or across a history gap.
+ nodes.get('symbol').value='BTCUSDT';run('connectChart()');const auditStream=streams.at(-1);const clipped=fixture(200);clipped.fills=[];clipped.contracts=[];nodes.get('fills').checked=true;emit(auditStream,clipped);
+ let beforeDraw=draws;run('draw()');const baselineDraw=draws-beforeDraw;
+ env.outside=fixture(200);env.outside.fills=[{at:999,side:'Buy',execPrice:100}];env.outside.contracts=[{at:999,definition:{entry:100}}];run('chartData.fills=outside.fills;chartData.contracts=outside.contracts');beforeDraw=draws;run('draw()');assert.equal(draws-beforeDraw,baselineDraw);
+ // Stale Buy/Sell cannot remain "ready", including a wall-clock rollback on the server.
+ const rollback=fixture(200);rollback.monotonic_at=30;rollback.book_entry_checks={Buy:'ready',Sell:'ready'};for(const b of Object.values(rollback.cross_market))if(b&&typeof b==='object')b.received_monotonic=10;emit(auditStream,rollback);assert.match(nodes.get('book-comparison').textContent,/данные устарели/);assert(!nodes.get('book-comparison').textContent.includes('ready'));
+ // A delayed SSE frame cannot make old quotes fresh against a newer status clock.
+ emit(auditStream,fixture(180));assert.match(nodes.get('linear-health').textContent,/Нет свежих данных/);
+ // Broken JSON closes the stream and obtains a FULL snapshot on a new connection.
+ auditStream.onmessage({data:'{broken'});assert(auditStream.closed);assert.equal(run('chartData'),null);const retry=run('reconnectTimer');assert(retry!==null);timers.get(retry)();const recovered=streams.at(-1);emit(auditStream,fixture(201));assert.equal(run('chartData'),null);emit(recovered,fixture(201));assert.equal(run('candles.length'),50);
+ // Missing heartbeat without an EventSource error also forces recovery.
+ mono+=7000;run('freshnessLoop()');assert(recovered.closed);assert(run('reconnectTimer')!==null);
+ // Parsed 200/500 transport failures are UNKNOWN command outcomes, never false refusals.
+ const originalFetch=env.fetch;env.fetch=async()=>({ok:true,status:200,json:async()=>{throw new SyntaxError('truncated')}});await run("act('flatten',{})");assert.match(nodes.get('result').textContent,/Результат команды неизвестен/);env.fetch=originalFetch;
+ // Successful key saving cannot erase newly typed replacement credentials.
+ let finishKeys;pendingPost=new Promise(resolve=>finishKeys=resolve);nodes.get('key').value='old-key';nodes.get('secret').value='old-secret';const saving=run('saveKeys()');nodes.get('key').value='new-key';nodes.get('secret').value='new-secret';finishKeys({ok:true,json:async()=>({saved:'demo'})});await saving;pendingPost=null;assert.equal(nodes.get('key').value,'new-key');assert.equal(nodes.get('secret').value,'new-secret');await settle();
+ // Source errors supplied by the actual server remain visible beside the chart.
+ if(run('reconnectTimer')!==null)timers.get(run('reconnectTimer'))();const withErrors=fixture(210);withErrors.data_errors=[{source:'account',error:'object required'}];emit(streams.at(-1),withErrors);assert.match(nodes.get('chart-errors').textContent,/account/);
+ // One renderer failure cannot hide the other renderer or the last command result.
+ const originalDraw=run('draw');env.breakDraw=()=>{throw new Error('canvas failure')};run('draw=breakDraw;depthSignature="";scheduleDraw()');render();assert.match(nodes.get('chart-status').textContent,/canvas failure/);assert.match(nodes.get('depth-status').textContent,/снимков/);env.restoreDraw=originalDraw;run('draw=restoreDraw');
+
+ if(process.env.BLACKBOX_RUNTIME_PAYLOAD){const actual=JSON.parse(fs.readFileSync(process.env.BLACKBOX_RUNTIME_PAYLOAD,'utf8'));await settle();state={...actual.status,console_instance:'instance'};await run('refresh()');nodes.get('symbol').value=actual.chart.symbol;nodes.get('tf').value=actual.chart.tf;run('connectChart()');emit(streams.at(-1),actual.chart);assert.equal(run('candles.length'),actual.chart.candles.length);assert.match(nodes.get('chart-status').textContent,/BTCUSDT/);assert(!nodes.get('chart-status').textContent.includes('Ошибка графика'));console.log(JSON.stringify({runtime_contract:'passed'}));}
+ console.log(JSON.stringify({status:'passed',draw_calls:draws,scenarios:26,scope:'Strict DOM/canvas model; no browser rendering or live exchange execution'}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

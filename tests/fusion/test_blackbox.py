@@ -140,3 +140,137 @@ def test_account_journal_does_not_sort_entire_history(tmp_path, table):
         assert any("USING INDEX console_" in r["detail"] for r in plan)
     finally:
         store.close()
+
+
+def test_journals_read_committed_state_without_waiting_for_trade_writer(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = Store(tmp_path / "db")
+    try:
+        store.decision(100, "BTCUSDT", "committed", {})
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with store.transaction() as db:
+                db.execute(
+                    "INSERT INTO decisions(at,symbol,kind,body) VALUES(101,'BTCUSDT','new','{}')"
+                )
+                # A Store.rows reader would wait on this transaction's Python lock.
+                future = pool.submit(records, store, "demo", "decisions")
+                page = future.result(timeout=2)
+                assert [r["kind"] for r in page["rows"]] == ["committed"]
+        assert len(records(store, "demo", "decisions")["rows"]) == 2
+    finally:
+        store.close()
+
+
+def test_all_stored_headlines_samples_and_dispatch_errors_are_visible(tmp_path):
+    store = Store(tmp_path / "db")
+    try:
+        for i in range(45):
+            store.put_meta(f"news_item:{i}", {"title": str(i), "published": i})
+        store.put_meta("secret:test", {"key": "excluded"})
+        ids, before = [], None
+        while True:
+            page = records(store, "demo", "headlines", 20, before)
+            ids.extend(r["key"] for r in page["rows"])
+            before = page["next_before"]
+            if before is None:
+                break
+        assert len(set(ids)) == 45 and all(k.startswith("news_item:") for k in ids)
+        store.sample("sample1", "BTCUSDT", 100, 110, [1.0], [2.0], {"policy": "test"})
+        assert records(store, "demo", "samples")["rows"][0]["id"] == "sample1"
+        for mode in ("demo", "live"):
+            store.command(mode, mode, "BTCUSDT", "flatten", 100, {})
+            with store.transaction() as db:
+                db.execute(
+                    "INSERT INTO dispatch VALUES('command',?,100,105,'TimeoutError')", (mode,)
+                )
+        page = records(store, "demo", "dispatch")
+        assert [r["id"] for r in page["rows"]] == ["demo"]
+        assert page["rows"][0]["error"] == "TimeoutError"
+        assert page["rows"][0]["next_at"] == 105
+    finally:
+        store.close()
+
+
+def test_corrupt_console_records_are_reported_without_losing_other_data(tmp_path):
+    runtime = Runtime(tmp_path, Config())
+    try:
+        runtime.store.account("demo", 100, 1000, [], [], "2026-09-06")
+        with runtime.store.transaction() as db:
+            db.execute("UPDATE account SET body='{broken'")
+            db.execute("INSERT INTO executions VALUES('demo','bad','bad','BTCUSDT',100,'{broken')")
+            db.execute(
+                "INSERT INTO contracts VALUES('bad','BTCUSDT',100,'observing','{broken',100)"
+            )
+        data = runtime.chart("BTCUSDT", "1m")
+        assert {e["source"] for e in data["data_errors"]} == {"account", "executions", "contracts"}
+        assert data["candles"] == []
+        assert data["positions"] == []
+        status = runtime.status()
+        assert status["config"]["symbols"] == Config().symbols
+        assert status["performance"]["error"]
+        assert status["account"]["body"] == "{broken"
+        assert records(runtime.store, "demo", "executions")["rows"][0]["body"] == "{broken"
+    finally:
+        runtime.close()
+
+
+def test_chart_checks_use_server_monotonic_receipt_age(tmp_path, monkeypatch):
+    runtime = Runtime(tmp_path, Config())
+    try:
+        book = {
+            "valid": True,
+            "book_at": 100,
+            "exchange_at": 100,
+            "received_monotonic": 10,
+            "spread_bps": 1,
+            "imbalance": 0,
+        }
+        runtime.shared.snapshots["BTCUSDT"] = {
+            "cross_market": {"linear": book, "spot": {**book, "status": "streaming"}}
+        }
+        monkeypatch.setattr("capitalizator.fusion.runtime.time.time", lambda: 101)
+        monkeypatch.setattr("capitalizator.fusion.runtime.time.monotonic", lambda: 20)
+        data = runtime.chart("BTCUSDT", "1m")
+        assert data["book_entry_checks"]["Buy"] == "spot_stale_elapsed"
+        assert data["monotonic_at"] == 20
+    finally:
+        runtime.store.close()
+
+
+def test_real_runtime_payload_renders_in_console_model(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    import time
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node required for server-to-console contract integration")
+    runtime = Runtime(tmp_path / "runtime", Config())
+    try:
+        engine = runtime.engines["BTCUSDT"]
+        now = time.time()
+        engine.process(
+            "history",
+            {
+                "tf": "1m",
+                "rows": [[str(int(now // 60 - 1) * 60000), "100", "102", "99", "101", "10"]],
+            },
+            now,
+        )
+        # Engine publishes production snapshot structures; no manually invented API schema.
+        payload = {"status": runtime.status(), "chart": runtime.chart("BTCUSDT", "1m")}
+        path = tmp_path / "runtime-payload.json"
+        path.write_text(json.dumps(payload))
+        result = subprocess.run(
+            [node, "tools/check_fusion_dashboard.cjs"],
+            env={**os.environ, "BLACKBOX_RUNTIME_PAYLOAD": str(path)},
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+        assert '"runtime_contract":"passed"' in result.stdout
+    finally:
+        runtime.close()

@@ -1218,26 +1218,59 @@ class Runtime:
             "SELECT * FROM contracts WHERE symbol=? ORDER BY at DESC LIMIT 30", (symbol,)
         )
         fills = self.store.rows(
-            "SELECT at,body FROM executions WHERE mode=? AND symbol=? ORDER BY at DESC LIMIT 100",
+            "SELECT id,at,body FROM executions WHERE mode=? AND symbol=? "
+            "ORDER BY at DESC LIMIT 100",
             (mode, symbol),
         )
         orders = self.store.rows(
-            "SELECT state,body FROM orders WHERE mode=? AND symbol=? "
+            "SELECT id,state,body FROM orders WHERE mode=? AND symbol=? "
             "ORDER BY created DESC LIMIT 30",
             (mode, symbol),
         )
         accounts = self.store.rows("SELECT at,body FROM account WHERE mode=?", (mode,))
-        positions = (
-            [
-                p
-                for p in json.loads(accounts[0]["body"])["positions"]
-                if p["symbol"] == symbol and float(p.get("size") or 0)
-            ]
-            if accounts
-            else []
-        )
+        data_errors: list[dict[str, Any]] = []
+
+        def parsed(row: dict[str, Any], key: str, source: str) -> dict[str, Any] | None:
+            try:
+                value = json.loads(row[key])
+                if not isinstance(value, dict):
+                    raise ValueError("object required")
+                return value
+            except (ValueError, TypeError, KeyError) as exc:
+                data_errors.append({"source": source, "id": row.get("id"), "error": str(exc)})
+                return None
+
+        account = parsed(accounts[0], "body", "account") if accounts else None
+        positions = []
+        if account is not None:
+            try:
+                positions = [
+                    p
+                    for p in account["positions"]
+                    if p["symbol"] == symbol and float(p.get("size") or 0)
+                ]
+            except (ValueError, TypeError, KeyError) as exc:
+                data_errors.append({"source": "positions", "error": str(exc)})
+        contract_rows = [
+            {**c, "definition": value}
+            for c in contracts
+            if (value := parsed(c, "definition", "contracts")) is not None
+        ]
+        fill_rows = [
+            {**value, "at": f["at"]}
+            for f in fills
+            if (value := parsed(f, "body", "executions")) is not None
+        ]
+        order_rows = [
+            {**value, "state": o["state"]}
+            for o in orders
+            if (value := parsed(o, "body", "orders")) is not None
+        ]
+        now, monotonic_at = time.time(), time.monotonic()
         body = {
-            "at": time.time(),
+            "at": now,
+            "monotonic_at": monotonic_at,
+            "data_errors": data_errors,
             "symbol": symbol,
             "mode": mode,
             "tf": tf,
@@ -1247,8 +1280,12 @@ class Runtime:
             "spot_levels": market.get("spot_levels", {}),
             "cross_market": market.get("cross_market", {}),
             "book_entry_checks": {
-                "Buy": entry_check(market.get("cross_market", {}), 1, time.time(), self.config),
-                "Sell": entry_check(market.get("cross_market", {}), -1, time.time(), self.config),
+                "Buy": entry_check(
+                    market.get("cross_market", {}), 1, now, self.config, monotonic_at=monotonic_at
+                ),
+                "Sell": entry_check(
+                    market.get("cross_market", {}), -1, now, self.config, monotonic_at=monotonic_at
+                ),
             },
             "max_data_age_s": self.config.max_data_age_s,
             "forming": market.get("forming", {}).get(tf),
@@ -1256,9 +1293,9 @@ class Runtime:
             "analytics": market.get("analytics", []),
             "structure": {k: v for k, v in series.items() if k != "candles"},
             "options": options,
-            "contracts": [{**c, "definition": json.loads(c["definition"])} for c in contracts],
-            "fills": [{"at": f["at"], **json.loads(f["body"])} for f in fills],
-            "orders": [{"state": o["state"], **json.loads(o["body"])} for o in orders],
+            "contracts": contract_rows,
+            "fills": fill_rows,
+            "orders": order_rows,
             "positions": positions,
             "account_at": accounts[0]["at"] if accounts else None,
         }
@@ -1290,6 +1327,12 @@ class Runtime:
                 + shlex.quote(str(root.parent / (root.name + "-backup-" + suffix))),
             ],
         }
+
+    def console_performance(self, mode: str) -> dict[str, Any]:
+        try:
+            return venue_performance(self.store, mode)
+        except (ValueError, TypeError, KeyError) as exc:
+            return {"error": str(exc), "realized_net": None, "closed_episodes": None}
 
     def status(self) -> dict[str, Any]:
         with self.shared.lock:
@@ -1326,7 +1369,7 @@ class Runtime:
                 "news": self.store.meta("news_status"),
                 "queues": [m.status() for m in self.mailboxes],
                 "private_queue": self.private_mailbox.status(),
-                "performance": venue_performance(self.store, mode),
+                "performance": self.console_performance(mode),
                 "orders": self.store.rows(
                     "SELECT * FROM orders WHERE mode=? ORDER BY created DESC LIMIT 30", (mode,)
                 ),
@@ -1341,6 +1384,7 @@ class Runtime:
         )
         with self.supervisor.lock:
             body["worker_errors"] = dict(self.supervisor.errors)
+        body["at"], body["monotonic_at"] = time.time(), time.monotonic()
         return body
 
     def close(self) -> None:

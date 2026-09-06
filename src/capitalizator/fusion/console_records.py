@@ -2,14 +2,28 @@
 
 from __future__ import annotations
 
+import sqlite3
+import time
 from typing import Any
 
 from capitalizator.fusion.store import Store
 
 TABLES = frozenset(
-    {"contracts", "decisions", "orders", "executions", "commands", "models", "events", "archives"}
+    {
+        "contracts",
+        "decisions",
+        "orders",
+        "executions",
+        "commands",
+        "models",
+        "events",
+        "archives",
+        "headlines",
+        "samples",
+        "dispatch",
+    }
 )
-ACCOUNT_TABLES = frozenset({"orders", "executions", "commands"})
+ACCOUNT_TABLES = frozenset({"orders", "executions", "commands", "dispatch"})
 
 
 def records(
@@ -23,12 +37,22 @@ def records(
         raise ValueError("invalid journal cursor")
     if mode not in {"demo", "live"}:
         raise ValueError("invalid account mode")
-    table = "meta" if kind == "archives" else kind
+    table = "meta" if kind in {"archives", "headlines"} else kind
     filters: list[str] = []
     args: list[Any] = []
     if kind == "archives":
         filters.append("key LIKE 'archive:%'")
-    if kind in ACCOUNT_TABLES:
+    if kind == "headlines":
+        filters.append("key LIKE 'news_item:%'")
+    if kind == "dispatch":
+        filters.append(
+            "((kind='command' AND EXISTS (SELECT 1 FROM commands c "
+            "WHERE c.id=dispatch.id AND c.mode=?)) OR "
+            "(kind IN ('order','cancel') AND EXISTS (SELECT 1 FROM orders o "
+            "WHERE o.id=dispatch.id AND o.mode=?)))"
+        )
+        args.extend((mode, mode))
+    elif kind in ACCOUNT_TABLES:
         filters.append("mode=?")
         args.append(mode)
     if before is not None:
@@ -36,7 +60,8 @@ def records(
         args.append(before)
     where = " WHERE " + " AND ".join(filters) if filters else ""
     # The table identifier comes exclusively from TABLES; all values are parameters.
-    rows = store.rows(
+    rows = read_journal(
+        store,
         f"SELECT rowid AS cursor,* FROM {table}{where} ORDER BY rowid DESC LIMIT ?",
         (*args, limit + 1),
     )
@@ -48,3 +73,16 @@ def records(
         "rows": rows,
         "next_before": rows[-1]["cursor"] if more else None,
     }
+
+
+def read_journal(store: Store, sql: str, args: tuple[Any, ...]) -> list[dict[str, Any]]:
+    """Independent WAL reader: long operator reads never own the trading lock."""
+    deadline = time.monotonic() + 0.5
+    db = sqlite3.connect(store.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.5)
+    try:
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA query_only=ON")
+        db.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+        return [dict(row) for row in db.execute(sql, args).fetchall()]
+    finally:
+        db.close()
