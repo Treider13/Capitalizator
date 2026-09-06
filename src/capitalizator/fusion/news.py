@@ -106,4 +106,58 @@ def ingest(store: Store, payload: dict[str, Any], at: float) -> list[NewsRow]:
 
 
 def calendar(base: tuple[NewsRow, ...], surprises: list[NewsRow]) -> tuple[NewsRow, ...]:
-    return merged_calendar(csv=base, intel=surprises)
+    # Fusion adapters already classify these records. The legacy text filter
+    # drops unlocks and even negative vocabulary such as "breach"/"suspension".
+    typed = {"unlock_blackout", "linear_supply_context", "surprise_blackout"}
+    accepted = [r for r in surprises if r.size_rule in typed]
+    remaining = [r for r in surprises if r.size_rule not in typed]
+    rows = {r.event_id: r for r in merged_calendar(csv=base, intel=remaining)}
+    for row in accepted:
+        rows.setdefault(row.event_id, row)
+    return tuple(sorted(rows.values(), key=lambda r: (r.event_time, r.event_id)))
+
+
+def protect(
+    store: Store,
+    rows: tuple[NewsRow, ...],
+    mode: str,
+    symbols: tuple[str, ...],
+    at: float,
+    post_minutes: int,
+) -> None:
+    """The same source-time risk action in the live broker and event replay."""
+    accounts = store.rows("SELECT body FROM account WHERE mode=?", (mode,))
+    positions = (
+        {
+            p["symbol"]
+            for p in json.loads(accounts[0]["body"])["positions"]
+            if float(p.get("size") or 0)
+        }
+        if accounts
+        else set()
+    )
+    for symbol in symbols:
+        if not any(
+            r.size_rule == "surprise_blackout"
+            and (not r.assets or "ALL" in r.assets or symbol in r.assets)
+            and r.known_at.timestamp() <= at <= r.event_time.timestamp() + post_minutes * 60
+            for r in rows
+        ):
+            continue
+        orders = store.rows(
+            "SELECT * FROM orders WHERE mode=? AND symbol=? "
+            "AND state NOT IN ('closed','rejected') ORDER BY created DESC LIMIT 1",
+            (mode, symbol),
+        )
+        if orders:
+            order = orders[0]
+            if order["state"] == "cancelled" and symbol not in positions:
+                continue
+            store.command(
+                "news-exit-" + order["id"], mode, symbol, "flatten", at, {"reason": "news_surprise"}
+            )
+            with store.transaction() as db:
+                db.execute(
+                    "UPDATE contracts SET state='refuted',updated=? WHERE id=?",
+                    (at, order["contract"]),
+                )

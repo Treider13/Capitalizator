@@ -18,6 +18,7 @@ from capitalizator.fusion.config import Config
 from capitalizator.fusion.engine import Engine, Shared
 from capitalizator.fusion.executor import Executor
 from capitalizator.fusion.market import Market
+from capitalizator.fusion.news import protect
 from capitalizator.fusion.performance import metrics, venue_performance
 from capitalizator.fusion.risk import Instrument
 from capitalizator.fusion.store import Store
@@ -276,6 +277,9 @@ def compare(
         venue = ReplayVenue(instruments, config, latency=latency)
         executor = Executor(store, venue, config)
         engines = {s: Engine(s, store, shared, config, variant=variant) for s in config.symbols}
+        executor.authorize = lambda order, es=engines, v=venue: (
+            es[order["symbol"]].fresh(v.clock) and es[order["symbol"]].news_allows(v.clock)
+        )
         lanes[variant] = (store, shared, venue, executor, engines)
     count, last_train = 0, 0
     try:
@@ -298,9 +302,19 @@ def compare(
                     row["known_at"] = datetime.fromisoformat(row["known_at"])
                     row["assets"] = tuple(row["assets"])
                     calendar.append(NewsRow(**row))
-                for _, shared, _, _, _ in lanes.values():
+                for store, shared, venue, executor, _ in lanes.values():
                     shared.calendar = tuple(calendar)
                     shared.news_at = event["received"]
+                    venue.clock = event["received"]
+                    protect(
+                        store,
+                        shared.calendar,
+                        "demo",
+                        config.symbols,
+                        venue.clock,
+                        config.news_post_minutes,
+                    )
+                    executor.tick(venue.clock, True)
                 count += 1
                 continue
             if symbol not in config.symbols:

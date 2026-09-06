@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import UTC, datetime
@@ -44,6 +45,7 @@ class Executor:
         self.day_halted = False
         self.entry_lock = entry_lock if entry_lock is not None else nullcontext()
         self.authorize = authorize
+        self.position_versions: dict[tuple[str, int], float] = {}
         # Sending was persisted before the network call; a crash makes it unknown.
         with store.transaction() as db:
             db.execute(
@@ -63,19 +65,70 @@ class Executor:
     def private(self, frame: dict[str, Any], at: float) -> None:
         topic = str(frame.get("topic") or "")
         for row in frame.get("data") or []:
-            if topic.startswith("execution"):
+            if topic.startswith("position"):
+                key = (str(row["symbol"]), int(row.get("positionIdx") or 0))
+                updated = float(row.get("updatedTime") or at * 1000)
+                size = float(row.get("size") or 0)
+                if not math.isfinite(updated) or not math.isfinite(size) or size < 0:
+                    raise ValueError("invalid private position")
+                if updated < self.position_versions.get(key, 0):
+                    continue
+                self.position_versions[key] = updated
+                self.positions = [
+                    p
+                    for p in self.positions
+                    if (p["symbol"], int(p.get("positionIdx") or 0)) != key
+                ]
+                if size > 0:
+                    self.positions.append(dict(row))
+                with self.store.transaction() as db:
+                    account = db.execute(
+                        "SELECT body FROM account WHERE mode=?", (self.mode,)
+                    ).fetchone()
+                    if account:
+                        body = json.loads(account["body"])
+                        body["positions"] = self.positions
+                        body["positions_at"] = at
+                        # A position notification does not refresh wallet freshness.
+                        db.execute(
+                            "UPDATE account SET body=? WHERE mode=?", (encode(body), self.mode)
+                        )
+            elif topic.startswith("execution"):
                 self.store.execution(self.mode, row)
             elif topic.startswith("order"):
                 ident = str(row.get("orderLinkId") or "")
                 if ident.startswith("acr-") and row.get("orderStatus") in STATUS:
                     # REST reconciliation is authoritative for reversals/races; a late
                     # New notification must not turn Filled back into accepted.
-                    existing = self.store.rows("SELECT state FROM orders WHERE id=?", (ident,))
-                    if existing and existing[0]["state"] not in {"closed", "filled"}:
-                        self.set_state(ident, STATUS[row["orderStatus"]], at)
+                    existing = self.store.rows(
+                        "SELECT state FROM orders WHERE id=? AND mode=?", (ident, self.mode)
+                    )
+                    state = STATUS[row["orderStatus"]]
+                    if existing:
+                        old = existing[0]["state"]
+                        advances = (
+                            old not in {"closed", "filled"}
+                            and not (
+                                state == "accepted"
+                                and old in {"partial", "cancelling", "cancelled", "rejected"}
+                            )
+                            and not (state == "partial" and old in {"cancelled", "rejected"})
+                        )
+                        if advances:
+                            self.set_state(ident, state, at)
 
     def reconcile(self, at: float) -> None:
         equity, positions, orders = self.api.account()
+        prior = {(p["symbol"], int(p.get("positionIdx") or 0)): p for p in self.positions}
+        positions = [
+            prior[key]
+            if key in prior
+            and p.get("updatedTime")
+            and float(p["updatedTime"]) < self.position_versions.get(key, 0)
+            else p
+            for p in positions
+            for key in [(p["symbol"], int(p.get("positionIdx") or 0))]
+        ]
         cursor = float(self.store.meta("execution_cursor:" + self.mode, at - 3600))
         # Bybit history query is bounded to seven days. Page every interval on restart.
         while cursor < at:
@@ -85,6 +138,11 @@ class Executor:
             cursor = end
             self.store.put_meta("execution_cursor:" + self.mode, cursor)
         self.positions = [p for p in positions if float(p.get("size") or 0) > 0]
+        for p in positions:
+            key = (str(p["symbol"]), int(p.get("positionIdx") or 0))
+            self.position_versions[key] = max(
+                self.position_versions.get(key, 0), float(p.get("updatedTime") or 0)
+            )
         self.store.account(
             self.mode,
             at,
@@ -216,18 +274,37 @@ class Executor:
             self.reconcile(at)
         allow_entries = allow_entries and not self.day_halted
         # Bounded control batch followed by bounded entry batch prevents starvation.
+        errors = []
         for command in self.store.rows(
-            "SELECT * FROM commands WHERE mode=? "
-            "AND state='pending' ORDER BY "
-            "CASE WHEN kind='flatten' THEN 0 ELSE 1 END,at,id LIMIT 16",
-            (self.mode,),
+            "SELECT c.* FROM commands c LEFT JOIN dispatch d "
+            "ON d.kind='command' AND d.id=c.id WHERE c.mode=? "
+            "AND c.state='pending' AND COALESCE(d.next_at,0)<=? ORDER BY "
+            "COALESCE(d.attempted,c.at), CASE WHEN c.kind='flatten' THEN 0 ELSE 1 END,"
+            "c.at,c.id LIMIT 16",
+            (self.mode, at),
         ):
-            self._command(command, at)
+            self._dispatch("command", command["id"], at, at)
+            try:
+                self._command(command, at)
+            except Exception as exc:
+                # Persist the retry budget but let other symbols receive protection.
+                self._dispatch(
+                    "command", command["id"], at, at + self.config.reconcile_s, type(exc).__name__
+                )
+                errors.append(exc)
+        if errors:
+            # Caller reports degraded broker health. No entries after failed protection.
+            raise errors[0]
         rows = self.store.rows(
-            "SELECT * FROM orders WHERE mode=? AND state IN "
+            "SELECT o.* FROM orders o LEFT JOIN dispatch d "
+            "ON d.kind='cancel' AND d.id=o.id LEFT JOIN contracts c ON c.id=o.contract "
+            "WHERE o.mode=? AND o.state IN "
             "('pending','accepted','partial','cancelling','unknown') "
-            "ORDER BY created,id LIMIT 16",
-            (self.mode,),
+            "AND (o.state='pending' OR ?=0 OR o.expires<=? "
+            "OR c.state IS NULL OR c.state<>'confirmed') "
+            "AND (o.state='pending' OR COALESCE(d.next_at,0)<=?) "
+            "ORDER BY o.created,o.id LIMIT 16",
+            (self.mode, int(allow_entries), at, at),
         )
         for row in rows:
             definition = self.store.rows(
@@ -266,23 +343,41 @@ class Executor:
                                 (result.get("orderId"), at, row["id"]),
                             )
             elif not valid or not allow_entries:
-                self.api.cancel(row["symbol"], row["id"])
-                if row["state"] != "unknown":
-                    self.set_state(row["id"], "cancelling", at)
+                self._cancel(row, at)
+
+    def _dispatch(self, kind: str, ident: str, at: float, next_at: float, error: str = "") -> None:
+        with self.store.transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO dispatch VALUES(?,?,?,?,?)",
+                (kind, ident, at, next_at, error),
+            )
+
+    def _cancel(self, row: dict[str, Any], at: float) -> None:
+        sent = self.store.rows(
+            "SELECT next_at FROM dispatch WHERE kind='cancel' AND id=?", (row["id"],)
+        )
+        if sent and at < sent[0]["next_at"]:
+            return
+        # Acknowledgement is asynchronous. Retry only at reconciliation cadence,
+        # including after restart/timeout; private queue traffic cannot amplify writes.
+        self._dispatch("cancel", row["id"], at, at + self.config.reconcile_s)
+        self.api.cancel(row["symbol"], row["id"])
+        if row["state"] != "unknown":
+            self.set_state(row["id"], "cancelling", at)
 
     def _command(self, command: dict[str, Any], at: float) -> None:
         kind, symbol = command["kind"], command["symbol"]
         body = json.loads(command["body"])
         if kind == "flatten":
             pending = self.store.rows(
-                "SELECT id,state FROM orders WHERE mode=? AND symbol=?", (self.mode, symbol)
+                "SELECT id,state,symbol FROM orders WHERE mode=? AND symbol=?", (self.mode, symbol)
             )
             for row in pending:
                 if row["state"] in ACTIVE and row["state"] != "filled":
                     if row["state"] == "pending":
                         self.set_state(row["id"], "cancelled", at)
                     else:
-                        self.api.cancel(symbol, row["id"])
+                        self._cancel(row, at)
             # Re-read actual position; a paper fill never supplies this quantity.
             _, positions, _ = self.api.account()
             positions = [

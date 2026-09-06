@@ -9,7 +9,7 @@ from typing import Any
 
 from capitalizator.card.sweep import fractals
 from capitalizator.desk.bars import TF_MINUTES
-from capitalizator.fusion.context import geometry
+from capitalizator.fusion.context import geometry, session_windows
 from capitalizator.zones.model import Bar
 
 TFS = ("1m", "5m", "15m", "1h", "4h")
@@ -26,6 +26,7 @@ def candle(bar: Bar) -> dict[str, Any]:
 
 def parse_history(symbol: str, tf: str, rows: list[Any], known_at: float) -> list[Bar]:
     result = []
+    seen: dict[datetime, list[Decimal]] = {}
     if any(not isinstance(row, list) or len(row) < 6 for row in rows):
         raise ValueError("historical candle schema invalid")
     for row in sorted(rows, key=lambda r: int(r[0])):
@@ -44,6 +45,11 @@ def parse_history(symbol: str, tf: str, rows: list[Any], known_at: float) -> lis
             raise ValueError("invalid historical OHLCV")
         if int(row[0]) % (TF_MINUTES[tf] * 60000):
             raise ValueError("historical candle not aligned to timeframe")
+        if start in seen:
+            if seen[start] != values:
+                raise ValueError("conflicting historical candles at one timestamp")
+            continue
+        seen[start] = values
         result.append(
             Bar(
                 symbol=symbol,
@@ -88,7 +94,13 @@ class Structure:
                 self._calculate(tf, tick)
 
     def _calculate(self, tf: str, tick: float) -> None:
-        bars = list(self.bars[tf])
+        stored = list(self.bars[tf])
+        gaps = [i for i in range(1, len(stored)) if stored[i].open_ts != stored[i - 1].close_ts]
+        # A feed outage is not a price inefficiency. Structure can use only the
+        # contiguous suffix; REST repair can reconnect the retained history later.
+        bars = stored[gaps[-1] :] if gaps else stored
+        if gaps and self.cache.get(tf, {}).get("contiguous_from") != bars[0].open_ts.timestamp():
+            self.previous_break.pop(tf, None)
         g = geometry(bars, tick)
         hi, lo = fractals(bars, n=2)
         trend = g.get("trend")
@@ -178,7 +190,10 @@ class Structure:
             "choch": choch,
             "geometry": g,
             "zones": zones[-30:],
-            "candles": [candle(b) for b in bars],
+            "candles": [candle(b) for b in stored],
+            "history_gaps": len(gaps),
+            "contiguous_from": bars[0].open_ts.timestamp(),
+            "sessions": session_windows(bars[0].open_ts.timestamp(), bars[-1].close_ts.timestamp()),
             "bars": len(bars),
         }
         self.revision += 1

@@ -7,7 +7,7 @@ identity or intentions. Only closed bars and already confirmed pivots are used.
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -29,6 +29,25 @@ def sessions(at: float) -> dict[str, str]:
         if start <= local.hour < end:
             result[name] = str(local.date())
     return result
+
+
+def session_windows(start: float, end: float) -> list[dict[str, Any]]:
+    """Exact UTC session boundaries, including boundaries inside 4h candles."""
+    windows = []
+    for name, zone, first, last in (
+        ("Tokyo", "Asia/Tokyo", 9, 18),
+        ("London", "Europe/London", 8, 17),
+        ("NY", "America/New_York", 8, 17),
+    ):
+        tz = ZoneInfo(zone)
+        day = datetime.fromtimestamp(start, tz).replace(hour=0, minute=0, second=0, microsecond=0)
+        while day.timestamp() <= end:
+            for label, hour in (("open", first), ("close", last)):
+                at = day.replace(hour=hour).timestamp()
+                if start <= at <= end:
+                    windows.append({"name": name, "boundary": label, "at": at})
+            day += timedelta(days=1)
+    return sorted(windows, key=lambda r: r["at"])
 
 
 def rank(value: float, history: list[float]) -> float | None:
@@ -80,6 +99,10 @@ def geometry(bars: list[Any], tick: float) -> dict[str, Any]:
             "high": [[i, high[i]] for i in hi],
             "low": [[i, low[i]] for i in lo],
         }
+        result["trend_segments"] = {
+            "high": [[bars[i].open_ts.timestamp(), high[i]] for i in hi],
+            "low": [[bars[i].open_ts.timestamp(), low[i]] for i in lo],
+        }
         result["triangle"] = bool(hs < 0 < ls)
         anchor = min(hi[0], lo[0])
         impulse = closes[anchor] - closes[0]
@@ -96,6 +119,9 @@ def geometry(bars: list[Any], tick: float) -> dict[str, Any]:
         if r1 is not None and r2 is not None:
             if side * (values[last] - values[first]) < 0 and side * (r2 - r1) > 0:
                 result["rsi_divergence"] = {"side": side, "pivots": [first, last], "rsi": [r1, r2]}
+                result["rsi_divergence"]["segment"] = [
+                    [bars[i].open_ts.timestamp(), values[i]] for i in (first, last)
+                ]
     direction = (
         1
         if highs and closes[-1] > high[highs[-1]]

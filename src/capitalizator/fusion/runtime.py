@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import shutil
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -16,7 +17,7 @@ from typing import Any
 
 from capitalizator.desk.bars import TF_MINUTES
 from capitalizator.fusion.archive import archive_events
-from capitalizator.fusion.atlas import Atlas, train
+from capitalizator.fusion.atlas import Atlas
 from capitalizator.fusion.concurrency import Mailbox, Supervisor
 from capitalizator.fusion.config import Config
 from capitalizator.fusion.engine import Engine, Shared
@@ -30,6 +31,7 @@ from capitalizator.fusion.news import ingest as ingest_news
 from capitalizator.fusion.performance import venue_performance
 from capitalizator.fusion.store import Store, encode
 from capitalizator.fusion.structure import TFS
+from capitalizator.fusion.training import TrainingProcess
 from capitalizator.news_macro.ingest import NewsRow, load_desk_calendar
 
 
@@ -70,6 +72,7 @@ class Runtime:
         self.epoch = 0
         self.recovering: set[str] = set()
         self.private_overflow_at = 0.0
+        self.news_wake = threading.Event()
         self._load_model()
 
     def _load_model(self) -> None:
@@ -129,11 +132,20 @@ class Runtime:
                 if kind == "book" and self.engines[symbol].market.valid:
                     with self.shared.lock:
                         self.recovering.discard(symbol)
-                        if not self.recovering and self.shared.reason.startswith("recovering_feed"):
-                            self.shared.halted, self.shared.reason = False, ""
+                        if not self.recovering and "recovering_feed" in self.shared.halts:
+                            self.shared.clear_halts(
+                                {"recovering_feed": self.shared.halts["recovering_feed"]}
+                            )
             self.supervisor.beat(f"market-{index}")
 
     def _trainer(self) -> None:
+        worker = TrainingProcess()
+        try:
+            self._train_loop(worker)
+        finally:
+            worker.close()
+
+    def _train_loop(self, worker: TrainingProcess) -> None:
         last_count = 0
         while not self.supervisor.stop.is_set():
             now = time.time()
@@ -149,7 +161,7 @@ class Runtime:
                 and total - last_count >= self.config.retrain_samples
             ):
                 rows = self.store.samples(now, self.config.training_rows, self.config.version)
-                model = train(rows, self.config, now)
+                model = worker.fit(rows, self.config, now, self.supervisor.stop)
                 last_count = total
                 if model:
                     with self.store.transaction() as db:
@@ -300,6 +312,7 @@ class Runtime:
                                 self.store.execution(source_mode, row)
                     if self.supervisor.failed.is_set():
                         self.shared.halt("worker_failure")
+                    self._protect_news(time.time())
                     self.executor.tick(now, allow_entries=allow and not requested)
                     self.store.put_meta(
                         "broker",
@@ -345,7 +358,7 @@ class Runtime:
             ):
                 self.shared.halt("public_socket_disconnected: resnapshot required")
             with self.shared.lock:
-                reason = self.shared.reason
+                incidents = dict(self.shared.halts)
             recoverable = (
                 "market_queue_overflow",
                 "market_processing_lag",
@@ -354,7 +367,7 @@ class Runtime:
             )
             if (
                 self.public_ws is not None
-                and reason.startswith(recoverable)
+                and any(key in recoverable for key in incidents)
                 and now - last_recovery > 5
             ):
                 last_recovery = now
@@ -362,19 +375,26 @@ class Runtime:
                 with self.shared.lock:
                     self.epoch += 1
                     self.recovering = set(self.config.symbols)
-                    self.shared.reason = "recovering_feed"
+                    self.shared.clear_halts(
+                        {key: value for key, value in incidents.items() if key in recoverable}
+                    )
+                    self.shared.halt("recovering_feed")
                 self._open_public()
-            if reason.startswith("private_queue_overflow") and self.executor:
+            if "private_queue_overflow" in incidents and self.executor:
                 # REST worker repairs unique executions/positions before clearing this halt.
                 if self.executor.last_reconcile > self.private_overflow_at:
                     with self.shared.lock:
-                        self.shared.halted, self.shared.reason = False, ""
+                        self.shared.clear_halts(
+                            {"private_queue_overflow": incidents["private_queue_overflow"]}
+                        )
             with self.supervisor.lock:
                 beats = dict(self.supervisor.heartbeats)
             for name, stamp in beats.items():
                 budget = (
                     max(60.0, self.config.account_age_s)
                     if name == "broker"
+                    else self.config.macro_poll_s + 120
+                    if name == "macro"
                     else 120.0
                     if name in {"news", "archive", "history", "options"}
                     else 30.0
@@ -404,6 +424,7 @@ class Runtime:
                     health["bybit"] = {"ok": True, "at": time.time()}
                 except Exception as exc:
                     health["bybit"] = {"ok": False, "at": time.time(), "error": type(exc).__name__}
+                self._publish_news(cache, health, time.time())
                 try:
                     provider_key = news_key(self.root)
                 except ValueError as exc:
@@ -475,79 +496,161 @@ class Runtime:
                             if isinstance(exc, ValueError)
                             else type(exc).__name__,
                         }
-                base = load_desk_calendar()
-                now = time.time()
-                macro_ok = all(
-                    any(
-                        r.event_class == kind
-                        and r.known_at.timestamp() <= now < r.event_time.timestamp()
-                        for r in base
+                    self._publish_news(cache, health, time.time())
+                    self.supervisor.beat("news")
+                self._publish_news(cache, health, time.time())
+                self.supervisor.beat("news")
+                self.news_wake.wait(self.config.news_poll_s)
+                self.news_wake.clear()
+
+    def _publish_news(
+        self, cache: dict[str, list[NewsRow]], health: dict[str, Any], now: float
+    ) -> None:
+        from capitalizator.fusion.macro import coverage as macro_coverage
+
+        with self.shared.lock:
+            official = self.shared.macro_calendar
+            macro_health = dict(self.shared.macro_health)
+        # Live fetched schedules replace static rows of the same class. A stale
+        # CSV cannot silently override a provider's changed/cancelled release.
+        classes = {r.event_class for r in official}
+        base = tuple(r for r in load_desk_calendar() if r.event_class not in classes) + official
+        macro_missing = macro_coverage(official, macro_health, now, self.config.macro_stale_s)
+        merged = merge_news(base, [r for rows in cache.values() for r in rows])
+        coverage = {}
+        for symbol in self.config.symbols:
+            relevant = [
+                r for r in self.news_sources if symbol in r["assets"] or "ALL" in r["assets"]
+            ]
+            missing = [
+                r["name"]
+                for r in relevant
+                if not health.get(r["name"], {}).get("ok")
+                or not 0 <= now - health[r["name"]]["at"] <= self.config.news_stale_s
+            ]
+            if not any(r["kind"] == "rss" for r in relevant):
+                missing.append("coin_news_not_configured")
+            if symbol not in {"BTCUSDT", "ETHUSDT"} and not any(
+                r["kind"] == "unlocks" for r in relevant
+            ):
+                missing.append("token_unlocks_not_configured")
+            missing.extend(macro_missing)
+            if not health.get("bybit", {}).get("ok"):
+                missing.append("bybit")
+            coverage[symbol] = {
+                "at": now,
+                "ok": not missing,
+                "missing": missing,
+                "unlock_coverage": any(r["kind"] == "unlocks" for r in relevant),
+            }
+        rows = [
+            {
+                **asdict(r),
+                "event_time": r.event_time.isoformat(),
+                "known_at": r.known_at.isoformat(),
+            }
+            for r in merged
+        ]
+        self.store.event(now, "*", "news", rows)
+        self.store.event(now, "*", "news_coverage", coverage)
+        with self.shared.lock:
+            self.shared.calendar = merged
+            self.shared.news_at = now
+            self.shared.news_coverage = coverage
+        self.store.put_meta(
+            "news_status",
+            {
+                "at": now,
+                "sources": {**health, "macro": macro_health},
+                "coverage": coverage,
+                "events": rows,
+                "headlines": [
+                    json.loads(r["body"])
+                    for r in self.store.rows(
+                        "SELECT body FROM meta WHERE key LIKE 'news_item:%' "
+                        "ORDER BY json_extract(body,'$.published') DESC LIMIT 30"
                     )
-                    for kind in ("CPI", "FOMC", "NFP", "PCE")
-                )
-                merged = merge_news(base, [r for rows in cache.values() for r in rows])
-                coverage = {}
-                for symbol in self.config.symbols:
-                    relevant = [
-                        r
-                        for r in self.news_sources
-                        if symbol in r["assets"] or "ALL" in r["assets"]
-                    ]
-                    missing = [
-                        r["name"]
-                        for r in relevant
-                        if not health.get(r["name"], {}).get("ok")
-                        or not 0 <= now - health[r["name"]]["at"] <= self.config.news_stale_s
-                    ]
-                    if not relevant:
-                        missing.append("coin_news_not_configured")
-                    if symbol not in {"BTCUSDT", "ETHUSDT"} and not any(
-                        r["kind"] == "unlocks" for r in relevant
-                    ):
-                        missing.append("token_unlocks_not_configured")
-                    if not macro_ok:
-                        missing.append("macro_calendar_exhausted")
-                    if not health.get("bybit", {}).get("ok"):
-                        missing.append("bybit")
-                    coverage[symbol] = {
-                        "at": now,
-                        "ok": not missing,
-                        "missing": missing,
-                        "unlock_coverage": any(r["kind"] == "unlocks" for r in relevant),
-                    }
-                rows = [
-                    {
-                        **asdict(r),
-                        "event_time": r.event_time.isoformat(),
-                        "known_at": r.known_at.isoformat(),
-                    }
-                    for r in merged
-                ]
-                self.store.event(now, "*", "news", rows)
-                self.store.event(now, "*", "news_coverage", coverage)
-                with self.shared.lock:
-                    self.shared.calendar = merged
-                    self.shared.news_at = now
-                    self.shared.news_coverage = coverage
-                self.store.put_meta(
-                    "news_status",
-                    {
-                        "at": now,
-                        "sources": health,
-                        "coverage": coverage,
-                        "events": rows,
-                        "headlines": [
-                            json.loads(r["body"])
-                            for r in self.store.rows(
-                                "SELECT body FROM meta WHERE key LIKE 'news_item:%' "
-                                "ORDER BY json_extract(body,'$.published') DESC LIMIT 30"
+                ],
+            },
+        )
+        self.shared.broker_wake.set()
+
+    def _macro(self) -> None:
+        from capitalizator.fusion.macro import SOURCES, fetch
+
+        cache: dict[str, list[NewsRow]] = {}
+        health: dict[str, Any] = {}
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="macro-source") as pool:
+            while not self.supervisor.stop.is_set():
+                jobs = {
+                    pool.submit(fetch, name, self.config.http_timeout_s, time.time()): name
+                    for name in SOURCES
+                }
+                for future in as_completed(jobs):
+                    name, now = jobs[future], time.time()
+                    try:
+                        values = future.result()
+                        normalized = []
+                        for value in values:
+                            known = self.store.meta("event_known:" + value.event_id, now)
+                            self.store.put_meta("event_known:" + value.event_id, known)
+                            normalized.append(
+                                replace(value, known_at=datetime.fromtimestamp(known, UTC))
                             )
+                        cache[name] = normalized
+                        health[name] = {
+                            "ok": True,
+                            "at": now,
+                            "events": len(normalized),
+                            "source": SOURCES[name],
+                        }
+                    except Exception as exc:
+                        health[name] = {
+                            "ok": False,
+                            "at": now,
+                            "error": type(exc).__name__,
+                            "source": SOURCES[name],
+                        }
+                combined = tuple(r for rows in cache.values() for r in rows)
+                self.store.event(
+                    time.time(),
+                    "*",
+                    "macro",
+                    {
+                        "health": health,
+                        "events": [
+                            {
+                                **asdict(r),
+                                "event_time": r.event_time.isoformat(),
+                                "known_at": r.known_at.isoformat(),
+                            }
+                            for r in combined
                         ],
                     },
                 )
-                self.shared.broker_wake.set()
-                self.supervisor.beat("news")
-                self.supervisor.stop.wait(self.config.news_poll_s)
+                with self.shared.lock:
+                    self.shared.macro_calendar = combined
+                    self.shared.macro_health = copy.deepcopy(health)
+                self.news_wake.set()
+                self.supervisor.beat("macro")
+                self.supervisor.stop.wait(self.config.macro_poll_s)
+
+    def _protect_news(self, at: float) -> None:
+        """Broker-owned reaction, shared with recorded-event replay."""
+        from capitalizator.fusion.news import protect
+
+        if self.executor is None:
+            return
+        with self.shared.lock:
+            calendar = self.shared.calendar
+        protect(
+            self.store,
+            calendar,
+            self.executor.mode,
+            self.config.symbols,
+            at,
+            self.config.news_post_minutes,
+        )
 
     def _history(self) -> None:
         # Closed candles provide context only, never synthetic orderflow/training labels.
@@ -640,6 +743,7 @@ class Runtime:
         self.supervisor.start("maintenance", self._maintenance)
         self.supervisor.start("archive", self._archive)
         if public:
+            self.supervisor.start("macro", self._macro)
             self.supervisor.start("news", self._news)
             self.supervisor.start("history", self._history)
             self.supervisor.start("options", self._options)
@@ -649,7 +753,9 @@ class Runtime:
     def control(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
         qualification = None
         if action == "mode" and body.get("mode") == "live":
-            qualification = venue_performance(self.store, "demo", self.policy_since)
+            qualification = venue_performance(
+                self.store, "demo", self.policy_since, self.config.version
+            )
         with self.shared.entry_lock:
             with self.shared.admission_lock:
                 result = self._control(action, body, qualification)
@@ -787,6 +893,16 @@ class Runtime:
             "ORDER BY created DESC LIMIT 30",
             (mode, symbol),
         )
+        accounts = self.store.rows("SELECT at,body FROM account WHERE mode=?", (mode,))
+        positions = (
+            [
+                p
+                for p in json.loads(accounts[0]["body"])["positions"]
+                if p["symbol"] == symbol and float(p.get("size") or 0)
+            ]
+            if accounts
+            else []
+        )
         body = {
             "at": time.time(),
             "symbol": symbol,
@@ -802,6 +918,8 @@ class Runtime:
             "contracts": [{**c, "definition": json.loads(c["definition"])} for c in contracts],
             "fills": [{"at": f["at"], **json.loads(f["body"])} for f in fills],
             "orders": [{"state": o["state"], **json.loads(o["body"])} for o in orders],
+            "positions": positions,
+            "account_at": accounts[0]["at"] if accounts else None,
         }
         if revision != closed_at:
             body["candles"] = series.get("candles", [])
@@ -815,6 +933,7 @@ class Runtime:
                 "paused": self.shared.paused,
                 "halted": self.shared.halted,
                 "reason": self.shared.reason,
+                "halt_reasons": [value[1] for value in self.shared.halts.values()],
                 "mode_request": self.mode_request,
                 "markets": dict(self.shared.snapshots),
                 "options": dict(self.shared.external),
@@ -852,6 +971,7 @@ class Runtime:
         # Never call the exchange writer concurrently from this thread.
         self.supervisor.stop.set()
         self.shared.broker_wake.set()
+        self.news_wake.set()
         for mailbox in (*self.mailboxes, self.private_mailbox):
             mailbox.close()
         remaining = self.supervisor.join()
