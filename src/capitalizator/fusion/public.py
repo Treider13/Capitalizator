@@ -16,31 +16,41 @@ class RawPublic:
         callback: Callable[[dict[str, Any]], None],
         *,
         factory: Any = None,
+        category: str = "linear",
     ) -> None:
+        if category not in {"linear", "spot"} or not symbols:
+            raise ValueError("nonempty linear/spot subscription required")
+        if category == "spot" and len(symbols) > 10:
+            raise ValueError("spot subscriptions exceed per-request topic limit")
         if factory is None:
             from websocket import WebSocketApp
 
             factory = WebSocketApp
         self.started_at = time.time()
+        self.started_at_monotonic = time.monotonic()
         self.callback = callback
-        self.topics = [
-            f"{topic}.{symbol}"
-            for symbol in symbols
-            for topic in ("orderbook.50", "publicTrade", "tickers", "allLiquidation")
-        ]
+        topics = (
+            ("orderbook.50",)
+            if category == "spot"
+            else ("orderbook.50", "publicTrade", "tickers", "allLiquidation")
+        )
+        self.topics = [f"{topic}.{symbol}" for symbol in symbols for topic in topics]
         self.connected = threading.Event()
         self.closed = threading.Event()
         self.error = ""
         self.last_message = time.monotonic()
+        self.last_data_message = self.last_message
         self.ws = factory(
-            "wss://stream.bybit.com/v5/public/linear",
+            "wss://stream.bybit.com/v5/public/" + category,
             on_open=self._open,
             on_message=self._message,
             on_error=self._error,
             on_close=self._close,
         )
-        self.thread = threading.Thread(target=self._run, name="public-wire", daemon=True)
-        self.heartbeat = threading.Thread(target=self._ping, name="public-heartbeat", daemon=True)
+        self.thread = threading.Thread(target=self._run, name=category + "-wire", daemon=True)
+        self.heartbeat = threading.Thread(
+            target=self._ping, name=category + "-heartbeat", daemon=True
+        )
         self.thread.start()
         self.heartbeat.start()
 
@@ -57,6 +67,7 @@ class RawPublic:
                     raise ValueError("public subscription rejected")
                 self.connected.set()
             elif frame.get("topic") in self.topics:
+                self.last_data_message = time.monotonic()
                 self.callback(frame)  # No SDK accumulation or snapshot rewriting.
         except Exception as exc:
             self._error(ws, exc)

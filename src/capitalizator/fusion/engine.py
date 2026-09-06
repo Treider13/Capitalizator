@@ -17,6 +17,7 @@ from capitalizator.fusion.atlas import Atlas
 from capitalizator.fusion.concurrency import FairLock
 from capitalizator.fusion.config import Config
 from capitalizator.fusion.contracts import Contract, baseline, propose
+from capitalizator.fusion.cross_market import entry_check
 from capitalizator.fusion.market import Block, Market
 from capitalizator.fusion.risk import Instrument, reserve
 from capitalizator.fusion.store import Store, encode
@@ -327,6 +328,12 @@ class Engine:
             self.transition("expired", block.at, "model_not_live_qualified")
         elif not self.fresh(block.at):
             self.transition("expired", block.at, "stale_market")
+        elif (
+            cross_reason := entry_check(
+                self.market.cross_market(), self.contract.side, block.at, self.config
+            )
+        ) != "ready":
+            self.transition("expired", block.at, cross_reason)
         elif self.variant in {"C", "D"} and forecast.edge(self.contract.side, cost) <= 0:
             self.transition("expired", block.at, "edge_consumed_while_waiting")
         else:
@@ -386,6 +393,7 @@ class Engine:
         m = self.market
         return bool(
             m.valid
+            and entry_check(m.cross_market(), 0, at, self.config) == "ready"
             and 0 <= at - m.book_at <= self.config.max_data_age_s
             and 0 <= at - m.ticker_at <= self.config.account_age_s
             and m.bids

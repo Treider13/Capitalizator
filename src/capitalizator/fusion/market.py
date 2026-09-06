@@ -15,6 +15,7 @@ from capitalizator.desk.bars import BarBuilder
 from capitalizator.exec.fvg_mark import latest_fvg
 from capitalizator.fusion.config import Config
 from capitalizator.fusion.context import absorption, geometry, rank, sessions
+from capitalizator.fusion.cross_market import SpotBook, book_metrics
 from capitalizator.fusion.flow import Flow
 from capitalizator.fusion.structure import TFS, Structure, candle, parse_history
 from capitalizator.recorder.normalize import normalize_bybit_public_trade
@@ -95,6 +96,7 @@ def session_key(at: float) -> str:
 class Market:
     def __init__(self, symbol: str, config: Config, tick: float = 0.1) -> None:
         self.symbol, self.config, self.tick = symbol, config, tick
+        self.spot = SpotBook(symbol)
         self.bids: dict[float, float] = {}
         self.asks: dict[float, float] = {}
         self.book_u = 0
@@ -370,6 +372,7 @@ class Market:
             "at": at,
             "book_at": self.book_at,
             "ticker_at": self.ticker_at,
+            "cross_market": self.cross_market(),
             "mark": self.ticker.get("markPrice"),
             "funding": float(self.ticker.get("fundingRate") or 0),
         }
@@ -425,6 +428,11 @@ class Market:
             "ticker_at": self.ticker_at,
             "trade_at": self.trade_at,
             "late_trades": self.late_trades,
+            "cross_market": self.cross_market(),
+            "spot_levels": {
+                "bids": sorted(self.spot.bids.items(), reverse=True)[:20],
+                "asks": sorted(self.spot.asks.items())[:20],
+            },
             "block": self.block_cache,
             "bid": max(self.bids) if self.bids else None,
             "ask": min(self.asks) if self.asks else None,
@@ -434,8 +442,23 @@ class Market:
             },
         }
 
+    def cross_market(self) -> dict[str, Any]:
+        spot = self.spot.snapshot()
+        linear = {**book_metrics(self.bids, self.asks), "book_at": self.book_at}
+        linear["valid"] = bool(linear["valid"] and self.valid)
+        ready = spot["valid"] and linear["valid"]
+        return {
+            "spot": spot,
+            "linear": linear,
+            "basis_bps": (linear["mid"] / spot["mid"] - 1) * 10000 if ready else None,
+            "imbalance_gap": linear["imbalance"] - spot["imbalance"] if ready else None,
+            "opposed": spot["imbalance"] * linear["imbalance"] < 0 if ready else None,
+        }
+
     def ingest(self, kind: str, frame: dict[str, Any], at: float) -> list[Block]:
-        if kind == "book":
+        if kind.startswith("spot_"):
+            self.spot.ingest(kind, frame, at)
+        elif kind == "book":
             self.book(frame, at)
         elif kind == "trades":
             return self.trades(frame, at)

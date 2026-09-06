@@ -507,6 +507,16 @@ def test_candidate_new_reaction_risk_reservation_and_venue_send(store, config):
         101,
     )
     engine.market.ticker_at = 101
+    engine.market.ingest(
+        "spot_book",
+        {
+            "generation": 1,
+            "type": "snapshot",
+            "ts": 101000,
+            "data": {"s": "BTCUSDT", "u": 1, "b": [["100", "1000"]], "a": [["100.01", "1000"]]},
+        },
+        101,
+    )
     for i in range(4):
         engine.market.blocks.append(block(ident=i, at=90 + i))
     c = {

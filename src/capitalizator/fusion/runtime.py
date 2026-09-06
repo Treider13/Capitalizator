@@ -20,6 +20,7 @@ from capitalizator.fusion.archive import archive_events
 from capitalizator.fusion.atlas import Atlas
 from capitalizator.fusion.concurrency import Mailbox, Supervisor
 from capitalizator.fusion.config import Config
+from capitalizator.fusion.cross_market import entry_check
 from capitalizator.fusion.engine import Engine, Shared
 from capitalizator.fusion.exchange import Bybit, credentials, news_key
 from capitalizator.fusion.executor import Executor
@@ -82,6 +83,8 @@ class Runtime:
         self.rejected_frames = 0
         self._instance_fd: int | None = None
         self.epoch = 0
+        self.spot_generations = {s: 0 for s in config.symbols}
+        self.spot_faults: set[str] = set()
         self.recovering: set[str] = set()
         self.private_overflow_at = 0.0
         self.news_wake = threading.Event()
@@ -139,8 +142,17 @@ class Runtime:
                 try:
                     self.engines[symbol].process(kind, frame, at)
                 except (ValueError, KeyError, ArithmeticError) as exc:
-                    self.engines[symbol].process("gap", {"reason": type(exc).__name__}, at)
-                    self.shared.halt("invalid_market_frame")
+                    if kind.startswith("spot_"):
+                        self.engines[symbol].process(
+                            "spot_status",
+                            {"generation": frame["generation"], "status": "invalid_frame"},
+                            at,
+                        )
+                        with self.shared.lock:
+                            self.spot_faults.add(symbol)
+                    else:
+                        self.engines[symbol].process("gap", {"reason": type(exc).__name__}, at)
+                        self.shared.halt("invalid_market_frame")
                 if kind == "book" and self.engines[symbol].market.valid:
                     with self.shared.lock:
                         self.recovering.discard(symbol)
@@ -242,6 +254,16 @@ class Runtime:
             ):
                 return False
             market = dict(self.shared.snapshots.get(order["symbol"], {}))
+            spot_generation = self.spot_generations[order["symbol"]]
+            spot_fault = order["symbol"] in self.spot_faults
+        cross = market.get("cross_market", {})
+        side = 1 if json.loads(order["body"])["side"] == "Buy" else -1
+        if (
+            spot_fault
+            or cross.get("spot", {}).get("generation") != spot_generation
+            or entry_check(cross, side, now, self.config) != "ready"
+        ):
+            return False
         if not market.get("valid") or now >= order["expires"]:
             return False
         if not 0 <= now - market.get("book_at", 0) <= self.config.max_data_age_s:
@@ -817,6 +839,120 @@ class Runtime:
         epoch = self.epoch
         self.public_ws = RawPublic(self.config.symbols, lambda frame: self.callback(frame, epoch))
 
+    def _spot_event(
+        self, symbol: str, kind: str, frame: dict[str, Any], generation: int, epoch: int
+    ) -> None:
+        with self.shared.lock:
+            if generation != self.spot_generations[symbol] or epoch != self.epoch:
+                return
+        item = (
+            symbol,
+            kind,
+            {**copy.deepcopy(frame), "generation": generation},
+            time.time(),
+            epoch,
+        )
+        if not self.mailboxes[self.routes[symbol]].put(symbol, item):
+            if self.supervisor.stop.is_set():
+                return
+            with self.shared.lock:
+                self.spot_faults.add(symbol)
+                self.rejected_frames += 1
+            self.shared.halt("market_queue_overflow: spot resnapshot required")
+
+    def _spot_status(self, symbol: str, status: str) -> tuple[int, int]:
+        # Revoke the old generation before waiting on any network or mailbox.
+        with self.shared.lock:
+            self.spot_generations[symbol] += 1
+            generation, epoch = self.spot_generations[symbol], self.epoch
+        self._spot_event(symbol, "spot_status", {"status": status}, generation, epoch)
+        return generation, epoch
+
+    def _spot_worker(self, symbol: str) -> None:
+        """One independent public connection/discovery task per configured symbol.
+
+        Exact same-base USDT spot only. XAU is never silently mapped to PAXG/XAUT.
+        Socket callbacks enqueue; all L2 mutation stays with the symbol actor.
+        """
+        from capitalizator.fusion.public import RawPublic
+
+        wire: Any = None
+        generation, epoch = self._spot_status(symbol, "discovery_pending")
+        next_discovery = 0.0
+        retry_delay = 1.0
+        name = "spot-" + symbol
+        try:
+            while not self.supervisor.stop.is_set():
+                now = time.monotonic()
+                with self.shared.lock:
+                    fault = symbol in self.spot_faults
+                    self.spot_faults.discard(symbol)
+                    changed = epoch != self.epoch
+                lost = wire is not None and (
+                    wire.closed.is_set()
+                    or (not wire.is_connected() and now - wire.last_message > 10)
+                    or now - wire.last_data_message > max(10, self.config.max_data_age_s * 2)
+                )
+                if fault or changed or lost:
+                    generation, epoch = self._spot_status(symbol, "reconnecting")
+                    if wire is not None:
+                        wire.exit()
+                        wire = None
+                    next_discovery = now + retry_delay
+                    retry_delay = min(30.0, retry_delay * 2)
+                elif (
+                    wire is not None
+                    and wire.is_connected()
+                    and now - wire.started_at_monotonic > 30
+                ):
+                    retry_delay = 1.0
+                if now >= next_discovery:
+                    try:
+                        result = public_get(
+                            "market/instruments-info",
+                            {"category": "spot", "symbol": symbol},
+                            self.config.http_timeout_s,
+                        )
+                        available = any(
+                            row.get("symbol") == symbol
+                            and row.get("baseCoin") == symbol[:-4]
+                            and row.get("quoteCoin") == "USDT"
+                            and row.get("status") == "Trading"
+                            for row in result["list"]
+                        )
+                        if not available:
+                            generation, epoch = self._spot_status(symbol, "instrument_unavailable")
+                            if wire is not None:
+                                wire.exit()
+                                wire = None
+                        elif wire is None:
+                            generation, epoch = self._spot_status(symbol, "awaiting_snapshot")
+
+                            def on_spot(
+                                frame: dict[str, Any], g: int = generation, e: int = epoch
+                            ) -> None:
+                                self._spot_event(symbol, "spot_book", frame, g, e)
+
+                            wire = RawPublic(
+                                (symbol,),
+                                on_spot,
+                                category="spot",
+                            )
+                    except Exception as exc:
+                        generation, epoch = self._spot_status(
+                            symbol, "discovery_error:" + type(exc).__name__
+                        )
+                        if wire is not None:
+                            wire.exit()
+                            wire = None
+                    next_discovery = time.monotonic() + self.config.context_poll_s
+                self.supervisor.beat(name)
+                self.supervisor.stop.wait(0.25)
+        finally:
+            self._spot_status(symbol, "stopped")
+            if wire is not None:
+                wire.exit()
+
     def start(self, *, public: bool = True) -> None:
         import fcntl
 
@@ -855,6 +991,8 @@ class Runtime:
             self.supervisor.start("options", self._options)
         if public:
             self._open_public()
+            for symbol in self.config.symbols:
+                self.supervisor.start("spot-" + symbol, lambda s=symbol: self._spot_worker(s))
 
     def control(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
         qualification = None
@@ -1090,6 +1228,13 @@ class Runtime:
             "revision": closed_at,
             "quote": {k: market.get(k) for k in ("bid", "ask", "book_at", "valid")},
             "book_levels": market.get("book_levels", {}),
+            "spot_levels": market.get("spot_levels", {}),
+            "cross_market": market.get("cross_market", {}),
+            "book_entry_checks": {
+                "Buy": entry_check(market.get("cross_market", {}), 1, time.time(), self.config),
+                "Sell": entry_check(market.get("cross_market", {}), -1, time.time(), self.config),
+            },
+            "max_data_age_s": self.config.max_data_age_s,
             "forming": market.get("forming", {}).get(tf),
             "block": market.get("block"),
             "analytics": market.get("analytics", []),
@@ -1119,7 +1264,7 @@ class Runtime:
                     symbol: {
                         k: v
                         for k, v in snapshot.items()
-                        if k not in {"chart", "forming", "analytics", "book_levels"}
+                        if k not in {"chart", "forming", "analytics", "book_levels", "spot_levels"}
                     }
                     for symbol, snapshot in self.shared.snapshots.items()
                 },

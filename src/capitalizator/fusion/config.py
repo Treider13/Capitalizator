@@ -122,7 +122,7 @@ class Config:
     def version(self) -> str:
         return hashlib.sha256(
             json.dumps(
-                {"policy": "fusion-7-close-revocation", **asdict(self)}, sort_keys=True
+                {"policy": "fusion-8-spot-futures", **asdict(self)}, sort_keys=True
             ).encode()
         ).hexdigest()[:16]
 
