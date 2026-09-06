@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS orders(
  updated REAL NOT NULL, expires REAL NOT NULL, reserve REAL NOT NULL,
  body TEXT NOT NULL, venue_id TEXT, error TEXT);
 CREATE INDEX IF NOT EXISTS order_state ON orders(mode,state);
+CREATE INDEX IF NOT EXISTS console_order_mode ON orders(mode);
 CREATE TABLE IF NOT EXISTS executions(
  mode TEXT NOT NULL, id TEXT NOT NULL, order_id TEXT NOT NULL,
  symbol TEXT NOT NULL, at REAL NOT NULL, body TEXT NOT NULL,
@@ -44,11 +45,13 @@ CREATE TABLE IF NOT EXISTS account(
  mode TEXT PRIMARY KEY, at REAL NOT NULL, equity REAL NOT NULL,
  day TEXT NOT NULL, day_start REAL NOT NULL, body TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS execution_symbol ON executions(mode,symbol,at);
+CREATE INDEX IF NOT EXISTS console_execution_mode ON executions(mode);
 CREATE INDEX IF NOT EXISTS contract_symbol ON contracts(symbol,at);
 CREATE INDEX IF NOT EXISTS order_symbol ON orders(mode,symbol,created);
 CREATE TABLE IF NOT EXISTS commands(
  id TEXT PRIMARY KEY, mode TEXT NOT NULL, symbol TEXT NOT NULL,
  kind TEXT NOT NULL, at REAL NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS console_command_mode ON commands(mode);
 CREATE TABLE IF NOT EXISTS dispatch(
  kind TEXT NOT NULL, id TEXT NOT NULL, attempted REAL NOT NULL, next_at REAL NOT NULL,
  error TEXT NOT NULL DEFAULT '', PRIMARY KEY(kind,id));

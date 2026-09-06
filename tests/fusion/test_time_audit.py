@@ -108,8 +108,7 @@ def test_console_freshness_does_not_use_phone_wall_clock():
     node = shutil.which("node")
     if not node:
         pytest.skip("Node is required for the console clock test")
-    html = Path("src/capitalizator/fusion/dashboard.html").read_text()
-    code = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    code = "let streamConnected=true;\n" + Path("src/capitalizator/fusion/chart.js").read_text()
     script = """
 const vm=require('vm'),assert=require('assert');
 let elapsed=1000;

@@ -5,13 +5,25 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
+import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from capitalizator.fusion.console_records import records
+
 PAGE = (Path(__file__).with_name("dashboard.html")).read_text(encoding="utf-8")
+ASSETS = {
+    "/assets/" + name: (Path(__file__).with_name(name).read_bytes(), mime)
+    for name, mime in (
+        ("dashboard.css", "text/css; charset=utf-8"),
+        ("dashboard.js", "text/javascript; charset=utf-8"),
+        ("chart.js", "text/javascript; charset=utf-8"),
+        ("depth.js", "text/javascript; charset=utf-8"),
+    )
+}
 
 
 def server(runtime: Any, port: int) -> ThreadingHTTPServer:
@@ -51,6 +63,22 @@ def server(runtime: Any, port: int) -> ThreadingHTTPServer:
                     PAGE.replace("__TOKEN__", token).replace("__INSTANCE__", instance).encode(),
                     "text/html; charset=utf-8",
                 )
+            elif self.path in ASSETS:
+                content, mime = ASSETS[self.path]
+                self.send(200, content, mime)
+            elif urlparse(self.path).path == "/api/records":
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    limit = int(query.get("limit", ["20"])[0])
+                    before = int(query["before"][0]) if "before" in query else None
+                    with runtime.shared.lock:
+                        mode = runtime.shared.mode
+                    body = records(runtime.store, mode, query.get("kind", [""])[0], limit, before)
+                    self.send(200, json.dumps(body, allow_nan=False).encode())
+                except ValueError as exc:
+                    self.send(400, json.dumps({"error": str(exc)}).encode())
+                except sqlite3.OperationalError:
+                    self.send(503, b'{"error":"journal read unavailable or time budget exceeded"}')
             elif urlparse(self.path).path == "/api/stream":
                 query = parse_qs(urlparse(self.path).query)
                 symbol = query.get("symbol", [runtime.config.symbols[0]])[0]
@@ -70,7 +98,7 @@ def server(runtime: Any, port: int) -> ThreadingHTTPServer:
                     self.send_header("Cache-Control", "no-store")
                     self.send_header("X-Accel-Buffering", "no")
                     self.end_headers()
-                    body = first
+                    body = {**first, "console_instance": instance}
                     while not runtime.supervisor.stop.is_set():
                         self.wfile.write(
                             b"data: " + json.dumps(body, allow_nan=False).encode() + b"\n\n"
@@ -78,7 +106,10 @@ def server(runtime: Any, port: int) -> ThreadingHTTPServer:
                         self.wfile.flush()
                         if runtime.supervisor.stop.wait(runtime.config.chart_refresh_s):
                             break
-                        body = runtime.chart(symbol, tf, body["revision"])
+                        body = {
+                            **runtime.chart(symbol, tf, body["revision"]),
+                            "console_instance": instance,
+                        }
                 except (OSError, ConnectionError):
                     pass
                 finally:
