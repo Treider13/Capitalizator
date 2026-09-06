@@ -111,7 +111,8 @@ class Runtime:
         }.get(topic.split(".")[0])
         if not kind or symbol not in self.routes:
             return
-        item = (symbol, kind, copy.deepcopy(frame), at, self.epoch if epoch is None else epoch)
+        received = {**copy.deepcopy(frame), "_received_monotonic": time.monotonic()}
+        item = (symbol, kind, received, at, self.epoch if epoch is None else epoch)
         if not self.mailboxes[self.routes[symbol]].put(symbol, item):
             with self.shared.lock:
                 self.rejected_frames += 1
@@ -137,11 +138,17 @@ class Runtime:
                 if epochs.get(symbol) != epoch:
                     self.engines[symbol].process("gap", {"reason": "feed_generation"}, at)
                     epochs[symbol] = epoch
-                if time.time() - at > self.config.max_data_age_s:
+                received_mono = frame.get("_received_monotonic")
+                age = (
+                    time.monotonic() - received_mono
+                    if received_mono is not None
+                    else time.time() - at
+                )
+                if not 0 <= age <= self.config.max_data_age_s:
                     self.shared.halt("market_processing_lag")
                 try:
                     self.engines[symbol].process(kind, frame, at)
-                except (ValueError, KeyError, ArithmeticError) as exc:
+                except (ValueError, KeyError, ArithmeticError, TypeError) as exc:
                     if kind.startswith("spot_"):
                         self.engines[symbol].process(
                             "spot_status",
@@ -261,7 +268,7 @@ class Runtime:
         if (
             spot_fault
             or cross.get("spot", {}).get("generation") != spot_generation
-            or entry_check(cross, side, now, self.config) != "ready"
+            or entry_check(cross, side, now, self.config, monotonic_at=time.monotonic()) != "ready"
         ):
             return False
         if not market.get("valid") or now >= order["expires"]:
@@ -741,7 +748,11 @@ class Runtime:
                         item = (
                             symbol,
                             "history",
-                            {"tf": tf, "rows": result["list"]},
+                            {
+                                "tf": tf,
+                                "rows": result["list"],
+                                "_received_monotonic": time.monotonic(),
+                            },
                             time.time(),
                             epoch,
                         )
@@ -848,7 +859,11 @@ class Runtime:
         item = (
             symbol,
             kind,
-            {**copy.deepcopy(frame), "generation": generation},
+            {
+                **copy.deepcopy(frame),
+                "generation": generation,
+                "_received_monotonic": time.monotonic(),
+            },
             time.time(),
             epoch,
         )

@@ -87,7 +87,7 @@ def test_invalid_spot_frames_cannot_be_used(mutation):
 
 def test_stale_exchange_data_is_not_refreshed_by_late_receipt():
     m = Market("BTCUSDT", Config())
-    m.ingest("book", frame(), 110)
+    m.ingest("book", frame(at=110), 110)
     m.ingest("spot_book", frame(), 110)
     assert entry_check(m.cross_market(), 1, 110, m.config) == "spot_stale"
     m.ingest("spot_book", frame(at=110), 110)
@@ -140,9 +140,10 @@ def test_dispatch_rechecks_generation_and_direction_using_stored_order_body(tmp_
         runtime.shared.news_required = False
         runtime.executor = SimpleNamespace(last_reconcile=101)
         engine = runtime.engines["BTCUSDT"]
-        engine.market.ingest("book", frame(), 101)
+        received_mono = time.monotonic()
+        engine.market.ingest("book", {**frame(), "_received_monotonic": received_mono}, 101)
         engine.market.ingest("ticker", {"data": {}}, 101)
-        engine.market.ingest("spot_book", frame(), 101)
+        engine.market.ingest("spot_book", {**frame(), "_received_monotonic": received_mono}, 101)
         runtime.spot_generations["BTCUSDT"] = 1
         runtime.shared.snapshots["BTCUSDT"] = engine.market.snapshot()
         monkeypatch.setattr("capitalizator.fusion.runtime.time.time", lambda: 101)
@@ -154,6 +155,9 @@ def test_dispatch_rechecks_generation_and_direction_using_stored_order_body(tmp_
             "body": json.dumps({"side": "Buy"}),
         }
         assert runtime._authorize_send(order)
+        with monkeypatch.context() as clock:
+            clock.setattr("capitalizator.fusion.runtime.time.monotonic", lambda: received_mono + 10)
+            assert not runtime._authorize_send(order)  # Wall time stayed 101; data aged 10 s.
         assert not runtime._authorize_send({**order, "body": json.dumps({"side": "Sell"})})
         runtime._spot_status("BTCUSDT", "reconnecting")
         assert not runtime._authorize_send(order)  # Even BEFORE actor drains status event.

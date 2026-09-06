@@ -53,11 +53,12 @@ class SpotBook:
         self.u = 0
         self.at = 0.0
         self.exchange_at = 0.0
+        self.received_mono: float | None = None
 
     def ingest(self, kind: str, frame: dict[str, Any], at: float) -> None:
         try:
             self._ingest(kind, frame, at)
-        except (ValueError, KeyError, ArithmeticError):
+        except (ValueError, KeyError, ArithmeticError, TypeError):
             self.bids.clear()
             self.asks.clear()
             self.u = 0
@@ -73,6 +74,7 @@ class SpotBook:
             self.asks.clear()
             self.u = 0
             self.at = self.exchange_at = 0.0
+            self.received_mono = None
             self.generation = generation
             self.status = str(frame.get("status", "awaiting_snapshot"))
         if kind != "spot_book":
@@ -102,6 +104,7 @@ class SpotBook:
                 else:
                     book.pop(price, None)
         self.u, self.at, self.exchange_at = u, at, stamp
+        self.received_mono = frame.get("_received_monotonic")
         if not book_metrics(self.bids, self.asks)["valid"]:
             self.u = 0
             self.status = "invalid_book"
@@ -117,20 +120,35 @@ class SpotBook:
             "status": self.status,
             "book_at": self.at,
             "exchange_at": self.exchange_at,
+            "received_monotonic": self.received_mono,
         }
 
 
-def entry_check(cross: dict[str, Any], side: int, at: float, config: Config) -> str:
+def entry_check(
+    cross: dict[str, Any],
+    side: int,
+    at: float,
+    config: Config,
+    *,
+    monotonic_at: float | None = None,
+) -> str:
     """A conservative veto, not a fitted claim of predictive profitability."""
     for venue in ("spot", "linear"):
         book = cross.get(venue, {})
         if not book.get("valid") or (venue == "spot" and book.get("status") != "streaming"):
             return venue + "_not_ready"
-        stamps = [book.get("book_at", 0)]
-        if venue == "spot":
-            stamps.append(book.get("exchange_at", 0))
-        if any(not 0 <= at - stamp <= config.max_data_age_s for stamp in stamps):
+        stamps = [book.get("book_at"), book.get("exchange_at")]
+        if any(
+            not isinstance(stamp, (float, int)) or not 0 <= at - stamp <= config.max_data_age_s
+            for stamp in stamps
+        ):
             return venue + "_stale"
+        if monotonic_at is not None:
+            receipt = book.get("received_monotonic")
+            if not isinstance(receipt, (int, float)) or not (
+                0 <= monotonic_at - receipt <= config.max_data_age_s
+            ):
+                return venue + "_stale_elapsed"
         if book["spread_bps"] > config.max_spread_bps:
             return venue + "_spread_wide"
         if side and side * book["imbalance"] < 0:

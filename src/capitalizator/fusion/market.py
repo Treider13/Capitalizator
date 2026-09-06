@@ -101,6 +101,8 @@ class Market:
         self.asks: dict[float, float] = {}
         self.book_u = 0
         self.book_at = 0.0
+        self.book_exchange_at: float | None = None
+        self.book_received_mono: float | None = None
         self.trade_at = 0.0
         self.ticker_at = 0.0
         self.valid = False
@@ -144,6 +146,8 @@ class Market:
     def reset(self) -> None:
         self.valid = False
         self.book_u = 0
+        self.book_exchange_at = None
+        self.book_received_mono = None
         self.pending.clear()
         self.amd_phase, self.amd_side, self.amd_origin = "unclassified", 0, 0
         self.blocks.clear()
@@ -173,6 +177,16 @@ class Market:
         snapshot = frame.get("type") == "snapshot" or u == 1
         if not snapshot and (not self.valid or u <= self.book_u):
             return
+        stamp = float(frame["ts"]) / 1000 if frame.get("ts") is not None else None
+        if stamp is not None and (
+            not math.isfinite(stamp)
+            or stamp <= 0
+            or (
+                not snapshot and self.book_exchange_at is not None and stamp < self.book_exchange_at
+            )
+        ):
+            self.reset()
+            raise ValueError("invalid_or_regressed_futures_timestamp")
         if snapshot:
             if not self.book_u:
                 self.observation_start = at
@@ -191,6 +205,8 @@ class Market:
                 else:
                     book.pop(px, None)
         self.book_u, self.book_at = u, at
+        self.book_exchange_at = stamp
+        self.book_received_mono = frame.get("_received_monotonic")
         self.valid = bool(self.bids and self.asks and max(self.bids) < min(self.asks))
 
     def trades(self, frame: dict[str, Any], at: float) -> list[Block]:
@@ -207,6 +223,8 @@ class Market:
                 self.ids.remove(self.id_queue.popleft())
             event = normalize_bybit_public_trade(raw, recv_ts=datetime.fromtimestamp(at, UTC))
             exch = event.exchange_ts.timestamp()
+            if not 0 <= at - exch <= self.config.max_data_age_s:
+                raise ValueError("trade_timestamp_outside_receipt_window")
             if exch < self.last_exchange_trade:
                 self.late_trades += 1
                 continue  # Never rewrite a finished contract/bar.
@@ -444,7 +462,12 @@ class Market:
 
     def cross_market(self) -> dict[str, Any]:
         spot = self.spot.snapshot()
-        linear = {**book_metrics(self.bids, self.asks), "book_at": self.book_at}
+        linear = {
+            **book_metrics(self.bids, self.asks),
+            "book_at": self.book_at,
+            "exchange_at": self.book_exchange_at,
+            "received_monotonic": self.book_received_mono,
+        }
         linear["valid"] = bool(linear["valid"] and self.valid)
         ready = spot["valid"] and linear["valid"]
         return {

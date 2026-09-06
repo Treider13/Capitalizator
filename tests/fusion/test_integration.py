@@ -503,7 +503,11 @@ def test_candidate_new_reaction_risk_reservation_and_venue_send(store, config):
     shared.atlas = KnownModel()
     engine = Engine("BTCUSDT", store, shared, config)
     engine.market.book(
-        {"type": "snapshot", "data": {"u": 1, "b": [["100", "1000"]], "a": [["100.01", "1000"]]}},
+        {
+            "type": "snapshot",
+            "ts": 101000,
+            "data": {"u": 1, "b": [["100", "1000"]], "a": [["100.01", "1000"]]},
+        },
         101,
     )
     engine.market.ticker_at = 101

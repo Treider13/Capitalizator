@@ -90,6 +90,8 @@ class Engine:
         self.contract_state = "none"
 
     def process(self, kind: str, frame: dict[str, Any], at: float) -> None:
+        if kind in {"book", "spot_book"} and not isinstance(frame.get("data"), dict):
+            raise ValueError("book_payload_must_be_an_object")
         with self.shared.lock:
             instrument = self.shared.instruments.get(
                 self.symbol
@@ -105,7 +107,12 @@ class Engine:
             and (frame.get("type") == "snapshot" or frame.get("data", {}).get("u") == 1)
         ):
             self.process("gap", {"reason": "venue_book_reset"}, at)
-        self.store.event(at, self.symbol, kind, frame)
+        self.store.event(
+            at,
+            self.symbol,
+            kind,
+            {k: v for k, v in frame.items() if k != "_received_monotonic"},
+        )
         if kind == "gap":
             self.unlabeled.clear()
             self.origin_costs.clear()
