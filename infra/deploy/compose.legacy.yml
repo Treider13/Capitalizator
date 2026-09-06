@@ -6,11 +6,11 @@ name: capitalizator
 x-base: &base
   build:
     context: ../..
-    dockerfile: infra/deploy/Dockerfile
+    dockerfile: infra/deploy/Dockerfile.legacy
     args:
       CAP_UID: ${CAP_UID:-1000}
       CAP_GID: ${CAP_GID:-1000}
-  image: capitalizator:local
+  image: capitalizator:legacy
   # Same uid/gid as the host owner of the data directory (deploy.sh exports them).
   user: "${CAP_UID:-1000}:${CAP_GID:-1000}"
   restart: unless-stopped

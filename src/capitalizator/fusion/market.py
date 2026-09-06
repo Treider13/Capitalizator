@@ -15,6 +15,8 @@ from capitalizator.desk.bars import BarBuilder
 from capitalizator.exec.fvg_mark import latest_fvg
 from capitalizator.fusion.config import Config
 from capitalizator.fusion.context import absorption, geometry, rank, sessions
+from capitalizator.fusion.flow import Flow
+from capitalizator.fusion.structure import TFS, Structure, candle, parse_history
 from capitalizator.recorder.normalize import normalize_bybit_public_trade
 
 FEATURES = (
@@ -69,6 +71,20 @@ def profile(hist: dict[float, float], fraction: float = 0.7) -> dict[str, float]
     return {"poc": points[peak], "val": points[lo], "vah": points[hi]}
 
 
+def compact_profile(hist: dict[float, float], bins: int = 64) -> list[list[float]]:
+    """Display-only aggregation; exact-print bins still determine POC/VAH/VAL."""
+    if not hist:
+        return []
+    low, high = min(hist), max(hist)
+    width = (high - low) / bins
+    if not width:
+        return [[low, sum(hist.values())]]
+    aggregate: dict[int, float] = defaultdict(float)
+    for price, volume in hist.items():
+        aggregate[min(bins - 1, int((price - low) / width))] += volume
+    return [[low + (i + 0.5) * width, volume] for i, volume in sorted(aggregate.items())]
+
+
 def session_key(at: float) -> str:
     dt = datetime.fromtimestamp(at, UTC)
     # Contiguous UTC research buckets. London/New York local sessions live in legacy context.
@@ -88,7 +104,10 @@ class Market:
         self.valid = False
         self.ticker: dict[str, Any] = {}
         self.blocks: deque[Block] = deque(maxlen=config.context_blocks * 4)
-        self.pending: list[tuple[float, float, int]] = []
+        self.pending = Flow()
+        self.amd_phase = "unclassified"
+        self.amd_side = 0
+        self.amd_origin = 0
         self.pending_start = 0.0
         self.block_id = 0
         self.refill = 0.0
@@ -99,8 +118,17 @@ class Market:
         self.id_queue: deque[str] = deque()
         self.hist: dict[float, float] = defaultdict(float)
         self.session = ""
-        self.previous_profile: dict[str, float] = {}
-        self.builder = BarBuilder(symbol, ("1m", "5m"))
+        self.previous_profile: dict[str, Any] = {}
+        self.observation_start = 0.0
+        self.profile_complete = False
+        self.builder = BarBuilder(symbol, TFS)
+        self.structure = Structure()
+        self.chart_cache: dict[str, Any] = {}
+        self.chart_revision = -1
+        self.block_cache: dict[str, Any] | None = None
+        self.forming_cache: dict[str, Any] = {}
+        self.forming_dirty = True
+        self.analytics_cache: list[dict[str, Any]] = []
         self.bars: deque[Any] = deque(maxlen=256)
         self.last_exchange_trade = 0.0
         self.late_trades = 0
@@ -115,12 +143,23 @@ class Market:
         self.valid = False
         self.book_u = 0
         self.pending.clear()
+        self.amd_phase, self.amd_side, self.amd_origin = "unclassified", 0, 0
         self.blocks.clear()
         self.refill = self.liquidations = 0.0
-        self.builder = BarBuilder(self.symbol, ("1m", "5m"))
+        self.builder = BarBuilder(self.symbol, TFS)
+        self.structure = Structure()
+        self.chart_cache = {}
+        self.chart_revision = -1
+        self.block_cache = None
+        self.analytics_cache = []
+        self.forming_cache = {}
+        self.forming_dirty = True
         self.bars.clear()
         self.hist.clear()
         self.previous_profile = {}
+        self.observation_start = 0.0
+        self.profile_complete = False
+        self.session = ""
         self.named_hist.clear()
         self.named_dates.clear()
         self.named_previous.clear()
@@ -133,6 +172,8 @@ class Market:
         if not snapshot and (not self.valid or u <= self.book_u):
             return
         if snapshot:
+            if not self.book_u:
+                self.observation_start = at
             self.bids.clear()
             self.asks.clear()
         for key, book, sign in (("b", self.bids, 1), ("a", self.asks, -1)):
@@ -173,20 +214,30 @@ class Market:
             self.trade_at = at
             self.cvd += qty * sign
             self.builder.on_trade(event)
-            for bar in self.builder.close_due(datetime.fromtimestamp(at, UTC)):
+            self.forming_dirty = True
+            for bar in self.builder.close_due(event.exchange_ts):
+                self.structure.add(bar, self.tick)
                 if bar.tf == "1m":
                     self.bars.append(bar)
             key = session_key(exch)
             if key != self.session:
-                self.previous_profile = profile(self.hist)
+                self.previous_profile = {**profile(self.hist), "complete": self.profile_complete}
+                dt = datetime.fromtimestamp(exch, UTC)
+                hour = 0 if dt.hour < 8 else 8 if dt.hour < 13 else 13 if dt.hour < 21 else 21
+                start = dt.replace(hour=hour, minute=0, second=0, microsecond=0).timestamp()
+                self.profile_complete = bool(
+                    self.observation_start and self.observation_start <= start
+                )
                 self.hist.clear()
                 self.session = key
             self.hist[round(px / self.tick) * self.tick] += qty
             active = sessions(exch)
             for name in list(self.named_dates):
                 if active.get(name) != self.named_dates[name]:
+                    histogram = self.named_hist.pop(name)
                     self.named_previous[name] = {
-                        **profile(self.named_hist.pop(name)),
+                        **profile(histogram),
+                        "histogram": compact_profile(histogram),
                         "date": self.named_dates.pop(name),
                         "coverage": "observed prints; first session can be partial",
                     }
@@ -200,6 +251,8 @@ class Market:
             if not self.pending:
                 self.pending_start = at
             self.pending.append((px, qty, sign))
+            if raw.get("BT") is True:
+                self.pending.block_volume += qty
             elapsed = at - self.pending_start
             if (
                 len(self.pending) >= self.config.block_trades
@@ -212,14 +265,13 @@ class Market:
 
     def _finish(self, at: float) -> Block:
         self.block_id += 1
-        prices = [r[0] for r in self.pending]
-        volume = sum(r[1] for r in self.pending)
-        flow = sum(r[1] * r[2] for r in self.pending) / volume
-        close, high, low = prices[-1], max(prices), min(prices)
+        volume = self.pending.volume
+        flow = self.pending.delta / volume
+        close, high, low = self.pending.close, self.pending.high, self.pending.low
         history = list(self.blocks)[-self.config.context_blocks :]
         returns = [b.x[0] for b in history]
         vol = max(float(np.std(returns)) if returns else 0, self.tick / close)
-        prev = history[-1].close if history else prices[0]
+        prev = history[-1].close if history else self.pending.open
         support = min((b.low for b in history), default=low)
         resistance = max((b.high for b in history), default=high)
         sweep = (
@@ -260,7 +312,30 @@ class Market:
             self.last_bos = bos
         fvg = latest_fvg(bars) if bars else None
         ranges = [float(b.high - b.low) for b in bars[-14:]]
+        pairing = self.structure.pair(sweep, close, low, high, at) if sweep else {"allowed": False}
+        if sweep:
+            self.amd_phase, self.amd_side, self.amd_origin = "manipulation", sweep, self.block_id
+        elif (
+            self.amd_side
+            and self.block_id - self.amd_origin <= self.config.horizon_blocks
+            and self.amd_side * x[0] > 0
+            and self.amd_side * flow > 0
+        ):
+            self.amd_phase = "distribution"
+        elif (
+            history
+            and abs(x[0]) <= float(np.median([abs(b.x[0]) for b in history]))
+            and abs(flow) <= float(np.median([abs(b.flow) for b in history]))
+            and volume >= float(np.median([b.volume for b in history]))
+        ):
+            self.amd_phase = "accumulation"
+            self.amd_side = 0
+        else:
+            self.amd_phase = "unclassified"
         context = {
+            "largest_print": self.pending.largest,
+            "block_trade_volume": self.pending.block_volume,
+            "pairing": pairing,
             "support": support,
             "resistance": resistance,
             "sweep": sweep,
@@ -272,23 +347,20 @@ class Market:
             "ask": min(self.asks),
             "profile": self.previous_profile,
             "session": self.session,
-            "bos": bos_status(bars),
+            "bos": bos,
             "choch": choch,
             "geometry": self.geometry,
             "session_profiles": dict(self.named_previous),
             "volume_percentile": rank(volume, [b.volume for b in history]),
             "oi_change_percentile": rank(abs(doi), [abs(b.x[5]) for b in history]),
             "replenishment_absorption": absorption(flow, refill, x[0], vol),
-            "gamma_exposure": None,
-            "gamma_status": "options positions and dealer sign unavailable",
             "order_block": ob_status(bars),
             "fvg": [float(v) for v in fvg] if fvg else None,
             "discount": (close - support) / span,
             "ote_long": [resistance - 0.786 * span, resistance - 0.618 * span],
             "ote_short": [support + 0.618 * span, support + 0.786 * span],
-            "amd": "manipulation"
-            if sweep
-            else ("distribution" if abs(x[0]) > vol and abs(flow) > 0.5 else "accumulation"),
+            "amd": self.amd_phase,
+            "amd_definition": "sweep / subsequent flow / median compression; intent unobserved",
             "cvd": self.cvd,
             "at": at,
             "book_at": self.book_at,
@@ -302,7 +374,7 @@ class Market:
             self.block_id,
             at,
             self.pending_start,
-            prices[0],
+            self.pending.open,
             high,
             low,
             close,
@@ -312,19 +384,43 @@ class Market:
             x,
             context,
         )
+        self.block_cache = asdict(block)
+        self.analytics_cache = [
+            {
+                "at": b.at,
+                "cvd": b.context["cvd"],
+                "flow": b.flow,
+                "volume": b.volume,
+                "oi_change": b.x[5],
+                "liquidations": b.x[6],
+            }
+            for b in [*self.blocks, block][-self.config.context_blocks * 4 :]
+        ]
         self.pending.clear()
         self.refill = self.liquidations = 0.0
         return block
 
     def snapshot(self) -> dict[str, Any]:
+        if self.chart_revision != self.structure.revision:
+            self.chart_cache = dict(self.structure.cache)
+            self.chart_revision = self.structure.revision
+        if self.forming_dirty:
+            self.forming_cache = {
+                tf: candle(b) for tf in TFS if (b := self.builder.open_bucket(tf)) is not None
+            }
+            self.forming_dirty = False
         return {
+            "chart": self.chart_cache,
+            "chart_revision": self.chart_revision,
+            "forming": self.forming_cache,
+            "analytics": self.analytics_cache,
             "symbol": self.symbol,
             "valid": self.valid,
             "book_at": self.book_at,
             "ticker_at": self.ticker_at,
             "trade_at": self.trade_at,
             "late_trades": self.late_trades,
-            "block": asdict(self.blocks[-1]) if self.blocks else None,
+            "block": self.block_cache,
             "bid": max(self.bids) if self.bids else None,
             "ask": min(self.asks) if self.asks else None,
         }
@@ -341,6 +437,11 @@ class Market:
             for row in frame.get("data", []):
                 # Bybit S is the liquidated position side, not the aggressor side.
                 self.liquidations += float(row["v"]) * (-1 if row["S"] == "Buy" else 1)
+        elif kind == "history":
+            bars = parse_history(self.symbol, frame["tf"], frame["rows"], at)
+            self.structure.seed(bars, self.tick)
+            self.builder.seed_closed(bars)
+            self.bars = deque(self.structure.bars["1m"], maxlen=256)
         elif kind == "gap":
             self.reset()
         return []

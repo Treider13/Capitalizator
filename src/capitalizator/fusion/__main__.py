@@ -21,11 +21,13 @@ def main() -> None:
     args = parser.parse_args()
     local_config = args.userdir / "config.json"
     config = Config.load(args.config or (local_config if local_config.is_file() else None))
-    runtime = Runtime(args.userdir, config)
     if args.status:
-        print(json.dumps(runtime.status(), ensure_ascii=False))
-        runtime.store.close()
+        from urllib.request import urlopen
+
+        with urlopen(f"http://127.0.0.1:{config.api_port}/api/status", timeout=5) as response:
+            print(response.read().decode())
         return
+    runtime = Runtime(args.userdir, config)
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
@@ -49,6 +51,8 @@ def main() -> None:
                 runtime.shared.halt("worker_failure")
                 break  # Compose restarts after orderly outbox cancellation/reconciliation.
     finally:
+        runtime.supervisor.stop.set()
+        runtime.shared.broker_wake.set()
         if web_thread.is_alive():
             http.shutdown()
             web_thread.join(5)

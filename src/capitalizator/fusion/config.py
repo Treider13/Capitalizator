@@ -50,6 +50,9 @@ class Config:
     minimum_free_disk_bytes: int = 536870912
     news_stale_s: float = 180.0
     model_max_age_s: float = 3600.0
+    news_poll_s: float = 60.0
+    context_poll_s: float = 60.0
+    chart_refresh_s: float = 0.2
 
     def __post_init__(self) -> None:
         if not self.symbols or len(set(self.symbols)) != len(self.symbols):
@@ -97,7 +100,9 @@ class Config:
 
     @property
     def version(self) -> str:
-        return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode()).hexdigest()[:16]
+        return hashlib.sha256(
+            json.dumps({"policy": "fusion-2-raw-mtf", **asdict(self)}, sort_keys=True).encode()
+        ).hexdigest()[:16]
 
     @classmethod
     def load(cls, path: Path | None) -> Config:

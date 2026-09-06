@@ -29,6 +29,9 @@ class Shared:
             raise ValueError("mode must be demo/live")
         self.lock = threading.RLock()
         self.entry_lock = FairLock()
+        self.admission_lock = FairLock()
+        self.broker_wake = threading.Event()
+        self.external: dict[str, dict[str, Any]] = {}
         self.mode = mode
         self.paused = False
         self.halted = False
@@ -41,6 +44,7 @@ class Shared:
         self.switching = False
         self.news_required = False
         self.news_at = 0.0
+        self.news_coverage: dict[str, Any] | None = None
 
     def halt(self, reason: str) -> None:
         with self.lock:
@@ -67,6 +71,12 @@ class Engine:
             instrument = self.shared.instruments.get(self.symbol)
         if instrument:
             self.market.tick = instrument.tick
+        if (
+            kind == "book"
+            and self.market.book_u
+            and (frame.get("type") == "snapshot" or frame.get("data", {}).get("u") == 1)
+        ):
+            self.process("gap", {"reason": "venue_book_reset"}, at)
         self.store.event(at, self.symbol, kind, frame)
         if kind == "gap":
             self.unlabeled.clear()
@@ -76,8 +86,9 @@ class Engine:
                 self.transition("expired", at, "data_gap")
         for block in self.market.ingest(kind, frame, at):
             self.on_block(block)
+        snapshot = self.market.snapshot()
         with self.shared.lock:
-            self.shared.snapshots[self.symbol] = self.market.snapshot()
+            self.shared.snapshots[self.symbol] = snapshot
 
     def transition(self, state: str, at: float, reason: str) -> None:
         assert self.contract is not None
@@ -93,6 +104,13 @@ class Engine:
     def news_allows(self, at: float) -> bool:
         with self.shared.lock:
             calendar = self.shared.calendar
+            if self.shared.news_required and self.shared.news_coverage is not None:
+                source = self.shared.news_coverage.get(self.symbol, {})
+                if (
+                    not source.get("ok")
+                    or not 0 <= at - source.get("at", 0) <= self.config.news_stale_s
+                ):
+                    return False
             if (
                 self.shared.news_required
                 and not 0 <= at - self.shared.news_at <= self.config.news_stale_s
@@ -100,6 +118,8 @@ class Engine:
                 return False
         now = datetime.fromtimestamp(at, UTC)
         for row in calendar:
+            if row.size_rule == "linear_supply_context":
+                continue
             if row.known_at > now:
                 continue
             if row.assets and self.symbol not in row.assets and "ALL" not in row.assets:
@@ -138,6 +158,7 @@ class Engine:
                 y,
                 {
                     **origin.context,
+                    "policy_version": self.config.version,
                     "costs": origin_cost,
                     "entry": origin.close,
                     "terminal": block.close,
@@ -151,19 +172,22 @@ class Engine:
             allow = not self.shared.paused and not self.shared.halted and self.shared.broker_ready
         cost = block.x[3] + (instrument.maker + instrument.taker if instrument else 0.0012)
         self._learn(block, cost)
+        forecast = model.predict(block.x, self.config.confidence_alpha) if model else None
+        model_valid = model is None or (
+            0 <= block.at - model.report.get("through", block.at) <= self.config.model_max_age_s
+        )
+        self.manage(block, forecast if model_valid and self.variant in {"C", "D"} else None, mode)
         if model is None and self.variant in {"C", "D"}:
             self.store.decision(
                 block.at, self.symbol, "observe", {"reason": "learning_initial_model"}
             )
             return
-        forecast = model.predict(block.x, self.config.confidence_alpha) if model else None
         if model and (
             model.report.get("through", block.at) > block.at
             or block.at - model.report.get("through", block.at) > self.config.model_max_age_s
         ):
             self.store.decision(block.at, self.symbol, "observe", {"reason": "model_clock_invalid"})
             return
-        self.manage(block, forecast if self.variant in {"C", "D"} else None, mode)
         if self.contract and self.contract_state == "observing":
             state, reason = self.contract.evaluate(block)
             if state != "observing":
@@ -222,7 +246,7 @@ class Engine:
         allow: bool,
         cost: float,
     ) -> None:
-        with self.shared.entry_lock:
+        with self.shared.admission_lock:
             with self.shared.lock:
                 allow = bool(
                     allow
@@ -233,6 +257,19 @@ class Engine:
                     and mode == self.shared.mode
                 )
             self._reserve_entry(block, forecast, instrument, mode, allow, cost)
+
+    def entry_location(self, block: Block) -> bool:
+        if self.variant in {"A", "B"}:
+            return True
+        if self.contract is None:
+            return False
+        anchors = self.contract.definition.get("pairing", {}).get("anchors", {})
+        low, high = anchors.get("low"), anchors.get("high")
+        if low is None or high is None or high <= low:
+            return False
+        price = float(block.context["bid"] if self.contract.side == 1 else block.context["ask"])
+        retracement = (high - price if self.contract.side == 1 else price - low) / (high - low)
+        return bool(0.5 <= retracement <= 1)
 
     def _reserve_entry(
         self,
@@ -246,6 +283,8 @@ class Engine:
         assert self.contract is not None
         if not allow or instrument is None or not self.news_allows(block.at):
             self.transition("expired", block.at, "entry_not_authorized")
+        elif not self.entry_location(block):
+            self.transition("expired", block.at, "retracement_lost_after_confirmation")
         elif mode == "live" and (
             forecast is None or not forecast.live_ready or self.variant != "D"
         ):
@@ -256,6 +295,32 @@ class Engine:
             self.transition("expired", block.at, "edge_consumed_while_waiting")
         else:
             entry = float(block.context["bid"] if self.contract.side == 1 else block.context["ask"])
+            factor = 1.0
+            with self.shared.lock:
+                options = dict(self.shared.external.get(self.symbol, {}))
+            iv = float(options.get("weighted_iv") or 0)
+            if (
+                options.get("available")
+                and 0 <= block.at - options["at"] <= self.config.news_stale_s
+            ):
+                durations = [b.at - b.start for b in self.market.blocks if b.at > b.start]
+                if durations and iv > 0 and block.x[9] > 0:
+                    annual_realized = block.x[9] * math.sqrt(
+                        365.25 * 86400 / (sum(durations) / len(durations))
+                    )
+                    factor = min(1.0, annual_realized / iv)
+                    self.store.decision(
+                        block.at,
+                        self.symbol,
+                        "option_risk_budget",
+                        {
+                            "factor": factor,
+                            "iv": iv,
+                            "realized": annual_realized,
+                            "gross_gamma": options.get("gross_gamma_1pct"),
+                            "dealer_sign": "unknown",
+                        },
+                    )
             payload, result = reserve(
                 self.store,
                 mode,
@@ -267,10 +332,12 @@ class Engine:
                 float(block.context["depth"]),
                 block.x[3] * block.close,
                 float(block.context["funding"]),
+                fraction=factor,
             )
             self.store.decision(
                 block.at, self.symbol, "entry_" + result, payload or {"contract": self.contract.id}
             )
+            self.shared.broker_wake.set()
             if payload is None:
                 self.transition("expired", block.at, result)
 
@@ -310,8 +377,19 @@ class Engine:
                 inst = self.shared.instruments.get(self.symbol)
             if inst:
                 future_cost += inst.taker
-            should_exit = crossed or (
-                forecast is not None and forecast.edge(side, future_cost) <= 0
+            with self.shared.lock:
+                surprise = any(
+                    r.size_rule == "surprise_blackout"
+                    and (not r.assets or self.symbol in r.assets or "ALL" in r.assets)
+                    and r.known_at.timestamp()
+                    <= block.at
+                    <= r.event_time.timestamp() + self.config.news_post_minutes * 60
+                    for r in self.shared.calendar
+                )
+            should_exit = (
+                crossed
+                or surprise
+                or (forecast is not None and forecast.edge(side, future_cost) <= 0)
             )
             if should_exit:
                 self.store.command(
@@ -320,8 +398,15 @@ class Engine:
                     self.symbol,
                     "flatten",
                     block.at,
-                    {"reason": "refuted" if crossed else "hold_edge_gone"},
+                    {
+                        "reason": "refuted"
+                        if crossed
+                        else "news_surprise"
+                        if surprise
+                        else "hold_edge_gone"
+                    },
                 )
+                self.shared.broker_wake.set()
                 with self.store.transaction() as db:
                     db.execute(
                         "UPDATE contracts SET state='refuted',updated=? WHERE id=?",

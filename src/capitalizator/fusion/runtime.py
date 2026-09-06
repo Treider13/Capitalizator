@@ -8,23 +8,29 @@ import os
 import shutil
 import time
 import uuid
-from dataclasses import asdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from capitalizator.desk.bars import TF_MINUTES
 from capitalizator.fusion.archive import archive_events
 from capitalizator.fusion.atlas import Atlas, train
 from capitalizator.fusion.concurrency import Mailbox, Supervisor
 from capitalizator.fusion.config import Config
 from capitalizator.fusion.engine import Engine, Shared
-from capitalizator.fusion.exchange import Bybit, credentials
+from capitalizator.fusion.exchange import Bybit, credentials, news_key
 from capitalizator.fusion.executor import Executor
+from capitalizator.fusion.external import bybit as public_get
+from capitalizator.fusion.external import fetch_source, gamma, sources
 from capitalizator.fusion.news import calendar as merge_news
 from capitalizator.fusion.news import fetch as fetch_news
 from capitalizator.fusion.news import ingest as ingest_news
 from capitalizator.fusion.performance import venue_performance
 from capitalizator.fusion.store import Store, encode
-from capitalizator.news_macro.ingest import load_desk_calendar
+from capitalizator.fusion.structure import TFS
+from capitalizator.news_macro.ingest import NewsRow, load_desk_calendar
 
 
 class Runtime:
@@ -33,9 +39,19 @@ class Runtime:
         root.mkdir(parents=True, exist_ok=True)
         self.store = Store(root / "fusion.sqlite3")
         self.shared = Shared(self.store.meta("mode", "demo"))
+        policy = self.store.meta("policy_epoch", {})
+        if policy.get("version") != config.version:
+            policy = {"version": config.version, "since": time.time()}
+            self.store.put_meta("policy_epoch", policy)
+            if self.shared.mode == "live":
+                self.store.put_meta("paused", True)
+        self.policy_since = float(policy["since"])
+        self.live_qualified = self.store.meta("live_qualified_policy") == config.version
         self.shared.paused = bool(self.store.meta("paused", False))
         self.shared.calendar = load_desk_calendar()
         self.shared.news_required = True
+        self.shared.news_coverage = {}
+        self.news_sources = sources(root, config.symbols)
         self.supervisor = Supervisor()
         self.mailboxes = [
             Mailbox(config.queue_capacity, config.queue_quantum) for _ in range(config.workers)
@@ -89,6 +105,7 @@ class Runtime:
             with self.shared.lock:
                 self.private_overflow_at = time.time()
             self.shared.halt("private_queue_overflow: reconcile required")
+        self.shared.broker_wake.set()
 
     def _market_worker(self, index: int) -> None:
         mailbox = self.mailboxes[index]
@@ -120,12 +137,18 @@ class Runtime:
         last_count = 0
         while not self.supervisor.stop.is_set():
             now = time.time()
-            total = int(self.store.rows("SELECT count(*) AS n FROM samples")[0]["n"])
+            total = int(
+                self.store.rows(
+                    "SELECT count(*) AS n FROM samples "
+                    "WHERE json_extract(context,'$.policy_version')=?",
+                    (self.config.version,),
+                )[0]["n"]
+            )
             if (
                 total >= self.config.demo_samples
                 and total - last_count >= self.config.retrain_samples
             ):
-                rows = self.store.samples(now, self.config.training_rows)
+                rows = self.store.samples(now, self.config.training_rows, self.config.version)
                 model = train(rows, self.config, now)
                 last_count = total
                 if model:
@@ -191,6 +214,7 @@ class Runtime:
                 or self.supervisor.stop.is_set()
                 or self.supervisor.failed.is_set()
                 or order["mode"] != self.shared.mode
+                or (self.shared.mode == "live" and not self.live_qualified)
             ):
                 return False
             market = dict(self.shared.snapshots.get(order["symbol"], {}))
@@ -222,6 +246,8 @@ class Runtime:
     def _broker_loop(self) -> None:
         next_connect = 0.0
         while not self.supervisor.stop.is_set():
+            self.shared.broker_wake.clear()
+            failed_round = False
             now = time.time()
             with self.shared.lock:
                 mode, requested = self.shared.mode, self.mode_request
@@ -280,6 +306,7 @@ class Runtime:
                         {"ready": True, "mode": self.executor.mode, "at": now, "error": ""},
                     )
             except Exception as exc:
+                failed_round = True
                 # Transport outage does not kill the account worker. Entries cannot
                 # use an expired account snapshot; venue stops remain independent.
                 reason = f"{type(exc).__name__}: {exc}"
@@ -294,7 +321,12 @@ class Runtime:
                 with self.shared.lock:
                     self.shared.broker_ready = self.executor is not None
             self.supervisor.beat("broker")
-            self.supervisor.stop.wait(0.1)
+            if (
+                failed_round
+                or self.executor is None
+                or not self.private_mailbox.status()["pending"]
+            ):
+                self.shared.broker_wake.wait(0.1)
 
     def _maintenance(self) -> None:
         last_recovery = 0.0
@@ -306,7 +338,11 @@ class Runtime:
                     "WHERE state='observing' AND json_extract(definition,'$.expires')<=?",
                     (now, now),
                 )
-            if self.public_ws is not None and not self.public_ws.is_connected():
+            if (
+                self.public_ws is not None
+                and not self.public_ws.is_connected()
+                and now - getattr(self.public_ws, "started_at", 0) > self.config.http_timeout_s
+            ):
                 self.shared.halt("public_socket_disconnected: resnapshot required")
             with self.shared.lock:
                 reason = self.shared.reason
@@ -340,7 +376,7 @@ class Runtime:
                     max(60.0, self.config.account_age_s)
                     if name == "broker"
                     else 120.0
-                    if name in {"news", "archive"}
+                    if name in {"news", "archive", "history", "options"}
                     else 30.0
                 )
                 if name != "trainer" and time.monotonic() - stamp > budget:
@@ -357,50 +393,231 @@ class Runtime:
             self.supervisor.stop.wait(5)
 
     def _news(self) -> None:
-        while not self.supervisor.stop.is_set():
-            try:
-                surprises = ingest_news(
-                    self.store, fetch_news(self.config.http_timeout_s), time.time()
+        cache: dict[str, list[NewsRow]] = {}
+        health: dict[str, Any] = {}
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="news-source") as pool:
+            while not self.supervisor.stop.is_set():
+                at = time.time()
+                try:
+                    payload = fetch_news(self.config.http_timeout_s)
+                    cache["bybit"] = ingest_news(self.store, payload, time.time())
+                    health["bybit"] = {"ok": True, "at": time.time()}
+                except Exception as exc:
+                    health["bybit"] = {"ok": False, "at": time.time(), "error": type(exc).__name__}
+                try:
+                    provider_key = news_key(self.root)
+                except ValueError as exc:
+                    provider_key = None
+                    self.store.put_meta("news_credentials_error", str(exc))
+                jobs = {
+                    pool.submit(
+                        fetch_source, row, self.config.http_timeout_s, at, provider_key
+                    ): row
+                    for row in self.news_sources
+                }
+                for future in as_completed(jobs):
+                    if self.supervisor.stop.is_set():
+                        for job in jobs:
+                            job.cancel()
+                        break
+                    observed = time.time()
+                    row = jobs[future]
+                    name = row["name"]
+                    try:
+                        values = future.result()
+                        events: list[NewsRow] = []
+                        if row["kind"] == "unlocks":
+                            events = values
+                        else:
+                            for item in values:
+                                previous = self.store.meta("news_item:" + item["id"])
+                                known = previous["known_at"] if previous else observed
+                                self.store.put_meta(
+                                    "news_item:" + item["id"], {**item, "known_at": known}
+                                )
+                                if item["sentiment"] < 0 and at - item["published"] <= 3600:
+                                    when = datetime.fromtimestamp(known, UTC)
+                                    events.append(
+                                        NewsRow(
+                                            item["id"],
+                                            "OTHER",
+                                            when,
+                                            when,
+                                            tuple(item["assets"]),
+                                            item["url"],
+                                            "UTC",
+                                            "surprise_blackout",
+                                            item["title"],
+                                            item["title"],
+                                        )
+                                    )
+                        normalized = []
+                        for event in events:
+                            known = self.store.meta("event_known:" + event.event_id, observed)
+                            self.store.put_meta("event_known:" + event.event_id, known)
+                            normalized.append(
+                                replace(event, known_at=datetime.fromtimestamp(known, UTC))
+                            )
+                        cache[name] = normalized
+                        health[name] = {
+                            "ok": True,
+                            "at": time.time(),
+                            "items": len(values),
+                            "assets": row["assets"],
+                            "kind": row["kind"],
+                        }
+                    except Exception as exc:
+                        health[name] = {
+                            "ok": False,
+                            "at": time.time(),
+                            "assets": row["assets"],
+                            "error": str(exc)
+                            if isinstance(exc, ValueError)
+                            else type(exc).__name__,
+                        }
+                base = load_desk_calendar()
+                now = time.time()
+                macro_ok = all(
+                    any(
+                        r.event_class == kind
+                        and r.known_at.timestamp() <= now < r.event_time.timestamp()
+                        for r in base
+                    )
+                    for kind in ("CPI", "FOMC", "NFP", "PCE")
                 )
-                merged = merge_news(load_desk_calendar(), surprises)
+                merged = merge_news(base, [r for rows in cache.values() for r in rows])
+                coverage = {}
+                for symbol in self.config.symbols:
+                    relevant = [
+                        r
+                        for r in self.news_sources
+                        if symbol in r["assets"] or "ALL" in r["assets"]
+                    ]
+                    missing = [
+                        r["name"]
+                        for r in relevant
+                        if not health.get(r["name"], {}).get("ok")
+                        or not 0 <= now - health[r["name"]]["at"] <= self.config.news_stale_s
+                    ]
+                    if not relevant:
+                        missing.append("coin_news_not_configured")
+                    if symbol not in {"BTCUSDT", "ETHUSDT"} and not any(
+                        r["kind"] == "unlocks" for r in relevant
+                    ):
+                        missing.append("token_unlocks_not_configured")
+                    if not macro_ok:
+                        missing.append("macro_calendar_exhausted")
+                    if not health.get("bybit", {}).get("ok"):
+                        missing.append("bybit")
+                    coverage[symbol] = {
+                        "at": now,
+                        "ok": not missing,
+                        "missing": missing,
+                        "unlock_coverage": any(r["kind"] == "unlocks" for r in relevant),
+                    }
+                rows = [
+                    {
+                        **asdict(r),
+                        "event_time": r.event_time.isoformat(),
+                        "known_at": r.known_at.isoformat(),
+                    }
+                    for r in merged
+                ]
+                self.store.event(now, "*", "news", rows)
+                self.store.event(now, "*", "news_coverage", coverage)
                 with self.shared.lock:
                     self.shared.calendar = merged
-                    self.shared.news_at = time.time()
-                self.store.event(
-                    time.time(),
-                    "*",
-                    "news",
-                    [
-                        {
-                            **asdict(row),
-                            "event_time": row.event_time.isoformat(),
-                            "known_at": row.known_at.isoformat(),
-                        }
-                        for row in merged
-                    ],
-                )
-            except Exception as exc:
+                    self.shared.news_at = now
+                    self.shared.news_coverage = coverage
                 self.store.put_meta(
-                    "news_status", {"at": time.time(), "ok": False, "error": type(exc).__name__}
+                    "news_status",
+                    {
+                        "at": now,
+                        "sources": health,
+                        "coverage": coverage,
+                        "events": rows,
+                        "headlines": [
+                            json.loads(r["body"])
+                            for r in self.store.rows(
+                                "SELECT body FROM meta WHERE key LIKE 'news_item:%' "
+                                "ORDER BY json_extract(body,'$.published') DESC LIMIT 30"
+                            )
+                        ],
+                    },
                 )
-            self.supervisor.beat("news")
-            self.supervisor.stop.wait(60)
+                self.shared.broker_wake.set()
+                self.supervisor.beat("news")
+                self.supervisor.stop.wait(self.config.news_poll_s)
+
+    def _history(self) -> None:
+        # Closed candles provide context only, never synthetic orderflow/training labels.
+        while not self.supervisor.stop.is_set():
+            for symbol in self.config.symbols:
+                for tf in TFS:
+                    if self.supervisor.stop.is_set():
+                        return
+                    epoch = self.epoch
+                    try:
+                        result = public_get(
+                            "market/kline",
+                            {
+                                "category": "linear",
+                                "symbol": symbol,
+                                "interval": str(TF_MINUTES[tf]),
+                                "limit": 256,
+                            },
+                            self.config.http_timeout_s,
+                        )
+                        item = (
+                            symbol,
+                            "history",
+                            {"tf": tf, "rows": result["list"]},
+                            time.time(),
+                            epoch,
+                        )
+                        if not self.mailboxes[self.routes[symbol]].put(symbol, item):
+                            self.shared.halt("market_queue_overflow: history")
+                    except Exception as exc:
+                        self.store.put_meta(
+                            "history:" + symbol + ":" + tf,
+                            {"at": time.time(), "error": type(exc).__name__},
+                        )
+                    self.supervisor.beat("history")
+            self.supervisor.stop.wait(self.config.context_poll_s)
+
+    def _options(self) -> None:
+        while not self.supervisor.stop.is_set():
+            for symbol in self.config.symbols:
+                if self.supervisor.stop.is_set():
+                    return
+                try:
+                    result = public_get(
+                        "market/tickers",
+                        {"category": "option", "baseCoin": symbol[:-4]},
+                        self.config.http_timeout_s,
+                    )
+                    value = gamma(result["list"], time.time())
+                    with self.shared.lock:
+                        prior = self.shared.external.get(symbol, {})
+                    if value.get("available") and prior.get("available"):
+                        previous = float(prior.get("gross_gamma_1pct") or 0)
+                        value["gross_change"] = (
+                            (value["gross_gamma_1pct"] / previous - 1) if previous else None
+                        )
+                        value["iv_change"] = value["weighted_iv"] - prior["weighted_iv"]
+                except Exception as exc:
+                    value = {"at": time.time(), "available": False, "error": type(exc).__name__}
+                self.store.event(time.time(), symbol, "options", value)
+                with self.shared.lock:
+                    self.shared.external[symbol] = value
+                self.supervisor.beat("options")
+            self.supervisor.stop.wait(self.config.context_poll_s)
 
     def _open_public(self) -> None:
-        from pybit.unified_trading import WebSocket
+        from capitalizator.fusion.public import RawPublic
 
-        ws = WebSocket(testnet=False, channel_type="linear", retries=3)
         epoch = self.epoch
-
-        def callback(frame: dict[str, Any]) -> None:
-            self.callback(frame, epoch)
-
-        symbols = list(self.config.symbols)
-        ws.orderbook_stream(50, symbols, callback)
-        ws.trade_stream(symbols, callback)
-        ws.ticker_stream(symbols, callback)
-        ws.all_liquidation_stream(symbols, callback)
-        self.public_ws = ws
+        self.public_ws = RawPublic(self.config.symbols, lambda frame: self.callback(frame, epoch))
 
     def start(self, *, public: bool = True) -> None:
         import fcntl
@@ -424,14 +641,41 @@ class Runtime:
         self.supervisor.start("archive", self._archive)
         if public:
             self.supervisor.start("news", self._news)
+            self.supervisor.start("history", self._history)
+            self.supervisor.start("options", self._options)
         if public:
             self._open_public()
 
     def control(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        qualification = None
+        if action == "mode" and body.get("mode") == "live":
+            qualification = venue_performance(self.store, "demo", self.policy_since)
         with self.shared.entry_lock:
-            return self._control(action, body)
+            with self.shared.admission_lock:
+                result = self._control(action, body, qualification)
+        self.shared.broker_wake.set()
+        return result
 
-    def _control(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _control(
+        self, action: str, body: dict[str, Any], qualification: Any = None
+    ) -> dict[str, Any]:
+        if action == "news_credentials":
+            key = body.get("key")
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError("Tokenomist key required")
+            directory = self.root / "secrets"
+            directory.mkdir(mode=0o700, exist_ok=True)
+            temp = directory / ("." + uuid.uuid4().hex)
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(fd, "w") as stream:
+                    json.dump({"key": key.strip()}, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp, directory / "tokenomist.json")
+            finally:
+                temp.unlink(missing_ok=True)
+            return {"saved": "tokenomist", "status": "applied_on_next_news_fetch"}
         if action == "credentials":
             mode = body.get("mode")
             key, secret = body.get("key"), body.get("secret")
@@ -476,7 +720,9 @@ class Runtime:
                 if mode == "live" and (model is None or not model.report.get("passed")):
                     raise ValueError("live requires a model with a passed chronological test")
                 if mode == "live":
-                    report = venue_performance(self.store, "demo")
+                    report = qualification
+                    if report is None:
+                        raise ValueError("demo qualification report missing")
                     if (
                         report["closed_episodes"] < 32
                         or report["realized_net"] <= 0
@@ -487,6 +733,9 @@ class Runtime:
                             "live requires complete demo inventory and 32 closed episodes "
                             "with positive block-bootstrap lower net estimate"
                         )
+                if mode == "live":
+                    self.live_qualified = True
+                    self.store.put_meta("live_qualified_policy", self.config.version)
                 self.mode_request = mode
                 self.shared.switching = True
             return {"requested": mode, "status": "pending_exchange_check"}
@@ -495,6 +744,8 @@ class Runtime:
             if not isinstance(paused, bool):
                 raise ValueError("paused must be boolean")
             with self.shared.lock:
+                if not paused and self.shared.mode == "live" and not self.live_qualified:
+                    raise ValueError("changed policy requires new Demo qualification before Live")
                 self.shared.paused = paused
             self.store.put_meta("paused", paused)
             return {"paused": paused}
@@ -515,6 +766,47 @@ class Runtime:
             return {"status": "close_requested", "paused": True}
         raise ValueError("unknown control action")
 
+    def chart(self, symbol: str, tf: str, revision: float = -1) -> dict[str, Any]:
+        if symbol not in self.config.symbols or tf not in TFS:
+            raise ValueError("unsupported chart symbol/timeframe")
+        with self.shared.lock:
+            market = self.shared.snapshots.get(symbol, {})
+            mode = self.shared.mode
+            options = self.shared.external.get(symbol, {})
+        series = market.get("chart", {}).get(tf, {})
+        closed_at = market.get("chart_revision", 0)
+        contracts = self.store.rows(
+            "SELECT * FROM contracts WHERE symbol=? ORDER BY at DESC LIMIT 30", (symbol,)
+        )
+        fills = self.store.rows(
+            "SELECT at,body FROM executions WHERE mode=? AND symbol=? ORDER BY at DESC LIMIT 100",
+            (mode, symbol),
+        )
+        orders = self.store.rows(
+            "SELECT state,body FROM orders WHERE mode=? AND symbol=? "
+            "ORDER BY created DESC LIMIT 30",
+            (mode, symbol),
+        )
+        body = {
+            "at": time.time(),
+            "symbol": symbol,
+            "mode": mode,
+            "tf": tf,
+            "revision": closed_at,
+            "quote": {k: market.get(k) for k in ("bid", "ask", "book_at", "valid")},
+            "forming": market.get("forming", {}).get(tf),
+            "block": market.get("block"),
+            "analytics": market.get("analytics", []),
+            "structure": {k: v for k, v in series.items() if k != "candles"},
+            "options": options,
+            "contracts": [{**c, "definition": json.loads(c["definition"])} for c in contracts],
+            "fills": [{"at": f["at"], **json.loads(f["body"])} for f in fills],
+            "orders": [{"state": o["state"], **json.loads(o["body"])} for o in orders],
+        }
+        if revision != closed_at:
+            body["candles"] = series.get("candles", [])
+        return body
+
     def status(self) -> dict[str, Any]:
         with self.shared.lock:
             mode = self.shared.mode
@@ -524,7 +816,8 @@ class Runtime:
                 "halted": self.shared.halted,
                 "reason": self.shared.reason,
                 "mode_request": self.mode_request,
-                "markets": copy.deepcopy(self.shared.snapshots),
+                "markets": dict(self.shared.snapshots),
+                "options": dict(self.shared.external),
                 "model": self.shared.atlas.version if self.shared.atlas else None,
             }
         accounts = self.store.rows("SELECT * FROM account WHERE mode=?", (mode,))
@@ -545,6 +838,7 @@ class Runtime:
                 "decisions": self.store.rows("SELECT * FROM decisions ORDER BY id DESC LIMIT 40"),
                 "config": asdict(self.config),
                 "config_version": self.config.version,
+                "policy_since": self.policy_since,
             }
         )
         with self.supervisor.lock:
@@ -557,6 +851,7 @@ class Runtime:
         # The account worker itself cancels entries in its finally clause.
         # Never call the exchange writer concurrently from this thread.
         self.supervisor.stop.set()
+        self.shared.broker_wake.set()
         for mailbox in (*self.mailboxes, self.private_mailbox):
             mailbox.close()
         remaining = self.supervisor.join()

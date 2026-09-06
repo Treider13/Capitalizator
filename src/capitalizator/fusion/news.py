@@ -7,7 +7,6 @@ import json
 import re
 from datetime import UTC, datetime
 from typing import Any
-from urllib.request import urlopen
 
 from capitalizator.fusion.store import Store
 from capitalizator.news_macro.ingest import NewsRow
@@ -47,10 +46,9 @@ def sentiment(text: str) -> float:
 
 
 def fetch(timeout: float = 5.0) -> dict[str, Any]:
-    with urlopen(URL, timeout=timeout) as response:
-        raw = response.read(2_000_001)
-    if len(raw) > 2_000_000:
-        raise ValueError("news response exceeded limit")
+    from capitalizator.fusion.external import read_url
+
+    raw = read_url(URL, timeout)
     body = json.loads(raw)
     if body.get("retCode") != 0:
         raise ValueError("news endpoint rejected request")
@@ -64,10 +62,10 @@ def ingest(store: Store, payload: dict[str, Any], at: float) -> list[NewsRow]:
         title = str(item.get("title") or "")
         description = str(item.get("description") or "")
         url = str(item.get("url") or URL)
-        ident = hashlib.sha256((url + title).encode()).hexdigest()[:24]
         published = float(item.get("dateTimestamp") or 0) / 1000
         if published <= 0 or published > at:
             continue
+        ident = hashlib.sha256((url + title + str(published)).encode()).hexdigest()[:24]
         known = float(seen.setdefault(ident, at))
         value = sentiment(title + " " + description)
         classification = classify_title(title)

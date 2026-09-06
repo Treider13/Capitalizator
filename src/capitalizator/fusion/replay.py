@@ -271,6 +271,7 @@ def compare(
         store = Store(destination)
         shared = Shared("demo")
         shared.news_required = True
+        shared.news_coverage = {}
         shared.instruments, shared.broker_ready = instruments, True
         venue = ReplayVenue(instruments, config, latency=latency)
         executor = Executor(store, venue, config)
@@ -280,6 +281,16 @@ def compare(
     try:
         for event in events(source, root):
             symbol, kind = event["symbol"], event["kind"]
+            if symbol == "*" and kind == "news_coverage":
+                for _, shared, _, _, _ in lanes.values():
+                    shared.news_coverage = json.loads(event["body"])
+                count += 1
+                continue
+            if kind == "options" and symbol in config.symbols:
+                for _, shared, _, _, _ in lanes.values():
+                    shared.external[symbol] = json.loads(event["body"])
+                count += 1
+                continue
             if symbol == "*" and kind == "news":
                 calendar = []
                 for row in json.loads(event["body"]):

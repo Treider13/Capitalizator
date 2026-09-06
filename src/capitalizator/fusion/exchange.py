@@ -36,6 +36,20 @@ def credentials(root: Path, mode: str) -> tuple[str, str] | None:
     return (key, secret) if key and secret else None
 
 
+def news_key(root: Path) -> str | None:
+    path = root / "secrets" / "tokenomist.json"
+    if path.is_symlink():
+        raise ValueError("news credential file may not be a symlink")
+    if not path.exists():
+        return None
+    if stat.S_IMODE(path.stat().st_mode) & 0o077:
+        raise ValueError("news credential file must have mode 0600")
+    value = json.loads(path.read_text()).get("key")
+    if not isinstance(value, str) or not value:
+        raise ValueError("invalid news credential file")
+    return value
+
+
 class Bybit:
     def __init__(self, mode: str, keys: tuple[str, str], config: Config) -> None:
         from pybit.unified_trading import HTTP

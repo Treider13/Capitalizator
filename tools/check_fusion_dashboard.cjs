@@ -1,0 +1,16 @@
+// Executes dashboard branches against a strict DOM/canvas test double.
+// This is a JS behavior check, not browser rendering or visual acceptance.
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync('src/capitalizator/fusion/dashboard.html','utf8').split('<script>')[1].split('</script>')[0];
+let draws=0;const ctx=new Proxy({}, {get:(o,k)=>o[k]||((...args)=>{for(const v of args)if(typeof v==='number')assert(Number.isFinite(v),k+' received nonfinite coordinate');draws++;}),set:(o,k,v)=>(o[k]=v,true)});
+function element(id=''){return {id,textContent:'',value:id==='count'?'120':id==='tf'?'1m':'',checked:true,clientWidth:1200,options:[],children:[],style:{},appendChild(x){this.children.push(x);if(id==='symbol'){this.options.push(x);if(!this.value)this.value=x.textContent;}},replaceChildren(){this.children=[];},getContext(){return ctx;}};}
+const nodes=new Map();const document={getElementById(id){if(!nodes.has(id))nodes.set(id,element(id));return nodes.get(id);},createElement(){return element();}};
+const state={mode:'demo',config:{symbols:['BTCUSDT','ETHUSDT']},markets:{},performance:{realized_net:0,closed_episodes:0},orders:[],decisions:[],news:{coverage:{BTCUSDT:{ok:false}},headlines:[],events:[]}};
+const env={document,window:{devicePixelRatio:1,addEventListener(){}},EventSource:class {close(){}},fetch:async()=>({json:async()=>state}),setTimeout(){},Intl,Date,Math,Number,JSON,console};
+vm.createContext(env);vm.runInContext(source,env);
+setImmediate(()=>{const rows=Array.from({length:50},(_,i)=>({at:Date.UTC(2026,8,6,8,i)/1000,end:Date.UTC(2026,8,6,8,i+1)/1000,open:100+i*.01,high:102,low:98,close:101,volume:10+i}));
+const fixture={mode:'demo',symbol:'BTCUSDT',tf:'1m',quote:{bid:100,valid:true,book_at:Date.now()/1000},forming:null,structure:{support:99,resistance:101,zones:[{low:99,high:100,side:1}],geometry:{bag:{low:100,high:101},order_block_zone:{low:99,high:100},equal_highs:[101],equal_lows:[99]}},options:{strikes:[{price:100,gross:100}]},block:{context:{amd:'fixture',pairing:{htf:'15m',ltf:'1m',ote:[99,100],poi:{low:99,high:100,kind:'OB'}},session_profiles:{london:{poc:100,val:99,vah:101,histogram:[[99,10],[100,20]]}}}},orders:[{state:'partial',stop:99,target:102}],fills:[{at:rows[20].at,side:'Buy',execPrice:100}],contracts:[{at:rows[15].at,state:'confirmed',definition:{entry:100}}]};
+env.fixture=fixture;env.rows=rows;vm.runInContext('chartData=fixture;candles=rows;draw()',env);assert(draws>100);assert.match(nodes.get('chart-status').textContent,/BTCUSDT/);
+for(const layer of ['zones','fills','sessions'])nodes.get(layer).checked=false;
+vm.runInContext('draw();chart.onmousemove({offsetX:100})',env);assert.match(nodes.get('crosshair').textContent,/O 100/);
+vm.runInContext('candles=[];draw()',env);console.log(JSON.stringify({status:'passed',draw_calls:draws,scope:'DOM/canvas test double; not browser rendering'}));});

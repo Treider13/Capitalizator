@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS executions(
 CREATE TABLE IF NOT EXISTS account(
  mode TEXT PRIMARY KEY, at REAL NOT NULL, equity REAL NOT NULL,
  day TEXT NOT NULL, day_start REAL NOT NULL, body TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS execution_symbol ON executions(mode,symbol,at);
+CREATE INDEX IF NOT EXISTS contract_symbol ON contracts(symbol,at);
+CREATE INDEX IF NOT EXISTS order_symbol ON orders(mode,symbol,created);
 CREATE TABLE IF NOT EXISTS commands(
  id TEXT PRIMARY KEY, mode TEXT NOT NULL, symbol TEXT NOT NULL,
  kind TEXT NOT NULL, at REAL NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL);
@@ -123,10 +126,12 @@ class Store:
                 (ident, symbol, origin, available, encode(x), encode(y), encode(context)),
             )
 
-    def samples(self, at: float, limit: int) -> list[dict[str, Any]]:
+    def samples(self, at: float, limit: int, policy: str | None = None) -> list[dict[str, Any]]:
         rows = self.rows(
-            "SELECT * FROM samples WHERE available<=? ORDER BY available DESC,id DESC LIMIT ?",
-            (at, limit),
+            "SELECT * FROM samples WHERE available<=? "
+            + ("AND json_extract(context,'$.policy_version')=? " if policy else "")
+            + "ORDER BY available DESC,id DESC LIMIT ?",
+            (at, policy, limit) if policy else (at, limit),
         )
         for row in rows:
             for key in ("x", "y", "context"):

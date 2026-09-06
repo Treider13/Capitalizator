@@ -1,0 +1,18 @@
+[
+  {
+    "name": "bitcoin-core",
+    "kind": "rss",
+    "url": "https://bitcoincore.org/en/rss.xml",
+    "assets": [
+      "BTCUSDT"
+    ]
+  },
+  {
+    "name": "ethereum-foundation",
+    "kind": "rss",
+    "url": "https://blog.ethereum.org/feed.xml",
+    "assets": [
+      "ETHUSDT"
+    ]
+  }
+]

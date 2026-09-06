@@ -1,41 +1,42 @@
-> Новый исполняемый контур **Capitalizator + Atlas + контракты реакции**:
-> [запуск, Demo/Live, архитектура и ограничения проверки](FUSION.md).
-> Основной Compose запускает `capitalizator.fusion`; прежний стек находится в
-> `infra/deploy/compose.legacy.yml`. Обязательного ожидания суток BTC-ленты в fusion нет.
-> Проверенные программные механизмы не означают доказанную доходность.
+# Capitalizator · Atlas и контракты реакции
 
-# Capitalizator
+Активный контур: `capitalizator.fusion`, Python 3.12. Два режима исполнения:
+**Bybit Demo Trading** и **Bybit Live**. Рыночные данные в обоих режимах — mainnet.
 
-Частная фьючерсная торговая система. Исследования и план — в `docs/`.  
-Код: рекордер (pybit public WS → parquet part-файлы), книга/ресинк, реестр инструментов, стол 24/7 (зоны → касание → ZLG/CAV → жюри → **бумажное исполнение** тени/демо с комиссиями), **сессионная политика** (`infra/sessions.yaml` — [`docs/SESSIONS.md`](docs/SESSIONS.md)), риск-движок, умный стоп и трейл, шлюз Bybit v5 (pybit; Demo Trading / testnet / live) с OMS-очередью, консоль с эквити/позициями/сессиями/настройками. Статус из прогона — `ops/STATUS-GENERATED.md` (`python -m capitalizator.ops.gen_status`); ручной журнал — `ops/STATUS.md`. Развёртывание — [`docs/VPS-DEPLOY.md`](docs/VPS-DEPLOY.md). Аудит: [`docs/AUDIT-2026-09-02.md`](docs/AUDIT-2026-09-02.md).
+[Запуск и эксплуатация](FUSION.md) · [Повторная проверка и границы доказательств](docs/FUSION-REVIEW-2026-09-06.md)
 
-Запуск проверок: `pip install -e ".[dev,live,hyexec]" && ruff check src tests && mypy && pytest`.
-База на ноут и переезд: [`docs/VAULT-LAPTOP.md`](docs/VAULT-LAPTOP.md).
+Сигнал: наблюдаемый liquidity sweep → подтверждённая пара HTF/LTF и retracement
+0.5–1 → ансамбль условных прогнозов → новая реакция потока и стакана → атомарный
+риск-бюджет → единственный исполнитель. Пропуск сделки — штатный результат.
 
-**С чего читать:** [`docs/PHASE-BUILD.md`](docs/PHASE-BUILD.md) — очередь шагов плюс детализация (артефакты, глоссарий, SQL гейтов, тесты, мониторинг, окна UTC).  
-Архитектура модулей: [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).  
-Аудит уникальности vs мировые аналоги (сент. 2026, без PnL): [`docs/UNIQUENESS-AUDIT-2026-09.md`](docs/UNIQUENESS-AUDIT-2026-09.md).  
-Фазы, гейты и деньги: [`docs/PHASES-ALL.md`](docs/PHASES-ALL.md).  
-Стол команды: [`docs/TEAM-DESK.md`](docs/TEAM-DESK.md).  
-Нейтральный месяц при скальпе 5% по очереди: [`docs/VERDICT-SCALP-5PCT.md`](docs/VERDICT-SCALP-5PCT.md).  
-100k → 600–900k при 10% в сделке: [`docs/VERDICT-600-900.md`](docs/VERDICT-600-900.md).  
-**Что делать, чтобы целиться в 900k:** [`docs/PLAN-900k.md`](docs/PLAN-900k.md).  
-«Со 100к по 10к в день»: [`docs/VERDICT-10K-DAY.md`](docs/VERDICT-10K-DAY.md).  
-50к в месяц со 100к: [`docs/VERDICT-50K-MONTH.md`](docs/VERDICT-50K-MONTH.md).  
-Альты + шире стоп / больше маржа: [`docs/ALTS-MARGIN-STOP.md`](docs/ALTS-MARGIN-STOP.md).  
-Трейл и альт +40%: [`docs/TRAIL-RUNNERS.md`](docs/TRAIL-RUNNERS.md) — хвост ловим остатком, не бюджетом.  
-Почему худой месяц бывает у умного стола: [`docs/WHY-BAD-MONTH.md`](docs/WHY-BAD-MONTH.md).  
-Как стать первыми в мире честно: [`docs/FIRST-IN-WORLD.md`](docs/FIRST-IN-WORLD.md) — стол исходов, не самый большой PnL.  
-Пассивное восстановление стакана (не Sharpe > 3): [`docs/PASSIVE-RESILIENCE.md`](docs/PASSIVE-RESILIENCE.md).  
-Изобретение: жест книги и первый факт: [`docs/INVENTION-FIRST-FACT.md`](docs/INVENTION-FIRST-FACT.md).  
-Жюри графика и книги, % за час сессии: [`docs/INVENTION-JURY.md`](docs/INVENTION-JURY.md).  
-ОКО — шестой голос жюри с вето: манипуляции, режим, конформное «не знаю»: [`docs/INVENTION-OKO.md`](docs/INVENTION-OKO.md).  
-ICT + «поток заказов» vs наши атомы: [`docs/COMPARE-ICT-FLOW.md`](docs/COMPARE-ICT-FLOW.md).  
-×6–×9 за 6 месяцев «стабильно и с низким риском»: [`docs/VERDICT-x6-LOWRISK.md`](docs/VERDICT-x6-LOWRISK.md) — **нет**.
+График показывает реальные свечи, FVG/OB/BAG, уровни, OTE, профиль предыдущей
+наблюдавшейся сессии, гипотезы и фактические исполнения. Новости имеют отдельный
+статус покрытия каждой монеты. Анлоки требуют настроенного источника Tokenomist.
+Опционная гамма — unsigned proxy; знак позиции дилеров неизвестен.
 
-Рядом: [`docs/SR-LEVELS-SCIENCE.md`](docs/SR-LEVELS-SCIENCE.md) (факты по уровням), [`docs/CENSUS-PRACTICE-REPOS.md`](docs/CENSUS-PRACTICE-REPOS.md) (~110 репо), [`docs/ARCHITECTURE-AZ.md`](docs/ARCHITECTURE-AZ.md) (ИИ, безопасность, контуры).
+```bash
+python -m pip install -e ".[dev,live]"
+python -m capitalizator.fusion --userdir /absolute/path/to/fusion-data
+```
 
-Кто реально прибыльный на **криптофьючерсах** (не звёзды): [`docs/FUTURES-BOTS-RESULTS.md`](docs/FUTURES-BOTS-RESULTS.md).  
-Перепись **150** топовых ботов/движков против стола (вечер 30.08): [`docs/CENSUS-150.md`](docs/CENSUS-150.md).  
-Мировой поиск (CN/IN/JP/KR, языки, Gitee/GitLab): [`docs/WORLD-SEARCH.md`](docs/WORLD-SEARCH.md) — пустой продукт пуст не только на EN GitHub.  
-Утренняя перепись практики (~110, issues/PnL): [`docs/CENSUS-PRACTICE-REPOS.md`](docs/CENSUS-PRACTICE-REPOS.md).
+Консоль: `http://127.0.0.1:8082`. Ключи вводятся в локальной консоли или передаются
+через отдельные переменные Demo/Live. Без ключей нет исполнения на счёте.
+Смена архитектуры инвалидирует старую модель и требует новой Demo-квалификации.
+
+```bash
+ruff check src tests
+mypy
+mypy src/capitalizator/fusion --follow-imports=silent
+pytest
+PYTHONPATH=src python tools/benchmark_fusion.py --events 5000
+```
+
+Основной `infra/deploy/compose.yml` запускает только fusion. Прежние приложения
+сохранены в `compose.legacy.yml` и [старой документации](README.legacy.md) для
+воспроизводимости; они не являются дополнительными исполнителями нового контура.
+Повторно используются проверяемые библиотеки свечей, геометрии, RSI, календарей
+и нормализации из Capitalizator.
+
+Тесты программных механизмов не доказывают 30% в месяц, безубыточность или
+превосходство над всеми стратегиями. Полный исторический L2/OOS-прогон и
+длительная проверка на Bybit Demo требуют соответствующих данных и доступа.

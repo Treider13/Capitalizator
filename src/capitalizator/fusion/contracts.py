@@ -73,18 +73,41 @@ def propose(
     side = int(c["sweep"])
     if side == 0:
         return None, "sweep_required"
+    pairing = c.get("pairing", {})
+    if not pairing.get("allowed"):
+        return None, "htf_ltf_unconfirmed"
     # Premium/discount retracement 0.5–1; OTE remains recorded, not counted as evidence.
-    location = float(c["discount"])
-    if not (0 <= location <= 0.5 if side == 1 else 0.5 <= location <= 1):
+    location = float(pairing["retracement"])
+    if not 0.5 <= location <= 1:
         return None, "outside_retracement"
     edge = forecast.edge(side, costs)
     if edge <= 0:
         return None, "no_robust_net_edge"
     tail = abs(forecast.lower if side == 1 else forecast.upper)
-    buffer = max(tick, block.close * math.expm1(min(tail, 1.0)), float(c["ask"]) - float(c["bid"]))
-    invalidation = float(c["sweep_extreme"]) - side * buffer
-    target = float(c["resistance"] if side == 1 else c["support"])
+    buffer = max(
+        tick,
+        float(c["atr"]),
+        block.close * math.expm1(min(tail, 1.0)),
+        float(c["ask"]) - float(c["bid"]),
+    )
+    extreme = float(c["sweep_extreme"])
+    poi = pairing.get("poi", {})
+    boundary = (
+        min(extreme, float(poi.get("low", extreme)))
+        if side == 1
+        else max(extreme, float(poi.get("high", extreme)))
+    )
+    invalidation = boundary - side * buffer
+    target = float(pairing["target"])
     distance = side * (block.close - invalidation)
+    if pairing.get("regime") == "range":
+        poc = c.get("profile", {}).get("poc")
+        if (
+            c.get("profile", {}).get("complete")
+            and poc is not None
+            and side * (poc - block.close) >= config.minimum_rr * distance
+        ):
+            target = float(poc)
     reward = side * (target - block.close)
     if invalidation <= 0 or distance <= 0 or reward < config.minimum_rr * distance:
         return None, "insufficient_structural_reward"
@@ -93,6 +116,7 @@ def propose(
     refill = float(np.quantile(side * scenarios[:, 2], config.confidence_alpha))
     definition = {
         "hypothesis": "sweep_reclaim_amplification",
+        "pairing": pairing,
         "alternative": "continued_pressure_or_absorption_failure",
         "support": c["support"],
         "resistance": c["resistance"],

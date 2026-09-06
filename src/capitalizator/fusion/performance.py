@@ -39,19 +39,22 @@ def metrics(
     }
 
 
-def venue_performance(store: Store, mode: str) -> dict[str, Any]:
+def venue_performance(store: Store, mode: str, since: float = 0) -> dict[str, Any]:
     with store.analytics_lock:
         revision = store.meta("execution_revision:" + mode, 0)
-        cached = store.meta("performance:" + mode)
+        cache_key = "performance:" + mode + (":" + str(since) if since else "")
+        cached = store.meta(cache_key)
         if cached is not None and cached["revision"] == revision:
             return dict(cached["report"])
-        report = _venue_performance(store, mode)
-        store.put_meta("performance:" + mode, {"revision": revision, "report": report})
+        report = _venue_performance(store, mode, since)
+        store.put_meta(cache_key, {"revision": revision, "report": report})
         return report
 
 
-def _venue_performance(store: Store, mode: str) -> dict[str, Any]:
-    rows = store.rows("SELECT * FROM executions WHERE mode=? ORDER BY at,id", (mode,))
+def _venue_performance(store: Store, mode: str, since: float = 0) -> dict[str, Any]:
+    rows = store.rows(
+        "SELECT * FROM executions WHERE mode=? AND at>=? ORDER BY at,id", (mode, since)
+    )
     inventory: dict[str, tuple[float, float, float]] = {}
     episodes: list[float] = []
     fees = realized = 0.0

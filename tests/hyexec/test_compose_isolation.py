@@ -27,7 +27,7 @@ def test_hyexec_and_train_are_separate_services() -> None:
 
 
 def test_image_installs_hyexec_extra() -> None:
-    text = (Path(__file__).resolve().parents[2] / "infra" / "deploy" / "Dockerfile").read_text()
+    text = (Path(__file__).resolve().parents[2] / "infra" / "deploy" / "Dockerfile.legacy").read_text()
     assert ".[live,hyexec]" in text
     assert "libgomp1" in text
 

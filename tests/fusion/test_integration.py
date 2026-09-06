@@ -508,7 +508,19 @@ def test_candidate_new_reaction_risk_reservation_and_venue_send(store, config):
     engine.market.ticker_at = 101
     for i in range(4):
         engine.market.blocks.append(block(ident=i, at=90 + i))
-    c = {**block().context, "sweep_extreme": 99.9, "ask": 100.01, "bid": 100}
+    c = {
+        **block().context,
+        "sweep_extreme": 99.9,
+        "ask": 100.01,
+        "bid": 100,
+        "pairing": {
+            "allowed": True,
+            "retracement": 0.75,
+            "target": 120,
+            "regime": "trend",
+            "anchors": {"low": 95, "high": 120},
+        },
+    }
     account(store, at=101)
     engine.on_block(block(ident=5, at=101, close=100, low=99.9, context=c))
     assert engine.contract_state == "observing"

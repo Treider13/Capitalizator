@@ -107,6 +107,9 @@ def reserve(
         abs(funding) * entry * max(1, config.max_hold_s / (instrument.funding_minutes * 60))
     )
     unit_loss = abs(entry - stop) + entry * (instrument.taker * 2) + spread * 2 + funding_cost
+    costs = unit_loss - abs(entry - stop)
+    if side * (contract.target - entry) - costs < config.minimum_rr * unit_loss:
+        return None, "net_reward_after_costs"
     ident = "acr-" + contract.id
     with store.transaction() as db:
         state = db.execute("SELECT state FROM contracts WHERE id=?", (contract.id,)).fetchone()
@@ -191,6 +194,7 @@ def reserve(
             "orderLinkId": ident,
             "contract_id": contract.id,
             "model_version": contract.model_version,
+            "policy_version": contract.config_version,
             "risk": risk,
             "budget": budget,
             "unit_loss": unit_loss,

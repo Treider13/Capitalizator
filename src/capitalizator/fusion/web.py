@@ -5,16 +5,18 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 PAGE = (Path(__file__).with_name("dashboard.html")).read_text(encoding="utf-8")
 
 
 def server(runtime: Any, port: int) -> ThreadingHTTPServer:
     token = secrets.token_urlsafe(32)
+    streams = threading.BoundedSemaphore(8)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args: Any) -> None:
@@ -31,7 +33,12 @@ def server(runtime: Any, port: int) -> ThreadingHTTPServer:
             self.wfile.write(body)
 
         def trusted_host(self) -> bool:
-            return self.headers.get("Host", "") in {f"127.0.0.1:{port}", f"localhost:{port}"}
+            assert isinstance(self.server, ThreadingHTTPServer)
+            bound_port = self.server.server_port
+            return self.headers.get("Host", "") in {
+                f"127.0.0.1:{bound_port}",
+                f"localhost:{bound_port}",
+            }
 
         def do_GET(self) -> None:
             if not self.trusted_host():
@@ -41,6 +48,38 @@ def server(runtime: Any, port: int) -> ThreadingHTTPServer:
                 self.send(
                     200, PAGE.replace("__TOKEN__", token).encode(), "text/html; charset=utf-8"
                 )
+            elif urlparse(self.path).path == "/api/stream":
+                query = parse_qs(urlparse(self.path).query)
+                symbol = query.get("symbol", [runtime.config.symbols[0]])[0]
+                tf = query.get("tf", ["1m"])[0]
+                try:
+                    first = runtime.chart(symbol, tf)
+                except ValueError:
+                    self.send(400, b'{"error":"chart parameters"}')
+                    return
+                if not streams.acquire(blocking=False):
+                    self.send(429, b'{"error":"stream limit"}')
+                    return
+                try:
+                    self.connection.settimeout(5)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Accel-Buffering", "no")
+                    self.end_headers()
+                    body = first
+                    while not runtime.supervisor.stop.is_set():
+                        self.wfile.write(
+                            b"data: " + json.dumps(body, allow_nan=False).encode() + b"\n\n"
+                        )
+                        self.wfile.flush()
+                        if runtime.supervisor.stop.wait(runtime.config.chart_refresh_s):
+                            break
+                        body = runtime.chart(symbol, tf, body["revision"])
+                except (OSError, ConnectionError):
+                    pass
+                finally:
+                    streams.release()
             elif self.path == "/api/status":
                 self.send(200, json.dumps(runtime.status(), allow_nan=False).encode())
             else:
@@ -69,5 +108,6 @@ def server(runtime: Any, port: int) -> ThreadingHTTPServer:
                 self.send(400, json.dumps({"error": str(exc)}).encode())
 
     http = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    http.daemon_threads = True
+    http.daemon_threads = False
+    http.block_on_close = True
     return http
