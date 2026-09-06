@@ -89,6 +89,32 @@ def test_live_recorder_streams_fixture_frames_into_parts(tmp_path: Path) -> None
     kn.close()
 
 
+def test_full_book_queue_does_not_drop_trades(tmp_path: Path) -> None:
+    """orderbook is the firehose. A full book park must not refuse publicTrade."""
+    import queue as queue_mod
+
+    ws = FakeWs()
+    rec = LiveRecorder(
+        symbols=["BTCUSDT"],
+        data_root=tmp_path / "tape",
+        ws_factory=lambda: ws,
+        fetch_snapshot=lambda s: (_ for _ in ()).throw(RuntimeError("no rest")),
+    )
+    (tmp_path / "tape").mkdir()
+    rec._qs["book"] = queue_mod.Queue(maxsize=2)
+    rec.start()
+    ws.emit("book", _book_frames()[0])
+    ws.emit("book", _book_frames()[1])
+    assert rec._qs["book"].full()
+    ws.emit("book", _book_frames()[2])
+    ws.emit("trades", _trade_frames()[0])
+    assert rec.dropped == 1
+    assert rec._qs["trades"].qsize() == 1
+    rec.drain()
+    assert rec.stats["trades"].frames == 1
+    assert rec.stats["trades"].events == 1
+
+
 def test_book_u_hole_is_applied_without_rest_resync(tmp_path: Path) -> None:
     """orderbook.200 / CCXT: a skipped u is a delta. REST is only if there is no snapshot."""
     ws = FakeWs()

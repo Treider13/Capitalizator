@@ -104,13 +104,16 @@ class TapeCursor:
     first pass (`book_hours`): a book is only valid from its next snapshot anyway.
     Official orderbook.200: snapshot, then delta. Origin jsonl is read first so a
     restart does not spend the byte budget on `book_diff` and never apply the
-    snapshot (live SOLUSDT stayed empty). No time-seek stitch.
+    snapshot (live SOLUSDT stayed empty). Trade jsonl has its own MAX_BYTES pool
+    for the same reason origin does not share leftover with deltas — live L200
+    can fill one pass alone (VPS 2026-09-06: tape_uptime stuck at 21:45).
+    No time-seek stitch.
     """
 
     RECENT_DAYS = 2
     # sized so one pass stays well under the 30 s dead-man: a longer pass starves the
     # desk heartbeat and the signer blocks entries with reason `desk` while catching up
-    MAX_BYTES = 8 * 1024 * 1024  # jsonl bytes per pass
+    MAX_BYTES = 8 * 1024 * 1024  # jsonl bytes per stream group per pass
     MAX_ROWS = 60_000  # parquet rows per pass
     BOOK_HOURS = 2  # production first pass: book deltas only this recent
     _BOOK_PARTS = frozenset({"book_diff", "snapshot", "bbo", "resync"})
@@ -182,8 +185,12 @@ class TapeCursor:
         budget_rows = self.max_rows
         self.backlog = False
         # Official: snapshot, then delta. Origin jsonl is small; it does not
-        # share the delta/trade budget.
+        # share the delta budget.
         # https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook
+        # Trades get the same treatment: own MAX_BYTES leftover, not whatever
+        # L200 did not eat. Bybit publicTrade is a separate WS topic; nautilus
+        # DatabentoDataClient keeps two live clients per dataset (MBO vs rest)
+        # for the same reason — one stream filling the socket must not stall the other.
         origin_jsonl = [p for p in jsonl_paths if _book_role(p) == "origin"]
         delta_jsonl = [p for p in jsonl_paths if _book_role(p) == "delta"]
         other_jsonl = [p for p in jsonl_paths if _book_role(p) is None]
@@ -201,13 +208,14 @@ class TapeCursor:
             got, used = self._tail_jsonl(path, budget_bytes)
             events.extend(got)
             budget_bytes -= used
+        leftover_trades = self.max_bytes
         for path in other_jsonl:
-            if budget_bytes <= 0:
+            if leftover_trades <= 0:
                 self.backlog = True
                 break
-            got, used = self._tail_jsonl(path, budget_bytes)
+            got, used = self._tail_jsonl(path, leftover_trades)
             events.extend(got)
-            budget_bytes -= used
+            leftover_trades -= used
         book_pq = [
             p
             for p in parquet_paths

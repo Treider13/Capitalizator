@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import os
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -12,7 +14,7 @@ import pyarrow.parquet as pq
 from capitalizator.authors.ingest import AuthorsIngest
 from capitalizator.book.reconstruct import BookDirty
 from capitalizator.card.live import CardLive, card_is_fresh
-from capitalizator.desk.bars import TF_MINUTES, closed_bars_from_trades
+from capitalizator.desk.bars import TF_MINUTES, closed_bars_from_trades, forming_bar_from_trades
 from capitalizator.desk.tape import _parse, event_from_jsonl_line
 from capitalizator.exec.replay import ReplayEngine
 from capitalizator.llm.daily_summary import DailySummary
@@ -47,40 +49,176 @@ def _symbol_stream_roots(tape: Path, *, symbol: str, stream: str) -> list[Path]:
     return roots
 
 
+def _hour_key(path: Path) -> Path:
+    if path.suffix == ".jsonl":
+        return path.parent / path.stem
+    return path.parent / path.name.split(".")[0]
+
+
+def _hour_files_for(tf: str, limit: int) -> int:
+    """Newest hour parts to open so `limit` closed bars can exist.
+
+    One parquet/jsonl file is one hour. 96 files is four 1d candles — HTF
+    buttons looked dead. Cap at 21 days so a click cannot walk the vault.
+    """
+    minutes = TF_MINUTES.get(tf, 15)
+    need = (max(limit, 1) * minutes + 59) // 60 + 2
+    return min(max(need, 24), 24 * 21)
+
+
+def _days_for_files(max_files: int) -> int:
+    return max(1, (max(max_files, 1) + 23) // 24)
+
+
+def _keep_newest_date_dirs(keep_days: int) -> Callable[[Path], bool]:
+    """Prune `date=` subtrees during the walk. Same idea as TapeCursor._recent
+    and hyexec.tape_day._keep_dates: a month of tape is not a Chronos GET.
+
+    Newest `date=` dirs on disk — not wall-clock vs now. Aug 31 fixtures
+    still load when the agent calendar is September.
+    """
+    keep_n = max(1, keep_days)
+    cache: dict[Path, frozenset[str]] = {}
+
+    def names_for(parent: Path) -> frozenset[str]:
+        cached = cache.get(parent)
+        if cached is not None:
+            return cached
+        try:
+            names = [n for n in os.listdir(parent) if n.startswith("date=") and len(n) == 15]
+        except OSError:
+            names = []
+        names.sort()
+        cache[parent] = frozenset(names[-keep_n:]) if names else frozenset()
+        return cache[parent]
+
+    def keep(path: Path) -> bool:
+        if not path.name.startswith("date="):
+            return True
+        keep_set = names_for(path.parent)
+        if not keep_set:
+            return True
+        return path.name in keep_set
+
+    return keep
+
+
+def _events_from_hour_map(by_hour: dict[Path, list[Path]], hours: list[Path]) -> list[MarketEvent]:
+    events: list[MarketEvent] = []
+    for key in hours:
+        files = by_hour[key]
+        jsonl = [path for path in files if path.suffix == ".jsonl"]
+        if jsonl:
+            for path in jsonl:
+                events.extend(_jsonl_events(path))
+            continue
+        for path in files:
+            if path.suffix != ".parquet":
+                continue
+            try:
+                table = pq.ParquetFile(path).read()
+            except (OSError, ValueError):
+                continue
+            for row in rows_fast(table):
+                event = _parse(row)
+                if event is not None:
+                    events.append(event)
+    events.sort(key=lambda e: (e.exchange_ts, e.symbol, e.stream))
+    return events
+
+
+def _hour_parts(
+    tape: Path, *, symbol: str, stream: str, when: datetime, hours_back: int
+) -> list[Path]:
+    """Open this hour and the previous ones. No tree walk — tape_tick cannot
+    scan 14G of tape just to paint the forming candle."""
+    span = max(1, hours_back)
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for offset in range(span):
+        moment = when - timedelta(hours=offset)
+        day = moment.strftime("%Y-%m-%d")
+        hour = f"{moment.hour:02d}"
+        prefix = f"hour={hour}."
+        compact = f"hour={hour}.parquet"
+        live = f"hour={hour}.jsonl"
+        for root in _symbol_stream_roots(tape, symbol=symbol, stream=stream):
+            parent = root / f"date={day}"
+            jsonl = parent / live
+            if jsonl.is_file() and not jsonl.is_symlink():
+                if jsonl not in seen:
+                    seen.add(jsonl)
+                    found.append(jsonl)
+                continue
+            if not parent.is_dir() or parent.is_symlink():
+                continue
+            try:
+                names = os.listdir(parent)
+            except OSError:
+                continue
+            for name in sorted(names):
+                if name != compact and not (name.startswith(prefix) and name.endswith(".parquet")):
+                    continue
+                path = parent / name
+                if not path.is_file() or path.is_symlink() or path in seen:
+                    continue
+                seen.add(path)
+                found.append(path)
+    return found
+
+
+def _events_from_paths(paths: list[Path]) -> list[MarketEvent]:
+    by_hour: dict[Path, list[Path]] = {}
+    hours: list[Path] = []
+    for path in paths:
+        key = _hour_key(path)
+        if key not in by_hour:
+            hours.append(key)
+        by_hour.setdefault(key, []).append(path)
+    return _events_from_hour_map(by_hour, hours)
+
+
 def _load_symbol_stream(
     tape: Path, *, symbol: str, stream: str, max_files: int = 96
 ) -> list[MarketEvent]:
-    """Read one symbol/stream, newest hour parts first. Never the whole vault."""
+    """Read one symbol/stream, newest hour parts first. Jsonl wins its hour.
+
+    Same rule as TapeCursor: the live feed is `hour=HH.jsonl`; parquet for that
+    hour is skipped. Never the whole vault.
+    """
     if tape.is_symlink() or not tape.is_dir() or not symbol or not stream:
         return []
     roots = _symbol_stream_roots(tape, symbol=symbol, stream=stream)
     if not roots:
         return []
-    paths: list[Path] = []
+    by_hour: dict[Path, list[Path]] = {}
+    keep = _keep_newest_date_dirs(_days_for_files(max_files))
     try:
         for root in roots:
-            paths.extend(
-                path
-                for path in iter_regular_files(root)
-                if path.suffix == ".parquet"
-                and symbol in path.parts
-                and (stream in path.parts or root.name == symbol)
-            )
+            for path in iter_regular_files(root, keep_dir=keep):
+                if symbol not in path.parts:
+                    continue
+                if stream not in path.parts and root.name != symbol:
+                    continue
+                if path.suffix not in {".parquet", ".jsonl"}:
+                    continue
+                by_hour.setdefault(_hour_key(path), []).append(path)
     except VaultError:
         return []
-    paths.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)
-    events: list[MarketEvent] = []
-    for path in paths[:max_files]:
-        try:
-            table = pq.ParquetFile(path).read()
-        except (OSError, ValueError):
-            continue
-        for row in rows_fast(table):
-            event = _parse(row)
-            if event is not None:
-                events.append(event)
-    events.sort(key=lambda e: (e.exchange_ts, e.symbol, e.stream))
-    return events
+    if not by_hour:
+        return []
+
+    def _mtime(key: Path) -> float:
+        newest = 0.0
+        for path in by_hour[key]:
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                continue
+        return newest
+
+    hours = sorted(by_hour, key=_mtime, reverse=True)[:max_files]
+    return _events_from_hour_map(by_hour, hours)
 
 
 def _safe(payload: dict[str, Any]) -> dict[str, Any]:
@@ -219,9 +357,17 @@ def bars_for(
     if limit < 1:
         limit = 1
     when = now or datetime.now(tz=UTC)
-    events = _load_symbol_stream(vault.tape, symbol=symbol, stream="trades")
+    events = _load_symbol_stream(
+        vault.tape, symbol=symbol, stream="trades", max_files=_hour_files_for(tf, limit)
+    )
     bars = closed_bars_from_trades(events, symbol=symbol, tf=tf, now=when, already=set())
-    return [_bar_row(bar) for bar in bars[-limit:]]
+    rows = [_bar_row(bar) for bar in bars[-limit:]]
+    forming = forming_bar_from_trades(events, symbol=symbol, tf=tf, now=when)
+    if forming is not None:
+        row = _bar_row(forming)
+        row["forming"] = True
+        rows.append(row)
+    return rows
 
 
 def _bar_row(bar: Bar) -> dict[str, Any]:
@@ -309,7 +455,7 @@ def _replay_tape_events(tape: Path) -> list[MarketEvent]:
     if tape.is_symlink() or not tape.is_dir():
         return []
     try:
-        paths = list(iter_regular_files(tape))
+        paths = list(iter_regular_files(tape, keep_dir=_keep_newest_date_dirs(2)))
     except VaultError:
         return []
     live_hours = {path.parent / path.stem for path in paths if path.suffix == ".jsonl"}
@@ -391,11 +537,56 @@ def book_for(vault: Vault, *, symbol: str) -> dict[str, Any]:
     return {"symbol": symbol, "bids": [], "asks": [], "ts": None}
 
 
+def tape_tick(vault: Vault, *, symbol: str, tf: str = "15m") -> dict[str, Any]:
+    """Book + last prints + forming bar. No 15-way dashboard refetch.
+
+    Desk already flushes `book:{symbol}` every 0.5s. Lightweight Charts wants
+    `series.update` on the open candle, not a parquet rebuild.
+    """
+    if tf not in TF_MINUTES:
+        tf = "15m"
+    minutes = TF_MINUTES[tf]
+    hour_span = max(2, (minutes + 59) // 60 + 1)
+    when = datetime.now(tz=UTC)
+    events = _events_from_paths(
+        _hour_parts(
+            vault.tape, symbol=symbol, stream="trades", when=when, hours_back=hour_span
+        )
+    )
+    forming = forming_bar_from_trades(events, symbol=symbol, tf=tf, now=when)
+    trades: list[dict[str, Any]] = []
+    for event in events:
+        if event.stream != "trades" or event.symbol != symbol:
+            continue
+        trades.append(
+            {
+                "symbol": event.symbol,
+                "ts": event.exchange_ts.isoformat(),
+                "px": str(event.payload.get("px") or ""),
+                "qty": str(event.payload.get("qty") or ""),
+                "side": str(event.payload.get("side") or ""),
+            }
+        )
+    forming_row = None
+    if forming is not None:
+        forming_row = _bar_row(forming)
+        forming_row["forming"] = True
+    return {
+        "symbol": symbol,
+        "tf": tf,
+        "book": book_for(vault, symbol=symbol),
+        "last_price": last_prices(vault).get(symbol),
+        "trades": trades[-30:],
+        "forming": forming_row,
+    }
+
+
 def trades_for(vault: Vault, *, symbol: str, limit: int = 50) -> list[dict[str, Any]]:
     if limit < 1:
         limit = 1
     out: list[dict[str, Any]] = []
-    for event in _load_symbol_stream(vault.tape, symbol=symbol, stream="trades"):
+    # A handful of newest hours: the tape table is last prints, not a history scan.
+    for event in _load_symbol_stream(vault.tape, symbol=symbol, stream="trades", max_files=4):
         if event.stream != "trades" or event.symbol != symbol:
             continue
         out.append(

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from capitalizator.desk.bars import TF_MINUTES, BarBuilder, closed_bars_from_trades
+from capitalizator.desk.bars import CHART_TFS, TF_MINUTES, BarBuilder, closed_bars_from_trades
 from capitalizator.types import MarketEvent
 from capitalizator.zones.config import KNOWN_TFS, load_registry
 
@@ -28,6 +28,8 @@ def test_tf_minutes_has_one_and_five() -> None:
     assert TF_MINUTES["1m"] == 1
     assert TF_MINUTES["5m"] == 5
     assert "3m" not in TF_MINUTES
+    assert CHART_TFS == ("1m", "5m", "15m", "1h", "4h", "1d")
+    assert "3m" not in CHART_TFS
 
 
 def test_five_minute_builder_matches_rescan() -> None:

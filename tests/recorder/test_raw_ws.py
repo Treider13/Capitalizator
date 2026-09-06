@@ -336,6 +336,63 @@ def test_live_book_is_read_while_trade_parquet_is_still_backlogged(tmp_path: Pat
     assert "book_diff" in streams
 
 
+def test_live_book_jsonl_cannot_starve_trade_jsonl(tmp_path: Path) -> None:
+    """VPS 2026-09-06: L200 jsonl filled MAX_BYTES; publicTrade never tailed.
+
+    hours24 / tape_uptime froze on the last parquet print while recorder was live.
+    Origin jsonl already has its own cap and does not share leftover with deltas
+    (SOLUSDT stayed empty when diffs ate the budget). Trades must too — not a
+    leftover after L200, not a made-up fraction of it.
+    """
+    from datetime import timedelta
+
+    from capitalizator.desk.tape import TapeCursor
+    from capitalizator.recorder.sink_parquet import BufferedParquetSink
+    from capitalizator.types import MarketEvent
+
+    now = datetime(2026, 9, 6, 1, 50, tzinfo=UTC)
+    sink = BufferedParquetSink(tmp_path, flush_every_s=60, max_rows=10_000, live_jsonl=True)
+    pad = "x" * 400
+    for i in range(80):
+        ts = now - timedelta(seconds=80 - i)
+        sink.write(
+            MarketEvent(
+                stream="book_diff",
+                exchange="bybit",
+                symbol="BTCUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                seq=i + 1,
+                payload={"b": [["79754.0", pad]], "a": []},
+            )
+        )
+    # ~4–5 KiB of trades: more than a 25% slice of max_bytes=8 KiB would allow,
+    # so a leftover-fraction mask would still drop prints. Own MAX_BYTES pool
+    # tails them in the same pass as the overflowing book.
+    trade_pad = "y" * 200
+    n_trades = 10
+    for i in range(n_trades):
+        ts = now + timedelta(seconds=i)
+        sink.write(
+            MarketEvent(
+                stream="trades",
+                exchange="bybit",
+                symbol="BTCUSDT",
+                exchange_ts=ts,
+                recv_ts=ts,
+                seq=100 + i,
+                payload={"px": "79591.6", "qty": "1", "side": "sell", "pad": trade_pad},
+            )
+        )
+    sink.flush()
+    cur = TapeCursor(replay_all_first=False, max_bytes=8 * 1024, book_hours=2)
+    batch = cur.fresh_rows(tmp_path, now=now + timedelta(minutes=1))
+    assert cur.backlog
+    assert any(e.stream == "book_diff" for e in batch)
+    trades = [e for e in batch if e.stream == "trades"]
+    assert [e.seq for e in trades] == list(range(100, 100 + n_trades))
+
+
 def test_production_restart_reads_snapshot_before_old_book_diffs(tmp_path: Path) -> None:
     """Official orderbook.200: snapshot first, then delta.
 
