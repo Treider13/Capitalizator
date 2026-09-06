@@ -477,6 +477,23 @@ def test_tracker_open_flat_callbacks_and_reconcile() -> None:
     assert len(flat) == 1 and tr.open_symbols() == []
 
 
+def test_full_wallet_queue_does_not_drop_execution() -> None:
+    import queue as queue_mod
+
+    tr = PositionTracker()
+    feed = PrivateFeed(tr)
+    feed._qs["wallet"] = queue_mod.Queue(maxsize=2)
+    feed.enqueue({"topic": "wallet", "data": [{"totalEquity": "1"}]})
+    feed.enqueue({"topic": "wallet", "data": [{"totalEquity": "2"}]})
+    feed.enqueue({"topic": "wallet", "data": [{"totalEquity": "3"}]})
+    feed.enqueue({"topic": "execution", "data": [{"symbol": "BTCUSDT", "side": "Buy", "execPrice": "65000",
+                                                  "execQty": "0.3", "execFee": "3.9", "orderLinkId": "abc",
+                                                  "execTime": str(int(NOW.timestamp() * 1000)), "isMaker": True}]})
+    assert feed.dropped == 1
+    assert feed.drain(now=NOW) >= 1
+    assert tr.fills and tr.fills[0].fee == Decimal("3.9")
+
+
 def test_unknown_position_is_never_adopted_silently() -> None:
     tr = PositionTracker()
     rest = [{"symbol": "ETHUSDT", "side": "Sell", "size": "1", "avgPrice": "3000"}]

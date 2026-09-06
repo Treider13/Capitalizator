@@ -202,6 +202,12 @@
     let barsSeq = 0;
     let chartSeriesKey = "";
     let overlayKey = "";
+    let tapeBusy = false;
+    let tapeAgain = false;
+    let barsBusy = false;
+    let barsAgain = false;
+    let refreshBusy = false;
+    let refreshAgain = false;
 
     function esc(s) {
       return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
@@ -636,50 +642,75 @@
       whyBox(lastTouch);
     }
     async function loadBars() {
-      const seq = ++barsSeq;
-      markTf();
-      const tfEl = document.getElementById("chart-tf");
-      if (tfEl) tfEl.textContent = tf;
-      const [bars, zones, touch] = await Promise.all([
-        jget("/api/bars?symbol=" + encodeURIComponent(symbol) + "&tf=" + encodeURIComponent(tf) + "&limit=200"),
-        jget("/api/zones?symbol=" + encodeURIComponent(symbol)),
-        jget("/api/touch/latest?symbol=" + encodeURIComponent(symbol))
-      ]);
-      if (seq !== barsSeq) return;
-      applyChartPayload(bars, zones, touch);
+      if (barsBusy) { barsAgain = true; return; }
+      barsBusy = true;
+      try {
+        do {
+          barsAgain = false;
+          const seq = ++barsSeq;
+          markTf();
+          const tfEl = document.getElementById("chart-tf");
+          if (tfEl) tfEl.textContent = tf;
+          const bars = await jget("/api/bars?symbol=" + encodeURIComponent(symbol) + "&tf=" + encodeURIComponent(tf) + "&limit=200");
+          if (seq !== barsSeq) continue;
+          applyChartPayload(bars, null, null);
+          const [zones, touch] = await Promise.all([
+            jget("/api/zones?symbol=" + encodeURIComponent(symbol)),
+            jget("/api/touch/latest?symbol=" + encodeURIComponent(symbol))
+          ]);
+          if (seq !== barsSeq) continue;
+          applyChartPayload(bars, zones, touch);
+        } while (barsAgain);
+      } finally {
+        barsBusy = false;
+      }
     }
     async function tickTape() {
-      const got = await jget(
-        "/api/tape?symbol=" + encodeURIComponent(symbol) + "&tf=" + encodeURIComponent(tf)
-      );
-      if (!got) return;
-      if (got.book) paintBook(got.book);
-      if (got.last_price) {
-        const priceEl = document.getElementById("price");
-        if (priceEl) priceEl.textContent = symbol + " " + got.last_price;
-      }
-      if (Array.isArray(got.trades)) {
-        const tr = got.trades;
-        document.getElementById("trades").innerHTML = tr.length
-          ? tr.slice().reverse().map(x => `<tr><td>${esc(x.ts)}</td><td class="num">${esc(x.px)}</td><td class="num">${esc(x.qty)}</td><td>${esc(x.side)}</td></tr>`).join("")
-          : '<tr><td colspan="4" class="empty">лента пуста</td></tr>';
-      }
-      if (got.forming) {
-        const row = got.forming;
-        if (!lastBars.length) lastBars = [row];
-        else {
-          const last = lastBars[lastBars.length - 1];
-          if (last.forming || last.open_ts === row.open_ts) lastBars[lastBars.length - 1] = row;
-          else lastBars.push(row);
-        }
-        if (lastBars.length > 220) lastBars = lastBars.slice(-200);
-        paintChart(lastBars, lastZones, lastTouch);
+      if (tapeBusy) { tapeAgain = true; return; }
+      tapeBusy = true;
+      try {
+        do {
+          tapeAgain = false;
+          const got = await jget(
+            "/api/tape?symbol=" + encodeURIComponent(symbol) + "&tf=" + encodeURIComponent(tf)
+          );
+          if (!got) continue;
+          if (got.book) paintBook(got.book);
+          if (got.last_price) {
+            const priceEl = document.getElementById("price");
+            if (priceEl) priceEl.textContent = symbol + " " + got.last_price;
+          }
+          if (Array.isArray(got.trades)) {
+            const tr = got.trades;
+            document.getElementById("trades").innerHTML = tr.length
+              ? tr.slice().reverse().map(x => `<tr><td>${esc(x.ts)}</td><td class="num">${esc(x.px)}</td><td class="num">${esc(x.qty)}</td><td>${esc(x.side)}</td></tr>`).join("")
+              : '<tr><td colspan="4" class="empty">лента пуста</td></tr>';
+          }
+          if (got.forming) {
+            const row = got.forming;
+            if (!lastBars.length) lastBars = [row];
+            else {
+              const last = lastBars[lastBars.length - 1];
+              if (last.forming || last.open_ts === row.open_ts) lastBars[lastBars.length - 1] = row;
+              else lastBars.push(row);
+            }
+            if (lastBars.length > 220) lastBars = lastBars.slice(-200);
+            paintChart(lastBars, lastZones, lastTouch);
+          }
+        } while (tapeAgain);
+      } finally {
+        tapeBusy = false;
       }
     }
     async function refresh() {
-      markTf();
-      const seq = ++refreshSeq;
-      const [status, dash, news, authors, llm, gates, hello, sessions, account, paper] = await Promise.all([
+      if (refreshBusy) { refreshAgain = true; return; }
+      refreshBusy = true;
+      try {
+        do {
+          refreshAgain = false;
+          markTf();
+          const seq = ++refreshSeq;
+          const [status, dash, news, authors, llm, gates, hello, sessions, account, paper] = await Promise.all([
         jget("/api/status"),
         jget("/api/dashboard"),
         jget("/api/news?symbol=" + encodeURIComponent(symbol)),
@@ -691,7 +722,7 @@
         jget("/api/account"),
         jget("/api/paper?limit=20")
       ]);
-      if (seq !== refreshSeq) return;
+      if (seq !== refreshSeq) continue;
       const st = status || BOOT;
       const sel = document.getElementById("symbol");
       const symbols = (st.symbols && st.symbols.length) ? st.symbols : [symbol];
@@ -865,6 +896,10 @@
         const row = g[k] || {};
         return `<div class="gate ${row.ok ? "green" : "red"}">${k.toUpperCase()} ${row.ok ? "да" : "нет"}</div>`;
       }).join("");
+        } while (refreshAgain);
+      } finally {
+        refreshBusy = false;
+      }
     }
     function setNote(text, sticky) {
       const note = document.getElementById("mode-note");
@@ -1001,9 +1036,9 @@
     });
     markTf();
     markSpeed();
-    loadBars();
     tickTape();
-    refresh();
+    loadBars();
+    setTimeout(refresh, 2000);
     setInterval(tickTape, 400);
     setInterval(loadBars, 60000);
     let fallback = setInterval(refresh, 30000);

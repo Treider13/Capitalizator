@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import os
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -64,6 +66,118 @@ def _hour_files_for(tf: str, limit: int) -> int:
     return min(max(need, 24), 24 * 21)
 
 
+def _days_for_files(max_files: int) -> int:
+    return max(1, (max(max_files, 1) + 23) // 24)
+
+
+def _keep_newest_date_dirs(keep_days: int) -> Callable[[Path], bool]:
+    """Prune `date=` subtrees during the walk. Same idea as TapeCursor._recent
+    and hyexec.tape_day._keep_dates: a month of tape is not a Chronos GET.
+
+    Newest `date=` dirs on disk — not wall-clock vs now. Aug 31 fixtures
+    still load when the agent calendar is September.
+    """
+    keep_n = max(1, keep_days)
+    cache: dict[Path, frozenset[str]] = {}
+
+    def names_for(parent: Path) -> frozenset[str]:
+        cached = cache.get(parent)
+        if cached is not None:
+            return cached
+        try:
+            names = [n for n in os.listdir(parent) if n.startswith("date=") and len(n) == 15]
+        except OSError:
+            names = []
+        names.sort()
+        cache[parent] = frozenset(names[-keep_n:]) if names else frozenset()
+        return cache[parent]
+
+    def keep(path: Path) -> bool:
+        if not path.name.startswith("date="):
+            return True
+        keep_set = names_for(path.parent)
+        if not keep_set:
+            return True
+        return path.name in keep_set
+
+    return keep
+
+
+def _events_from_hour_map(by_hour: dict[Path, list[Path]], hours: list[Path]) -> list[MarketEvent]:
+    events: list[MarketEvent] = []
+    for key in hours:
+        files = by_hour[key]
+        jsonl = [path for path in files if path.suffix == ".jsonl"]
+        if jsonl:
+            for path in jsonl:
+                events.extend(_jsonl_events(path))
+            continue
+        for path in files:
+            if path.suffix != ".parquet":
+                continue
+            try:
+                table = pq.ParquetFile(path).read()
+            except (OSError, ValueError):
+                continue
+            for row in rows_fast(table):
+                event = _parse(row)
+                if event is not None:
+                    events.append(event)
+    events.sort(key=lambda e: (e.exchange_ts, e.symbol, e.stream))
+    return events
+
+
+def _hour_parts(
+    tape: Path, *, symbol: str, stream: str, when: datetime, hours_back: int
+) -> list[Path]:
+    """Open this hour and the previous ones. No tree walk — tape_tick cannot
+    scan 14G of tape just to paint the forming candle."""
+    span = max(1, hours_back)
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for offset in range(span):
+        moment = when - timedelta(hours=offset)
+        day = moment.strftime("%Y-%m-%d")
+        hour = f"{moment.hour:02d}"
+        prefix = f"hour={hour}."
+        compact = f"hour={hour}.parquet"
+        live = f"hour={hour}.jsonl"
+        for root in _symbol_stream_roots(tape, symbol=symbol, stream=stream):
+            parent = root / f"date={day}"
+            jsonl = parent / live
+            if jsonl.is_file() and not jsonl.is_symlink():
+                if jsonl not in seen:
+                    seen.add(jsonl)
+                    found.append(jsonl)
+                continue
+            if not parent.is_dir() or parent.is_symlink():
+                continue
+            try:
+                names = os.listdir(parent)
+            except OSError:
+                continue
+            for name in sorted(names):
+                if name != compact and not (name.startswith(prefix) and name.endswith(".parquet")):
+                    continue
+                path = parent / name
+                if not path.is_file() or path.is_symlink() or path in seen:
+                    continue
+                seen.add(path)
+                found.append(path)
+    return found
+
+
+def _events_from_paths(paths: list[Path]) -> list[MarketEvent]:
+    by_hour: dict[Path, list[Path]] = {}
+    hours: list[Path] = []
+    for path in paths:
+        key = _hour_key(path)
+        if key not in by_hour:
+            hours.append(key)
+        by_hour.setdefault(key, []).append(path)
+    return _events_from_hour_map(by_hour, hours)
+
+
 def _load_symbol_stream(
     tape: Path, *, symbol: str, stream: str, max_files: int = 96
 ) -> list[MarketEvent]:
@@ -78,9 +192,10 @@ def _load_symbol_stream(
     if not roots:
         return []
     by_hour: dict[Path, list[Path]] = {}
+    keep = _keep_newest_date_dirs(_days_for_files(max_files))
     try:
         for root in roots:
-            for path in iter_regular_files(root):
+            for path in iter_regular_files(root, keep_dir=keep):
                 if symbol not in path.parts:
                     continue
                 if stream not in path.parts and root.name != symbol:
@@ -103,27 +218,7 @@ def _load_symbol_stream(
         return newest
 
     hours = sorted(by_hour, key=_mtime, reverse=True)[:max_files]
-    events: list[MarketEvent] = []
-    for key in hours:
-        files = by_hour[key]
-        jsonl = [path for path in files if path.suffix == ".jsonl"]
-        if jsonl:
-            for path in jsonl:
-                events.extend(_jsonl_events(path))
-            continue
-        for path in files:
-            if path.suffix != ".parquet":
-                continue
-            try:
-                table = pq.ParquetFile(path).read()
-            except (OSError, ValueError):
-                continue
-            for row in rows_fast(table):
-                event = _parse(row)
-                if event is not None:
-                    events.append(event)
-    events.sort(key=lambda e: (e.exchange_ts, e.symbol, e.stream))
-    return events
+    return _events_from_hour_map(by_hour, hours)
 
 
 def _safe(payload: dict[str, Any]) -> dict[str, Any]:
@@ -360,7 +455,7 @@ def _replay_tape_events(tape: Path) -> list[MarketEvent]:
     if tape.is_symlink() or not tape.is_dir():
         return []
     try:
-        paths = list(iter_regular_files(tape))
+        paths = list(iter_regular_files(tape, keep_dir=_keep_newest_date_dirs(2)))
     except VaultError:
         return []
     live_hours = {path.parent / path.stem for path in paths if path.suffix == ".jsonl"}
@@ -452,10 +547,12 @@ def tape_tick(vault: Vault, *, symbol: str, tf: str = "15m") -> dict[str, Any]:
         tf = "15m"
     minutes = TF_MINUTES[tf]
     hour_span = max(2, (minutes + 59) // 60 + 1)
-    events = _load_symbol_stream(
-        vault.tape, symbol=symbol, stream="trades", max_files=hour_span
-    )
     when = datetime.now(tz=UTC)
+    events = _events_from_paths(
+        _hour_parts(
+            vault.tape, symbol=symbol, stream="trades", when=when, hours_back=hour_span
+        )
+    )
     forming = forming_bar_from_trades(events, symbol=symbol, tf=tf, now=when)
     trades: list[dict[str, Any]] = []
     for event in events:

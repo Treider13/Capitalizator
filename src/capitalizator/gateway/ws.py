@@ -2,6 +2,7 @@
 
 pybit runs callbacks on its own thread; we only enqueue the frame and let the
 signer loop drain the queue on its thread (no shared mutable state in callbacks).
+Each private topic has its own park so wallet noise cannot drop execution.
 The factory is injected so the plumbing is unit-tested without a socket.
 Frame shape: {"topic": "position"|"execution"|"order"|"wallet", "data": [...]}.
 """
@@ -17,6 +18,18 @@ from capitalizator.gateway.keys import Keys
 from capitalizator.gateway.tracker import PositionTracker
 
 Frame = Mapping[str, Any]
+_PRIVATE_TOPICS = ("execution", "order", "position", "wallet")
+# execution must not wait behind a full wallet/position queue — same split as
+# publicTrade vs orderbook on the recorder. One private socket, four parks.
+_PRIVATE_QSIZE = 25_000
+
+
+class _QueueSizes:
+    def __init__(self, queues: Mapping[str, queue.Queue[Frame]]) -> None:
+        self._queues = queues
+
+    def qsize(self) -> int:
+        return sum(item.qsize() for item in self._queues.values())
 
 
 def make_private_ws(keys: Keys) -> Any:
@@ -41,7 +54,10 @@ class PrivateFeed:
     def __init__(self, tracker: PositionTracker, *, ws: Any | None = None) -> None:
         self.tracker = tracker
         self.ws = ws
-        self.q: queue.Queue[Frame] = queue.Queue(maxsize=100_000)
+        self._qs: dict[str, queue.Queue[Frame]] = {
+            name: queue.Queue(maxsize=_PRIVATE_QSIZE) for name in _PRIVATE_TOPICS
+        }
+        self.q = _QueueSizes(self._qs)
         self.dropped = 0
         self.frames = 0
         self.last_frame_at: datetime | None = None
@@ -73,8 +89,10 @@ class PrivateFeed:
 
     def enqueue(self, frame: Frame) -> None:
         """pybit callback thread: park the frame, nothing else."""
+        topic = str(frame.get("topic") or "")
+        name = next((item for item in _PRIVATE_TOPICS if topic.startswith(item)), "wallet")
         try:
-            self.q.put_nowait(frame)
+            self._qs[name].put_nowait(frame)
         except queue.Full:
             self.dropped += 1
 
@@ -83,12 +101,19 @@ class PrivateFeed:
         when = now or datetime.now(tz=UTC)
         n = 0
         while n < max_frames:
-            try:
-                frame = self.q.get_nowait()
-            except queue.Empty:
+            progress = False
+            for name in _PRIVATE_TOPICS:
+                if n >= max_frames:
+                    break
+                try:
+                    frame = self._qs[name].get_nowait()
+                except queue.Empty:
+                    continue
+                self.apply(frame, now=when)
+                n += 1
+                progress = True
+            if not progress:
                 break
-            self.apply(frame, now=when)
-            n += 1
         return n
 
     def apply(self, frame: Frame, *, now: datetime) -> None:

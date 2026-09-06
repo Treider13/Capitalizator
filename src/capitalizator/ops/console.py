@@ -95,11 +95,16 @@ def _parquet_counts(tape: Path) -> tuple[int, int]:
         raise ValueError(f"symlink: {tape}")
     if not tape.is_dir():
         return 0, 0
-    files = [path for path in iter_regular_files(tape) if path.suffix == ".parquet"]
-    # A live desk writes thousands of hour parts. Opening each with pyarrow on
-    # every /api/status (SSE refresh) ate ~2.7GiB and killed a 4GiB VPS.
-    if len(files) > 128:
-        return len(files), 0
+    files: list[Path] = []
+    for path in iter_regular_files(tape):
+        if path.suffix != ".parquet":
+            continue
+        files.append(path)
+        # A live desk writes thousands of hour parts. Opening each with pyarrow
+        # on every /api/status ate ~2.7GiB. Walking the rest of a 14G tape to
+        # paint a dashboard number also starved /api/bars — stop once we know.
+        if len(files) > 128:
+            return len(files), 0
     readable = 0
     rows = 0
     if files:

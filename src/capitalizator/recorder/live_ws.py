@@ -9,7 +9,8 @@ book; the deltas the desk needs for the 8 s ZLG/ОКО window never arrive. Same
     `allLiquidation.<sym>` for the desk universe (docs/v5/websocket/public/*);
     subscribed in chunks of ≤10 args, re-subscribed after a reconnect;
   * every frame gets its own `recv_ts` on arrival (socket thread), then is
-    parked in a queue; the main thread normalises with TradesNormalizer /
+    parked in a *per-stream* queue (book cannot fill the cap and drop trades);
+    the main thread round-robins those queues and normalises with TradesNormalizer /
     BybitBookWs (gap → REST snapshot via RestSnapshot) / ticker_events /
     liquidation_events and writes through `BufferedParquetSink` (immutable parts);
   * a status JSON (frames, last age per stream, gaps, dropped, socket state) is
@@ -61,6 +62,24 @@ class StreamStat:
     gaps: int = 0
 
 
+STREAMS = ("trades", "book", "ticker", "liquidation")
+# Book is the firehose. One shared queue lets orderbook fill the cap and
+# publicTrade never lands — same starve as origin vs trade jsonl. Official
+# Bybit is still one socket / many topics; parking is per stream, like
+# nautilus Databento `_live_clients` vs `_live_clients_mbo`.
+_STREAM_QSIZE = {"trades": 50_000, "book": 100_000, "ticker": 25_000, "liquidation": 25_000}
+
+
+class _QueueSizes:
+    """`rec.q.qsize()` stays the sum so existing status/tests keep working."""
+
+    def __init__(self, queues: Mapping[str, queue.Queue[Any]]) -> None:
+        self._queues = queues
+
+    def qsize(self) -> int:
+        return sum(item.qsize() for item in self._queues.values())
+
+
 @dataclass
 class LiveRecorder:
     symbols: Sequence[str]
@@ -69,7 +88,8 @@ class LiveRecorder:
     knowledge: Knowledge | None = None
     fetch_snapshot: Callable[[str], BookSnapshot] | None = None
     sink: BufferedParquetSink | None = None
-    q: queue.Queue = field(default_factory=lambda: queue.Queue(maxsize=200_000))
+    q: Any = field(init=False)
+    _qs: dict[str, queue.Queue[Any]] = field(init=False, repr=False)
     stats: dict[str, StreamStat] = field(default_factory=dict)
     dropped: int = 0
     books: dict[str, BybitBookWs] = field(default_factory=dict)
@@ -104,7 +124,11 @@ class LiveRecorder:
             self.fetch_snapshot = rest.fetch
         if self.rest_ticker is None:
             self.rest_ticker = RestTicker()
-        for name in ("trades", "book", "ticker", "liquidation"):
+        self._qs = {
+            name: queue.Queue(maxsize=_STREAM_QSIZE[name]) for name in STREAMS
+        }
+        self.q = _QueueSizes(self._qs)
+        for name in STREAMS:
             self.stats[name] = StreamStat()
 
     # --- socket side (pybit thread) ----------------------------------------------------
@@ -160,10 +184,13 @@ class LiveRecorder:
         return {"added": added, "dropped": dropped}
 
     def _cb(self, stream: str) -> Callable[[Frame], None]:
+        parked = self._qs[stream]
+
         def handle(frame: Frame) -> None:
             # recv_ts per frame, on arrival (Н-2). Nothing else on this thread.
+            # A full book queue drops book frames only — trades still park.
             try:
-                self.q.put_nowait((stream, datetime.now(tz=UTC), frame))
+                parked.put_nowait((datetime.now(tz=UTC), frame))
             except queue.Full:
                 self.dropped += 1
 
@@ -173,12 +200,19 @@ class LiveRecorder:
     def drain(self, *, max_frames: int = 20_000) -> int:
         n = 0
         while n < max_frames:
-            try:
-                stream, recv_ts, frame = self.q.get_nowait()
-            except queue.Empty:
+            progress = False
+            for name in STREAMS:
+                if n >= max_frames:
+                    break
+                try:
+                    recv_ts, frame = self._qs[name].get_nowait()
+                except queue.Empty:
+                    continue
+                self.handle(name, frame, recv_ts=recv_ts)
+                n += 1
+                progress = True
+            if not progress:
                 break
-            self.handle(stream, frame, recv_ts=recv_ts)
-            n += 1
         assert self.sink is not None
         self.sink.maybe_flush(time.monotonic())
         if self.rest_fallback:

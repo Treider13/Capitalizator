@@ -40,6 +40,9 @@ def test_chronos_has_desk_controls() -> None:
     assert "function refreshSoon()" in text
     assert "setInterval(tickTape, 400)" in text
     assert "setInterval(refresh, 30000)" in text
+    assert "setTimeout(refresh, 2000)" in text
+    assert "tapeBusy" in text
+    assert "barsBusy" in text
     assert "candleSeries.update" in text
     assert "/api/tape" in text
     assert 'id="replay-bars"' in text
@@ -386,3 +389,70 @@ def test_tape_tick_has_book_and_forming(tmp_path: Path) -> None:
     assert got["forming"] is not None
     assert got["forming"]["forming"] is True
     assert got["forming"]["close"] == "79591.6"
+
+
+def test_load_symbol_stream_keeps_newest_dates_not_wall_clock(tmp_path: Path) -> None:
+    """A month of tape is not a GET. Keep newest `date=` dirs on disk.
+
+    Wall-clock vs now would drop Aug 31 fixtures when the agent calendar is September.
+    """
+    vault = init_vault(tmp_path / "desk")
+    open_knowledge(vault).close()
+    sink = ParquetSink(vault.tape)
+    sink.write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=datetime(2026, 8, 1, 12, tzinfo=UTC),
+            recv_ts=datetime(2026, 8, 1, 12, tzinfo=UTC),
+            payload={"px": "10", "qty": "1", "side": "buy"},
+        )
+    )
+    sink.write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=datetime(2026, 8, 31, 12, tzinfo=UTC),
+            recv_ts=datetime(2026, 8, 31, 12, tzinfo=UTC),
+            payload={"px": "20", "qty": "1", "side": "buy"},
+        )
+    )
+    events = _load_symbol_stream(vault.tape, symbol="BTCUSDT", stream="trades", max_files=24)
+    assert [e.payload["px"] for e in events] == ["20"]
+
+
+def test_tape_tick_opens_this_hour_not_the_archive(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "desk")
+    knowledge = open_knowledge(vault)
+    knowledge.put_last_price("BTCUSDT", "200")
+    knowledge.close()
+    ParquetSink(vault.tape).write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=datetime(2026, 8, 1, 12, tzinfo=UTC),
+            recv_ts=datetime(2026, 8, 1, 12, tzinfo=UTC),
+            payload={"px": "10", "qty": "1", "side": "buy"},
+        )
+    )
+    live = BufferedParquetSink(vault.tape, flush_every_s=60, max_rows=10_000, live_jsonl=True)
+    live.write(
+        MarketEvent(
+            stream="trades",
+            exchange="bybit",
+            symbol="BTCUSDT",
+            exchange_ts=datetime.now(tz=UTC),
+            recv_ts=datetime.now(tz=UTC),
+            payload={"px": "200", "qty": "1", "side": "buy"},
+        )
+    )
+    from capitalizator.ops.chronos_data import tape_tick
+
+    got = tape_tick(vault, symbol="BTCUSDT", tf="1m")
+    live.close()
+    assert got["forming"] is not None
+    assert got["forming"]["close"] == "200"
+    assert all(row["px"] != "10" for row in got["trades"])

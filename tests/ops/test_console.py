@@ -265,6 +265,18 @@ def _hours24_tape(tape: Path) -> None:
     )
 
 
+def test_parquet_counts_stop_walking_after_128(tmp_path: Path) -> None:
+    """Status must not walk a 14G tape just to learn there are many files."""
+    tape = tmp_path / "tape"
+    nested = tape / "bybit" / "BTCUSDT" / "trades" / "date=2000-01-01"
+    nested.mkdir(parents=True)
+    for i in range(200):
+        (nested / f"{i:03d}.parquet").write_bytes(b"not parquet")
+    files_n, rows_n = console_pkg._parquet_counts(tape)
+    assert files_n == 129
+    assert rows_n == 0
+
+
 def test_parquet_counts_skip_opening_a_large_vault(tmp_path: Path) -> None:
     """A live tape has thousands of hour parts. Status must not open them all."""
     tape = tmp_path / "tape"
