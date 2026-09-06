@@ -744,3 +744,61 @@ def test_cancel_failure_does_not_prevent_closing_filled_exposure(store, cancel_e
     with pytest.raises(cancel_error):
         executor.tick(110, False)
     assert venue.closes == ["acx-operator-close"]
+
+
+@pytest.mark.parametrize("generation", ["missing", "bad", None, "inf"])
+@pytest.mark.parametrize("kind", ["spot_book", "spot_status"])
+@pytest.mark.parametrize("initial", [False, True])
+def test_replay_recovers_invalid_spot_generation(store, tmp_path, generation, kind, initial):
+    cfg = a.replace(a.CFG, symbols=("BTCUSDT",))
+    store.event(100, "BTCUSDT", "book", frame(at=100))
+    if initial:
+        store.event(100, "BTCUSDT", "spot_book", frame(at=100, generation=7))
+    bad = frame(at=101)
+    if generation == "missing":
+        del bad["generation"]
+    else:
+        bad["generation"] = generation
+    store.event(101, "BTCUSDT", kind, bad)
+    store.event(102, "BTCUSDT", "spot_book", frame(at=102, generation=8))
+    output = tmp_path / "replay"
+    a.compare(store, tmp_path, output, cfg, {"BTCUSDT": a.INST})
+    for variant in ("A", "B", "C", "D"):
+        result = a.Store(output / f"{variant}.sqlite3")
+        try:
+            faults = result.rows(
+                "SELECT body FROM events WHERE kind='spot_status' "
+                "AND json_extract(body,'$.status')='invalid_frame'"
+            )
+            assert len(faults) == 1
+            assert json.loads(faults[0]["body"])["generation"] == (7 if initial else -1)
+            assert result.rows("SELECT id FROM events WHERE kind='spot_book' AND received=102")
+            assert not result.rows("SELECT id FROM events WHERE kind='gap' AND received>=101")
+        finally:
+            result.close()
+
+
+@pytest.mark.parametrize("failed_side", ["venue", "engine"])
+def test_spot_recovery_keeps_new_valid_generation_and_both_books_consistent(store, failed_side):
+    from capitalizator.fusion.engine import Engine, Shared
+    from capitalizator.fusion.replay import ReplayVenue, _recover_spot
+
+    cfg = a.replace(a.CFG, symbols=("BTCUSDT",))
+    venue = ReplayVenue({"BTCUSDT": a.INST}, cfg)
+    engine = Engine("BTCUSDT", store, Shared(), cfg)
+    markets = (venue.markets["BTCUSDT"], engine.market)
+    for market in markets:
+        market.ingest("book", frame(), 101)
+        market.ingest("spot_book", frame(generation=7), 101)
+    bad = frame(generation=8, qty=-1)
+    failed = markets[0 if failed_side == "venue" else 1]
+    with pytest.raises(ValueError):
+        failed.ingest("spot_book", bad, 102)
+    _recover_spot(venue, engine, "BTCUSDT", 102)
+    for market in markets:
+        assert market.valid
+        assert market.spot.generation == 8
+        assert market.spot.status == "invalid_frame"
+        assert not market.spot.bids and not market.spot.asks
+        market.ingest("spot_book", frame(at=103, generation=8), 103)
+        assert market.spot.status == "streaming"

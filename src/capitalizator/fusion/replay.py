@@ -255,6 +255,15 @@ class ReplayVenue:
         self.equities[int(at // 86400)] = self.account()[0]
 
 
+def _recover_spot(venue: ReplayVenue, engine: Engine, symbol: str, at: float) -> None:
+    # A malformed generation cannot be reused by the recovery parser. Both
+    # books retain the last generation they successfully parsed, even on failure.
+    generation = max(venue.markets[symbol].spot.generation, engine.market.spot.generation)
+    fault = {"generation": generation, "status": "invalid_frame"}
+    venue.markets[symbol].ingest("spot_status", fault, at)
+    engine.process("spot_status", fault, at)
+
+
 def compare(
     source: Store,
     root: Path,
@@ -335,9 +344,7 @@ def compare(
                 except (ValueError, KeyError, ArithmeticError, TypeError) as exc:
                     store.event(at, symbol, kind, frame)
                     if kind.startswith("spot_"):
-                        fault = {"generation": frame["generation"], "status": "invalid_frame"}
-                        venue.markets[symbol].ingest("spot_status", fault, at)
-                        engines[symbol].process("spot_status", fault, at)
+                        _recover_spot(venue, engines[symbol], symbol, at)
                     else:
                         venue.markets[symbol].ingest("gap", {}, at)
                         engines[symbol].process("gap", {"reason": type(exc).__name__}, at)
@@ -348,11 +355,7 @@ def compare(
                     engines[symbol].process(kind, frame, at)
                 except (ValueError, KeyError, ArithmeticError, TypeError) as exc:
                     if kind.startswith("spot_"):
-                        engines[symbol].process(
-                            "spot_status",
-                            {"generation": frame["generation"], "status": "invalid_frame"},
-                            at,
-                        )
+                        _recover_spot(venue, engines[symbol], symbol, at)
                     else:
                         engines[symbol].process("gap", {"reason": type(exc).__name__}, at)
                         shared.halt("invalid_market_frame")
