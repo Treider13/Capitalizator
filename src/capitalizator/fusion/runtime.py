@@ -16,12 +16,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from capitalizator.desk.bars import TF_MINUTES
 from capitalizator.fusion.archive import archive_events
 from capitalizator.fusion.atlas import Atlas
 from capitalizator.fusion.concurrency import Mailbox, Supervisor
 from capitalizator.fusion.config import Config
 from capitalizator.fusion.cross_market import entry_check
+from capitalizator.fusion.daily import daily_context, daily_target
 from capitalizator.fusion.engine import Engine, Shared
 from capitalizator.fusion.exchange import Bybit, credentials, news_key
 from capitalizator.fusion.executor import Executor
@@ -34,7 +34,7 @@ from capitalizator.fusion.news import ingest as ingest_news
 from capitalizator.fusion.performance import venue_performance
 from capitalizator.fusion.risk import Instrument
 from capitalizator.fusion.store import Store, encode
-from capitalizator.fusion.structure import TFS
+from capitalizator.fusion.structure import BYBIT_INTERVALS, TFS
 from capitalizator.fusion.training import TrainingProcess
 from capitalizator.news_macro.ingest import NewsRow, load_desk_calendar
 
@@ -265,7 +265,8 @@ class Runtime:
             spot_generation = self.spot_generations[order["symbol"]]
             spot_fault = order["symbol"] in self.spot_faults
         cross = market.get("cross_market", {})
-        side = 1 if json.loads(order["body"])["side"] == "Buy" else -1
+        spec = json.loads(order["body"])
+        side = 1 if spec["side"] == "Buy" else -1
         if (
             spot_fault
             or cross.get("spot", {}).get("generation") != spot_generation
@@ -273,6 +274,20 @@ class Runtime:
         ):
             return False
         if not market.get("valid") or now >= order["expires"]:
+            return False
+        daily = daily_context(market.get("chart", {}).get("1d", {}), float(spec["price"]), now)
+        daily_check = daily_target(
+            daily,
+            side,
+            float(spec["price"]),
+            float(spec["target"]),
+            max(
+                float(spec.get("daily_buffer", 0)),
+                float(market.get("ask") or 0) - float(market.get("bid") or 0),
+            ),
+            now,
+        )
+        if not daily_check["allowed"] or daily_check["limited"]:
             return False
         if not 0 <= now - market.get("book_at", 0) <= self.config.max_data_age_s:
             return False
@@ -730,7 +745,7 @@ class Runtime:
                         {
                             "category": "linear",
                             "symbol": symbol,
-                            "interval": str(TF_MINUTES[tf]),
+                            "interval": BYBIT_INTERVALS[tf],
                             "limit": 256,
                         },
                         self.config.http_timeout_s,
@@ -1292,6 +1307,9 @@ class Runtime:
             "block": market.get("block"),
             "analytics": market.get("analytics", []),
             "structure": {k: v for k, v in series.items() if k != "candles"},
+            "daily": daily_context(
+                market.get("chart", {}).get("1d", {}), float(market.get("bid") or 0), now
+            ),
             "options": options,
             "contracts": contract_rows,
             "fills": fill_rows,

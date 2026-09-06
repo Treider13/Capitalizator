@@ -16,8 +16,9 @@ from capitalizator.exec.fvg_mark import latest_fvg
 from capitalizator.fusion.config import Config
 from capitalizator.fusion.context import absorption, geometry, rank, sessions
 from capitalizator.fusion.cross_market import SpotBook, book_metrics
+from capitalizator.fusion.daily import daily_context
 from capitalizator.fusion.flow import Flow
-from capitalizator.fusion.structure import TFS, Structure, candle, parse_history
+from capitalizator.fusion.structure import TFS, TRADE_TFS, Structure, candle, parse_history
 from capitalizator.recorder.normalize import normalize_bybit_public_trade
 
 FEATURES = (
@@ -125,7 +126,7 @@ class Market:
         self.previous_profile: dict[str, Any] = {}
         self.observation_start = 0.0
         self.profile_complete = False
-        self.builder = BarBuilder(symbol, TFS)
+        self.builder = BarBuilder(symbol, TRADE_TFS)
         self.structure = Structure()
         self.chart_cache: dict[str, Any] = {}
         self.chart_revision = -1
@@ -152,7 +153,7 @@ class Market:
         self.amd_phase, self.amd_side, self.amd_origin = "unclassified", 0, 0
         self.blocks.clear()
         self.refill = self.liquidations = 0.0
-        self.builder = BarBuilder(self.symbol, TFS)
+        self.builder = BarBuilder(self.symbol, TRADE_TFS)
         self.structure = Structure()
         self.chart_cache = {}
         self.chart_revision = -1
@@ -359,6 +360,7 @@ class Market:
             "largest_print": self.pending.largest,
             "block_trade_volume": self.pending.block_volume,
             "pairing": pairing,
+            "daily": daily_context(self.structure.cache.get("1d", {}), close, at),
             "support": support,
             "resistance": resistance,
             "sweep": sweep,

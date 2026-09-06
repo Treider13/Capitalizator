@@ -110,6 +110,8 @@ def test_opposing_futures_book_and_wide_spot_spread_veto_entry():
 
 @pytest.mark.parametrize("spot_qty,orders", [(2, 1), (0.5, 0)])
 def test_production_reservation_consumes_both_books(tmp_path, spot_qty, orders):
+    from tests.fusion.daily_fixtures import seed_daily
+
     store = Store(tmp_path / "db")
     try:
         cfg = Config()
@@ -120,6 +122,7 @@ def test_production_reservation_consumes_both_books(tmp_path, spot_qty, orders):
         engine.market.ingest("book", frame(qty=2000), 101)
         engine.market.ingest("ticker", {"data": {}}, 101)
         engine.market.ingest("spot_book", frame(qty=spot_qty), 101)
+        seed_daily(engine.market)
         engine._reserve_entry(block(), None, instrument(), "demo", True, 0.001)
         assert len(store.rows("SELECT * FROM orders")) == orders
         if not orders:
@@ -132,6 +135,8 @@ def test_production_reservation_consumes_both_books(tmp_path, spot_qty, orders):
 
 
 def test_dispatch_rechecks_generation_and_direction_using_stored_order_body(tmp_path, monkeypatch):
+    from tests.fusion.daily_fixtures import seed_daily
+
     runtime = Runtime(tmp_path, Config())
     try:
         c = contract()
@@ -145,6 +150,7 @@ def test_dispatch_rechecks_generation_and_direction_using_stored_order_body(tmp_
         engine.market.ingest("ticker", {"data": {}}, 101)
         engine.market.ingest("spot_book", {**frame(), "_received_monotonic": received_mono}, 101)
         runtime.spot_generations["BTCUSDT"] = 1
+        seed_daily(engine.market)
         runtime.shared.snapshots["BTCUSDT"] = engine.market.snapshot()
         monkeypatch.setattr("capitalizator.fusion.runtime.time.time", lambda: 101)
         order = {
@@ -152,9 +158,20 @@ def test_dispatch_rechecks_generation_and_direction_using_stored_order_body(tmp_
             "mode": "demo",
             "contract": c.id,
             "expires": 110,
-            "body": json.dumps({"side": "Buy"}),
+            "body": json.dumps({"side": "Buy", "price": "100", "target": "120", "daily_buffer": 0.01}),
         }
         assert runtime._authorize_send(order)
+        # A new daily obstacle can revoke an otherwise fresh, authorized order.
+        seed_daily(engine.market, high=110)
+        runtime.shared.snapshots["BTCUSDT"] = engine.market.snapshot()
+        assert not runtime._authorize_send(order)
+        seed_daily(engine.market)
+        runtime.shared.snapshots["BTCUSDT"] = engine.market.snapshot()
+        assert runtime._authorize_send(order)
+        saved = runtime.shared.snapshots["BTCUSDT"]
+        runtime.shared.snapshots["BTCUSDT"] = {**saved, "chart": {}}
+        assert not runtime._authorize_send(order)
+        runtime.shared.snapshots["BTCUSDT"] = saved
         with monkeypatch.context() as clock:
             clock.setattr("capitalizator.fusion.runtime.time.monotonic", lambda: received_mono + 10)
             assert not runtime._authorize_send(order)  # Wall time stayed 101; data aged 10 s.

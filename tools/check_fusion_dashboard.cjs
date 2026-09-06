@@ -45,6 +45,13 @@ function emit(s,data){s.onmessage({data:JSON.stringify(data)});render();}
 (async()=>{
  ready();await settle();render();assert.equal(streams.length,1);assert.equal(nodes.get('symbol').options.length,6);assert.equal(run('recordPanels.size'),11);assert.match(nodes.get('position-rows').children[0].children[0].textContent,/неизвестны/);
  const initial=streams.at(-1);emit(initial,fixture());assert(draws>100);assert.match(nodes.get('chart-status').textContent,/BTCUSDT/);assert.equal(JSON.parse(nodes.get('context').textContent).data_quality.history_gaps,1);assert.equal(run('depthFrames.linear.length'),1);assert.equal(run('depthFrames.linear[0].bids[0][1]'),2);assert.equal(run('depthFrames.spot[0].bids[0][1]'),20);
+ // Daily levels remain visible on intraday charts and expire at the UTC boundary.
+ assert(nodes.get('tf').options.some(o=>o.value==='1d'));
+ const dailyFrame=fixture();dailyFrame.daily={status:'ready',at:0,support:{price:99},resistance:{price:101},levels:[]};emit(initial,dailyFrame);
+ assert.match(nodes.get('daily-status').textContent,/поддержка 99/);assert.match(nodes.get('daily-status').textContent,/сопротивление 101/);assert.equal(JSON.parse(nodes.get('context').textContent).daily.status,'ready');
+ const dayClock=mono;mono=86400000;run('draw()');assert.match(nodes.get('daily-status').textContent,/устарели/);mono=dayClock;
+ // Levels outside the visible candle scale still have explicit numeric values.
+ dailyFrame.daily.support.price=50;dailyFrame.daily.resistance.price=150;emit(initial,dailyFrame);assert.match(nodes.get('daily-status').textContent,/поддержка 50/);assert.match(nodes.get('daily-status').textContent,/сопротивление 150/);
  // Layers and real OHLCV remain functional.
  for(const id of ['zones','fills','sessions'])nodes.get(id).checked=false;run('draw();chart.onmousemove({offsetX:100})');assert.match(nodes.get('crosshair').textContent,/O 100/);
  run("chart.onpointerdown({offsetX:100});chart.onkeydown({key:'Home',preventDefault(){}})");assert.match(nodes.get('crosshair').textContent,/O 100 H/);
@@ -97,5 +104,5 @@ function emit(s,data){s.onmessage({data:JSON.stringify(data)});render();}
  const originalDraw=run('draw');env.breakDraw=()=>{throw new Error('canvas failure')};run('draw=breakDraw;depthSignature="";scheduleDraw()');render();assert.match(nodes.get('chart-status').textContent,/canvas failure/);assert.match(nodes.get('depth-status').textContent,/снимков/);env.restoreDraw=originalDraw;run('draw=restoreDraw');
 
  if(process.env.BLACKBOX_RUNTIME_PAYLOAD){const actual=JSON.parse(fs.readFileSync(process.env.BLACKBOX_RUNTIME_PAYLOAD,'utf8'));await settle();state={...actual.status,console_instance:'instance'};await run('refresh()');nodes.get('symbol').value=actual.chart.symbol;nodes.get('tf').value=actual.chart.tf;run('connectChart()');emit(streams.at(-1),actual.chart);assert.equal(run('candles.length'),actual.chart.candles.length);assert.match(nodes.get('chart-status').textContent,/BTCUSDT/);assert(!nodes.get('chart-status').textContent.includes('Ошибка графика'));console.log(JSON.stringify({runtime_contract:'passed'}));}
- console.log(JSON.stringify({status:'passed',draw_calls:draws,scenarios:26,scope:'Strict DOM/canvas model; no browser rendering or live exchange execution'}));
+ console.log(JSON.stringify({status:'passed',draw_calls:draws,scenarios:28,scope:'Strict DOM/canvas model; no browser rendering or live exchange execution'}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

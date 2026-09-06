@@ -482,7 +482,10 @@ def test_concurrent_symbols_share_one_margin_budget(store, config):
 
 
 def test_candidate_new_reaction_risk_reservation_and_venue_send(store, config):
+    from tests.fusion.daily_fixtures import seed_daily
+
     from capitalizator.fusion.atlas import Forecast
+    from capitalizator.fusion.daily import daily_context
 
     class KnownModel:
         report = {"through": 99}
@@ -504,6 +507,7 @@ def test_candidate_new_reaction_risk_reservation_and_venue_send(store, config):
     shared.instruments = {"BTCUSDT": instrument()}
     shared.atlas = KnownModel()
     engine = Engine("BTCUSDT", store, shared, config)
+    seed_daily(engine.market)
     engine.market.book(
         {
             "type": "snapshot",
@@ -527,6 +531,7 @@ def test_candidate_new_reaction_risk_reservation_and_venue_send(store, config):
         engine.market.blocks.append(block(ident=i, at=90 + i))
     c = {
         **block().context,
+        "daily": daily_context(engine.market.structure.cache["1d"], 100, 101),
         "sweep_extreme": 99.9,
         "ask": 100.01,
         "bid": 100,

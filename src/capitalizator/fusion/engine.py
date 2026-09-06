@@ -18,6 +18,7 @@ from capitalizator.fusion.concurrency import FairLock
 from capitalizator.fusion.config import Config
 from capitalizator.fusion.contracts import Contract, baseline, propose
 from capitalizator.fusion.cross_market import entry_check
+from capitalizator.fusion.daily import daily_context, daily_target
 from capitalizator.fusion.market import Block, Market
 from capitalizator.fusion.risk import Instrument, reserve
 from capitalizator.fusion.store import Store, encode
@@ -278,6 +279,7 @@ class Engine:
                 "upper": forecast.upper if forecast else None,
                 "means": forecast.means if forecast else None,
                 "contract": candidate.id if candidate else None,
+                "daily": block.context.get("daily", {}),
             },
         )
 
@@ -325,8 +327,21 @@ class Engine:
         cost: float,
     ) -> None:
         assert self.contract is not None
+        entry = float(block.context["bid"] if self.contract.side == 1 else block.context["ask"])
+        daily_check = daily_target(
+            daily_context(self.market.structure.cache.get("1d", {}), entry, block.at),
+            self.contract.side,
+            entry,
+            self.contract.target,
+            max(self.market.tick, float(block.context["ask"]) - float(block.context["bid"])),
+            block.at,
+        )
         if not allow or instrument is None or not self.news_allows(block.at):
             self.transition("expired", block.at, "entry_not_authorized")
+        elif not daily_check["allowed"]:
+            self.transition("expired", block.at, daily_check["reason"])
+        elif daily_check["limited"]:
+            self.transition("expired", block.at, "daily_level_changed_after_confirmation")
         elif not self.entry_location(block):
             self.transition("expired", block.at, "retracement_lost_after_confirmation")
         elif mode == "live" and (
@@ -344,7 +359,6 @@ class Engine:
         elif self.variant in {"C", "D"} and forecast.edge(self.contract.side, cost) <= 0:
             self.transition("expired", block.at, "edge_consumed_while_waiting")
         else:
-            entry = float(block.context["bid"] if self.contract.side == 1 else block.context["ask"])
             factor = 1.0
             with self.shared.lock:
                 options = dict(self.shared.external.get(self.symbol, {}))
