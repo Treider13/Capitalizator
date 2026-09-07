@@ -7,9 +7,14 @@ from capitalizator.fusion import macro, macro_fallback
 
 
 def page(month="September", year=2026, next_month="oct26"):
+    navigation = (
+        f'<a href="/research/calendars/i-{next_month}.html">NEXT MONTH</a>'
+        if next_month is not None
+        else ""
+    )
     return f"""<p>all Eastern Time</p>
 <td class="ts-data-table-head">{month} {year}</td>
-<a href="/research/calendars/i-{next_month}.html">NEXT MONTH</a>
+{navigation}
 <td class="somatdR"><div>04<br><a>Employment Situation</a><br>(08:30)</div></td>
 <td class="somatdR"><div>11<br><a>Consumer Price Index</a><br>(08:30)</div></td>""".encode()
 
@@ -45,7 +50,8 @@ def test_duplicate_event_is_rejected():
         macro_fallback.parse_month(raw, macro_fallback.URL, 100, (2026, 9))
 
 
-def test_bls_forbidden_uses_two_real_months_and_retains_provenance(monkeypatch):
+@pytest.mark.parametrize("third_month", ["nov26", None])
+def test_bls_forbidden_uses_two_real_months_and_retains_provenance(monkeypatch, third_month):
     def forbidden(*args):
         raise HTTPError(macro.SOURCES["bls"], 403, "Forbidden", {}, None)
 
@@ -54,12 +60,16 @@ def test_bls_forbidden_uses_two_real_months_and_retains_provenance(monkeypatch):
 
     def read(url, timeout):
         calls.append(url)
-        return page() if url == macro_fallback.URL else page("October", next_month="nov26")
+        return page() if url == macro_fallback.URL else page("October", next_month=third_month)
 
     monkeypatch.setattr(macro_fallback, "read_url", read)
     at = datetime(2026, 9, 7, tzinfo=UTC).timestamp()
     rows = macro.fetch("bls", 10, at)
-    assert len(calls) == 2
+    assert calls == [
+        macro_fallback.URL,
+        "https://www.newyorkfed.org/research/calendars/i-oct26.html",
+    ]
+    assert len(rows) == 4
     assert {r.event_time.month for r in rows} == {9, 10}
     assert any(r.event_class == "NFP" and r.event_time.timestamp() > at for r in rows)
     assert all("newyorkfed.org" in r.source for r in rows)
@@ -76,6 +86,25 @@ def test_next_month_cannot_silently_repeat_current(monkeypatch):
         macro_fallback.fetch(10, datetime(2026, 9, 7, tzinfo=UTC).timestamp())
 
 
+@pytest.mark.parametrize(
+    "old,new,error",
+    [
+        (b"all Eastern Time", b"UTC", "missing timezone"),
+        (b"October 2026", b"October 2025", "month mismatch"),
+        (b"(08:30)", b"TBD", "release time"),
+        (b"Consumer Price Index", b"Producer Price Index", "coverage incomplete"),
+        (b">11<", b">32<", "day"),
+    ],
+)
+def test_next_month_without_navigation_still_requires_valid_events(monkeypatch, old, new, error):
+    following = page("October", next_month=None).replace(old, new)
+    monkeypatch.setattr(
+        macro_fallback, "read_url", lambda url, timeout: page() if url == macro_fallback.URL else following
+    )
+    with pytest.raises(ValueError, match=error):
+        macro_fallback.fetch(10, datetime(2026, 9, 7, tzinfo=UTC).timestamp())
+
+
 def test_december_fetches_next_year(monkeypatch):
     monkeypatch.setattr(
         macro_fallback,
@@ -83,7 +112,7 @@ def test_december_fetches_next_year(monkeypatch):
         lambda url, timeout: (
             page("December", next_month="jan27")
             if url == macro_fallback.URL
-            else page("January", 2027, "feb27")
+            else page("January", 2027, None)
         ),
     )
     rows = macro_fallback.fetch(10, datetime(2026, 12, 31, tzinfo=UTC).timestamp())

@@ -56,8 +56,13 @@ class CalendarPage(HTMLParser):
 
 
 def parse_month(
-    body: bytes, source: str, at: float, expected: tuple[int, int]
-) -> tuple[list[NewsRow], str]:
+    body: bytes,
+    source: str,
+    at: float,
+    expected: tuple[int, int],
+    *,
+    require_next_link: bool = True,
+) -> tuple[list[NewsRow], str | None]:
     # Import locally: macro owns the common event schema and timezone conversion.
     from capitalizator.fusion.macro import NY, row
 
@@ -70,18 +75,21 @@ def parse_month(
     headings = [" ".join(parts) for kind, parts in page.cells if kind == "heading"]
     if headings != [f"{calendar.month_name[month]} {year}"]:
         raise ValueError("NY Fed calendar month mismatch")
-    if len(page.next_links) != 1:
-        raise ValueError("NY Fed next month link missing or ambiguous")
-    next_url = urljoin(source, page.next_links[0])
-    target = urlparse(next_url)
-    if (
-        target.scheme != "https"
-        or target.netloc != "www.newyorkfed.org"
-        or not re.fullmatch(r"/research/calendars/i-[a-z]{3}\d{2}\.html", target.path)
-        or target.query
-        or target.fragment
-    ):
-        raise ValueError("invalid NY Fed next month URL")
+    next_url = None
+    # Only validate navigation when another page will actually be fetched.
+    if require_next_link:
+        if len(page.next_links) != 1:
+            raise ValueError("NY Fed next month link missing or ambiguous")
+        next_url = urljoin(source, page.next_links[0])
+        target = urlparse(next_url)
+        if (
+            target.scheme != "https"
+            or target.netloc != "www.newyorkfed.org"
+            or not re.fullmatch(r"/research/calendars/i-[a-z]{3}\d{2}\.html", target.path)
+            or target.query
+            or target.fragment
+        ):
+            raise ValueError("invalid NY Fed next month URL")
     result = []
     seen = set()
     for kind, parts in page.cells:
@@ -116,7 +124,11 @@ def fetch(timeout: float, at: float) -> list[NewsRow]:
     current = (now.year, now.month)
     following = (now.year + (now.month == 12), now.month % 12 + 1)
     rows, next_url = parse_month(read_url(URL, timeout), URL, at, current)
-    future_rows, _ = parse_month(read_url(next_url, timeout), next_url, at, following)
+    if next_url is None:
+        raise ValueError("NY Fed next month link missing")
+    future_rows, _ = parse_month(
+        read_url(next_url, timeout), next_url, at, following, require_next_link=False
+    )
     rows.extend(future_rows)
     if not all(
         any(r.event_class == k and r.event_time.timestamp() > at for r in rows)
