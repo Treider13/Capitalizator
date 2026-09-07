@@ -723,7 +723,9 @@ class Runtime:
                             "ok": True,
                             "at": now,
                             "events": len(normalized),
-                            "source": SOURCES[name],
+                            "source": normalized[0].source if normalized else SOURCES[name],
+                            "sources": sorted({r.source for r in normalized}),
+                            "fallback": any(r.source != SOURCES[name] for r in normalized),
                         }
                     except Exception as exc:
                         health[name] = {
@@ -731,6 +733,7 @@ class Runtime:
                             "at": now,
                             "error": type(exc).__name__,
                             "source": SOURCES[name],
+                            "http_status": getattr(exc, "code", None),
                         }
                 combined = tuple(r for rows in cache.values() for r in rows)
                 self.store.event(

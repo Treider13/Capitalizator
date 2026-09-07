@@ -13,6 +13,7 @@ import re
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from typing import Any
+from urllib.error import HTTPError
 from zoneinfo import ZoneInfo
 
 from capitalizator.fusion.external import read_url
@@ -161,8 +162,27 @@ def fed(body: bytes, at: float) -> list[NewsRow]:
 
 
 def fetch(name: str, timeout: float, at: float) -> list[NewsRow]:
-    body = read_url(SOURCES[name], timeout)
-    return fed(body, at) if name == "fed" else ical(body, SOURCES[name], at)
+    try:
+        body = read_url(SOURCES[name], timeout)
+        rows = fed(body, at) if name == "fed" else ical(body, SOURCES[name], at)
+        if name == "bls" and not all(
+            any(r.event_class == k and r.event_time.timestamp() > at for r in rows)
+            for k in CLASSES[name]
+        ):
+            raise ValueError("BLS future CPI/NFP coverage incomplete")
+        return rows
+    except (OSError, ValueError) as primary_error:
+        if name != "bls":
+            raise
+        from capitalizator.fusion.macro_fallback import fetch as fallback
+
+        try:
+            return fallback(timeout, at)
+        except (OSError, ValueError) as fallback_error:
+            # Health reports the primary BLS status; retain the fallback failure as cause.
+            if isinstance(primary_error, HTTPError):
+                raise primary_error from fallback_error
+            raise
 
 
 def coverage(
