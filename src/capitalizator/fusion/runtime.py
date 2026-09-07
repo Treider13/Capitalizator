@@ -27,6 +27,7 @@ from capitalizator.fusion.exchange import Bybit, credentials, news_key
 from capitalizator.fusion.executor import Executor
 from capitalizator.fusion.external import bybit as public_get
 from capitalizator.fusion.external import fetch_source, gamma, sources
+from capitalizator.fusion.liquidation_pressure import PressureConfig
 from capitalizator.fusion.news import NO_SCHEDULED_UNLOCKS
 from capitalizator.fusion.news import calendar as merge_news
 from capitalizator.fusion.news import fetch as fetch_news
@@ -73,7 +74,19 @@ class Runtime:
             Mailbox(config.queue_capacity, config.queue_quantum) for _ in range(config.workers)
         ]
         self.private_mailbox = Mailbox(config.queue_capacity, config.queue_quantum)
-        self.engines = {s: Engine(s, self.store, self.shared, config) for s in config.symbols}
+        pressure_error = None
+        try:
+            pressure_config = PressureConfig.load(root / "liquidation_pressure.json")
+        except (ValueError, TypeError, OSError) as exc:
+            pressure_config, pressure_error = PressureConfig(), exc
+        self.engines = {
+            s: Engine(s, self.store, self.shared, config, pressure_config=pressure_config)
+            for s in config.symbols
+        }
+        if pressure_error is not None:
+            for engine in self.engines.values():
+                engine.pressure.fail(pressure_error)
+                engine.pressure.configuration_error = engine.pressure.error
         self.routes = {s: i % config.workers for i, s in enumerate(config.symbols)}
         self.public_ws: Any = None
         self.private_ws: Any = None
@@ -130,8 +143,26 @@ class Runtime:
     def _market_worker(self, index: int) -> None:
         mailbox = self.mailboxes[index]
         epochs: dict[str, int] = {}
+        next_pressure_clock = 0.0
         while not self.supervisor.stop.is_set():
-            for symbol, kind, frame, at, epoch in mailbox.get():
+            batch = mailbox.get()
+            # Only the owning worker advances analytical time. Never inject an
+            # extra item into a full market queue or run execution on timer ticks.
+            if not batch and time.monotonic() >= next_pressure_clock:
+                next_pressure_clock = time.monotonic() + 1.0
+                for symbol, engine in self.engines.items():
+                    if (
+                        self.routes[symbol] == index
+                        and engine.pressure.enabled
+                        and engine.pressure.last_receipt is not None
+                        and time.time() - engine.pressure.last_receipt
+                        > engine.pressure.config.max_age_s
+                    ):
+                        try:
+                            engine.process("pressure_clock", {}, time.time())
+                        except Exception as exc:
+                            engine.pressure.fail(exc)
+            for symbol, kind, frame, at, epoch in batch:
                 with self.shared.lock:
                     current_epoch = self.epoch
                 if epoch != current_epoch:
@@ -1323,6 +1354,7 @@ class Runtime:
             "book_levels": market.get("book_levels", {}),
             "spot_levels": market.get("spot_levels", {}),
             "cross_market": market.get("cross_market", {}),
+            "liquidation_pressure": market.get("liquidation_pressure", {}),
             "book_entry_checks": {
                 "Buy": entry_check(
                     market.get("cross_market", {}), 1, now, self.config, monotonic_at=monotonic_at

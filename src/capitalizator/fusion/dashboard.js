@@ -57,6 +57,24 @@ function addNewsSource(source={name:'',kind:'rss',url:'',assets:[]}) {
   const remove=document.createElement('button');remove.type='button';remove.textContent='Удалить источник';remove.onclick=()=>container.remove();container.appendChild(remove);$('news-sources').appendChild(container);
 }
 async function saveNewsSources() { const sources=Array.from(document.querySelectorAll('.source-row')).map(r=>{const kind=r.querySelector('.source-kind').value;return {name:r.querySelector('.source-name').value.trim(),kind,match_assets:r.querySelector('.source-filter').checked,[kind==='rss'?'url':'token_id']:r.querySelector('.source-address').value.trim(),assets:r.querySelector('.source-assets').value.split(',').map(v=>v.trim().toUpperCase()).filter(Boolean)}});await act('news_sources',{sources}); }
+function renderPressure(data) {
+  const p=data?.liquidation_pressure, target=$('pressure-status');
+  if(!target)return;
+  if(!p||!p.mode){target.textContent='Нет оценки ликвидационного давления.';$('pressure-detail').textContent='';return;}
+  const quality={ready:'Данные готовы',warming:'Накопление истории',unavailable:'Наблюдение прервано',error:'Ошибка наблюдения',off:'Выключен'};
+  const states={pressure:'давление продолжается',easing:'ослабление, ждём проверки',recovery:'восстановление по правилам наблюдения',mixed:'неоднозначная картина'};
+  const elapsed=data===chartData&&lastChartArrival!==null?Math.max(0,(performance.now()-lastChartArrival)/1000):0;
+  const now=Math.max((data.at??lastState?.at)+elapsed,statusClock()??-Infinity), stamp=p.evaluated_at??p.at;
+  const stale=p.mode!=='off'&&number(now)!==null&&number(stamp)!==null&&(now<stamp||now-stamp>(p.max_age_s||5)||(number(p.valid_until)!==null&&now>p.valid_until));
+  const episodes=(p.quality==='ready'&&!stale?p.episodes||[]:[]).map(e=>(e.direction==='sell'?'Продажи: ':'Покупки: ')+(states[e.state]||e.state));
+  const reasons={confirmation_trade_continuity_lost:'Поток сделок прерывался: нужно новое подтверждение',insufficient_depth_levels:'Недостаточно уровней книги для проверки',confirmation_depth_lost:'Глубина уменьшилась: проверка начинается заново',recovery_depth_lost:'Видимая глубина после восстановления уменьшилась',new_wave_or_continued_aggression:'Новая волна или продолжение агрессивных сделок',liquidations_flow_and_price:'Ликвидации, сделки и цена движутся согласованно',waiting_independent_flow:'Нужны последующие сделки для проверки',new_flow_absorbed_in_observed_band:'Цена выдержала новые сделки, видимая глубина сохранилась',confirmation_deadline:'Подтверждение не получено в отведённое время',insufficient_new_evidence:'Новых данных недостаточно',waiting_flow_and_observable_depth:'Ждём достаточного потока и наблюдаемой глубины',confirmation_level_lost:'Проверяемый уровень потерян',recovery_level_lost:'Цена обновила экстремум',recovery_band_unobservable:'Проверяемая глубина больше не видна'};
+  const explanation=p.quality==='ready'&&!stale?(p.episodes||[]).map(e=>reasons[e.reason]||e.reason).filter(Boolean).join('; '):'';
+  const blocked=p.mode==='off'?[]:(stale||p.quality!=='ready'?['Buy','Sell']:p.would_block||[]);
+  const restriction=blocked.length?'При фильтрации: пропустить '+blocked.map(s=>s==='Buy'?'лонг':'шорт').join(' и '):'Дополнительного запрета нет';
+  const age=number(now)!==null&&number(stamp)!==null?' · возраст '+Math.max(0,now-stamp).toFixed(1)+' с':'';
+  target.textContent=(stale?'Оценка устарела':quality[p.quality]||p.quality)+' · '+(episodes.join('; ')||(p.quality==='ready'&&!stale?'Эпизод не обнаружен':'Оценка рынка не готова'))+(explanation?' · '+explanation:'')+' · '+restriction+age+' · '+(p.mode==='off'?'выключен':'наблюдение, на заявки не влияет');
+  $('pressure-detail').textContent=pretty(p);
+}
 function renderNews(id, list, isEvent=false) {
   const target=$(id);target.replaceChildren();if(!list?.length){target.textContent='Нет полученных '+(isEvent?'событий.':'заголовков.');return;}
   for(const n of list){const item=document.createElement('article');item.className='news-item';let heading=document.createElement('span');
@@ -113,21 +131,21 @@ function clearChart(message) {
 }
 function connectChart() {
   if(reconnectTimer!==null)clearTimeout(reconnectTimer);reconnectTimer=null;lastChartArrival=null;
-  const generation=++streamGeneration;if(stream)stream.close();stream=null;streamConnected=false;chartData=null;candles=[];resetDepth();clearChart('Подключение выбранного инструмента…');
+  const generation=++streamGeneration;if(stream)stream.close();stream=null;streamConnected=false;chartData=null;candles=[];resetDepth();renderPressure(null);clearChart('Подключение выбранного инструмента…');
   const symbol=$('symbol').value,tf=$('tf').value;if(!symbol)return;
   const connection=new EventSource('/api/stream?symbol='+encodeURIComponent(symbol)+'&tf='+encodeURIComponent(tf));stream=connection;
   connection.onmessage=event=>{
     if(generation!==streamGeneration||stopped)return;
     try{const data=JSON.parse(event.data);if(data.console_instance&&data.console_instance!==consoleInstance){location.reload();return;}if(data.symbol!==symbol||data.tf!==tf||!Number.isFinite(data.at))throw new Error('Снимок не соответствует выбранному графику');
-      if(lastState&&data.mode!==lastState.mode){streamConnected=false;chartData=null;candles=[];resetDepth();clearChart('Смена счёта: ожидание сверки состояния…');void refresh();return;}
+      if(lastState&&data.mode!==lastState.mode){streamConnected=false;chartData=null;candles=[];resetDepth();renderPressure(null);clearChart('Смена счёта: ожидание сверки состояния…');void refresh();return;}
       if(!Array.isArray(data.candles)&&!candles.length&&!chartData){retryChart('Нет полного снимка свечей; повторное подключение…');return;}
-      data._received_mono=performance.now();lastChartArrival=data._received_mono;chartData=data;streamConnected=true;$('chart-errors').textContent=data.data_errors?.length?'Ошибка сохранённых данных: '+pretty(data.data_errors)+' · исходные записи доступны в журналах.':'';if(data.candles)candles=data.candles;captureDepth(data);scheduleDraw();
+      data._received_mono=performance.now();lastChartArrival=data._received_mono;chartData=data;streamConnected=true;$('chart-errors').textContent=data.data_errors?.length?'Ошибка сохранённых данных: '+pretty(data.data_errors)+' · исходные записи доступны в журналах.':'';if(data.candles)candles=data.candles;captureDepth(data);renderPressure(data);scheduleDraw();
     }catch(error){retryChart('Ошибка потока: '+error.message);}
   };
   connection.onerror=()=>{if(generation!==streamGeneration)return;streamConnected=false;resetDepth();scheduleDraw();$('chart-status').textContent='Нет потока графика · переподключение';};
 }
 function retryChart(message) {
-  if(stopped||reconnectTimer!==null)return;++streamGeneration;if(stream)stream.close();stream=null;streamConnected=false;chartData=null;candles=[];lastChartArrival=null;resetDepth();clearChart(message);
+  if(stopped||reconnectTimer!==null)return;++streamGeneration;if(stream)stream.close();stream=null;streamConnected=false;chartData=null;candles=[];lastChartArrival=null;resetDepth();renderPressure(null);clearChart(message);
   reconnectTimer=setTimeout(()=>{reconnectTimer=null;connectChart();},1500);
 }
 function scheduleDraw() { if(renderPending||document.hidden||stopped)return;renderPending=true;requestAnimationFrame(()=>{renderPending=false;if(document.hidden||stopped)return;
@@ -152,7 +170,7 @@ async function loadRecords(p,before=null) {
   finally{if(generation===p.generation){p.busy=false;p.first.disabled=false;p.nextButton.disabled=p.next===null;}}
 }
 async function statusLoop() { if(stopped)return;if(!document.hidden)await refresh();if(!stopped)setTimeout(statusLoop,2000); }
-function freshnessLoop() { if(stopped)return;if(!document.hidden){if(streamConnected&&lastChartArrival!==null&&performance.now()-lastChartArrival>Math.max(5000,(lastState?.config?.chart_refresh_s||.2)*5000))retryChart('Поток перестал обновляться; переподключение…');renderFreshness();scheduleDraw();}setTimeout(freshnessLoop,1000); }
+function freshnessLoop() { if(stopped)return;if(!document.hidden){if(streamConnected&&lastChartArrival!==null&&performance.now()-lastChartArrival>Math.max(5000,(lastState?.config?.chart_refresh_s||.2)*5000))retryChart('Поток перестал обновляться; переподключение…');renderFreshness();renderPressure(chartData);scheduleDraw();}setTimeout(freshnessLoop,1000); }
 function init() {
   $('settings').onsubmit=saveSettings;$('keys-form').onsubmit=saveKeys;$('news-key-form').onsubmit=saveNewsKey;$('add-source').onclick=()=>addNewsSource();$('save-sources').onclick=saveNewsSources;
   $('pause-quick').onclick=()=>act('pause',{paused:true});$('resume-quick').onclick=()=>act('pause',{paused:false});

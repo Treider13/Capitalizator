@@ -18,6 +18,7 @@ from capitalizator.fusion.config import Config
 from capitalizator.fusion.cross_market import entry_check
 from capitalizator.fusion.engine import Engine, Shared
 from capitalizator.fusion.executor import Executor
+from capitalizator.fusion.liquidation_pressure import PressureConfig
 from capitalizator.fusion.market import Market
 from capitalizator.fusion.news import protect
 from capitalizator.fusion.performance import metrics, venue_performance
@@ -272,37 +273,56 @@ def compare(
     instruments: dict[str, Instrument],
     *,
     latency: float = 0.2,
+    pressure_config: PressureConfig | None = None,
+    engine_factory: Any = Engine,
+    variants: tuple[str, ...] = ("A", "B", "C", "D"),
 ) -> dict[str, Any]:
+    if "D" not in variants or len(set(variants)) != len(variants) or set(variants) - set("ABCD"):
+        raise ValueError("replay variants must be unique A/B/C/D and include D")
     output.mkdir(parents=True, exist_ok=True)
     lanes = {}
-    for variant in "ABCD":
-        destination = output / f"{variant}.sqlite3"
-        if destination.exists():
-            raise ValueError("replay output must be new; never reuse learned test state")
-        store = Store(destination)
-        shared = Shared("demo")
-        shared.news_required = True
-        shared.news_coverage = {}
-        shared.instruments, shared.broker_ready = instruments, True
-        venue = ReplayVenue(instruments, config, latency=latency)
-        executor = Executor(store, venue, config)
-        engines = {s: Engine(s, store, shared, config, variant=variant) for s in config.symbols}
-        executor.authorize = lambda order, es=engines, v=venue: (
-            es[order["symbol"]].fresh(v.clock)
-            and es[order["symbol"]].news_allows(v.clock)
-            and entry_check(
-                es[order["symbol"]].market.cross_market(),
-                1 if json.loads(order["body"])["side"] == "Buy" else -1,
-                v.clock,
-                config,
-            )
-            == "ready"
-        )
-        lanes[variant] = (store, shared, venue, executor, engines)
-    count, last_train = 0, 0
+    opened: list[Store] = []
     try:
+        for variant in variants:
+            destination = output / f"{variant}.sqlite3"
+            if destination.exists():
+                raise ValueError("replay output must be new; never reuse learned test state")
+            store = Store(destination)
+            opened.append(store)
+            shared = Shared("demo")
+            shared.news_required = True
+            shared.news_coverage = {}
+            shared.instruments, shared.broker_ready = instruments, True
+            venue = ReplayVenue(instruments, config, latency=latency)
+            executor = Executor(store, venue, config)
+            engines = {
+                s: engine_factory(
+                    s, store, shared, config, variant=variant, pressure_config=pressure_config
+                )
+                for s in config.symbols
+            }
+            executor.authorize = lambda order, es=engines, v=venue: (
+                es[order["symbol"]].fresh(v.clock)
+                and es[order["symbol"]].news_allows(v.clock)
+                and entry_check(
+                    es[order["symbol"]].market.cross_market(),
+                    1 if json.loads(order["body"])["side"] == "Buy" else -1,
+                    v.clock,
+                    config,
+                )
+                == "ready"
+            )
+            lanes[variant] = (store, shared, venue, executor, engines)
+        count, last_train = 0, 0
         for event in events(source, root):
             symbol, kind = event["symbol"], event["kind"]
+            if kind == "pressure_clock":
+                if symbol in config.symbols:
+                    for _, _, _, _, engines in lanes.values():
+                        engines[symbol].process(kind, json.loads(event["body"]), event["received"])
+                # Analytical clock must not trigger fills, account reconciliation,
+                # training or trading decisions which were absent in the source.
+                continue
             if symbol == "*" and kind == "news_coverage":
                 for _, shared, _, _, _ in lanes.values():
                     shared.news_coverage = json.loads(event["body"])
@@ -403,7 +423,7 @@ def compare(
         (output / "comparison.json").write_text(json.dumps(result, indent=2, allow_nan=False))
         return result
     finally:
-        for store, *_ in lanes.values():
+        for store in opened:
             store.close()
 
 
@@ -414,6 +434,7 @@ def main() -> None:
     parser.add_argument("--instruments", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--latency", type=float, default=0.2)
+    parser.add_argument("--pressure-config", type=Path)
     args = parser.parse_args()
     config = Config.load(args.config)
     store = Store(args.userdir / "fusion.sqlite3")
@@ -427,7 +448,15 @@ def main() -> None:
         if set(config.symbols) - instruments.keys():
             raise ValueError("record exchange instrument metadata first or supply --instruments")
         result = compare(
-            store, args.userdir, args.output, config, instruments, latency=args.latency
+            store,
+            args.userdir,
+            args.output,
+            config,
+            instruments,
+            latency=args.latency,
+            pressure_config=PressureConfig.load(
+                args.pressure_config or args.userdir / "liquidation_pressure.json"
+            ),
         )
         print(json.dumps(result, indent=2))
     finally:

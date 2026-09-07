@@ -45,6 +45,14 @@ function emit(s,data){s.onmessage({data:JSON.stringify(data)});render();}
 (async()=>{
  ready();await settle();render();assert.equal(streams.length,1);assert.equal(nodes.get('symbol').options.length,6);assert.equal(run('recordPanels.size'),11);assert.match(nodes.get('position-rows').children[0].children[0].textContent,/неизвестны/);
  const initial=streams.at(-1);emit(initial,fixture());assert(draws>100);assert.match(nodes.get('chart-status').textContent,/BTCUSDT/);assert.equal(JSON.parse(nodes.get('context').textContent).data_quality.history_gaps,1);assert.equal(run('depthFrames.linear.length'),1);assert.equal(run('depthFrames.linear[0].bids[0][1]'),2);assert.equal(run('depthFrames.spot[0].bids[0][1]'),20);
+ // Pressure panel never carries a recovery state across stale data or symbol reset.
+ const pressureFrame=fixture();pressureFrame.liquidation_pressure={mode:'observe',quality:'ready',at:100,evaluated_at:100,max_age_s:5,episodes:[{direction:'sell',state:'recovery'}]};emit(initial,pressureFrame);
+ assert.match(nodes.get('pressure-status').textContent,/восстановление/);
+ const pressureClock=mono;mono+=6000;run('renderPressure(chartData)');assert.match(nodes.get('pressure-status').textContent,/устарела/);assert(!nodes.get('pressure-status').textContent.includes('восстановление'));mono=pressureClock;
+ pressureFrame.liquidation_pressure.valid_until=100.2;emit(initial,pressureFrame);mono+=500;run('renderPressure(chartData)');assert.match(nodes.get('pressure-status').textContent,/устарела/);mono=pressureClock;delete pressureFrame.liquidation_pressure.valid_until;
+ pressureFrame.liquidation_pressure.quality='unavailable';emit(initial,pressureFrame);assert(!nodes.get('pressure-status').textContent.includes('восстановление'));
+ pressureFrame.liquidation_pressure.mode='off';pressureFrame.liquidation_pressure.quality='off';emit(initial,pressureFrame);assert.match(nodes.get('pressure-status').textContent,/Выключен/);
+ run('renderPressure(null)');assert.equal(nodes.get('pressure-detail').textContent,'');emit(initial,fixture());
  // Daily levels remain visible on intraday charts and expire at the UTC boundary.
  assert(nodes.get('tf').options.some(o=>o.value==='1d'));
  const dailyFrame=fixture();dailyFrame.daily={status:'ready',at:0,support:{price:99},resistance:{price:101},levels:[]};emit(initial,dailyFrame);
@@ -90,6 +98,7 @@ function emit(s,data){s.onmessage({data:JSON.stringify(data)});render();}
  const rollback=fixture(200);rollback.monotonic_at=30;rollback.book_entry_checks={Buy:'ready',Sell:'ready'};for(const b of Object.values(rollback.cross_market))if(b&&typeof b==='object')b.received_monotonic=10;emit(auditStream,rollback);assert.match(nodes.get('book-comparison').textContent,/данные устарели/);assert(!nodes.get('book-comparison').textContent.includes('ready'));
  // A delayed SSE frame cannot make old quotes fresh against a newer status clock.
  emit(auditStream,fixture(180));assert.match(nodes.get('linear-health').textContent,/Нет свежих данных/);
+ const delayedPressure=fixture(180);delayedPressure.liquidation_pressure={mode:'observe',quality:'ready',at:180,evaluated_at:180,valid_until:185,max_age_s:5,episodes:[{direction:'sell',state:'recovery'}]};emit(auditStream,delayedPressure);assert.match(nodes.get('pressure-status').textContent,/устарела/);assert(!nodes.get('pressure-status').textContent.includes('восстановление'));
  // Broken JSON closes the stream and obtains a FULL snapshot on a new connection.
  auditStream.onmessage({data:'{broken'});assert(auditStream.closed);assert.equal(run('chartData'),null);const retry=run('reconnectTimer');assert(retry!==null);timers.get(retry)();const recovered=streams.at(-1);emit(auditStream,fixture(201));assert.equal(run('chartData'),null);emit(recovered,fixture(201));assert.equal(run('candles.length'),50);
  // Missing heartbeat without an EventSource error also forces recovery.
@@ -104,5 +113,5 @@ function emit(s,data){s.onmessage({data:JSON.stringify(data)});render();}
  const originalDraw=run('draw');env.breakDraw=()=>{throw new Error('canvas failure')};run('draw=breakDraw;depthSignature="";scheduleDraw()');render();assert.match(nodes.get('chart-status').textContent,/canvas failure/);assert.match(nodes.get('depth-status').textContent,/снимков/);env.restoreDraw=originalDraw;run('draw=restoreDraw');
 
  if(process.env.BLACKBOX_RUNTIME_PAYLOAD){const actual=JSON.parse(fs.readFileSync(process.env.BLACKBOX_RUNTIME_PAYLOAD,'utf8'));await settle();state={...actual.status,console_instance:'instance'};await run('refresh()');nodes.get('symbol').value=actual.chart.symbol;nodes.get('tf').value=actual.chart.tf;run('connectChart()');emit(streams.at(-1),actual.chart);assert.equal(run('candles.length'),actual.chart.candles.length);assert.match(nodes.get('chart-status').textContent,/BTCUSDT/);assert(!nodes.get('chart-status').textContent.includes('Ошибка графика'));console.log(JSON.stringify({runtime_contract:'passed'}));}
- console.log(JSON.stringify({status:'passed',draw_calls:draws,scenarios:28,scope:'Strict DOM/canvas model; no browser rendering or live exchange execution'}));
+ console.log(JSON.stringify({status:'passed',draw_calls:draws,scenarios:35,scope:'Strict DOM/canvas model; no browser rendering or live exchange execution'}));
 })().catch(error=>{console.error(error);process.exitCode=1;});
