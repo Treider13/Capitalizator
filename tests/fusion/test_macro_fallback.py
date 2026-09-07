@@ -140,3 +140,67 @@ END:VCALENDAR'''
     monkeypatch.setattr(macro_fallback, "read_url", lambda *args: pytest.fail("unexpected fallback"))
     rows = macro.fetch("bls", 10, datetime(2026, 9, 7, tzinfo=UTC).timestamp())
     assert all(r.source == macro.SOURCES["bls"] for r in rows)
+
+
+@pytest.mark.parametrize("primary_status", [403, 429])
+@pytest.mark.parametrize(
+    "fallback_error",
+    [
+        ValueError("NY Fed monthly CPI/NFP coverage incomplete"),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        TimeoutError("NY Fed timed out"),
+        HTTPError(macro_fallback.URL, 503, "Service Unavailable", {}, None),
+    ],
+)
+def test_failed_fallback_preserves_primary_http_status(monkeypatch, primary_status, fallback_error):
+    primary = HTTPError(macro.SOURCES["bls"], primary_status, "BLS unavailable", {}, None)
+
+    def fail_primary(*args):
+        raise primary
+
+    def fail_fallback(*args):
+        raise fallback_error
+
+    monkeypatch.setattr(macro, "read_url", fail_primary)
+    monkeypatch.setattr(macro_fallback, "fetch", fail_fallback)
+    with pytest.raises(HTTPError) as error:
+        macro.fetch("bls", 10, 100)
+    assert error.value is primary
+    assert error.value.code == primary_status
+    assert error.value.__cause__ is fallback_error
+
+
+def test_non_http_primary_failure_preserves_fallback_error(monkeypatch):
+    fallback_error = ValueError("NY Fed calendar month mismatch")
+
+    def fail_fallback(*args):
+        raise fallback_error
+
+    monkeypatch.setattr(macro, "read_url", lambda *args: b"invalid calendar")
+    monkeypatch.setattr(macro_fallback, "fetch", fail_fallback)
+    with pytest.raises(ValueError) as error:
+        macro.fetch("bls", 10, 100)
+    assert error.value is fallback_error
+
+
+def test_macro_worker_reports_primary_http_status_after_invalid_fallback(monkeypatch, tmp_path):
+    from capitalizator.fusion.config import Config
+    from capitalizator.fusion.runtime import Runtime
+
+    def forbidden(*args):
+        raise HTTPError(macro.SOURCES["bls"], 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(macro, "SOURCES", {"bls": macro.SOURCES["bls"]})
+    monkeypatch.setattr(macro, "read_url", forbidden)
+    monkeypatch.setattr(macro_fallback, "read_url", lambda *args: b"invalid calendar")
+    runtime = Runtime(tmp_path, Config())
+    monkeypatch.setattr(runtime.supervisor, "beat", lambda name: runtime.supervisor.stop.set())
+    try:
+        runtime._macro()
+        health = runtime.shared.macro_health["bls"]
+        assert health["ok"] is False
+        assert health["source"] == macro.SOURCES["bls"]
+        assert health["http_status"] == 403
+        assert runtime.shared.macro_calendar == ()
+    finally:
+        runtime.store.close()
