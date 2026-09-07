@@ -19,6 +19,7 @@ from capitalizator.fusion.config import Config
 from capitalizator.fusion.contracts import Contract, baseline, propose
 from capitalizator.fusion.cross_market import entry_check
 from capitalizator.fusion.daily import daily_context, daily_target
+from capitalizator.fusion.liquidation_pressure import PressureConfig, PressureObserver
 from capitalizator.fusion.market import Block, Market
 from capitalizator.fusion.risk import Instrument, reserve
 from capitalizator.fusion.store import Store, encode
@@ -77,7 +78,14 @@ class Shared:
 
 class Engine:
     def __init__(
-        self, symbol: str, store: Store, shared: Shared, config: Config, *, variant: str = "D"
+        self,
+        symbol: str,
+        store: Store,
+        shared: Shared,
+        config: Config,
+        *,
+        variant: str = "D",
+        pressure_config: PressureConfig | None = None,
     ) -> None:
         if variant not in {"A", "B", "C", "D"}:
             raise ValueError("unknown ablation variant")
@@ -89,8 +97,18 @@ class Engine:
         self.future: deque[Block] = deque(maxlen=config.horizon_blocks + 2)
         self.contract: Contract | None = None
         self.contract_state = "none"
+        self.pressure = PressureObserver(symbol, pressure_config)
 
     def process(self, kind: str, frame: dict[str, Any], at: float) -> None:
+        if kind == "pressure_clock":
+            # Analytical time must bypass instrument updates, gaps and on_block.
+            event_id = self.store.event(at, self.symbol, kind, {})
+            self._observe(kind, {}, at, event_id)
+            pressure = self.pressure_snapshot(at)
+            with self.shared.lock:
+                previous = self.shared.snapshots.get(self.symbol, {})
+                self.shared.snapshots[self.symbol] = {**previous, "liquidation_pressure": pressure}
+            return
         if kind in {"book", "spot_book"} and not isinstance(frame.get("data"), dict):
             raise ValueError("book_payload_must_be_an_object")
         with self.shared.lock:
@@ -108,7 +126,7 @@ class Engine:
             and (frame.get("type") == "snapshot" or frame.get("data", {}).get("u") == 1)
         ):
             self.process("gap", {"reason": "venue_book_reset"}, at)
-        self.store.event(
+        event_id = self.store.event(
             at,
             self.symbol,
             kind,
@@ -120,11 +138,40 @@ class Engine:
             self.future.clear()
             if self.contract:
                 self.transition("expired", at, "data_gap")
-        for block in self.market.ingest(kind, frame, at):
+        blocks = self.market.ingest(kind, frame, at)
+        self._observe(kind, frame, at, event_id)
+        for block in blocks:
             self.on_block(block)
         snapshot = self.market.snapshot()
+        snapshot["liquidation_pressure"] = self.pressure_snapshot(
+            max(at, self.pressure.last_receipt or at)
+        )
         with self.shared.lock:
             self.shared.snapshots[self.symbol] = snapshot
+
+    def _observe(self, kind: str, frame: dict[str, Any], at: float, event_id: int) -> None:
+        if self.pressure.enabled:
+            try:
+                record = self.pressure.step(kind, frame, at, self.market, event_id=event_id)
+                if record is not None:
+                    self.store.decision(at, self.symbol, "pressure_observation", record)
+            except Exception as exc:
+                self.pressure.fail(exc)
+
+    def pressure_snapshot(self, at: float | None = None) -> dict[str, Any]:
+        try:
+            return self.pressure.snapshot(at)
+        except Exception as exc:
+            self.pressure.fail(exc)
+            return {
+                "mode": "observe" if self.pressure.enabled else "off",
+                "quality": "error",
+                "reason": "observer_snapshot_error",
+                "error": self.pressure.error,
+                "affects_orders": False,
+                "would_block": ["Buy", "Sell"],
+                "episodes": [],
+            }
 
     def transition(self, state: str, at: float, reason: str) -> None:
         assert self.contract is not None
@@ -202,6 +249,22 @@ class Engine:
             )
 
     def on_block(self, block: Block) -> None:
+        if self.pressure.enabled and block.context.get("sweep"):
+            try:
+                self.store.decision(
+                    block.at,
+                    self.symbol,
+                    "pressure_candidate",
+                    {
+                        **self.pressure_snapshot(block.at),
+                        "side": int(block.context["sweep"]),
+                        "price": block.close,
+                        "block_id": block.id,
+                        "scope": "sweep candidate, not an authorized or filled trade",
+                    },
+                )
+            except Exception as exc:
+                self.pressure.fail(exc)
         with self.shared.lock:
             model = self.shared.atlas
             instrument = self.shared.instruments.get(
