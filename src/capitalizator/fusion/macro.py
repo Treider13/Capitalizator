@@ -161,8 +161,21 @@ def fed(body: bytes, at: float) -> list[NewsRow]:
 
 
 def fetch(name: str, timeout: float, at: float) -> list[NewsRow]:
-    body = read_url(SOURCES[name], timeout)
-    return fed(body, at) if name == "fed" else ical(body, SOURCES[name], at)
+    try:
+        body = read_url(SOURCES[name], timeout)
+        rows = fed(body, at) if name == "fed" else ical(body, SOURCES[name], at)
+        if name == "bls" and not all(
+            any(r.event_class == k and r.event_time.timestamp() > at for r in rows)
+            for k in CLASSES[name]
+        ):
+            raise ValueError("BLS future CPI/NFP coverage incomplete")
+        return rows
+    except (OSError, ValueError):
+        if name != "bls":
+            raise
+        from capitalizator.fusion.macro_fallback import fetch as fallback
+
+        return fallback(timeout, at)
 
 
 def coverage(
