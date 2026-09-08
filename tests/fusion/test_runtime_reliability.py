@@ -154,6 +154,61 @@ raise SystemExit(cli.main())
         r.store.close()
 
 
+@pytest.mark.parametrize(
+    "fault", ["corrupt_database", "invalid_state", "blocked_logs", "data_file"]
+)
+def test_real_cli_constructor_failure_is_logged_without_runtime(tmp_path, fault):
+    root = tmp_path / "data"
+    if fault == "data_file":
+        root.write_text("cannot create a data directory here")
+    else:
+        root.mkdir()
+        if fault == "invalid_state":
+            store = Store(root / "fusion.sqlite3")
+            store.put_meta("policy_epoch", "invalid persisted state")
+            store.close()
+        else:
+            (root / "fusion.sqlite3").write_bytes(b"not a SQLite database")
+        if fault == "blocked_logs":
+            (root / "logs").write_text("diagnostics directory is unavailable")
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path(inspect.getfile(Runtime)).resolve().parents[2]),
+        "OPENBLAS_NUM_THREADS": "1",
+    }
+    result = subprocess.run(
+        [sys.executable, "-m", "capitalizator.fusion", "--userdir", str(root)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 1, result.stderr
+    records = [json.loads(line) for line in result.stderr.splitlines() if line.startswith("{")]
+    failures = [r for r in records if r["event"] == "failure"]
+    assert len(failures) == 1, result.stderr
+    failure = failures[0]
+    assert failure["worker"] == "main"
+    expected = {"invalid_state": "AttributeError", "data_file": "FileExistsError"}.get(
+        fault, "DatabaseError"
+    )
+    assert failure["error"].startswith(expected + ":")
+    assert "Traceback" in failure["traceback"] and "__init__" in failure["traceback"]
+    assert records[-1]["event"] == "shutdown"
+    assert records[-1]["reason"] == "main_failure" and records[-1]["exit_code"] == 1
+    assert records[-1]["run_id"] == failure["run_id"]
+    assert "UnboundLocalError" not in result.stderr
+    if fault in {"blocked_logs", "data_file"}:
+        assert "diagnostics_write_failed" in result.stderr
+    else:
+        saved = json.loads((root / "logs" / "last_failure.json").read_text())
+        assert saved == failure
+        journal = [
+            json.loads(line) for line in (root / "logs" / "runtime.jsonl").read_text().splitlines()
+        ]
+        assert journal == records
+
+
 def test_health_does_not_treat_pause_as_crash_but_detects_worker_failure(tmp_path):
     r = Runtime(tmp_path, Config())
     try:

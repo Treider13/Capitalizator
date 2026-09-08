@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 
 from capitalizator.fusion.config import Config
+from capitalizator.fusion.diagnostics import Diagnostics
 from capitalizator.fusion.runtime import Runtime
 from capitalizator.fusion.web import server
 
@@ -39,11 +40,15 @@ def main() -> int:
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, stop_signal)
     while not stop.is_set():
-        runtime = Runtime(args.userdir, config, config_path=config_path)
+        runtime: Runtime | None = None
+        # Construction can fail before SQLite or Runtime.diagnostics is available.
+        diagnostics = Diagnostics(args.userdir, config.version)
         http = None
         web_thread = None
         fatal = False
         try:
+            runtime = Runtime(args.userdir, config, config_path=config_path)
+            diagnostics = runtime.diagnostics
             http = server(runtime, config.api_port)
             web_thread = threading.Thread(target=http.serve_forever, name="console", daemon=False)
             runtime.start()
@@ -66,34 +71,36 @@ def main() -> int:
                     break
         except BaseException as exc:
             fatal = True
-            runtime.diagnostics.failure("main", exc)
+            diagnostics.failure("main", exc)
             raise
         finally:
-            runtime.supervisor.stop.set()
-            runtime.shared.broker_wake.set()
-            if http is not None and web_thread is not None and web_thread.is_alive():
-                http.shutdown()
-                web_thread.join(5)
-            if http is not None:
-                http.server_close()
-            try:
-                runtime.close()
-            except BaseException as exc:
-                runtime.diagnostics.failure("shutdown", exc)
-                raise
-            runtime.diagnostics.record(
+            if runtime is not None:
+                runtime.supervisor.stop.set()
+                runtime.shared.broker_wake.set()
+                if http is not None and web_thread is not None and web_thread.is_alive():
+                    http.shutdown()
+                    web_thread.join(5)
+                if http is not None:
+                    http.server_close()
+                try:
+                    runtime.close()
+                except BaseException as exc:
+                    diagnostics.failure("shutdown", exc)
+                    raise
+            worker_failed = runtime is not None and runtime.supervisor.failed.is_set()
+            diagnostics.record(
                 "shutdown",
                 reason=(
                     "main_failure"
                     if fatal
                     else "worker_failure"
-                    if runtime.supervisor.failed.is_set()
+                    if worker_failed
                     else "signal"
                     if received_signal
                     else "configuration_restart"
                 ),
                 signals=received_signal,
-                exit_code=1 if fatal or runtime.supervisor.failed.is_set() else 0,
+                exit_code=1 if fatal or worker_failed else 0,
             )
         if runtime.supervisor.failed.is_set():
             return 1
