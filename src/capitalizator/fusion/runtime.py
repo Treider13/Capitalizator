@@ -1105,6 +1105,7 @@ class Runtime:
             "startup",
             mode=self.shared.mode,
             paused=self.shared.paused,
+            database=self.store.database_info,
             previous_failure_run=(self.diagnostics.last_failure or {}).get("run_id"),
         )
         # A second instance may inspect storage, but cannot alter the active
@@ -1527,6 +1528,7 @@ class Runtime:
                 "pause_state": pause_state,
                 "last_failure": self.diagnostics.last_failure,
                 "run_id": self.diagnostics.run_id,
+                "database": dict(self.store.database_info),
                 "halted": self.shared.halted,
                 "reason": self.shared.reason,
                 "halt_reasons": [value[1] for value in self.shared.halts.values()],

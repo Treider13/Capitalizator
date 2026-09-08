@@ -54,6 +54,7 @@ jobs:
           python -m pytest -c "$GITHUB_WORKSPACE/pyproject.toml" -o pythonpath='' \
             "$GITHUB_WORKSPACE/tests/fusion/test_execution_lifecycle.py" \
             "$GITHUB_WORKSPACE/tests/fusion/test_runtime_reliability.py" \
+            "$GITHUB_WORKSPACE/tests/fusion/test_store_reliability.py" \
             "$GITHUB_WORKSPACE/tests/fusion/test_blackbox.py" \
             "$GITHUB_WORKSPACE/tests/fusion/test_time_audit.py"
       - name: No keys in src

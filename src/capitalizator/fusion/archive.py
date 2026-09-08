@@ -53,6 +53,15 @@ def events(store: Store, root: Path) -> Any:
         yield from _snapshot_events(db, root)
 
 
+def read_archive(path: Path, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = pq.read_table(path).to_pylist()
+    if hashlib.sha256(encode(rows).encode()).hexdigest() != manifest["sha256_rows"]:
+        raise ValueError("archive checksum mismatch")
+    if len(rows) != manifest["count"]:
+        raise ValueError("archive row count mismatch")
+    return rows
+
+
 def _snapshot_events(db: Any, root: Path) -> Any:
     manifests = db.execute("SELECT body FROM meta WHERE key LIKE 'archive:%'").fetchall()
     import json
@@ -61,10 +70,7 @@ def _snapshot_events(db: Any, root: Path) -> Any:
     files.sort(key=lambda r: int(r["path"].split("-")[1]))
     for manifest in files:
         path = root / "archive" / manifest["path"]
-        rows = pq.read_table(path).to_pylist()
-        if hashlib.sha256(encode(rows).encode()).hexdigest() != manifest["sha256_rows"]:
-            raise ValueError("archive checksum mismatch")
-        yield from rows
+        yield from read_archive(path, manifest)
     cursor = 0
     while True:
         rows = [
