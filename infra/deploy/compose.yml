@@ -27,6 +27,7 @@ x-base: &base
   environment:
     TZ: UTC
     PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONFAULTHANDLER: "1"
     OPENBLAS_NUM_THREADS: "1"
     OMP_NUM_THREADS: "1"
     CAP_USERDIR: /data
@@ -49,7 +50,7 @@ services:
     command: ["python", "-m", "capitalizator.fusion", "--userdir", "/data/fusion"]
     stop_grace_period: 60s
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/api/status', timeout=5).read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/api/health', timeout=5).read()"]
       interval: 30s
       timeout: 10s
       retries: 3

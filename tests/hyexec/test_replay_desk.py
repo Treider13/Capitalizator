@@ -78,7 +78,8 @@ def test_replay_day_is_learn_and_does_not_write_phase(tmp_path: Path) -> None:
     live = init_vault(tmp_path / "live")
     sand = init_vault(tmp_path / "sand")
     _trade(live.tape)
-    phase = Path("infra/phase.yaml").read_text(encoding="utf-8")
+    phase_path = Path(__file__).resolve().parents[2] / "infra/phase.yaml"
+    phase = phase_path.read_text(encoding="utf-8")
     knowledge = open_knowledge(sand)
     try:
         plan = replay_day(
@@ -95,7 +96,7 @@ def test_replay_day_is_learn_and_does_not_write_phase(tmp_path: Path) -> None:
     assert plan["n_events"] == 1
     assert plan["n_open_paper"] == 0
     assert live_rows == []
-    assert Path("infra/phase.yaml").read_text(encoding="utf-8") == phase
+    assert phase_path.read_text(encoding="utf-8") == phase
 
 
 def test_clock_for_is_last_print_not_wall() -> None:

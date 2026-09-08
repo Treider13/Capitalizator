@@ -131,9 +131,10 @@ def entry_check(
     config: Config,
     *,
     monotonic_at: float | None = None,
+    symbol: str | None = None,
 ) -> str:
     """A conservative veto, not a fitted claim of predictive profitability."""
-    for venue in ("spot", "linear"):
+    for venue in (("spot", "linear") if config.requires_spot(symbol) else ("linear",)):
         book = cross.get(venue, {})
         if not book.get("valid") or (venue == "spot" and book.get("status") != "streaming"):
             return venue + "_not_ready"

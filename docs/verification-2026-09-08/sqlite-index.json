@@ -1,0 +1,18 @@
+{
+  "kind": "synthetic_sqlite_policy_count_100000_rows",
+  "iterations": 20,
+  "before": {
+    "plan": [
+      "SCAN samples"
+    ],
+    "count": 25000,
+    "mean_ms": 10.78380475000813
+  },
+  "after": {
+    "plan": [
+      "SEARCH samples USING COVERING INDEX sample_policy_clock (<expr>=?)"
+    ],
+    "count": 25000,
+    "mean_ms": 0.8347025000148278
+  }
+}

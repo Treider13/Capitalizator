@@ -29,10 +29,11 @@ function drawDepth(force=false){
   const canvas=$('depth');if(!canvas||document.hidden||!depthVisible)return;
   const venue=$('depth-venue').value||'linear',d=chartData,frames=depthFrames[venue],fresh=!!d&&bookFresh(d.cross_market?.[venue],d),w=Math.max(320,canvas.clientWidth),h=canvas.clientHeight||420;
   $('depth-symbol').textContent=d?.symbol||$('symbol').value||'—';
+  const notRequired=venue==='spot'&&d?.cross_market?.spot_required===false;
   const unavailable=d?.cross_market?.[venue]?.status==='instrument_unavailable';
-  const message=!fresh?(unavailable?'Точной спотовой пары нет. 3D этого рынка недоступен.':'Нет свежего стакана. Ожидание реальных уровней.'):
+  const message=notRequired?'XAU: режим только фьючерсов. Спотовый стакан не требуется.':!fresh?(unavailable?'Точной спотовой пары нет. 3D этого рынка недоступен.':'Нет свежего стакана. Ожидание реальных уровней.'):
     !frames.length?'Свежий статус без доступных уровней. Ожидание L2.':`${venue==='linear'?'Фьючерсы':'Спот'} · ${frames.length}/24 снимков · ${utc(frames.at(-1).at)} · окно ${Math.max(0,frames.at(-1).at-frames[0].at).toFixed(1)} с`;
-  $('depth-status').textContent=message;$('depth-status').className=fresh?'':'bad';
+  $('depth-status').textContent=message;$('depth-status').className=fresh||notRequired?'':'bad';
   const signature=[venue,d?.symbol,fresh,frames.at(-1)?.at,w,h,camera.yaw,camera.pitch].join(':');if(!force&&signature===depthSignature)return;depthSignature=signature;
   const ratio=Math.min(window.devicePixelRatio||1,2);canvas.width=Math.round(w*ratio);canvas.height=Math.round(h*ratio);const g=canvas.getContext('2d');if(!g)return;g.scale(ratio,ratio);g.clearRect(0,0,w,h);g.font='11px system-ui';
   const yaw=camera.yaw*Math.PI/180,pitch=camera.pitch*Math.PI/180;

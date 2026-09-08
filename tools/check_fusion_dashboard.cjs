@@ -1,6 +1,7 @@
 // Deterministic behavior checks with a strict DOM model; this is NOT browser QA.
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
-const root='src/capitalizator/fusion/';
+const path=require('node:path');
+const root=path.resolve(process.env.BLACKBOX_FUSION_ROOT||path.join(__dirname,'../src/capitalizator/fusion'))+path.sep;
 const html=fs.readFileSync(root+'dashboard.html','utf8');
 let draws=0,mono=1000,rafID=0;const frames=new Map(),timers=new Map();let timerID=0;
 const drawing=new Proxy({}, {get:(o,k)=>o[k]||((...args)=>{for(const v of args)if(typeof v==='number')assert(Number.isFinite(v),k+' received nonfinite coordinate');draws++;}),set:(o,k,v)=>(o[k]=v,true)});

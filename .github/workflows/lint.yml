@@ -43,6 +43,20 @@ jobs:
         run: node tools/check_fusion_dashboard.cjs
       - name: Tests
         run: pytest
+      - name: Installed wheel acceptance outside checkout
+        run: |
+          python -m build --wheel --outdir dist
+          pip install --force-reinstall --no-deps dist/*.whl
+          pip check
+          cd "$(mktemp -d)"
+          unset PYTHONPATH
+          python -c 'import capitalizator.fusion.runtime as r; assert "site-packages" in r.__file__, r.__file__'
+          python -m pytest -c "$GITHUB_WORKSPACE/pyproject.toml" -o pythonpath='' \
+            "$GITHUB_WORKSPACE/tests/fusion/test_execution_lifecycle.py" \
+            "$GITHUB_WORKSPACE/tests/fusion/test_runtime_reliability.py" \
+            "$GITHUB_WORKSPACE/tests/fusion/test_store_reliability.py" \
+            "$GITHUB_WORKSPACE/tests/fusion/test_blackbox.py" \
+            "$GITHUB_WORKSPACE/tests/fusion/test_time_audit.py"
       - name: No keys in src
         run: |
           if grep -R -n -E 'BYBIT_API_KEY|API_SECRET|AKIA[0-9A-Z]{16}' src; then

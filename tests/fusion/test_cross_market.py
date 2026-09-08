@@ -213,7 +213,7 @@ def test_spot_wire_uses_spot_endpoint_without_derivative_topics():
         wire.exit()
 
 
-def test_unavailable_gold_never_substitutes_tokenized_gold(tmp_path, monkeypatch):
+def test_gold_futures_only_does_not_discover_or_substitute_spot(tmp_path, monkeypatch):
     r = Runtime(tmp_path, Config())
     calls = []
 
@@ -234,8 +234,9 @@ def test_unavailable_gold_never_substitutes_tokenized_gold(tmp_path, monkeypatch
     try:
         r._spot_worker("XAUUSDT")
         items = r.mailboxes[r.routes["XAUUSDT"]].get(0)
-        assert any(item[2].get("status") == "instrument_unavailable" for item in items)
-        assert calls == [{"category": "spot", "symbol": "XAUUSDT"}]
+        assert items == []
+        assert r.engines["XAUUSDT"].market.spot.status == "not_required"
+        assert calls == []
     finally:
         r.store.close()
 

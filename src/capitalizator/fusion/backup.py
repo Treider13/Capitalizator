@@ -8,7 +8,10 @@ import json
 import os
 import shutil
 import sqlite3
+from contextlib import closing
 from pathlib import Path
+
+from capitalizator.fusion.archive import read_archive
 
 
 def backup(root: Path, destination: Path) -> dict[str, str]:
@@ -19,8 +22,10 @@ def backup(root: Path, destination: Path) -> dict[str, str]:
         raise FileNotFoundError(source)
     destination.mkdir(parents=True, mode=0o700)
     database = destination / "fusion.sqlite3"
-    with sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True) as src:
-        with sqlite3.connect(database) as dst:
+    # Connection's context manager commits/rolls back; it does not close handles.
+    # Close and checkpoint before hashing or publishing the backup's file manifest.
+    with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as src:
+        with closing(sqlite3.connect(database)) as dst:
             src.backup(dst, pages=256)
             manifests = [
                 json.loads(r[0])
@@ -34,6 +39,8 @@ def backup(root: Path, destination: Path) -> dict[str, str]:
         if Path(name).name != name:
             raise ValueError("invalid archive path")
         shutil.copyfile(root / "archive" / name, destination / "archive" / name)
+        # A checksum of a corrupt copy is not proof that it matches the ledger.
+        read_archive(destination / "archive" / name, manifest)
     for name in ("config.json", "news_sources.json"):
         if (root / name).is_file():
             shutil.copyfile(root / name, destination / name)

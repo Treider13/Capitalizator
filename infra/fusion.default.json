@@ -46,6 +46,7 @@
   "minimum_free_disk_bytes": 536870912,
   "news_stale_s": 180.0,
   "model_max_age_s": 3600.0,
+  "training_timeout_s": 120.0,
   "news_poll_s": 60.0,
   "context_poll_s": 60.0,
   "chart_refresh_s": 0.2,

@@ -173,7 +173,9 @@ class Engine:
                 "episodes": [],
             }
 
-    def transition(self, state: str, at: float, reason: str) -> None:
+    def transition(
+        self, state: str, at: float, reason: str, *, details: dict[str, Any] | None = None
+    ) -> None:
         assert self.contract is not None
         with self.store.transaction() as db:
             db.execute(
@@ -181,24 +183,29 @@ class Engine:
             )
         self.contract_state = state
         self.store.decision(
-            at, self.symbol, "contract_" + state, {"contract": self.contract.id, "reason": reason}
+            at,
+            self.symbol,
+            "contract_" + state,
+            {"contract": self.contract.id, "reason": reason, **(details or {})},
         )
 
     def news_allows(self, at: float) -> bool:
+        return self.news_block_reason(at) is None
+
+    def news_block_reason(self, at: float) -> str | None:
         with self.shared.lock:
             calendar = self.shared.calendar
             if self.shared.news_required and self.shared.news_coverage is not None:
                 source = self.shared.news_coverage.get(self.symbol, {})
-                if (
-                    not source.get("ok")
-                    or not 0 <= at - source.get("at", 0) <= self.config.news_stale_s
-                ):
-                    return False
+                if not source.get("ok"):
+                    return "news_coverage_unavailable"
+                if not 0 <= at - source.get("at", 0) <= self.config.news_stale_s:
+                    return "news_coverage_stale"
             if (
                 self.shared.news_required
                 and not 0 <= at - self.shared.news_at <= self.config.news_stale_s
             ):
-                return False
+                return "news_feed_stale"
         now = datetime.fromtimestamp(at, UTC)
         for row in calendar:
             if row.size_rule == "linear_supply_context":
@@ -213,8 +220,8 @@ class Engine:
                 <= now
                 <= row.event_time + timedelta(minutes=self.config.news_post_minutes)
             ):
-                return False
-        return True
+                return "news_event_window:" + row.event_class
+        return None
 
     def _learn(self, block: Block, costs: float) -> None:
         self.future.append(block)
@@ -304,7 +311,11 @@ class Engine:
                 self._send(block, forecast, instrument, mode, allow, cost)
             if state == "observing":
                 return
-        if not self.fresh(block.at) or len(self.market.blocks) < self.config.context_blocks:
+        if not self.fresh(block.at):
+            self.store.decision(block.at, self.symbol, "observe", {"reason": "stale_market"})
+            return
+        if len(self.market.blocks) < self.config.context_blocks:
+            self.store.decision(block.at, self.symbol, "observe", {"reason": "warming_context"})
             return
         if self.variant in {"A", "B"}:
             candidate = baseline(self.symbol, block, self.config, self.market.tick)
@@ -400,7 +411,27 @@ class Engine:
             block.at,
         )
         if not allow or instrument is None or not self.news_allows(block.at):
-            self.transition("expired", block.at, "entry_not_authorized")
+            with self.shared.lock:
+                blockers = [
+                    name
+                    for name, active in (
+                        ("paused", self.shared.paused),
+                        ("halted", self.shared.halted),
+                        ("mode_switching", self.shared.switching),
+                        ("broker_not_ready", not self.shared.broker_ready),
+                        ("mode_changed", mode != self.shared.mode),
+                        ("instrument_metadata_missing", instrument is None),
+                    )
+                    if active
+                ]
+            news_reason = self.news_block_reason(block.at)
+            if news_reason:
+                blockers.append(news_reason)
+            if not allow and not blockers:
+                blockers.append("admission_revoked")
+            self.transition(
+                "expired", block.at, "entry_not_authorized", details={"blockers": blockers}
+            )
         elif not daily_check["allowed"]:
             self.transition("expired", block.at, daily_check["reason"])
         elif daily_check["limited"]:
@@ -415,7 +446,11 @@ class Engine:
             self.transition("expired", block.at, "stale_market")
         elif (
             cross_reason := entry_check(
-                self.market.cross_market(), self.contract.side, block.at, self.config
+                self.market.cross_market(),
+                self.contract.side,
+                block.at,
+                self.config,
+                symbol=self.symbol,
             )
         ) != "ready":
             self.transition("expired", block.at, cross_reason)
@@ -477,7 +512,7 @@ class Engine:
         m = self.market
         return bool(
             m.valid
-            and entry_check(m.cross_market(), 0, at, self.config) == "ready"
+            and entry_check(m.cross_market(), 0, at, self.config, symbol=self.symbol) == "ready"
             and 0 <= at - m.book_at <= self.config.max_data_age_s
             and 0 <= at - m.ticker_at <= self.config.account_age_s
             and m.bids

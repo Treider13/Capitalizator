@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from typing import Any
 
 
@@ -89,30 +91,47 @@ class Mailbox:
 class Supervisor:
     """Worker failure latches a shared halt. No unobserved background exceptions."""
 
-    def __init__(self) -> None:
+    def __init__(self, on_failure: Callable[[str, BaseException], None] | None = None) -> None:
         self.stop = threading.Event()
         self.failed = threading.Event()
         self.lock = threading.Lock()
         self.threads: list[threading.Thread] = []
         self.errors: dict[str, str] = {}
         self.heartbeats: dict[str, float] = {}
+        self.on_failure = on_failure
 
     def beat(self, name: str) -> None:
         with self.lock:
             self.heartbeats[name] = time.monotonic()
 
-    def start(self, name: str, fn: Any) -> None:
+    def start(self, name: str, fn: Any, *, allow_return: bool = False) -> None:
         def run() -> None:
             try:
                 fn()
-            except Exception as exc:
+                if not self.stop.is_set() and not allow_return:
+                    raise RuntimeError("worker returned before shutdown was requested")
+            except BaseException as exc:
                 with self.lock:
                     self.errors[name] = f"{type(exc).__name__}: {exc}"
                 self.failed.set()
+                if self.on_failure is not None:
+                    try:
+                        self.on_failure(name, exc)
+                    except Exception:
+                        logging.getLogger(__name__).exception("worker %s diagnostics failed", name)
+                else:
+                    logging.getLogger(__name__).exception("worker %s failed", name)
 
         thread = threading.Thread(name=name, target=run, daemon=False)
-        self.threads.append(thread)
-        thread.start()
+        with self.lock:
+            self.heartbeats[name] = time.monotonic()
+            self.threads.append(thread)
+            try:
+                thread.start()
+            except BaseException:
+                self.threads.remove(thread)
+                self.heartbeats.pop(name, None)
+                raise
 
     def join(self, timeout: float = 15.0) -> list[str]:
         self.stop.set()

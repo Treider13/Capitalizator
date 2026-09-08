@@ -98,6 +98,8 @@ class Market:
     def __init__(self, symbol: str, config: Config, tick: float = 0.1) -> None:
         self.symbol, self.config, self.tick = symbol, config, tick
         self.spot = SpotBook(symbol)
+        if not config.requires_spot(symbol):
+            self.spot.status = "not_required"
         self.bids: dict[float, float] = {}
         self.asks: dict[float, float] = {}
         self.book_u = 0
@@ -475,6 +477,7 @@ class Market:
         return {
             "spot": spot,
             "linear": linear,
+            "spot_required": self.config.requires_spot(self.symbol),
             "basis_bps": (linear["mid"] / spot["mid"] - 1) * 10000 if ready else None,
             "imbalance_gap": linear["imbalance"] - spot["imbalance"] if ready else None,
             "opposed": spot["imbalance"] * linear["imbalance"] < 0 if ready else None,

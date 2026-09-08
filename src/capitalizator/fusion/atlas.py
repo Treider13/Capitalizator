@@ -120,29 +120,56 @@ def train(rows: list[dict[str, Any]], config: Config, at: float) -> Atlas | None
     residuals = cy - cp
     tx, ty = np.asarray([r["x"] for r in test]), np.asarray([r["y"] for r in test])
     tp = _predict(tx, mean, scale, coefs)
-    # Non-overlapping time clusters retain simultaneous symbols in one observation.
+    tz = np.clip((tx - mean) / scale, -20, 20)
+    experts = np.stack([np.column_stack((np.ones(len(tx)), tz)) @ c for c in coefs], axis=1)
+    error = float(
+        np.std(residuals[:, 0], ddof=1) / np.sqrt(max(1, len(calibration) / config.horizon_blocks))
+    )
+    # Approximate time buckets keep simultaneous symbols together; they are not independent.
     horizon = max(float(np.median([r["available"] - r["origin"] for r in test])), 0.001)
     net: list[float] = []
     baseline: list[float] = []
     by_cluster: dict[int, list[float]] = {}
-    for row, prediction, actual in zip(test, tp, ty, strict=True):
+    directions: list[int] = []
+    thresholds: list[float] = []
+    for row, prediction, actual in zip(test, experts, ty, strict=True):
         costs = float(row["context"].get("costs", 0.0012))
-        direction = int(np.sign(prediction[0])) if abs(prediction[0]) > costs else 0
+        # Validate the same worst-expert/estimation-error veto used by Forecast.edge.
+        # The mixture mean alone used to count trades the runtime would never admit.
+        buy_edge = float(prediction[:, 0].min()) - error - costs
+        sell_edge = float((-prediction[:, 0]).min()) - error - costs
+        direction = 1 if buy_edge > 0 else -1 if sell_edge > 0 else 0
+        directions.append(direction)
+        thresholds.append(costs)
         result = direction * float(actual[0]) - abs(direction) * costs
         net.append(result)
         baseline.append(float(actual[0]) - costs)
         cluster = int(row["origin"] / horizon)
         by_cluster.setdefault(cluster, []).append(result)
     clusters = np.asarray([np.mean(v) for v in by_cluster.values()])
-    error = float(
-        np.std(residuals[:, 0], ddof=1) / np.sqrt(max(1, len(calibration) / config.horizon_blocks))
-    )
     rng = np.random.default_rng(0)
-    boot = np.mean(rng.choice(clusters, (1000, len(clusters)), replace=True), axis=1)
+    # Time buckets can still be dependent; resample neighbouring buckets together.
+    width = max(2, int(np.sqrt(len(clusters))))
+    starts = rng.integers(0, len(clusters), (1000, int(np.ceil(len(clusters) / width))))
+    indices = (starts[:, :, None] + np.arange(width)) % len(clusters)
+    boot = np.mean(clusters[indices.reshape(1000, -1)[:, : len(clusters)]], axis=1)
     lower = float(np.quantile(boot, config.confidence_alpha))
     mse = float(np.mean((tp[:, 0] - ty[:, 0]) ** 2))
     zero_mse = float(np.mean(ty[:, 0] ** 2))
     mean_net = float(np.mean(net))
+    reasons = []
+    if n < config.live_samples:
+        reasons.append("insufficient_samples")
+    if len(clusters) < 32:
+        reasons.append("insufficient_time_clusters")
+    if not any(directions):
+        reasons.append("no_cost_covering_signals")
+    if lower <= 0:
+        reasons.append("nonpositive_lower_net")
+    if mse >= zero_mse:
+        reasons.append("no_improvement_over_zero")
+    if mean_net <= max(0, float(np.mean(baseline))):
+        reasons.append("no_net_advantage_over_baseline")
     report = {
         "train_n": len(fit_rows),
         "calibration_n": len(calibration),
@@ -155,13 +182,18 @@ def train(rows: list[dict[str, Any]], config: Config, at: float) -> Atlas | None
         "lower_mean_net": lower,
         "buy_hold_mean": float(np.mean(baseline)),
         "through": max(r["available"] for r in rows),
-        "passed": bool(
-            n >= config.live_samples
-            and len(clusters) >= 32
-            and lower > 0
-            and mse < zero_mse
-            and mean_net > max(0, float(np.mean(baseline)))
-        ),
+        "passed": not reasons,
+        "rejection_reasons": reasons,
+        "signal_count": sum(d != 0 for d in directions),
+        "buy_signals": directions.count(1),
+        "sell_signals": directions.count(-1),
+        "abstentions": directions.count(0),
+        "median_cost_bps": float(np.median(thresholds)) * 10000,
+        "median_abs_prediction_bps": float(np.median(np.abs(tp[:, 0]))) * 10000,
+        "mean_error_bps": error * 10000,
+        "sample_span_s": max(r["available"] for r in rows) - min(r["origin"] for r in rows),
+        "median_label_horizon_s": horizon,
+        "bootstrap_block_clusters": width,
         "scope": "purged model test; execution and full-strategy validation are separate",
     }
     # Bounded deterministic residual reservoir; preserve joint target dependence.

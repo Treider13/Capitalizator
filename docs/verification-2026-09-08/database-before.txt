@@ -1,0 +1,165 @@
+FFFFFF...F                                                               [100%]
+=================================== FAILURES ===================================
+______ test_sqlite_full_preserves_original_error_and_connection_recovers _______
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-19/test_sqlite_full_preserves_ori0')
+
+    def test_sqlite_full_preserves_original_error_and_connection_recovers(tmp_path):
+        store = Store(tmp_path / "db")
+        try:
+            store.put_meta("committed", 1)
+            pages = store.db.execute("PRAGMA page_count").fetchone()[0]
+            store.db.execute(f"PRAGMA max_page_count={pages + 1}")
+            with pytest.raises(sqlite3.OperationalError) as caught:
+                with store.transaction() as db:
+                    db.execute("INSERT INTO meta VALUES('uncommitted','1')")
+                    db.execute("INSERT INTO meta VALUES('oversized',zeroblob(1048576))")
+>           assert caught.value.sqlite_errorcode == sqlite3.SQLITE_FULL
+E           AssertionError: assert 1 == 13
+E            +  where 1 = OperationalError('cannot rollback - no transaction is active').sqlite_errorcode
+E            +    where OperationalError('cannot rollback - no transaction is active') = <ExceptionInfo OperationalError('cannot rollback - no transaction is active') tblen=3>.value
+E            +  and   13 = sqlite3.SQLITE_FULL
+
+tests/fusion/test_store_reliability.py:34: AssertionError
+_______ test_sqlite_automatic_constraint_rollback_keeps_integrity_error ________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-19/test_sqlite_automatic_constrai0')
+
+    def test_sqlite_automatic_constraint_rollback_keeps_integrity_error(tmp_path):
+        store = Store(tmp_path / "db")
+        try:
+            store.put_meta("existing", 1)
+            with pytest.raises(sqlite3.IntegrityError):
+                with store.transaction() as db:
+>                   db.execute("INSERT OR ROLLBACK INTO meta VALUES('existing','2')")
+E                   sqlite3.IntegrityError: UNIQUE constraint failed: meta.key
+
+tests/fusion/test_store_reliability.py:49: IntegrityError
+
+During handling of the above exception, another exception occurred:
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-19/test_sqlite_automatic_constrai0')
+
+    def test_sqlite_automatic_constraint_rollback_keeps_integrity_error(tmp_path):
+        store = Store(tmp_path / "db")
+        try:
+            store.put_meta("existing", 1)
+            with pytest.raises(sqlite3.IntegrityError):
+>               with store.transaction() as db:
+                     ^^^^^^^^^^^^^^^^^^^
+
+tests/fusion/test_store_reliability.py:48:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:158: in __exit__
+    self.gen.throw(value)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <capitalizator.fusion.store.Store object at 0x7f64e4923530>
+
+    @contextmanager
+    def transaction(self) -> Any:
+        with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                yield self.db
+                self.db.execute("COMMIT")
+            except BaseException:
+>               self.db.execute("ROLLBACK")
+E               sqlite3.OperationalError: cannot rollback - no transaction is active
+
+src/capitalizator/fusion/store.py:99: OperationalError
+_________ test_schema_failure_rolls_back_all_ddl_and_closes_connection _________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-19/test_schema_failure_rolls_back0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f64e4921580>
+
+    def test_schema_failure_rolls_back_all_ddl_and_closes_connection(tmp_path, monkeypatch):
+        connections = track_connections(monkeypatch)
+        path = tmp_path / "db"
+        monkeypatch.setattr(storage, "SCHEMA", storage.SCHEMA + "\nCREATE INDEX bad ON missing_table(x);\n")
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="missing_table"):
+                Store(path)
+>           with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           Failed: DID NOT RAISE <class 'sqlite3.ProgrammingError'>
+
+tests/fusion/test_store_reliability.py:75: Failed
+___________ test_future_schema_is_rejected_before_modifying_database ___________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-19/test_future_schema_is_rejected0')
+
+    def test_future_schema_is_rejected_before_modifying_database(tmp_path):
+        path = tmp_path / "db"
+        db = sqlite3.connect(path)
+        db.execute("PRAGMA user_version=999")
+        db.close()
+        before = path.read_bytes()
+>       with pytest.raises(RuntimeError, match="schema version"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'RuntimeError'>
+
+tests/fusion/test_store_reliability.py:91: Failed
+__________ test_legacy_schema_upgrade_is_idempotent_and_keeps_ledger ___________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-19/test_legacy_schema_upgrade_is_0')
+
+    def test_legacy_schema_upgrade_is_idempotent_and_keeps_ledger(tmp_path):
+        path = tmp_path / "db"
+        db = sqlite3.connect(path)
+        db.executescript(storage.SCHEMA)
+        db.execute("INSERT INTO meta VALUES('paused','true')")
+        db.commit()
+        db.close()
+        for _ in range(2):
+            store = Store(path)
+            try:
+                assert store.meta("paused") is True
+>               assert store.db.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
+                                                                                ^^^^^^^^^^^^^^^^^^^^^^
+E               AttributeError: module 'capitalizator.fusion.store' has no attribute 'SCHEMA_VERSION'
+
+tests/fusion/test_store_reliability.py:107: AttributeError
+____________ test_read_snapshot_cannot_recreate_a_missing_database _____________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-19/test_read_snapshot_cannot_recr0')
+
+    def test_read_snapshot_cannot_recreate_a_missing_database(tmp_path):
+        path = tmp_path / "db"
+        store = Store(path)
+        store.close()
+        path.unlink()
+>       with pytest.raises(sqlite3.OperationalError):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'sqlite3.OperationalError'>
+
+tests/fusion/test_store_reliability.py:120: Failed
+_________ test_backup_closes_connections_and_restore_matches_checksums _________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-19/test_backup_closes_connections0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f64e4923bc0>
+
+    def test_backup_closes_connections_and_restore_matches_checksums(tmp_path, monkeypatch):
+        root, destination = tmp_path / "source", tmp_path / "backup"
+        store = Store(root / "fusion.sqlite3")
+        connections = track_connections(monkeypatch)
+        try:
+            for i in range(5):
+                store.event(i, "BTCUSDT", "test", {"i": i})
+            archive_events(store, root, 100, 3)
+            checksums = backup(root, destination)
+            for db in connections:
+>               with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E               Failed: DID NOT RAISE <class 'sqlite3.ProgrammingError'>
+
+tests/fusion/test_store_reliability.py:209: Failed
+=========================== short test summary info ============================
+FAILED tests/fusion/test_store_reliability.py::test_sqlite_full_preserves_original_error_and_connection_recovers
+FAILED tests/fusion/test_store_reliability.py::test_sqlite_automatic_constraint_rollback_keeps_integrity_error
+FAILED tests/fusion/test_store_reliability.py::test_schema_failure_rolls_back_all_ddl_and_closes_connection
+FAILED tests/fusion/test_store_reliability.py::test_future_schema_is_rejected_before_modifying_database
+FAILED tests/fusion/test_store_reliability.py::test_legacy_schema_upgrade_is_idempotent_and_keeps_ledger
+FAILED tests/fusion/test_store_reliability.py::test_read_snapshot_cannot_recreate_a_missing_database
+FAILED tests/fusion/test_store_reliability.py::test_backup_closes_connections_and_restore_matches_checksums
+7 failed, 3 passed in 0.20s

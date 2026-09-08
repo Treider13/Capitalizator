@@ -59,6 +59,7 @@ class Config:
     minimum_free_disk_bytes: int = 536870912
     news_stale_s: float = 180.0
     model_max_age_s: float = 3600.0
+    training_timeout_s: float = 120.0
     news_poll_s: float = 60.0
     context_poll_s: float = 60.0
     chart_refresh_s: float = 0.2
@@ -122,9 +123,13 @@ class Config:
     def version(self) -> str:
         return hashlib.sha256(
             json.dumps(
-                {"policy": "fusion-10-daily-levels", **asdict(self)}, sort_keys=True
+                {"policy": "fusion-11-xau-linear-model-gates", **asdict(self)}, sort_keys=True
             ).encode()
         ).hexdigest()[:16]
+
+    def requires_spot(self, symbol: str | None) -> bool:
+        """Only the explicitly requested gold perpetual uses a futures-only policy."""
+        return symbol != "XAUUSDT"
 
     @classmethod
     def load(cls, path: Path | None) -> Config:

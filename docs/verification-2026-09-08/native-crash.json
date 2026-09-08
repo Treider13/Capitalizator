@@ -1,0 +1,6 @@
+{
+  "kind": "injected_SIGABRT_no_core_dump",
+  "returncode": -6,
+  "stderr": "Fatal Python error: Aborted\n\nCurrent thread 0x00007f21619ae740 (most recent call first):\n  File \"<string>\", line 1 in <module>\n",
+  "fatal_trace_present": true
+}

@@ -157,6 +157,9 @@ def server(runtime: Any, port: int) -> ThreadingHTTPServer:
                     pass
                 finally:
                     streams.release()
+            elif self.path == "/api/health":
+                body = runtime.health()
+                self.send(200 if body["healthy"] else 503, json.dumps(body).encode())
             elif self.path == "/api/status":
                 body = {**runtime.status(), "console_instance": instance}
                 self.send(200, json.dumps(body, allow_nan=False).encode())

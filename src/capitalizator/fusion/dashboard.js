@@ -94,7 +94,7 @@ function renderFreshness() {
   $('account-freshness').textContent=s.account?(accountFresh?'Сверен':'Устарел')+' · '+accountAge.toFixed(1)+' с':'Нет снимка счёта';$('account-freshness').className='chip '+(accountFresh?'good':'bad');
   const gates=[['Связь с системой',connected?'Подключена':'Устарела / нет связи',connected],['Входы оператора',s.paused?'Пауза':s.halted?'Остановлены':'Разрешены',connected&&!s.paused&&!s.halted],['Сверка счёта',accountFresh?'Свежая':'Не готова',accountFresh],['Модель',s.model?'Загружена':'Нет модели',connected&&!!s.model]];
   $('entry-gates').replaceChildren();for(const [label,value,ok] of gates){const d=document.createElement('div');d.className='gate '+(ok?'good':'bad');const l=document.createElement('small');l.textContent=label;const v=document.createElement('span');v.textContent=value;d.append(l,v);$('entry-gates').appendChild(d)}
-  const table=$('coverage-rows');table.replaceChildren();for(const symbol of s.config.symbols){const m=s.markets[symbol]||{};const book=b=>!connected?'Состояние устарело':b?.status==='instrument_unavailable'?'Точная пара отсутствует':bookValidAt(b,{...s,_received_mono:lastStatusMono,max_data_age_s:s.config.max_data_age_s})?'Свежий':'Нет свежих данных';row(table,[symbol,book(m.cross_market?.spot),book(m.cross_market?.linear),m.block?'Возраст '+Math.max(0,now-m.block.at).toFixed(1)+' с':'Нет контекста',pretty(s.news?.coverage?.[symbol]??'Нет покрытия')]);}
+  const table=$('coverage-rows');table.replaceChildren();for(const symbol of s.config.symbols){const m=s.markets[symbol]||{};const book=b=>!connected?'Состояние устарело':b?.status==='not_required'?'Не требуется: только фьючерсы':b?.status==='instrument_unavailable'?'Точная пара отсутствует':bookValidAt(b,{...s,_received_mono:lastStatusMono,max_data_age_s:s.config.max_data_age_s})?'Свежий':'Нет свежих данных';row(table,[symbol,book(m.cross_market?.spot),book(m.cross_market?.linear),m.block?'Возраст '+Math.max(0,now-m.block.at).toFixed(1)+' с':'Нет контекста',pretty(s.news?.coverage?.[symbol]??'Нет покрытия')]);}
 }
 function renderStatus(s) {
   const first=!lastState,oldMode=lastState?.mode;lastState=s;lastStatusMono=performance.now();statusError='';
@@ -114,7 +114,7 @@ function renderStatus(s) {
   $('decisions').textContent=s.decisions?.length?s.decisions.map(d=>utc(d.at)+' '+d.symbol+' '+d.kind+'\n'+pretty(decoded(d.body))).join('\n\n'):'Решений ещё нет.';
   $('diagnostics').textContent=pretty({broker:s.broker,queues:s.queues,private_queue:s.private_queue,errors:s.worker_errors,uptime_s:s.uptime_s,config_version:s.config_version,restart_requested:s.restart_requested,mode_request:s.mode_request,halt_reasons:s.halt_reasons});
   $('config-state').textContent=pretty(cfg);$('performance-state').textContent=pretty(s.performance);
-  $('training-state').textContent=pretty({active_model:s.model,active_report:s.active_model_report,last_training:s.training,policy_since:s.policy_since,config_version:s.config_version});
+  $('training-state').textContent=pretty({active_model:s.model,active_report:s.active_model_report,last_training:s.training,pause_state:s.pause_state,last_failure:s.last_failure,policy_since:s.policy_since,config_version:s.config_version});
   $('news-state').textContent=pretty(s.news);renderNews('headlines',s.news?.headlines);renderNews('events',s.news?.events,true);
   $('coverage-state').textContent=pretty({markets:s.markets,options:s.options});
   $('maintenance').textContent=s.maintenance?.commands?.join('\n\n')||'Команды обслуживания недоступны в этой версии сервера.';

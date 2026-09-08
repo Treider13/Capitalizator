@@ -12,6 +12,8 @@ from typing import Any
 
 from capitalizator.fusion.concurrency import FairLock
 
+SCHEMA_VERSION = 1
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS events(
@@ -25,6 +27,8 @@ CREATE TABLE IF NOT EXISTS samples(
  id TEXT PRIMARY KEY, symbol TEXT NOT NULL, origin REAL NOT NULL,
  available REAL NOT NULL, x TEXT NOT NULL, y TEXT NOT NULL, context TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS sample_clock ON samples(available);
+CREATE INDEX IF NOT EXISTS sample_policy_clock
+ ON samples(json_extract(context,'$.policy_version'),available,id);
 CREATE TABLE IF NOT EXISTS models(
  version TEXT PRIMARY KEY, at REAL NOT NULL, body TEXT NOT NULL, report TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS contracts(
@@ -70,11 +74,47 @@ class Store:
         self.analytics_lock = threading.Lock()
         self.db = sqlite3.connect(path, timeout=10, check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA synchronous=FULL")
-        self.db.execute("PRAGMA busy_timeout=10000")
-        self.db.executescript(SCHEMA)
+        try:
+            self._check_schema_version()
+            if self.db.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
+                raise RuntimeError("SQLite WAL mode is required")
+            self.db.execute("PRAGMA synchronous=FULL")
+            self.db.execute("PRAGMA busy_timeout=10000")
+            self._initialize_schema()
+            self.database_info = {
+                "sqlite_version": sqlite3.sqlite_version,
+                "sqlite_source_id": self.db.execute("SELECT sqlite_source_id()").fetchone()[0],
+                **{
+                    name: self.db.execute(f"PRAGMA {name}").fetchone()[0]
+                    for name in ("user_version", "journal_mode", "synchronous", "busy_timeout")
+                },
+            }
+        except BaseException as exc:
+            try:
+                self.db.close()
+            except BaseException as close_error:
+                exc.add_note(f"database close failed: {type(close_error).__name__}")
+            raise
+
+    def _check_schema_version(self) -> None:
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if version not in (0, SCHEMA_VERSION):
+            raise RuntimeError(f"unsupported SQLite schema version: {version}")
+
+    def _initialize_schema(self) -> None:
         with self.transaction() as db:
+            # Recheck under the write lock in case another process upgraded it.
+            self._check_schema_version()
+            # executescript implicitly commits a pending transaction. Execute each
+            # complete DDL statement instead, keeping schema and migration atomic.
+            statement = ""
+            for line in SCHEMA.splitlines(keepends=True):
+                statement += line
+                if sqlite3.complete_statement(statement):
+                    db.execute(statement)
+                    statement = ""
+            if statement.strip():
+                raise ValueError("incomplete SQLite schema statement")
             if not db.execute("SELECT 1 FROM meta WHERE key='linear_ledger_v2'").fetchone():
                 mixed_demo = db.execute(
                     "SELECT 1 FROM executions WHERE mode='demo' "
@@ -85,6 +125,7 @@ class Store:
                     # episodes. Requalify once using the corrected calculation.
                     db.execute("DELETE FROM meta WHERE key='live_qualified_policy'")
                 db.execute("INSERT INTO meta VALUES('linear_ledger_v2','true')")
+            db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     @contextmanager
     def transaction(self) -> Any:
@@ -93,8 +134,18 @@ class Store:
             try:
                 yield self.db
                 self.db.execute("COMMIT")
-            except BaseException:
-                self.db.execute("ROLLBACK")
+            except BaseException as exc:
+                try:
+                    # SQLITE_FULL and ON CONFLICT ROLLBACK may already end it.
+                    if self.db.in_transaction:
+                        self.db.execute("ROLLBACK")
+                except BaseException as rollback_error:
+                    exc.add_note(f"database rollback failed: {type(rollback_error).__name__}")
+                    # A connection with an unresolved transaction must not be reused.
+                    try:
+                        self.db.close()
+                    except BaseException as close_error:
+                        exc.add_note(f"database close failed: {type(close_error).__name__}")
                 raise
 
     def rows(self, sql: str, args: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
@@ -104,7 +155,9 @@ class Store:
     @contextmanager
     def snapshot(self) -> Any:
         """Independent WAL read transaction; archive rotation cannot change its view."""
-        db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        db = sqlite3.connect(
+            self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10, isolation_level=None
+        )
         db.row_factory = sqlite3.Row
         try:
             db.execute("PRAGMA query_only=ON")

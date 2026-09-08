@@ -1,0 +1,13 @@
+{
+  "module": "/workspace/scratch/749e566b67c3/Capitalizator/.venv-acceptance/lib/python3.12/site-packages/capitalizator/fusion/store.py",
+  "wheel_sha256": "6abbfb0c067661389546287ffdb15a9dcb5140e8693cad645fb6e723950e2c80",
+  "status_database": {
+    "sqlite_version": "3.53.1",
+    "sqlite_source_id": "2026-05-05 10:34:17 c88b22011a54b4f6fbd149e9f8e4de77658ce58143a1af0e3785e4e6475127e9",
+    "user_version": 1,
+    "journal_mode": "wal",
+    "synchronous": 2,
+    "busy_timeout": 10000
+  },
+  "scope": "installed wheel; local temporary database, not VPS"
+}
