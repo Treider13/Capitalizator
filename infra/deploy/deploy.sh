@@ -8,7 +8,11 @@ APP="$DATA/app"
 cd "$APP"
 if [ -d .git ]; then
   BRANCH="${CAP_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
-  git fetch -q origin && git checkout -q "$BRANCH" && git pull -q --ff-only origin "$BRANCH"
+  # Separate commands: errexit ignores failures on the left of an && list.
+  # Never build or restart from stale sources after a failed repository update.
+  git fetch -q origin
+  git checkout -q "$BRANCH"
+  git pull -q --ff-only origin "$BRANCH"
 else
   echo "no .git in $APP: deploying the uploaded tree as is"
 fi
