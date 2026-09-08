@@ -1,0 +1,14 @@
+{
+  "silent_worker_return": {
+    "alive": false,
+    "failed": false,
+    "errors": {}
+  },
+  "stopped_training_child": {
+    "configured_timeout_s": 0.3,
+    "parent_observation_s": 5.007,
+    "hung_until_external_kill": true,
+    "stdout": "fit-started\n",
+    "stderr": ""
+  }
+}

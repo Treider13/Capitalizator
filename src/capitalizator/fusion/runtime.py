@@ -22,6 +22,7 @@ from capitalizator.fusion.concurrency import Mailbox, Supervisor
 from capitalizator.fusion.config import Config
 from capitalizator.fusion.cross_market import entry_check
 from capitalizator.fusion.daily import daily_context, daily_target
+from capitalizator.fusion.diagnostics import Diagnostics
 from capitalizator.fusion.engine import Engine, Shared
 from capitalizator.fusion.exchange import Bybit, credentials, news_key
 from capitalizator.fusion.executor import Executor
@@ -64,12 +65,21 @@ class Runtime:
         self.shared.paused = bool(self.store.meta("paused", False)) or (
             (changed_policy or not self.live_qualified) and self.shared.mode == "live"
         )
+        self.startup_pause_reason = (
+            "live_policy_not_qualified"
+            if (changed_policy or not self.live_qualified) and self.shared.mode == "live"
+            else "persisted_pause_unknown"
+            if self.shared.paused
+            else "startup"
+        )
         self.shared.calendar = load_desk_calendar()
         self.shared.news_required = True
         self.shared.news_coverage = {}
         self.news_sources = sources(root, config.symbols)
         self.news_source_revision = 0
-        self.supervisor = Supervisor()
+        self.diagnostics = Diagnostics(root, config.version)
+        self.supervisor = Supervisor(self.diagnostics.failure)
+        self.watchdog_stale: set[str] = set()
         self.mailboxes = [
             Mailbox(config.queue_capacity, config.queue_quantum) for _ in range(config.workers)
         ]
@@ -302,10 +312,11 @@ class Runtime:
         spec = json.loads(order["body"])
         side = 1 if spec["side"] == "Buy" else -1
         if (
-            spot_fault
-            or cross.get("spot", {}).get("generation") != spot_generation
-            or entry_check(cross, side, now, self.config, monotonic_at=time.monotonic()) != "ready"
-        ):
+            self.config.requires_spot(order["symbol"])
+            and (spot_fault or cross.get("spot", {}).get("generation") != spot_generation)
+        ) or entry_check(
+            cross, side, now, self.config, monotonic_at=time.monotonic(), symbol=order["symbol"]
+        ) != "ready":
             return False
         if not market.get("valid") or now >= order["expires"]:
             return False
@@ -484,23 +495,70 @@ class Runtime:
                         self.shared.clear_halts(
                             {"private_queue_overflow": incidents["private_queue_overflow"]}
                         )
-            with self.supervisor.lock:
-                beats = dict(self.supervisor.heartbeats)
-            for name, stamp in beats.items():
-                budget = (
-                    max(60.0, self.config.account_age_s)
-                    if name == "broker"
-                    else self.config.macro_poll_s + 120
-                    if name == "macro"
-                    else 120.0
-                    if name in {"news", "archive", "history", "options", "metadata"}
-                    else 30.0
-                )
-                if name != "trainer" and time.monotonic() - stamp > budget:
-                    self.shared.halt("worker_stale:" + name)
             if shutil.disk_usage(self.root).free < self.config.minimum_free_disk_bytes:
                 self.shared.halt("disk_space_low")
             self.supervisor.beat("maintenance")
+            self.supervisor.stop.wait(1)
+
+    def _stale_workers(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with self.supervisor.lock:
+            beats = dict(self.supervisor.heartbeats)
+        stale = {}
+        for name, stamp in beats.items():
+            budget = (
+                max(60.0, self.config.account_age_s)
+                if name == "broker"
+                else self.config.macro_poll_s + 120
+                if name == "macro"
+                else self.config.training_timeout_s + 10
+                if name == "trainer"
+                else 120.0
+                if name in {"news", "archive", "history", "options", "metadata"}
+                else 30.0
+            )
+            if now - stamp > budget:
+                stale[name] = {"age_s": now - stamp, "budget_s": budget}
+        return stale
+
+    def _check_workers(self) -> None:
+        stale = self._stale_workers()
+        new = {name: body for name, body in stale.items() if name not in self.watchdog_stale}
+        if new:
+            # Evidence is captured even if a stuck worker holds shared.lock or SQLite.
+            self.diagnostics.stalled(new)
+        recovered = self.watchdog_stale - stale.keys()
+        with self.shared.lock:
+            observed = {
+                key: value
+                for key, value in self.shared.halts.items()
+                if key.startswith("worker_stale:")
+                and key.removeprefix("worker_stale:") in recovered
+            }
+            self.shared.clear_halts(observed)
+            for name in new:
+                self.shared.halt("worker_stale:" + name)
+        if recovered:
+            self.diagnostics.record("watchdog_recovered", workers=sorted(recovered))
+        self.watchdog_stale = set(stale)
+
+    def _watchdog(self) -> None:
+        next_record = 0.0
+        while not self.supervisor.stop.is_set():
+            self._check_workers()
+            now = time.monotonic()
+            if now >= next_record:
+                with self.supervisor.lock:
+                    ages = {name: now - at for name, at in self.supervisor.heartbeats.items()}
+                self.diagnostics.record(
+                    "heartbeat",
+                    uptime_s=time.time() - self.started,
+                    worker_age_s=ages,
+                    queues=[m.status() for m in self.mailboxes],
+                    private_queue=self.private_mailbox.status(),
+                )
+                next_record = now + 60
+            self.supervisor.beat("watchdog")
             self.supervisor.stop.wait(1)
 
     def _archive(self) -> None:
@@ -951,6 +1009,9 @@ class Runtime:
         """
         from capitalizator.fusion.public import RawPublic
 
+        if not self.config.requires_spot(symbol):
+            return
+
         wire: Any = None
         generation, epoch = self._spot_status(symbol, "discovery_pending")
         next_discovery = 0.0
@@ -1040,6 +1101,12 @@ class Runtime:
                 "another fusion runtime already owns this account directory"
             ) from None
         self._instance_fd = fd
+        self.diagnostics.record(
+            "startup",
+            mode=self.shared.mode,
+            paused=self.shared.paused,
+            previous_failure_run=(self.diagnostics.last_failure or {}).get("run_id"),
+        )
         # A second instance may inspect storage, but cannot alter the active
         # policy/paused state before it owns the process lock.
         self.store.put_meta(
@@ -1050,6 +1117,20 @@ class Runtime:
             },
         )
         self.store.put_meta("paused", self.shared.paused)
+        pause_state = self.store.meta("pause_state")
+        if (
+            not isinstance(pause_state, dict)
+            or pause_state.get("paused") != self.shared.paused
+            or self.startup_pause_reason == "live_policy_not_qualified"
+        ):
+            self.store.put_meta(
+                "pause_state",
+                {
+                    "paused": self.shared.paused,
+                    "at": time.time(),
+                    "reason": self.startup_pause_reason,
+                },
+            )
         with self.store.transaction() as db:
             db.execute("UPDATE contracts SET state='expired' WHERE state='observing'")
         for i in range(self.config.workers):
@@ -1057,6 +1138,7 @@ class Runtime:
         self.supervisor.start("trainer", self._trainer)
         self.supervisor.start("broker", self._broker)
         self.supervisor.start("maintenance", self._maintenance)
+        self.supervisor.start("watchdog", self._watchdog)
         self.supervisor.start("archive", self._archive)
         if public:
             self.supervisor.start("metadata", self._metadata)
@@ -1067,7 +1149,8 @@ class Runtime:
         if public:
             self._open_public()
             for symbol in self.config.symbols:
-                self.supervisor.start("spot-" + symbol, lambda s=symbol: self._spot_worker(s))
+                if self.config.requires_spot(symbol):
+                    self.supervisor.start("spot-" + symbol, lambda s=symbol: self._spot_worker(s))
 
     def control(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
         qualification = None
@@ -1078,6 +1161,14 @@ class Runtime:
         with self.shared.entry_lock:
             with self.shared.admission_lock:
                 result = self._control(action, body, qualification)
+                if action in {"pause", "flatten", "settings"}:
+                    pause_state = {
+                        "paused": self.shared.paused or self.restart_requested.is_set(),
+                        "at": time.time(),
+                        "reason": "operator_" + action,
+                    }
+                    self.store.put_meta("pause_state", pause_state)
+                    self.diagnostics.record("pause_change", **pause_state)
         self.shared.broker_wake.set()
         return result
 
@@ -1360,10 +1451,20 @@ class Runtime:
             "liquidation_pressure": market.get("liquidation_pressure", {}),
             "book_entry_checks": {
                 "Buy": entry_check(
-                    market.get("cross_market", {}), 1, now, self.config, monotonic_at=monotonic_at
+                    market.get("cross_market", {}),
+                    1,
+                    now,
+                    self.config,
+                    monotonic_at=monotonic_at,
+                    symbol=symbol,
                 ),
                 "Sell": entry_check(
-                    market.get("cross_market", {}), -1, now, self.config, monotonic_at=monotonic_at
+                    market.get("cross_market", {}),
+                    -1,
+                    now,
+                    self.config,
+                    monotonic_at=monotonic_at,
+                    symbol=symbol,
                 ),
             },
             "max_data_age_s": self.config.max_data_age_s,
@@ -1417,11 +1518,15 @@ class Runtime:
             return {"error": str(exc), "realized_net": None, "closed_episodes": None}
 
     def status(self) -> dict[str, Any]:
+        pause_state = self.store.meta("pause_state")
         with self.shared.lock:
             mode = self.shared.mode
             body = {
                 "mode": mode,
                 "paused": self.shared.paused,
+                "pause_state": pause_state,
+                "last_failure": self.diagnostics.last_failure,
+                "run_id": self.diagnostics.run_id,
                 "halted": self.shared.halted,
                 "reason": self.shared.reason,
                 "halt_reasons": [value[1] for value in self.shared.halts.values()],
@@ -1468,6 +1573,21 @@ class Runtime:
             body["worker_errors"] = dict(self.supervisor.errors)
         body["at"], body["monotonic_at"] = time.time(), time.monotonic()
         return body
+
+    def health(self) -> dict[str, Any]:
+        """Liveness is independent of a legitimate trading pause or rejected model."""
+        with self.supervisor.lock:
+            errors = dict(self.supervisor.errors)
+            dead = [t.name for t in self.supervisor.threads if not t.is_alive()]
+        stale = self._stale_workers()
+        return {
+            "healthy": not (errors or dead or stale or self.supervisor.stop.is_set()),
+            "worker_errors": errors,
+            "stopped_workers": dead,
+            "stale_workers": stale,
+            "uptime_s": time.time() - self.started,
+            "run_id": self.diagnostics.run_id,
+        }
 
     def close(self) -> None:
         with self.shared.lock:

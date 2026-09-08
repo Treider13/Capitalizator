@@ -1,0 +1,7 @@
+{
+  "label": "baseline",
+  "returncode": 0,
+  "stdout": "{\"mode\": \"demo\", \"console\": \"http://127.0.0.1:8082\", \"btc_24h_required\": false}\n",
+  "stderr": "",
+  "durable_failure": false
+}

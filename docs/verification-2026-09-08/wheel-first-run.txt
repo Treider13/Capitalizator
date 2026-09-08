@@ -1,0 +1,284 @@
+........................................................................ [  2%]
+........................................................................ [  5%]
+........................................................................ [  8%]
+........................................................................ [ 11%]
+........................................................................ [ 13%]
+........................................................................ [ 16%]
+........................................................................ [ 19%]
+........................................................................ [ 22%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+...................................F.................................... [ 30%]
+........................................................................ [ 33%]
+........................................................................ [ 36%]
+........................................................................ [ 39%]
+................................F....................................... [ 41%]
+...................F.................................................... [ 44%]
+.....................................................F.................. [ 47%]
+........................................................................ [ 50%]
+........................................................................ [ 53%]
+........................................................................ [ 55%]
+........................................................................ [ 58%]
+........................................................................ [ 61%]
+........................................................................ [ 64%]
+........................................................................ [ 67%]
+........................................................................ [ 69%]
+........................................................................ [ 72%]
+........................................................................ [ 75%]
+........................................................................ [ 78%]
+........................................................................ [ 81%]
+........................................................................ [ 83%]
+........................................................................ [ 86%]
+..................s..................................................... [ 89%]
+........................................................................ [ 92%]
+........................................................................ [ 95%]
+...................................s.................................... [ 97%]
+....................................................                     [100%]
+=================================== FAILURES ===================================
+______________ test_real_runtime_payload_renders_in_console_model ______________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-12/test_real_runtime_payload_rend0')
+
+    def test_real_runtime_payload_renders_in_console_model(tmp_path):
+        import os
+        import shutil
+        import subprocess
+        import time
+    
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("Node required for server-to-console contract integration")
+        runtime = Runtime(tmp_path / "runtime", Config())
+        try:
+            engine = runtime.engines["BTCUSDT"]
+            now = time.time()
+            engine.process(
+                "history",
+                {
+                    "tf": "1m",
+                    "rows": [[str(int(now // 60 - 1) * 60000), "100", "102", "99", "101", "10"]],
+                },
+                now,
+            )
+            # Engine publishes production snapshot structures; no manually invented API schema.
+            payload = {"status": runtime.status(), "chart": runtime.chart("BTCUSDT", "1m")}
+            path = tmp_path / "runtime-payload.json"
+            path.write_text(json.dumps(payload))
+            result = subprocess.run(
+                [node, "tools/check_fusion_dashboard.cjs"],
+                env={**os.environ, "BLACKBOX_RUNTIME_PAYLOAD": str(path)},
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+>           assert result.returncode == 0, result.stderr
+E           AssertionError: node:internal/modules/cjs/loader:1520
+E               throw err;
+E               ^
+E             
+E             Error: Cannot find module '/tmp/tools/check_fusion_dashboard.cjs'
+E                 at Module._resolveFilename (node:internal/modules/cjs/loader:1517:15)
+E                 at wrapResolveFilename (node:internal/modules/cjs/loader:1071:27)
+E                 at defaultResolveImplForCJSLoading (node:internal/modules/cjs/loader:1095:10)
+E                 at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1122:12)
+E                 at Module._load (node:internal/modules/cjs/loader:1294:5)
+E                 at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+E                 at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+E                 at node:internal/main/run_main_module:33:47 {
+E               code: 'MODULE_NOT_FOUND',
+E               requireStack: []
+E             }
+E             
+E             Node.js v24.19.0
+E             
+E           assert 1 == 0
+E            +  where 1 = CompletedProcess(args=['/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node', 'tools/check_fusion_das... node:internal/main/run_main_module:33:47 {\n  code: 'MODULE_NOT_FOUND',\n  requireStack: []\n}\n\nNode.js v24.19.0\n").returncode
+
+/workspace/scratch/749e566b67c3/Capitalizator/tests/fusion/test_blackbox.py:273: AssertionError
+_________ test_training_timeout_covers_partial_response_not_just_poll __________
+
+    def exchange() -> None:
+        try:
+            self.connection.send((rows, config, at))
+            result["phase"] = "receive"
+>           result["response"] = self.connection.recv()
+                                 ^^^^^^^^^^^^^^^^^^^^^^
+
+/workspace/scratch/749e566b67c3/Capitalizator/.venv-acceptance/lib/python3.12/site-packages/capitalizator/fusion/training.py:73: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/multiprocessing/connection.py:250: in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/multiprocessing/connection.py:430: in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <multiprocessing.connection.Connection object at 0x7f4ffb41deb0>
+size = 4, read = <built-in function read>
+
+    def _recv(self, size, read=_read):
+        buf = io.BytesIO()
+        handle = self._handle
+        remaining = size
+        while remaining > 0:
+>           chunk = read(handle, remaining)
+                    ^^^^^^^^^^^^^^^^^^^^^^^
+E           ConnectionResetError: [Errno 104] Connection reset by peer
+
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/multiprocessing/connection.py:395: ConnectionResetError
+
+The above exception was the direct cause of the following exception:
+
+    @pytest.mark.skipif(not hasattr(signal, "SIGSTOP"), reason="Linux partial IPC fault injection")
+    def test_training_timeout_covers_partial_response_not_just_poll():
+        worker = TrainingProcess()
+        worker.process.terminate()
+        worker.process.join(2)
+        worker.connection.close()
+        context = mp.get_context("spawn")
+        worker.connection, child = context.Pipe()
+        worker.process = context.Process(target=_send_partial_response, args=(child,))
+        worker.process.start()
+        child.close()
+        try:
+            with pytest.raises(TimeoutError, match="during receive"):
+>               worker.fit([], replace(Config(), training_timeout_s=1.5), 100, threading.Event())
+
+/workspace/scratch/749e566b67c3/Capitalizator/tests/fusion/test_runtime_reliability.py:313: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <capitalizator.fusion.training.TrainingProcess object at 0x7f4ffb41ef00>
+rows = []
+config = Config(symbols=('BTCUSDT', 'ETHUSDT', 'XAUUSDT', 'SOLUSDT', 'BNBUSDT', 'DOGEUSDT'), workers=4, queue_capacity=4096, qu..._timeout_s=1.5, news_poll_s=60.0, context_poll_s=60.0, chart_refresh_s=0.2, macro_poll_s=3600.0, macro_stale_s=86400.0)
+at = 100, stop = <threading.Event at 0x7f4ffb41cd70: unset>
+
+    def fit(
+        self, rows: list[dict[str, Any]], config: Config, at: float, stop: threading.Event
+    ) -> Atlas | None:
+        if stop.is_set():
+            return None
+        if not self.fit_lock.acquire(blocking=False):
+            raise RuntimeError("model worker already has an in-flight job")
+        try:
+            if self.closed or self.unusable:
+                raise RuntimeError("model worker cannot reuse a closed or interrupted pipe")
+            deadline = time.monotonic() + config.training_timeout_s
+            done = threading.Event()
+            result: dict[str, Any] = {"phase": "send"}
+    
+            def exchange() -> None:
+                try:
+                    self.connection.send((rows, config, at))
+                    result["phase"] = "receive"
+                    result["response"] = self.connection.recv()
+                except BaseException as exc:
+                    result["error"] = exc
+                finally:
+                    done.set()
+    
+            # Pipe.send and partial Pipe.recv can both block. One bounded exchange
+            # thread owns the pipe; cancellation kills its peer and invalidates it.
+            self.io_thread = threading.Thread(target=exchange, name="atlas-ipc", daemon=True)
+            self.io_thread.start()
+            while not done.wait(0.05):
+                if stop.is_set():
+                    self.unusable = True
+                    return None
+                if time.monotonic() >= deadline:
+                    self.unusable = True
+                    raise TimeoutError(
+                        f"model worker exceeded {config.training_timeout_s}s "
+                        f"during {result['phase']}; pid={self.process.pid}"
+                    )
+            self.io_thread.join(0.1)
+            if "error" in result:
+                self.unusable = True
+                self.process.join(0.1)
+>               raise RuntimeError(
+                    f"model worker pipe failed during {result['phase']}; "
+                    f"pid={self.process.pid} exitcode={self.process.exitcode}"
+                ) from result["error"]
+E               RuntimeError: model worker pipe failed during receive; pid=254 exitcode=1
+
+/workspace/scratch/749e566b67c3/Capitalizator/.venv-acceptance/lib/python3.12/site-packages/capitalizator/fusion/training.py:97: RuntimeError
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/multiprocessing/spawn.py", line 132, in _main
+    self = reduction.pickle.load(from_parent)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'tests'
+_____________ test_console_freshness_does_not_use_phone_wall_clock _____________
+
+    def test_console_freshness_does_not_use_phone_wall_clock():
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("Node is required for the console clock test")
+>       code = "let streamConnected=true;\n" + Path("src/capitalizator/fusion/chart.js").read_text()
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+/workspace/scratch/749e566b67c3/Capitalizator/tests/fusion/test_time_audit.py:111: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py:1027: in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = PosixPath('src/capitalizator/fusion/chart.js'), mode = 'r'
+buffering = -1, encoding = 'locale', errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'src/capitalizator/fusion/chart.js'
+
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py:1013: FileNotFoundError
+______________ test_replay_day_is_learn_and_does_not_write_phase _______________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-12/test_replay_day_is_learn_and_d0')
+
+    def test_replay_day_is_learn_and_does_not_write_phase(tmp_path: Path) -> None:
+        live = init_vault(tmp_path / "live")
+        sand = init_vault(tmp_path / "sand")
+        _trade(live.tape)
+>       phase = Path("infra/phase.yaml").read_text(encoding="utf-8")
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+/workspace/scratch/749e566b67c3/Capitalizator/tests/hyexec/test_replay_desk.py:81: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py:1027: in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = PosixPath('infra/phase.yaml'), mode = 'r', buffering = -1
+encoding = 'utf-8', errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'infra/phase.yaml'
+
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py:1013: FileNotFoundError
+=========================== short test summary info ============================
+SKIPPED [1] ../workspace/scratch/749e566b67c3/Capitalizator/tests/recorder/test_snapshot.py:156: no egress to api.bybit.com
+SKIPPED [1] ../workspace/scratch/749e566b67c3/Capitalizator/tests/test_gitleaks_pattern.py:34: gitleaks binary not installed
+4 failed, 2566 passed, 2 skipped in 94.79s (0:01:34)

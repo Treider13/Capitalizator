@@ -6,7 +6,7 @@ import json
 import shutil
 import subprocess
 import threading
-from pathlib import Path
+from importlib.resources import files
 
 import pytest
 from tests.fusion.test_contract_runtime import trade_frame
@@ -108,7 +108,10 @@ def test_console_freshness_does_not_use_phone_wall_clock():
     node = shutil.which("node")
     if not node:
         pytest.skip("Node is required for the console clock test")
-    code = "let streamConnected=true;\n" + Path("src/capitalizator/fusion/chart.js").read_text()
+    code = (
+        "let streamConnected=true;\n"
+        + files("capitalizator.fusion").joinpath("chart.js").read_text()
+    )
     script = """
 const vm=require('vm'),assert=require('assert');
 let elapsed=1000;

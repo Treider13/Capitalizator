@@ -309,6 +309,7 @@ def compare(
                     1 if json.loads(order["body"])["side"] == "Buy" else -1,
                     v.clock,
                     config,
+                    symbol=order["symbol"],
                 )
                 == "ready"
             )

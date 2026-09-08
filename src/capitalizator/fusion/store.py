@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS samples(
  id TEXT PRIMARY KEY, symbol TEXT NOT NULL, origin REAL NOT NULL,
  available REAL NOT NULL, x TEXT NOT NULL, y TEXT NOT NULL, context TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS sample_clock ON samples(available);
+CREATE INDEX IF NOT EXISTS sample_policy_clock
+ ON samples(json_extract(context,'$.policy_version'),available,id);
 CREATE TABLE IF NOT EXISTS models(
  version TEXT PRIMARY KEY, at REAL NOT NULL, body TEXT NOT NULL, report TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS contracts(

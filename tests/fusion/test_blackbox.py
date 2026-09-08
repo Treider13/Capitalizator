@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import shlex
 import threading
+from importlib.resources import files
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -264,8 +266,12 @@ def test_real_runtime_payload_renders_in_console_model(tmp_path):
         path = tmp_path / "runtime-payload.json"
         path.write_text(json.dumps(payload))
         result = subprocess.run(
-            [node, "tools/check_fusion_dashboard.cjs"],
-            env={**os.environ, "BLACKBOX_RUNTIME_PAYLOAD": str(path)},
+            [node, str(Path(__file__).resolve().parents[2] / "tools/check_fusion_dashboard.cjs")],
+            env={
+                **os.environ,
+                "BLACKBOX_RUNTIME_PAYLOAD": str(path),
+                "BLACKBOX_FUSION_ROOT": str(files("capitalizator.fusion")),
+            },
             capture_output=True,
             text=True,
             timeout=15,

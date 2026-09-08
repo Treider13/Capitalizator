@@ -1,0 +1,7 @@
+{
+  "label": "patched",
+  "returncode": 1,
+  "stdout": "{\"mode\": \"demo\", \"console\": \"http://127.0.0.1:8082\", \"btc_24h_required\": false}\n",
+  "stderr": "{\"at\":1788852535.5695946,\"pid\":30,\"run_id\":\"255d22c05eb0446580e47573361beb74\",\"policy\":\"25f164f04284c6ea\",\"event\":\"startup\",\"mode\":\"demo\",\"paused\":false,\"previous_failure_run\":null}\n{\"at\":1788852535.5739458,\"pid\":30,\"run_id\":\"255d22c05eb0446580e47573361beb74\",\"policy\":\"25f164f04284c6ea\",\"event\":\"failure\",\"worker\":\"injected-worker\",\"error\":\"RuntimeError: fault injection: market worker\",\"traceback\":\"Traceback (most recent call last):\\n  File \\\"/workspace/scratch/749e566b67c3/Capitalizator/src/capitalizator/fusion/concurrency.py\\\", line 110, in run\\n    fn()\\n  File \\\"<string>\\\", line 9, in fail\\nRuntimeError: fault injection: market worker\\n\"}\n{\"at\":1788852536.075544,\"pid\":30,\"run_id\":\"255d22c05eb0446580e47573361beb74\",\"policy\":\"25f164f04284c6ea\",\"event\":\"shutdown\",\"reason\":\"worker_failure\",\"signals\":[],\"exit_code\":1}\n",
+  "durable_failure": true
+}

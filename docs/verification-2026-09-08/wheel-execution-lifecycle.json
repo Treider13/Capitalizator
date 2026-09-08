@@ -1,0 +1,132 @@
+{
+  "cases": [
+    {
+      "symbol": "BTCUSDT",
+      "lost_ack": false,
+      "sends": 1,
+      "closes": 1,
+      "executions": 2,
+      "episodes": 1,
+      "restart_preserved": true,
+      "scope": "synthetic component acceptance; not exchange/PnL validation"
+    },
+    {
+      "symbol": "ETHUSDT",
+      "lost_ack": false,
+      "sends": 1,
+      "closes": 1,
+      "executions": 2,
+      "episodes": 1,
+      "restart_preserved": true,
+      "scope": "synthetic component acceptance; not exchange/PnL validation"
+    },
+    {
+      "symbol": "XAUUSDT",
+      "lost_ack": false,
+      "sends": 1,
+      "closes": 1,
+      "executions": 2,
+      "episodes": 1,
+      "restart_preserved": true,
+      "scope": "synthetic component acceptance; not exchange/PnL validation"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "lost_ack": false,
+      "sends": 1,
+      "closes": 1,
+      "executions": 2,
+      "episodes": 1,
+      "restart_preserved": true,
+      "scope": "synthetic component acceptance; not exchange/PnL validation"
+    },
+    {
+      "symbol": "BNBUSDT",
+      "lost_ack": false,
+      "sends": 1,
+      "closes": 1,
+      "executions": 2,
+      "episodes": 1,
+      "restart_preserved": true,
+      "scope": "synthetic component acceptance; not exchange/PnL validation"
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "lost_ack": false,
+      "sends": 1,
+      "closes": 1,
+      "executions": 2,
+      "episodes": 1,
+      "restart_preserved": true,
+      "scope": "synthetic component acceptance; not exchange/PnL validation"
+    },
+    {
+      "symbol": "BTCUSDT",
+      "lost_ack": true,
+      "sends": 1,
+      "closes": 1,
+      "executions": 2,
+      "episodes": 1,
+      "restart_preserved": true,
+      "scope": "synthetic component acceptance; not exchange/PnL validation"
+    },
+    {
+      "symbol": "ETHUSDT",
+      "lost_ack": true,
+      "sends": 1,
+      "closes": 1,
+      "executions": 2,
+      "episodes": 1,
+      "restart_preserved": true,
+      "scope": "synthetic component acceptance; not exchange/PnL validation"
+    },
+    {
+      "symbol": "XAUUSDT",
+      "lost_ack": true,
+      "sends": 1,
+      "closes": 1,
+      "executions": 2,
+      "episodes": 1,
+      "restart_preserved": true,
+      "scope": "synthetic component acceptance; not exchange/PnL validation"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "lost_ack": true,
+      "sends": 1,
+      "closes": 1,
+      "executions": 2,
+      "episodes": 1,
+      "restart_preserved": true,
+      "scope": "synthetic component acceptance; not exchange/PnL validation"
+    },
+    {
+      "symbol": "BNBUSDT",
+      "lost_ack": true,
+      "sends": 1,
+      "closes": 1,
+      "executions": 2,
+      "episodes": 1,
+      "restart_preserved": true,
+      "scope": "synthetic component acceptance; not exchange/PnL validation"
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "lost_ack": true,
+      "sends": 1,
+      "closes": 1,
+      "executions": 2,
+      "episodes": 1,
+      "restart_preserved": true,
+      "scope": "synthetic component acceptance; not exchange/PnL validation"
+    }
+  ],
+  "result": "12 passed in 6.69s",
+  "fixture_boundaries": [
+    "synthetic constant-response training data",
+    "seeded warm blocks, daily/SMC context and news coverage",
+    "in-memory venue acknowledgements and fills",
+    "real Atlas, Engine D, contract/risk gates, Executor, SQLite and HTTP controls"
+  ],
+  "note": "No admission method replaced. This is not a test of natural signal discovery or Bybit connectivity."
+}

@@ -1,0 +1,17 @@
+{
+  "silent_worker_return": {
+    "alive": false,
+    "failed": true,
+    "errors": {
+      "unexpected-return": "RuntimeError: worker returned before shutdown was requested"
+    },
+    "durable": true
+  },
+  "stopped_training_child": {
+    "configured_timeout_s": 0.3,
+    "parent_observation_s": 0.92,
+    "hung_until_external_kill": false,
+    "stdout": "fit-started\nTimeoutError model worker exceeded 0.3s during send; pid=11\nclosed\n",
+    "stderr": ""
+  }
+}
